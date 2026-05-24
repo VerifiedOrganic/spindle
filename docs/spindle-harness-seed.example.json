@@ -1,0 +1,50 @@
+{
+  "project_id": "project:replace-me",
+  "book_number": 1,
+  "range": {
+    "start_chapter": 11,
+    "end_chapter": 12
+  },
+  "checkpoint_interval": 2,
+  "editorial_directives": [
+    "Continuity first",
+    "Do not introduce facts not grounded in scene context"
+  ],
+  "chapters": [
+    {
+      "chapter_number": 11,
+      "synopsis": "Marcus confronts Elena about the ledger discrepancies.",
+      "pov_character_id": "character:marcus",
+      "scenes": [
+        {
+          "scene_order": 1,
+          "character_ids": ["character:marcus", "character:elena"],
+          "location_id": "location:archive",
+          "content_rating": "teen",
+          "tone": "tense"
+        },
+        {
+          "scene_order": 2,
+          "character_ids": ["character:marcus"],
+          "location_id": "location:roof",
+          "content_rating": "teen",
+          "tone": "grim"
+        }
+      ]
+    },
+    {
+      "chapter_number": 12,
+      "synopsis": "Elena tests whether Marcus will keep her secret.",
+      "pov_character_id": "character:elena",
+      "scenes": [
+        {
+          "scene_order": 1,
+          "character_ids": ["character:elena", "character:marcus"],
+          "location_id": "location:safehouse",
+          "content_rating": "teen",
+          "tone": "suspicious"
+        }
+      ]
+    }
+  ]
+}

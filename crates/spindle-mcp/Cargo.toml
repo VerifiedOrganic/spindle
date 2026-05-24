@@ -1,0 +1,29 @@
+[package]
+name = "spindle-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap = { version = "4", features = ["derive"] }
+dirs.workspace = true
+futures-core = "0.3.31"
+reqwest.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+spindle-adapters = { path = "../spindle-adapters" }
+spindle-core = { path = "../spindle-core" }
+tokio.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tower = { version = "0.5.2", features = ["util"] }
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true

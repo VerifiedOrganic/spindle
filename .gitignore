@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE - JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Environment / OS
+.env
+.DS_Store
+
+# Claude Code - machine-specific config
+.claude/mcp.json
+.claude/settings.local.json
+
+# Local SQLite databases
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Agent-runtime state directories (not source).
+.agora/
+.antigravitycli/
+.brehon/

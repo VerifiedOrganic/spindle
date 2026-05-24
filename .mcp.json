@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "spindle": {
+      "args": [
+        "run",
+        "-p",
+        "spindle-mcp"
+      ],
+      "command": "cargo"
+    }
+  }
+}
