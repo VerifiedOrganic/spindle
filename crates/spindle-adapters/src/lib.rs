@@ -17,6 +17,7 @@ pub use guidance::{
 };
 pub use workspace::{
     Workspace, default_config_path, default_data_dir, find_workspace_root, resolve_workspace,
+    runtime_dir,
 };
 
 // SQLite-backed entry points.

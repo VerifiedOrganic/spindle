@@ -534,14 +534,7 @@ pub fn structural_summary_from_records(
 // =============================================================================
 
 pub fn default_import_data_dir() -> PathBuf {
-    std::env::var_os("SPINDLE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::data_local_dir().map(|path| path.join("spindle")))
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".spindle-data")
-        })
+    crate::workspace::default_data_dir()
 }
 
 pub fn default_import_project_name(input: &ImportManuscriptInput) -> String {

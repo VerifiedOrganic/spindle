@@ -117,6 +117,7 @@
 //! | `bible://config/agents` | `list_agents` | Same data; resource is cached |
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -1992,8 +1993,9 @@ impl ToolRouter {
             chapters: chapter_seeds,
         };
 
-        let harness_state =
+        let mut harness_state =
             spindle_harness::state::HarnessState::from_seed(seed, active_branch.id.clone());
+        harness_state.artifacts_dir = "../artifacts".to_string();
 
         let run_id = format!(
             "authoring_run:{}",
@@ -2260,10 +2262,7 @@ impl ToolRouter {
         }
 
         let action_to_execute = outcome.next_action.clone();
-        let state_path = data_dir.join(format!(
-            "authoring_run_{}_temp.json",
-            run_id.replace(":", "_")
-        ));
+        let state_path = authoring_state_path(data_dir, &run_id);
         harness_state.save(&state_path)?;
 
         let exec_result = execute_one(
@@ -2344,10 +2343,7 @@ impl ToolRouter {
         let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
 
         let data_dir = repo.data_dir();
-        let state_path = data_dir.join(format!(
-            "authoring_run_{}_temp.json",
-            run_id.replace(":", "_")
-        ));
+        let state_path = authoring_state_path(data_dir, &run_id);
         harness_state.save(&state_path)?;
 
         let review_result = spindle_harness::operator::review_checkpoint(
@@ -2427,10 +2423,7 @@ impl ToolRouter {
         };
 
         let data_dir = repo.data_dir();
-        let state_path = data_dir.join(format!(
-            "authoring_run_{}_temp.json",
-            run_id.replace(":", "_")
-        ));
+        let state_path = authoring_state_path(data_dir, &run_id);
         harness_state.save(&state_path)?;
 
         let resolve_result = spindle_harness::operator::resolve_scene_block(
@@ -2561,6 +2554,13 @@ fn extract_scene_location_and_rating(
     };
 
     (location_id, rating)
+}
+
+fn authoring_state_path(data_dir: &Path, run_id: &str) -> PathBuf {
+    spindle_adapters::workspace::runtime_dir(data_dir).join(format!(
+        "authoring_run_{}_temp.json",
+        run_id.replace(":", "_")
+    ))
 }
 
 fn map_harness_to_records(
@@ -2735,7 +2735,7 @@ fn map_records_to_harness(
         });
     }
 
-    spindle_harness::state::HarnessState {
+    let mut state = spindle_harness::state::HarnessState {
         project_id: run.project_id.clone(),
         active_branch_id: run.active_branch_id.clone(),
         book_number: run.book_number,
@@ -2749,7 +2749,12 @@ fn map_records_to_harness(
         editorial_directives: run.editorial_directives.clone(),
         chapters: ch_states,
         checkpoint_history: cp_history,
+    };
+
+    if state.artifacts_dir == "artifacts" {
+        state.artifacts_dir = "../artifacts".to_string();
     }
+    state
 }
 
 /// Public entry point for both the MCP tool and the CLI.

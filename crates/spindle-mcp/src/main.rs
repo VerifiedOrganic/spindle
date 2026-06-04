@@ -72,36 +72,7 @@ async fn main() -> anyhow::Result<()> {
             }
             McpCommand::Init => {
                 let cwd = std::env::current_dir().context("getting current directory")?;
-                let spindle_dir = cwd.join(".spindle");
-                std::fs::create_dir_all(&spindle_dir).context("creating .spindle directory")?;
-
-                // Create subdirectories: artifacts, runtime, etc.
-                std::fs::create_dir_all(spindle_dir.join("artifacts"))
-                    .context("creating artifacts directory")?;
-                std::fs::create_dir_all(spindle_dir.join("runtime"))
-                    .context("creating runtime directory")?;
-
-                // Create a basic default config.toml if it doesn't exist
-                let config_path = spindle_dir.join("config.toml");
-                if !config_path.exists() {
-                    let default_config = r#"# Spindle local agent configuration
-# Documented at docs/spindle-agent-config.md
-
-# [[agents]]
-# id = "local-http"
-# name = "Local HTTP model"
-# provider = "openai-compatible"
-# endpoint = "http://localhost:11434/v1"
-# model = "mistral"
-# api_key_env = "OPENAI_API_KEY"
-
-# [[routing]]
-# route = "draft"
-# agent = "local-http"
-"#;
-                    std::fs::write(&config_path, default_config)
-                        .context("writing default config.toml")?;
-                }
+                let spindle_dir = init_project_workspace(&cwd)?;
 
                 println!(
                     "Initialized Spindle project-local workspace at {}",
@@ -162,6 +133,39 @@ pub fn build_service(
     let _ = service.configure_agents(spindle_core::models::ConfigureAgentsInput { config_path });
     service
 }
+
+fn init_project_workspace(cwd: &Path) -> anyhow::Result<PathBuf> {
+    let spindle_dir = cwd.join(".spindle");
+    std::fs::create_dir_all(&spindle_dir).context("creating .spindle directory")?;
+    std::fs::create_dir_all(spindle_dir.join("artifacts"))
+        .context("creating artifacts directory")?;
+    std::fs::create_dir_all(spindle_adapters::workspace::runtime_dir(&spindle_dir))
+        .context("creating runtime directory")?;
+
+    let config_path = spindle_dir.join("config.toml");
+    if !config_path.exists() {
+        std::fs::write(&config_path, DEFAULT_LOCAL_CONFIG)
+            .context("writing default config.toml")?;
+    }
+
+    Ok(spindle_dir)
+}
+
+const DEFAULT_LOCAL_CONFIG: &str = r#"# Spindle local agent configuration
+# Documented at docs/spindle-agent-config.md
+
+# [[agents]]
+# id = "local-http"
+# name = "Local HTTP model"
+# provider = "openai-compatible"
+# endpoint = "http://localhost:11434/v1"
+# model = "mistral"
+# api_key_env = "OPENAI_API_KEY"
+
+# [[routing]]
+# route = "draft"
+# agent = "local-http"
+"#;
 
 /// Primary mode: owns the DB, starts an HTTP listener for secondaries,
 /// serves this session over stdio.
@@ -284,10 +288,13 @@ pub async fn bridge_stdio(duplex: tokio::io::DuplexStream) -> anyhow::Result<()>
 // ── Addr file helpers ───────────────────────────────────────────────────────
 
 fn addr_file_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("spindle.addr")
+    spindle_adapters::workspace::runtime_dir(data_dir).join("spindle.addr")
 }
 
 pub fn write_addr_file(data_dir: &Path, addr: SocketAddr) -> anyhow::Result<()> {
+    if let Some(parent) = addr_file_path(data_dir).parent() {
+        std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
+    }
     std::fs::write(addr_file_path(data_dir), addr.to_string()).context("failed to write addr file")
 }
 
@@ -412,5 +419,21 @@ mod tests {
         write_addr_file(temp.path(), addr).expect("write");
         let read_back = read_addr_file(temp.path()).expect("read");
         assert_eq!(read_back, addr);
+        assert!(temp.path().join("runtime").join("spindle.addr").exists());
+        assert!(!temp.path().join("spindle.addr").exists());
+    }
+
+    #[test]
+    fn init_project_workspace_creates_local_layout() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let workspace = init_project_workspace(temp.path()).expect("init workspace");
+
+        assert_eq!(workspace, temp.path().join(".spindle"));
+        assert!(workspace.join("artifacts").is_dir());
+        assert!(workspace.join("runtime").is_dir());
+        assert!(workspace.join("config.toml").is_file());
+
+        let config = std::fs::read_to_string(workspace.join("config.toml")).expect("read config");
+        assert!(config.contains("Spindle local agent configuration"));
     }
 }

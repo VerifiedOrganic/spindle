@@ -83,6 +83,10 @@ pub fn default_platform_data_dir_for_cwd(cwd: &Path) -> PathBuf {
         .unwrap_or_else(|| cwd.join(".spindle-data"))
 }
 
+pub fn runtime_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("runtime")
+}
+
 pub fn resolve_workspace(
     cwd: &Path,
     env_data_dir: Option<PathBuf>,
@@ -168,11 +172,27 @@ mod tests {
     }
 
     #[test]
+    fn test_spindle_data_dir_override_uses_local_db_name() {
+        let temp = tempdir().unwrap();
+        let explicit_data_dir = temp.path().join(".spindle");
+
+        let ws = resolve_workspace(temp.path(), Some(explicit_data_dir.clone()), None);
+        assert_eq!(ws.data_dir, explicit_data_dir);
+        assert_eq!(ws.db_path, ws.data_dir.join("spindle.db"));
+    }
+
+    #[test]
     fn test_config_override_wins() {
         let temp = tempdir().unwrap();
         let explicit_config = temp.path().join("explicit_config.toml");
 
         let ws = resolve_workspace(temp.path(), None, Some(explicit_config.clone()));
         assert_eq!(ws.config_path, Some(explicit_config));
+    }
+
+    #[test]
+    fn test_runtime_dir_stays_inside_data_dir() {
+        let temp = tempdir().unwrap();
+        assert_eq!(runtime_dir(temp.path()), temp.path().join("runtime"));
     }
 }

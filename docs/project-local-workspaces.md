@@ -12,7 +12,7 @@ my-book/
 │   ├── spindle.db          # The SQLite database holding this book's story bible and runs
 │   ├── config.toml         # Project-specific agent & routing configurations
 │   ├── artifacts/          # Scene drafts, paces, and checkpoint reports
-│   └── runtime/            # Temporary runtime files (e.g. spindle.addr)
+│   └── runtime/            # Temporary runtime files (spindle.addr, authoring state)
 ```
 
 ## Resolution Semantics
