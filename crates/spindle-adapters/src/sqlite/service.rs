@@ -19,6 +19,7 @@
 //! that calls it through a real MCP-shaped input.
 
 use anyhow::{Context, Result};
+use chrono::TimeZone;
 use spindle_core::models::{
     AnnotateSceneBeatsInput, AnnotateSceneBeatsOutput, AnnotatedBeat, ArchiveEntityInput,
     ArchiveEntityOutput, BatchCreateMotifsInput, BatchCreateMotifsOutput,
@@ -4323,6 +4324,80 @@ impl SqliteSpindleService {
                     .await?;
                 Value::Array(records.into_iter().map(relates_to_json).collect())
             }
+            "research" => {
+                let sources = self
+                    .repository
+                    .list_research_sources_by_project(&project_id)
+                    .await?;
+                let notes = self
+                    .repository
+                    .list_research_notes_by_project(&project_id)
+                    .await?;
+                let claims = self
+                    .repository
+                    .list_research_claims_by_project(&project_id)
+                    .await?;
+                json!({
+                    "sources": sources.into_iter().map(|s| {
+                        json!({
+                            "id": s.id,
+                            "project_id": s.project_id,
+                            "branch_id": s.branch_id,
+                            "title": s.title,
+                            "source_type": s.source_type,
+                            "url": s.url,
+                            "file_path": s.file_path,
+                            "author": s.author,
+                            "publisher": s.publisher,
+                            "published_date": s.published_date,
+                            "accessed_at": crate::sqlite::row::timestamp_to_micros(s.accessed_at),
+                            "reliability": s.reliability,
+                            "tags": s.tags,
+                            "summary": s.summary,
+                            "created_at": crate::sqlite::row::timestamp_to_micros(s.created_at),
+                            "updated_at": crate::sqlite::row::timestamp_to_micros(s.updated_at),
+                        })
+                    }).collect::<Vec<_>>(),
+                    "notes": notes.into_iter().map(|n| {
+                        json!({
+                            "id": n.id,
+                            "project_id": n.project_id,
+                            "source_id": n.source_id,
+                            "branch_id": n.branch_id,
+                            "note": n.note,
+                            "quote": n.quote,
+                            "locator": n.locator,
+                            "tags": n.tags,
+                            "created_at": crate::sqlite::row::timestamp_to_micros(n.created_at),
+                            "updated_at": crate::sqlite::row::timestamp_to_micros(n.updated_at),
+                        })
+                    }).collect::<Vec<_>>(),
+                    "claims": claims.into_iter().map(|c| {
+                        json!({
+                            "id": c.id,
+                            "project_id": c.project_id,
+                            "source_id": c.source_id,
+                            "note_id": c.note_id,
+                            "branch_id": c.branch_id,
+                            "claim": c.claim,
+                            "topic": c.topic,
+                            "time_period": c.time_period,
+                            "location": c.location,
+                            "confidence": c.confidence,
+                            "tags": c.tags,
+                            "created_at": crate::sqlite::row::timestamp_to_micros(c.created_at),
+                            "updated_at": crate::sqlite::row::timestamp_to_micros(c.updated_at),
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            }
+            "research/tags" => {
+                let tags = self
+                    .repository
+                    .research_tags_by_project(&project_id)
+                    .await?;
+                json!(tags)
+            }
             _ => anyhow::bail!("unknown project resource path: {resource_path}"),
         })
     }
@@ -4388,6 +4463,21 @@ impl SqliteSpindleService {
             "future_knowledge" => self
                 .repository
                 .get_future_knowledge(record_id_str)
+                .await
+                .is_ok(),
+            "research_source" => self
+                .repository
+                .get_research_source(record_id_str)
+                .await
+                .is_ok(),
+            "research_note" => self
+                .repository
+                .get_research_note(record_id_str)
+                .await
+                .is_ok(),
+            "research_claim" => self
+                .repository
+                .get_research_claim(record_id_str)
                 .await
                 .is_ok(),
             other => anyhow::bail!("read_entity_by_id does not support table `{other}`"),
@@ -9882,6 +9972,432 @@ impl SqliteSpindleService {
                 world_rules_count,
                 bible_hits_count,
             },
+        })
+    }
+
+    async fn resolve_research_branch_id(
+        &self,
+        project_id: &str,
+        branch_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        self.repository.get_project(project_id).await?;
+
+        if let Some(branch_id) = branch_id {
+            let branch = self
+                .repository
+                .get_branch(branch_id)
+                .await
+                .with_context(|| format!("branch not found: {branch_id}"))?;
+            if branch.project_id.as_deref() != Some(project_id) {
+                anyhow::bail!("branch does not belong to the requested project");
+            }
+            return Ok(Some(branch.id));
+        }
+
+        let active_branch = self.repository.get_active_branch(project_id).await?;
+        Ok(Some(active_branch.id))
+    }
+
+    pub async fn research_add_source(
+        &self,
+        input: spindle_core::models::ResearchAddSourceInput,
+    ) -> Result<spindle_core::models::ResearchAddSourceOutput> {
+        let branch_id = self
+            .resolve_research_branch_id(&input.project_id, input.branch_id.as_deref())
+            .await?;
+        let tags = normalize_tags(&input.tags);
+
+        let accessed_at = match input.accessed_at {
+            Some(micros) => match chrono::Utc.timestamp_micros(micros).single() {
+                Some(ts) => ts,
+                None => chrono::Utc::now(),
+            },
+            None => chrono::Utc::now(),
+        };
+
+        let branch_id_str = branch_id.as_deref();
+
+        let source = self
+            .repository
+            .create_research_source(
+                &input.project_id,
+                branch_id_str,
+                &input.title,
+                &input.source_type,
+                input.url.as_deref(),
+                input.file_path.as_deref(),
+                input.author.as_deref(),
+                input.publisher.as_deref(),
+                input.published_date.as_deref(),
+                accessed_at,
+                &input.reliability,
+                &tags,
+                input.summary.as_deref(),
+            )
+            .await?;
+
+        Ok(spindle_core::models::ResearchAddSourceOutput {
+            source_id: source.id,
+        })
+    }
+
+    pub async fn research_add_note(
+        &self,
+        input: spindle_core::models::ResearchAddNoteInput,
+    ) -> Result<spindle_core::models::ResearchAddNoteOutput> {
+        let source = if let Some(source_id) = &input.source_id {
+            let source = self
+                .repository
+                .get_research_source(source_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("source not found: {}", source_id))?;
+            if source.project_id != input.project_id {
+                anyhow::bail!("source does not belong to the requested project");
+            }
+            Some(source)
+        } else {
+            None
+        };
+
+        let tags = normalize_tags(&input.tags);
+
+        let mut branch_id = self
+            .resolve_research_branch_id(&input.project_id, input.branch_id.as_deref())
+            .await?;
+        if input.branch_id.is_none()
+            && let Some(source_branch_id) =
+                source.as_ref().and_then(|source| source.branch_id.clone())
+        {
+            branch_id = Some(source_branch_id);
+        }
+        if let Some(source_branch_id) = source
+            .as_ref()
+            .and_then(|source| source.branch_id.as_deref())
+            && branch_id.as_deref() != Some(source_branch_id)
+        {
+            anyhow::bail!("source branch does not match the requested branch");
+        }
+        let branch_id_str = branch_id.as_deref();
+
+        let note = self
+            .repository
+            .create_research_note(
+                &input.project_id,
+                input.source_id.as_deref(),
+                branch_id_str,
+                &input.note,
+                input.quote.as_deref(),
+                input.locator.as_deref(),
+                &tags,
+            )
+            .await?;
+
+        Ok(spindle_core::models::ResearchAddNoteOutput { note_id: note.id })
+    }
+
+    pub async fn research_add_claim(
+        &self,
+        input: spindle_core::models::ResearchAddClaimInput,
+    ) -> Result<spindle_core::models::ResearchAddClaimOutput> {
+        let note = if let Some(note_id) = &input.note_id {
+            let note = self
+                .repository
+                .get_research_note(note_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("note not found: {}", note_id))?;
+            if note.project_id != input.project_id {
+                anyhow::bail!("note does not belong to the requested project");
+            }
+            Some(note)
+        } else {
+            None
+        };
+
+        if let (Some(note), Some(source_id)) = (&note, &input.source_id)
+            && let Some(note_source_id) = note.source_id.as_deref()
+            && note_source_id != source_id
+        {
+            anyhow::bail!("note is linked to a different source");
+        }
+
+        let source_id = input
+            .source_id
+            .clone()
+            .or_else(|| note.as_ref().and_then(|note| note.source_id.clone()));
+
+        let source = if let Some(source_id) = &source_id {
+            let source = self
+                .repository
+                .get_research_source(source_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("source not found: {}", source_id))?;
+            if source.project_id != input.project_id {
+                anyhow::bail!("source does not belong to the requested project");
+            }
+            Some(source)
+        } else {
+            None
+        };
+
+        let tags = normalize_tags(&input.tags);
+
+        let mut branch_id = self
+            .resolve_research_branch_id(&input.project_id, input.branch_id.as_deref())
+            .await?;
+        if input.branch_id.is_none() {
+            if let Some(note_branch_id) = note.as_ref().and_then(|note| note.branch_id.clone()) {
+                branch_id = Some(note_branch_id);
+            } else if let Some(source_branch_id) =
+                source.as_ref().and_then(|source| source.branch_id.clone())
+            {
+                branch_id = Some(source_branch_id);
+            }
+        }
+        if let Some(note_branch_id) = note.as_ref().and_then(|note| note.branch_id.as_deref())
+            && branch_id.as_deref() != Some(note_branch_id)
+        {
+            anyhow::bail!("note branch does not match the requested branch");
+        }
+        if let Some(source_branch_id) = source
+            .as_ref()
+            .and_then(|source| source.branch_id.as_deref())
+            && branch_id.as_deref() != Some(source_branch_id)
+        {
+            anyhow::bail!("source branch does not match the requested branch");
+        }
+        let branch_id_str = branch_id.as_deref();
+
+        let claim = self
+            .repository
+            .create_research_claim(
+                &input.project_id,
+                source_id.as_deref(),
+                input.note_id.as_deref(),
+                branch_id_str,
+                &input.claim,
+                input.topic.as_deref(),
+                input.time_period.as_deref(),
+                input.location.as_deref(),
+                &input.confidence,
+                &tags,
+            )
+            .await?;
+
+        Ok(spindle_core::models::ResearchAddClaimOutput { claim_id: claim.id })
+    }
+
+    pub async fn research_search(
+        &self,
+        input: spindle_core::models::ResearchSearchInput,
+    ) -> Result<spindle_core::models::ResearchSearchOutput> {
+        let branch_id = self
+            .resolve_research_branch_id(&input.project_id, input.branch_id.as_deref())
+            .await?;
+        let tags = normalize_tags(&input.tags);
+        let results = self
+            .repository
+            .search_research(
+                &input.project_id,
+                branch_id.as_deref(),
+                &input.query,
+                &tags,
+                input.time_period.as_deref(),
+                input.location.as_deref(),
+                input.limit,
+            )
+            .await?;
+
+        Ok(spindle_core::models::ResearchSearchOutput { results })
+    }
+
+    pub async fn research_pack_for_scene(
+        &self,
+        input: spindle_core::models::ResearchPackForSceneInput,
+    ) -> Result<spindle_core::models::ResearchPackForSceneOutput> {
+        let limit = input.limit.unwrap_or(10);
+        let project_id = &input.project_id;
+        let branch_id = self
+            .resolve_research_branch_id(project_id, input.branch_id.as_deref())
+            .await?;
+
+        let mut target_tags = normalize_tags(&input.tags);
+        if let Some(summary) = &input.scene_summary {
+            for word in summary.split_whitespace() {
+                let cleaned: String = word.chars().filter(|c| c.is_alphanumeric()).collect();
+                if cleaned.len() > 3 {
+                    target_tags.push(cleaned.to_lowercase());
+                }
+            }
+        }
+
+        let all_sources = self
+            .repository
+            .list_research_sources_by_project(project_id)
+            .await?
+            .into_iter()
+            .filter(|source| {
+                research_branch_matches(source.branch_id.as_deref(), branch_id.as_deref())
+            })
+            .collect::<Vec<_>>();
+        let all_notes = self
+            .repository
+            .list_research_notes_by_project(project_id)
+            .await?
+            .into_iter()
+            .filter(|note| research_branch_matches(note.branch_id.as_deref(), branch_id.as_deref()))
+            .collect::<Vec<_>>();
+        let all_claims = self
+            .repository
+            .list_research_claims_by_project(project_id)
+            .await?
+            .into_iter()
+            .filter(|claim| {
+                research_branch_matches(claim.branch_id.as_deref(), branch_id.as_deref())
+            })
+            .collect::<Vec<_>>();
+
+        let mut scored_sources = Vec::new();
+        for s in all_sources {
+            let mut score = 0;
+            if let Some(loc) = &input.scene_location {
+                let loc_lower = loc.to_lowercase();
+                if s.title.to_lowercase().contains(&loc_lower) {
+                    score += 5;
+                }
+                if let Some(sum) = &s.summary
+                    && sum.to_lowercase().contains(&loc_lower)
+                {
+                    score += 3;
+                }
+            }
+            if let Some(q) = &input.explicit_query {
+                let q_lower = q.to_lowercase();
+                if s.title.to_lowercase().contains(&q_lower) {
+                    score += 10;
+                }
+                if let Some(sum) = &s.summary
+                    && sum.to_lowercase().contains(&q_lower)
+                {
+                    score += 5;
+                }
+            }
+            for t in &target_tags {
+                if s.tags.iter().any(|st| st.eq_ignore_ascii_case(t)) {
+                    score += 2;
+                }
+            }
+            if score > 0
+                || (input.explicit_query.is_none()
+                    && input.scene_location.is_none()
+                    && input.tags.is_empty())
+            {
+                scored_sources.push((s, score));
+            }
+        }
+        scored_sources.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+
+        let mut scored_notes = Vec::new();
+        for n in all_notes {
+            let mut score = 0;
+            if let Some(loc) = &input.scene_location {
+                let loc_lower = loc.to_lowercase();
+                if n.note.to_lowercase().contains(&loc_lower) {
+                    score += 5;
+                }
+                if let Some(q) = &n.quote
+                    && q.to_lowercase().contains(&loc_lower)
+                {
+                    score += 3;
+                }
+            }
+            if let Some(q) = &input.explicit_query {
+                let q_lower = q.to_lowercase();
+                if n.note.to_lowercase().contains(&q_lower) {
+                    score += 10;
+                }
+                if let Some(qt) = &n.quote
+                    && qt.to_lowercase().contains(&q_lower)
+                {
+                    score += 5;
+                }
+            }
+            for t in &target_tags {
+                if n.tags.iter().any(|nt| nt.eq_ignore_ascii_case(t)) {
+                    score += 2;
+                }
+            }
+            if score > 0
+                || (input.explicit_query.is_none()
+                    && input.scene_location.is_none()
+                    && input.tags.is_empty())
+            {
+                scored_notes.push((n, score));
+            }
+        }
+        scored_notes.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+
+        let mut scored_claims = Vec::new();
+        for c in all_claims {
+            let mut score = 0;
+            if let Some(loc) = &input.scene_location {
+                let loc_lower = loc.to_lowercase();
+                if let Some(cloc) = &c.location
+                    && cloc.to_lowercase().contains(&loc_lower)
+                {
+                    score += 8;
+                }
+                if c.claim.to_lowercase().contains(&loc_lower) {
+                    score += 5;
+                }
+            }
+            if let Some(q) = &input.explicit_query {
+                let q_lower = q.to_lowercase();
+                if c.claim.to_lowercase().contains(&q_lower) {
+                    score += 10;
+                }
+                if let Some(top) = &c.topic
+                    && top.to_lowercase().contains(&q_lower)
+                {
+                    score += 5;
+                }
+            }
+            for t in &target_tags {
+                if c.tags.iter().any(|ct| ct.eq_ignore_ascii_case(t)) {
+                    score += 2;
+                }
+            }
+            if score > 0
+                || (input.explicit_query.is_none()
+                    && input.scene_location.is_none()
+                    && input.tags.is_empty())
+            {
+                scored_claims.push((c, score));
+            }
+        }
+        scored_claims.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+
+        let sources: Vec<spindle_core::models::ResearchSource> = scored_sources
+            .into_iter()
+            .take(limit)
+            .map(|(s, _)| map_research_source(s))
+            .collect();
+
+        let notes: Vec<spindle_core::models::ResearchNote> = scored_notes
+            .into_iter()
+            .take(limit)
+            .map(|(n, _)| map_research_note(n))
+            .collect();
+
+        let claims: Vec<spindle_core::models::ResearchClaim> = scored_claims
+            .into_iter()
+            .take(limit)
+            .map(|(c, _)| map_research_claim(c))
+            .collect();
+
+        Ok(spindle_core::models::ResearchPackForSceneOutput {
+            sources,
+            notes,
+            claims,
         })
     }
 
@@ -17007,11 +17523,98 @@ fn summarize_commit_scene_findings(
     }
 }
 
+fn normalize_tags(tags: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for t in tags {
+        let trimmed = t.trim().to_string();
+        if !trimmed.is_empty()
+            && !normalized
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&trimmed))
+        {
+            normalized.push(trimmed);
+        }
+    }
+    normalized
+}
+
+fn research_branch_matches(item_branch_id: Option<&str>, target_branch_id: Option<&str>) -> bool {
+    match target_branch_id {
+        Some(target_branch_id) => {
+            item_branch_id.is_none() || item_branch_id == Some(target_branch_id)
+        }
+        None => true,
+    }
+}
+
+fn map_research_source(
+    s: crate::sqlite::records::ResearchSource,
+) -> spindle_core::models::ResearchSource {
+    spindle_core::models::ResearchSource {
+        id: s.id,
+        project_id: s.project_id,
+        branch_id: s.branch_id,
+        title: s.title,
+        source_type: s.source_type,
+        url: s.url,
+        file_path: s.file_path,
+        author: s.author,
+        publisher: s.publisher,
+        published_date: s.published_date,
+        accessed_at: crate::sqlite::row::timestamp_to_micros(s.accessed_at),
+        reliability: s.reliability,
+        tags: s.tags,
+        summary: s.summary,
+        created_at: crate::sqlite::row::timestamp_to_micros(s.created_at),
+        updated_at: crate::sqlite::row::timestamp_to_micros(s.updated_at),
+    }
+}
+
+fn map_research_note(
+    n: crate::sqlite::records::ResearchNote,
+) -> spindle_core::models::ResearchNote {
+    spindle_core::models::ResearchNote {
+        id: n.id,
+        project_id: n.project_id,
+        source_id: n.source_id,
+        branch_id: n.branch_id,
+        note: n.note,
+        quote: n.quote,
+        locator: n.locator,
+        tags: n.tags,
+        created_at: crate::sqlite::row::timestamp_to_micros(n.created_at),
+        updated_at: crate::sqlite::row::timestamp_to_micros(n.updated_at),
+    }
+}
+
+fn map_research_claim(
+    c: crate::sqlite::records::ResearchClaim,
+) -> spindle_core::models::ResearchClaim {
+    spindle_core::models::ResearchClaim {
+        id: c.id,
+        project_id: c.project_id,
+        source_id: c.source_id,
+        note_id: c.note_id,
+        branch_id: c.branch_id,
+        claim: c.claim,
+        topic: c.topic,
+        time_period: c.time_period,
+        location: c.location,
+        confidence: c.confidence,
+        tags: c.tags,
+        created_at: crate::sqlite::row::timestamp_to_micros(c.created_at),
+        updated_at: crate::sqlite::row::timestamp_to_micros(c.updated_at),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sqlite::SqlitePool;
-    use spindle_core::models::ReaderContract;
+    use spindle_core::models::{
+        ReaderContract, ResearchAddClaimInput, ResearchAddNoteInput, ResearchAddSourceInput,
+        ResearchPackForSceneInput, ResearchSearchInput,
+    };
     use tempfile::TempDir;
 
     async fn fresh_service() -> (TempDir, SqliteSpindleService) {
@@ -23360,6 +23963,318 @@ mod tests {
         assert!(
             err.to_string().contains("scene move impact resource path"),
             "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn research_library_integration_test() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Vegas 1970s".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "grounded in research".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let project_id = proj.project_id;
+
+        // 1. Add research source
+        let add_src_out = svc
+            .research_add_source(ResearchAddSourceInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                title: "Las Vegas in the 1970s".to_string(),
+                source_type: "book".to_string(),
+                url: Some("https://example.com/vegas-70s".to_string()),
+                file_path: None,
+                author: Some("John Doe".to_string()),
+                publisher: Some("Vegas Press".to_string()),
+                published_date: Some("1982-05-12".to_string()),
+                accessed_at: Some(1786523901000000),
+                reliability: "primary".to_string(),
+                tags: vec![
+                    "Vegas  ".to_string(),
+                    "  1970s".to_string(),
+                    "Vegas".to_string(),
+                    "".to_string(),
+                ],
+                summary: Some(
+                    "Detailed account of the casino expansion and culture in 1970s Las Vegas."
+                        .to_string(),
+                ),
+            })
+            .await
+            .unwrap();
+        let source_id = add_src_out.source_id;
+        assert!(source_id.starts_with("research_source:"));
+
+        // 2. Add research note linked to source
+        let add_note_out = svc.research_add_note(ResearchAddNoteInput {
+            project_id: project_id.clone(),
+            source_id: Some(source_id.clone()),
+            branch_id: None,
+            note: "The Stardust casino had a massive neon sign built in 1958 and modernized in the 70s.".to_string(),
+            quote: Some("Stardust neon sign was a beacon of the Strip".to_string()),
+            locator: Some("page 45".to_string()),
+            tags: vec!["Stardust".to_string(), "neon".to_string()],
+        }).await.unwrap();
+        let note_id = add_note_out.note_id;
+        assert!(note_id.starts_with("research_note:"));
+
+        // 3. Add research claim linked to source and note
+        let add_claim_out = svc.research_add_claim(ResearchAddClaimInput {
+            project_id: project_id.clone(),
+            source_id: None,
+            note_id: Some(note_id.clone()),
+            branch_id: None,
+            claim: "Casinos used mob skimming techniques extensively until the late 70s crackdowns.".to_string(),
+            topic: Some("mob skimming".to_string()),
+            time_period: Some("1970s".to_string()),
+            location: Some("Las Vegas Strip".to_string()),
+            confidence: "high".to_string(),
+            tags: vec!["mob".to_string(), "crime".to_string()],
+        }).await.unwrap();
+        let claim_id = add_claim_out.claim_id;
+        assert!(claim_id.starts_with("research_claim:"));
+        let stored_claim = svc
+            .repository
+            .get_research_claim(&claim_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_claim.source_id.as_deref(), Some(source_id.as_str()));
+
+        // 4. Verify tag normalization and deduping
+        let tags_out = svc
+            .repository
+            .research_tags_by_project(&project_id)
+            .await
+            .unwrap();
+        assert!(tags_out.contains(&"Vegas".to_string()));
+        assert!(tags_out.contains(&"1970s".to_string()));
+        assert!(tags_out.contains(&"Stardust".to_string()));
+        assert!(tags_out.contains(&"neon".to_string()));
+        assert!(tags_out.contains(&"mob".to_string()));
+        assert!(tags_out.contains(&"crime".to_string()));
+        assert!(!tags_out.contains(&"".to_string()));
+        assert!(!tags_out.contains(&"Vegas  ".to_string()));
+
+        // 5. Search research and verify results and provenance
+        let search_out = svc
+            .research_search(ResearchSearchInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                query: "Stardust".to_string(),
+                tags: Vec::new(),
+                time_period: None,
+                location: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(!search_out.results.is_empty());
+        let item = &search_out.results[0];
+        assert_eq!(item.item_type, "note");
+        assert_eq!(
+            item.source_title,
+            Some("Las Vegas in the 1970s".to_string())
+        );
+        assert_eq!(item.source_author, Some("John Doe".to_string()));
+        assert_eq!(
+            item.source_url,
+            Some("https://example.com/vegas-70s".to_string())
+        );
+        assert_eq!(item.locator, Some("page 45".to_string()));
+
+        let punctuation_search = svc
+            .research_search(ResearchSearchInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                query: "70's Stardust".to_string(),
+                tags: vec![" neon ".to_string()],
+                time_period: None,
+                location: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            punctuation_search
+                .results
+                .iter()
+                .any(|item| item.id == note_id),
+            "punctuation-safe FTS query should find the Stardust note"
+        );
+
+        let search_claim = svc
+            .research_search(ResearchSearchInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                query: "skimming".to_string(),
+                tags: Vec::new(),
+                time_period: None,
+                location: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(!search_claim.results.is_empty());
+        assert_eq!(search_claim.results[0].item_type, "claim");
+        assert!(search_claim.results[0].preview.contains("mob skimming"));
+
+        // 6. Cross-project isolation: create second project
+        let proj2 = svc
+            .create_project(CreateProjectInput {
+                name: "Isolation Test".to_string(),
+                project_type: "novel".to_string(),
+                genre: "mystery".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "must isolate books".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let search_proj2 = svc
+            .research_search(ResearchSearchInput {
+                project_id: proj2.project_id.clone(),
+                branch_id: None,
+                query: "Stardust".to_string(),
+                tags: Vec::new(),
+                time_period: None,
+                location: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(search_proj2.results.is_empty());
+
+        let proj2_branch = svc
+            .repository
+            .get_active_branch(&proj2.project_id)
+            .await
+            .unwrap();
+        let wrong_project_branch_err = svc
+            .research_add_source(ResearchAddSourceInput {
+                project_id: project_id.clone(),
+                branch_id: Some(proj2_branch.id.clone()),
+                title: "Wrong branch".to_string(),
+                source_type: "article".to_string(),
+                url: None,
+                file_path: None,
+                author: None,
+                publisher: None,
+                published_date: None,
+                accessed_at: None,
+                reliability: "secondary".to_string(),
+                tags: Vec::new(),
+                summary: None,
+            })
+            .await
+            .expect_err("foreign project branch must be rejected");
+        assert!(
+            wrong_project_branch_err
+                .to_string()
+                .contains("branch does not belong"),
+            "got: {wrong_project_branch_err}"
+        );
+
+        let alt_branch = svc
+            .create_branch(CreateBranchInput {
+                project_id: project_id.clone(),
+                name: "alternate".to_string(),
+                branch_type: "what-if".to_string(),
+                description: None,
+                parent_branch_id: None,
+            })
+            .await
+            .unwrap();
+        let alt_branch_search = svc
+            .research_search(ResearchSearchInput {
+                project_id: project_id.clone(),
+                branch_id: Some(alt_branch.branch_id.clone()),
+                query: "Stardust".to_string(),
+                tags: Vec::new(),
+                time_period: None,
+                location: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            alt_branch_search.results.is_empty(),
+            "branch-scoped search should not leak active-branch research"
+        );
+        let mismatched_branch_err = svc
+            .research_add_note(ResearchAddNoteInput {
+                project_id: project_id.clone(),
+                source_id: Some(source_id.clone()),
+                branch_id: Some(alt_branch.branch_id.clone()),
+                note: "Should not attach to a source from another branch".to_string(),
+                quote: None,
+                locator: None,
+                tags: Vec::new(),
+            })
+            .await
+            .expect_err("note should not attach to a source from another branch");
+        assert!(
+            mismatched_branch_err
+                .to_string()
+                .contains("source branch does not match"),
+            "got: {mismatched_branch_err}"
+        );
+
+        let alt_pack = svc
+            .research_pack_for_scene(ResearchPackForSceneInput {
+                project_id: project_id.clone(),
+                branch_id: Some(alt_branch.branch_id.clone()),
+                scene_summary: Some(
+                    "A casino heist takes place in 1970s Stardust hotel.".to_string(),
+                ),
+                scene_location: Some("Las Vegas Strip".to_string()),
+                character_ids: Vec::new(),
+                tags: vec!["mob".to_string()],
+                explicit_query: None,
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        assert!(alt_pack.sources.is_empty());
+        assert!(alt_pack.notes.is_empty());
+        assert!(alt_pack.claims.is_empty());
+
+        // 7. Research pack for scene
+        let pack_out = svc
+            .research_pack_for_scene(ResearchPackForSceneInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                scene_summary: Some(
+                    "A casino heist takes place in 1970s Stardust hotel.".to_string(),
+                ),
+                scene_location: Some("Las Vegas Strip".to_string()),
+                character_ids: Vec::new(),
+                tags: vec!["mob".to_string()],
+                explicit_query: None,
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        assert!(pack_out.sources.len() <= 1);
+        assert!(pack_out.notes.len() <= 1);
+        assert!(pack_out.claims.len() <= 1);
+        assert!(!pack_out.claims.is_empty());
+        assert_eq!(
+            pack_out.claims[0].claim,
+            "Casinos used mob skimming techniques extensively until the late 70s crackdowns."
+                .to_string()
         );
     }
 }

@@ -273,6 +273,11 @@ impl ToolRouter {
                 "extract_canonical_facts_from_scene",
                 "migrate_canonical_fact",
                 "research_query",
+                "research_add_source",
+                "research_add_note",
+                "research_add_claim",
+                "research_search",
+                "research_pack_for_scene",
                 "pull_chapter_from_file",
                 "push_chapter_to_file",
                 "authoring_prepare_run",
@@ -577,6 +582,26 @@ impl ToolRouter {
             tool::<ResearchQueryInput, ResearchQueryOutput>(
                 "research_query",
                 "Research a factual question using Gemini, grounded in project context from the Bible",
+            ),
+            tool::<ResearchAddSourceInput, ResearchAddSourceOutput>(
+                "research_add_source",
+                "Create new research source metadata and optional summary in the project-local library",
+            ),
+            tool::<ResearchAddNoteInput, ResearchAddNoteOutput>(
+                "research_add_note",
+                "Attach a freeform note and optional quote/locator to a research source",
+            ),
+            tool::<ResearchAddClaimInput, ResearchAddClaimOutput>(
+                "research_add_claim",
+                "Store a distilled factual claim with confidence, topic, location, time period, and tags",
+            ),
+            tool::<ResearchSearchInput, ResearchSearchOutput>(
+                "research_search",
+                "Search the project-local research library for matching sources, notes, and claims",
+            ),
+            tool::<ResearchPackForSceneInput, ResearchPackForSceneOutput>(
+                "research_pack_for_scene",
+                "Retrieve a compact, budget-aware packet of relevant research for a scene or chapter",
             ),
             tool::<ExportEpubInput, ExportEpubOutput>(
                 "export_epub",
@@ -1391,6 +1416,28 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.research_query(input))
                     .await
             }
+            "research_add_source" => {
+                self.invoke(arguments, |input| self.service.research_add_source(input))
+                    .await
+            }
+            "research_add_note" => {
+                self.invoke(arguments, |input| self.service.research_add_note(input))
+                    .await
+            }
+            "research_add_claim" => {
+                self.invoke(arguments, |input| self.service.research_add_claim(input))
+                    .await
+            }
+            "research_search" => {
+                self.invoke(arguments, |input| self.service.research_search(input))
+                    .await
+            }
+            "research_pack_for_scene" => {
+                self.invoke(arguments, |input| {
+                    self.service.research_pack_for_scene(input)
+                })
+                .await
+            }
             "export_epub" => {
                 self.invoke(arguments, |input| self.service.export_epub(input))
                     .await
@@ -1603,6 +1650,8 @@ fn tool_requires_session_serialization(name: &str) -> bool {
             | "find_scenes_referencing"
             | "preflight_book_export"
             | "research_query"
+            | "research_search"
+            | "research_pack_for_scene"
     )
 }
 

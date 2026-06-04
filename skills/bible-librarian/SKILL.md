@@ -144,6 +144,8 @@ bible://projects/{project_id}/timeline-graph/mermaid  → Branch/timeline graph
 bible://projects/{project_id}/temporal-interventions  → Temporal interventions
 bible://projects/{project_id}/system-overlays         → System overlays
 bible://projects/{project_id}/continuity/health       → Continuity health summary
+bible://projects/{project_id}/research                 → Concise list of all research sources, notes, and claims
+bible://projects/{project_id}/research/tags            → All unique tags used in the research library
 bible://references/anti-slop                          → Craft reference
 bible://system/model-routes                           → Model routing metadata
 ```
@@ -330,6 +332,20 @@ PROMISES
   ⏳ Anonymous message sender (planted ch 3) — OVERDUE, no reinforcement
   ✅ Harbor secret (planted ch 5, paid off ch 14)
 ```
+
+## Research Library
+
+Use the Research Library tools to store and query external research, factual claims, and historical details that ground the narrative:
+
+- Call `research_add_source` to document a new research source (books, articles, interviews, files, etc.).
+- Call `research_add_note` to attach specific quotes, page numbers, or general notes to an existing source.
+- Call `research_add_claim` to record a distilled factual claim (with topic, location, time period, confidence, and tags) linked to a source or note.
+- Call `research_search` to search the research library using full-text search matching claim text, note text, and source titles, optionally filtering by tags, time period, or location.
+- Call `research_pack_for_scene` to retrieve a compact, budget-aware packet of relevant research matching a scene's summary, location, character IDs, or tags. The scene-writer or authoring supervisor should call this tool before writing a scene draft to ground the prose without bloating the prompt context.
+
+The research library can be browsed using these resources:
+- `bible://projects/{project_id}/research` returns a concise listing of all sources, notes, and claims.
+- `bible://projects/{project_id}/research/tags` returns all unique tags used in the research library.
 
 ## Export
 

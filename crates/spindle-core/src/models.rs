@@ -4488,6 +4488,223 @@ pub struct ResearchContextSummary {
     pub bible_hits_count: usize,
 }
 
+// ── Research Library Models & DTOs ──────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchSource {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published_date: Option<String>,
+    pub accessed_at: i64,
+    pub reliability: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchNote {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub note: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchClaim {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub note_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub claim: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddSourceInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published_date: Option<String>,
+    #[serde(default)]
+    pub accessed_at: Option<i64>,
+    pub reliability: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddSourceOutput {
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddNoteInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub note: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddNoteOutput {
+    pub note_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddClaimInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub note_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub claim: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddClaimOutput {
+    pub claim_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchSearchInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub query: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchSearchResultItem {
+    pub item_type: String, // "source", "note", or "claim"
+    pub id: String,
+    pub title_or_summary: String,
+    pub preview: String,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub source_title: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub source_author: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub confidence_or_reliability: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchSearchOutput {
+    pub results: Vec<ResearchSearchResultItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPackForSceneInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    #[serde(default)]
+    pub scene_summary: Option<String>,
+    #[serde(default)]
+    pub scene_location: Option<String>,
+    #[serde(default)]
+    pub character_ids: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPackForSceneOutput {
+    pub sources: Vec<ResearchSource>,
+    pub notes: Vec<ResearchNote>,
+    pub claims: Vec<ResearchClaim>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportEpubInput {
     pub project_id: String,

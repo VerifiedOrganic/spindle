@@ -213,6 +213,24 @@ impl ResourceRouter {
             );
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/research"),
+                    format!("project {project_id} research"),
+                )
+                .with_description("Concise list of all sources, notes, and claims in the project-local research library.")
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+            resources.push(
+                RawResource::new(
+                    format!("bible://projects/{project_id}/research/tags"),
+                    format!("project {project_id} research tags"),
+                )
+                .with_description("All unique tags used in the project-local research library.")
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/reader-contract"),
                     format!("project {project_id} reader contract"),
                 )
@@ -451,6 +469,24 @@ impl ResourceRouter {
             .with_mime_type("application/json")
             .no_annotation(),
             RawResourceTemplate::new(
+                "bible://projects/{project_id}/research",
+                "research library",
+            )
+            .with_description(
+                "Read all sources, notes, and claims from the project-local research library.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research/tags",
+                "research tags",
+            )
+            .with_description(
+                "Read all unique tags used in the project-local research library.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
                 "bible://projects/{project_id}/conflicts/{offset}/{limit}",
                 "conflicts page",
             )
@@ -679,6 +715,41 @@ mod tests {
             ResourceContents::BlobResourceContents { .. } => {
                 panic!("branches resource should be text")
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn research_resources_are_listed_and_readable() {
+        let (_tmp, router, project_id) = fresh_router().await;
+        let research_uri = format!("bible://projects/{project_id}/research");
+        let tags_uri = format!("bible://projects/{project_id}/research/tags");
+
+        let resources = router.list_resources().await.unwrap();
+        assert!(resources.resources.iter().any(|r| r.uri == research_uri));
+        assert!(resources.resources.iter().any(|r| r.uri == tags_uri));
+
+        let res = router.read_resource(&research_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert!(text.contains("sources"));
+                assert!(text.contains("notes"));
+                assert!(text.contains("claims"));
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let tags_res = router.read_resource(&tags_uri).await.unwrap();
+        match &tags_res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
         }
     }
 }

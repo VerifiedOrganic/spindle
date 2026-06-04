@@ -2621,6 +2621,127 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringCheckpoint {
     }
 }
 
+pub const RESEARCH_SOURCE_COLUMNS: &str = "id, project_id, branch_id, title, source_type, url, file_path, author, publisher, published_date, accessed_at, reliability, tags, summary, created_at, updated_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchSource {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub source_type: String,
+    pub url: Option<String>,
+    pub file_path: Option<String>,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub published_date: Option<String>,
+    pub accessed_at: Timestamp,
+    pub reliability: String,
+    pub tags: Vec<String>,
+    pub summary: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchSource {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::opt_text(r, 2)?,
+            title: row::text(r, 3)?,
+            source_type: row::text(r, 4)?,
+            url: row::opt_text(r, 5)?,
+            file_path: row::opt_text(r, 6)?,
+            author: row::opt_text(r, 7)?,
+            publisher: row::opt_text(r, 8)?,
+            published_date: row::opt_text(r, 9)?,
+            accessed_at: row::time(r, 10)?,
+            reliability: row::text(r, 11)?,
+            tags: row::json(r, 12)?,
+            summary: row::opt_text(r, 13)?,
+            created_at: row::time(r, 14)?,
+            updated_at: row::time(r, 15)?,
+        })
+    }
+}
+
+pub const RESEARCH_NOTE_COLUMNS: &str =
+    "id, project_id, source_id, branch_id, note, quote, locator, tags, created_at, updated_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchNote {
+    pub id: String,
+    pub project_id: String,
+    pub source_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub note: String,
+    pub quote: Option<String>,
+    pub locator: Option<String>,
+    pub tags: Vec<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchNote {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            source_id: row::opt_text(r, 2)?,
+            branch_id: row::opt_text(r, 3)?,
+            note: row::text(r, 4)?,
+            quote: row::opt_text(r, 5)?,
+            locator: row::opt_text(r, 6)?,
+            tags: row::json(r, 7)?,
+            created_at: row::time(r, 8)?,
+            updated_at: row::time(r, 9)?,
+        })
+    }
+}
+
+pub const RESEARCH_CLAIM_COLUMNS: &str = "id, project_id, source_id, note_id, branch_id, claim, topic, time_period, location, confidence, tags, created_at, updated_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchClaim {
+    pub id: String,
+    pub project_id: String,
+    pub source_id: Option<String>,
+    pub note_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub claim: String,
+    pub topic: Option<String>,
+    pub time_period: Option<String>,
+    pub location: Option<String>,
+    pub confidence: String,
+    pub tags: Vec<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchClaim {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            source_id: row::opt_text(r, 2)?,
+            note_id: row::opt_text(r, 3)?,
+            branch_id: row::opt_text(r, 4)?,
+            claim: row::text(r, 5)?,
+            topic: row::opt_text(r, 6)?,
+            time_period: row::opt_text(r, 7)?,
+            location: row::opt_text(r, 8)?,
+            confidence: row::text(r, 9)?,
+            tags: row::json(r, 10)?,
+            created_at: row::time(r, 11)?,
+            updated_at: row::time(r, 12)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
