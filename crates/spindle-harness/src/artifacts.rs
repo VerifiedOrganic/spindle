@@ -17,6 +17,8 @@ pub struct SceneGenerationArtifact {
     pub scene_order: i32,
     pub route_name: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub rating: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub completion_fragments: Vec<String>,
@@ -26,6 +28,12 @@ pub struct SceneGenerationArtifact {
     pub model_name: Option<String>,
     #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
+    pub generation_id: Option<String>,
+    #[serde(default)]
+    pub generation_agent_id: Option<String>,
+    #[serde(default)]
+    pub generation_output_sha256: Option<String>,
     #[serde(default)]
     pub last_parse_error: Option<String>,
     #[serde(default)]
@@ -44,6 +52,7 @@ impl SceneGenerationArtifact {
         scene_order: i32,
         route_name: String,
         agent_id: String,
+        rating: Option<String>,
         prompt: String,
     ) -> Self {
         Self {
@@ -52,11 +61,15 @@ impl SceneGenerationArtifact {
             scene_order,
             route_name,
             agent_id,
+            rating,
             prompt,
             completion_fragments: Vec::new(),
             adapter_kind: None,
             model_name: None,
             truncated: true,
+            generation_id: None,
+            generation_agent_id: None,
+            generation_output_sha256: None,
             last_parse_error: None,
             package: None,
             save_draft_output: None,
