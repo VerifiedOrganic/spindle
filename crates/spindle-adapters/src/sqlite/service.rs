@@ -126,6 +126,17 @@ impl SqliteSpindleService {
         &self.repository
     }
 
+    pub fn get_all_generation_receipts(&self) -> Vec<(Option<String>, bool)> {
+        let receipts = self
+            .generation_receipts
+            .read()
+            .expect("generation receipts read lock");
+        receipts
+            .values()
+            .map(|r| (r.rating.clone(), r.explicit_capable_agent))
+            .collect()
+    }
+
     async fn resolve_phase_four_caches(
         &self,
         project_id: &str,
@@ -3678,7 +3689,7 @@ impl SqliteSpindleService {
                     "book_number": book_number,
                     "chapter_number": chapter_number,
                     "chapter_id": chapter.id,
-                    "title": chapter.title,
+                    "title": chapter.title.as_deref().unwrap_or(""),
                     "scenes": scenes,
                 }));
             }

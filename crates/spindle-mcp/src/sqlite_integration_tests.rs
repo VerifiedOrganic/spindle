@@ -384,3 +384,627 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
         .unwrap();
     assert_eq!(switched.branch_id, feature.branch_id);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authoring_supervisor_integration_flow() {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    // 1. Create a temp directory for the database and repository data
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_supervisor.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // 2. Set up CLI mock script
+    let script_path = tmp.path().join("mock_agent.sh");
+    let script_content = r#"#!/bin/bash
+ROUTE=$1
+PROMPT=$2
+
+if [ "$ROUTE" = "draft" ]; then
+  cat <<EOF
+{
+  "full_text": "Mara stood watch at the Ash Gate, clutching her salt charm.",
+  "summary": "Mara watch",
+  "tone": "grim",
+  "character_states": [],
+  "canonical_facts": [],
+  "relationship_updates": [],
+  "beats": [],
+  "continuity_notes": []
+}
+EOF
+elif [ "$ROUTE" = "review" ]; then
+  cat <<EOF
+STRENGTHS:
+- Strong description of the salt charm.
+- Natural pacing.
+
+CONCERNS:
+- None.
+EOF
+else
+  cat <<EOF
+{
+  "summary": "Mara held the gate.",
+  "key_events": [],
+  "character_changes": [],
+  "relationship_shifts": [],
+  "arc_advances": [],
+  "promise_events": []
+}
+EOF
+fi
+"#;
+    std::fs::write(&script_path, script_content).unwrap();
+
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    // 3. Write config.toml
+    let config_path = tmp.path().join("config.toml");
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "cli-agent-review"
+name = "CLI Agent Review"
+provider = "cli"
+endpoint = "{}"
+model = "default"
+ratings = ["general"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review"
+"#,
+        script_path.display(),
+        script_path.display()
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+
+    // Set CLI COMMAND environment variable
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    // 4. Initialize service and configure agents
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    // 5. Create project and entities
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Supervised Project".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Mara holds the gate.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    // 6. Test authoring_prepare_run reports missing requirements clearly
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    let prep_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1
+    });
+    let prep_res = router
+        .call_tool(
+            "authoring_prepare_run",
+            Some(prep_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prep_res.is_error, Some(false));
+    let prep_val = prep_res.structured_content.unwrap();
+    assert_eq!(prep_val["ready_to_draft"].as_bool(), Some(false));
+    assert!(
+        prep_val["missing_requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|val| val.as_str().unwrap().contains("missing chapter plan"))
+    );
+
+    // 7. Add the plan chapters and scenes to satisfy requirements
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: "First watch.".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![
+            PlanChapterSceneInput {
+                scene_order: 1,
+                summary: format!("Mara takes the watch at {} rating:general", loc.location_id),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                purpose: "establishing".into(),
+            },
+            PlanChapterSceneInput {
+                scene_order: 2,
+                summary: format!(
+                    "Mara encounters the beast at {} rating:explicit",
+                    loc.location_id
+                ),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                purpose: "climax".into(),
+            },
+        ],
+    })
+    .await
+    .unwrap();
+
+    // Now call prepare again, it should say "ready"
+    let prep_res2 = router
+        .call_tool(
+            "authoring_prepare_run",
+            Some(prep_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prep_res2.is_error, Some(false));
+    let prep_val2 = prep_res2.structured_content.unwrap();
+    assert_eq!(
+        prep_val2["ready_to_draft"].as_bool(),
+        Some(true),
+        "prepare failed: {:?}",
+        prep_val2
+    );
+
+    // Invalid run parameters should block before creating a broken run.
+    let invalid_start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 0
+    });
+    let invalid_start_res = router
+        .call_tool(
+            "authoring_start_run",
+            Some(invalid_start_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_start_res.is_error, Some(false));
+    let invalid_start_val = invalid_start_res.structured_content.unwrap();
+    assert_eq!(invalid_start_val["status"].as_str(), Some("blocked"));
+    assert_eq!(invalid_start_val["run_id"].as_str(), Some(""));
+
+    // 8. Start the run
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1
+    });
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(start_res.is_error, Some(false));
+    let start_val = start_res.structured_content.unwrap();
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+    assert!(run_id.starts_with("authoring_run:"));
+
+    // A paused run must not continue advancing when execute_next is called.
+    let paused_start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let paused_run_id = paused_start_res.structured_content.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cancel_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": paused_run_id
+    });
+    let cancel_res = router
+        .call_tool(
+            "authoring_cancel_run",
+            Some(cancel_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel_res.is_error, Some(false));
+    let paused_exec_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": paused_run_id
+    });
+    let paused_exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(paused_exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(paused_exec_res.is_error, Some(false));
+    let paused_exec_val = paused_exec_res.structured_content.unwrap();
+    assert_eq!(paused_exec_val["status"].as_str(), Some("paused"));
+    assert_eq!(paused_exec_val["executed_action"].as_str(), Some("none"));
+
+    // 9. Start background Axum MCP HTTP server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    // 10. Execute next step (Draft Scene 1 - General)
+    println!("TEST: Step 10 - Draft Scene 1.1");
+    let exec_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id
+    });
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        exec_res.is_error,
+        Some(false),
+        "authoring_execute_next failed: {:?}",
+        exec_res
+    );
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("draft book scene 1.1")
+    );
+
+    // Check status
+    println!("TEST: Checking status after draft scene 1.1");
+    let status_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id
+    });
+    let status_res = router
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let status_val = status_res.structured_content.unwrap();
+    assert_eq!(status_val["blocked_reason"].as_str(), None);
+
+    // 11. Execute next step (Commit Scene 1)
+    println!("TEST: Step 11 - Commit Scene 1.1");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes")
+    );
+
+    // 11b. Execute next step (Annotate Beats Scene 1)
+    println!("TEST: Step 11b - Annotate Beats Scene 1.1");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats")
+    );
+
+    // 12. Execute next step (Draft Scene 2 - Explicit)
+    println!("TEST: Step 12 - Draft Scene 1.2");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("draft book scene 1.2")
+    );
+
+    // Let's verify that the receipt was registered and it carries rating: explicit and explicit_capable = true
+    println!("TEST: Verifying model receipts");
+    let receipts = svc.get_all_generation_receipts();
+    assert!(
+        receipts.iter().any(|(rating, explicit_capable)| {
+            rating.as_deref() == Some("explicit") && *explicit_capable
+        }),
+        "No explicit-capable explicit receipt found: {:?}",
+        receipts
+    );
+
+    // 13. Execute next step (Commit Scene 2)
+    println!("TEST: Step 13 - Commit Scene 1.2");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes")
+    );
+
+    // 13b. Execute next step (Annotate Beats Scene 2)
+    println!("TEST: Step 13b - Annotate Beats Scene 1.2");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats")
+    );
+
+    // 14. Execute next step (Save Chapter Summary)
+    println!("TEST: Step 14 - Save Chapter Summary");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("save summary for chapter 1")
+    );
+
+    // 15. Execute next step (Run Checkpoint)
+    println!("TEST: Step 15 - Run Checkpoint");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("run checkpoint")
+    );
+
+    // Verify it is blocked at checkpoint review
+    println!("TEST: Verifying blocked at checkpoint review");
+    let status_res = router
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let status_val = status_res.structured_content.unwrap();
+    assert_eq!(
+        status_val["blocked_reason"].as_str().unwrap(),
+        "await_checkpoint_review"
+    );
+    assert!(
+        status_val["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("await checkpoint review")
+    );
+
+    // Execute next should fail/be blocked
+    println!("TEST: Executing next while blocked");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert_eq!(exec_val["status"].as_str().unwrap(), "blocked");
+
+    // 16. Shut down background server to simulate service restart
+    println!("TEST: Shutting down first background server");
+    ct.cancel();
+    server_handle.await.unwrap();
+    crate::remove_addr_file(&data_dir);
+
+    // 17. Restart service (fresh service & new background server using same DB and data dir)
+    println!("TEST: Restarting service and spawning second background server");
+    let pool2 = SqlitePool::open(&db_path).await.unwrap();
+    let repo2 =
+        Repository::with_model_router(pool2.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc2 = SqliteSpindleService::new(repo2);
+    svc2.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    let router2 = ToolRouter::with_tool_profile_and_serialization(
+        svc2.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+
+    let svc2_clone = svc2.clone();
+    let ct2 = CancellationToken::new();
+    let ct2_clone1 = ct2.clone();
+    let ct2_clone2 = ct2.clone();
+    let server_handle2 = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc2_clone, ct2_clone1))
+            .with_graceful_shutdown(async move { ct2_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    // Check status after restart, should still say "await_checkpoint_review"
+    println!("TEST: Checking status after restart");
+    let status_res = router2
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let status_val = status_res.structured_content.unwrap();
+    assert_eq!(
+        status_val["blocked_reason"].as_str().unwrap(),
+        "await_checkpoint_review"
+    );
+
+    // 18. Review checkpoint and resume
+    println!("TEST: Step 18 - Review Checkpoint");
+    let review_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "directives": ["Keep the prose dark."]
+    });
+    let review_res = router2
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(review_res.is_error, Some(false));
+
+    // Execute next should now complete the run
+    let exec_res = router2
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let exec_val = exec_res.structured_content.unwrap();
+    assert_eq!(exec_val["next_action"].as_str().unwrap(), "complete");
+
+    // Shut down second server
+    ct2.cancel();
+    server_handle2.await.unwrap();
+    crate::remove_addr_file(&data_dir);
+}

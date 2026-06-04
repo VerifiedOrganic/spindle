@@ -118,6 +118,7 @@ consistent.
 Spindle ships writing skills your AI client can load directly:
 
 - `bible-librarian` — search and lookup across the story bible
+- `authoring-supervisor` — coordinate interactive drafting and checkpoint runs
 - `scene-writer` — draft prose with the right context
 - `character-creator` — build out a character
 - `worldbuilder` — develop locations, factions, rules, lore
@@ -171,6 +172,7 @@ Both render as styled XHTML `div` elements in exported EPUB files.
 
 ## Going further
 
+- **Interactive Drafting Loop.** The `authoring-supervisor` skill drives an interactive, chat-native drafting run using SQLite-persisted states, automated checkpoints, and user feedback reviews. See [`docs/authoring-supervisor.md`](docs/authoring-supervisor.md).
 - **Batch drafting.** `spindle-harness` is an operator-driven tool for
   unattended batch drafting with checkpointed editorial review and resumable
   artifacts. See [`docs/spindle-harness-usage.md`](docs/spindle-harness-usage.md).

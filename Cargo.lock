@@ -2141,6 +2141,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "dirs",
  "futures-core",
@@ -2151,6 +2152,7 @@ dependencies = [
  "serde_json",
  "spindle-adapters",
  "spindle-core",
+ "spindle-harness",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2158,6 +2160,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]

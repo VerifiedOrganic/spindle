@@ -4791,6 +4791,176 @@ pub enum CanonicalValue {
     },
 }
 
+// =============================================================================
+// Authoring Supervisor DTOs
+// =============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStartRunInput {
+    pub project_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    #[serde(default)]
+    pub end_chapter: Option<i32>,
+    #[serde(default)]
+    pub chapter_count: Option<i32>,
+    pub checkpoint_interval: usize,
+    #[serde(default)]
+    pub editorial_directives: Option<Vec<String>>,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStartRunOutput {
+    pub run_id: String,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusOutput {
+    pub run_id: String,
+    pub project_id: String,
+    pub status: String,
+    pub next_action: String,
+    pub blocked_reason: Option<String>,
+    pub checkpoint_state: Option<String>,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub completed_chapter_count: usize,
+    pub total_chapter_count: usize,
+    pub chapters: Vec<AuthoringStatusChapter>,
+    pub checkpoint_reports: Vec<AuthoringStatusCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusChapter {
+    pub chapter_number: i32,
+    pub status: String,
+    pub summary_saved: bool,
+    pub summary_artifact_path: Option<String>,
+    pub scenes: Vec<AuthoringStatusScene>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusScene {
+    pub scene_order: i32,
+    pub phase: String,
+    pub scene_id: Option<String>,
+    pub scene_artifact_path: Option<String>,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusCheckpoint {
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub save_point_id: String,
+    pub status: String,
+    pub report_artifact_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringExecuteNextInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringExecuteNextOutput {
+    pub run_id: String,
+    pub next_action: String,
+    pub executed_action: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringReviewCheckpointInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub directives: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringReviewCheckpointOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringResolveBlockInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub target_phase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringResolveBlockOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringCancelRunInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringCancelRunOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringPrepareRunInput {
+    pub project_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    #[serde(default)]
+    pub end_chapter: Option<i32>,
+    #[serde(default)]
+    pub chapter_count: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringPrepareRunOutput {
+    pub project_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub ready_to_draft: bool,
+    pub missing_requirements: Vec<String>,
+    pub details: Vec<AuthoringPrepareChapterDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringPrepareChapterDetails {
+    pub chapter_number: i32,
+    pub ready: bool,
+    pub missing_items: Vec<String>,
+}
+
 pub fn normalize_name(input: &str) -> String {
     input.trim().to_lowercase()
 }

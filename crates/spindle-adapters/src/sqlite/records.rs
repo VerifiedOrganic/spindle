@@ -2480,6 +2480,147 @@ impl<'a> TryFrom<&Row<'a>> for ImportReviewItem {
     }
 }
 
+// =============================================================================
+// Authoring Runs
+// =============================================================================
+
+pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringRun {
+    pub id: String,
+    pub project_id: String,
+    pub active_branch_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub checkpoint_interval: i64,
+    pub last_checkpoint_end_chapter: i32,
+    pub artifacts_dir: String,
+    pub editorial_directives: Vec<String>,
+    pub status: String,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            active_branch_id: row::text(r, 2)?,
+            book_number: row::int(r, 3)? as i32,
+            start_chapter: row::int(r, 4)? as i32,
+            end_chapter: row::int(r, 5)? as i32,
+            checkpoint_interval: row::int(r, 6)? as i64,
+            last_checkpoint_end_chapter: row::int(r, 7)? as i32,
+            artifacts_dir: row::text(r, 8)?,
+            editorial_directives: row::json(r, 9)?,
+            status: row::text(r, 10)?,
+            created_at: row::time(r, 11)?,
+            updated_at: row::time(r, 12)?,
+        })
+    }
+}
+
+pub const AUTHORING_RUN_CHAPTER_COLUMNS: &str = "authoring_run_id, chapter_number, planned, synopsis, pov_character_id, status, summary_saved, summary_artifact_path";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringRunChapter {
+    pub authoring_run_id: String,
+    pub chapter_number: i32,
+    pub planned: bool,
+    pub synopsis: String,
+    pub pov_character_id: Option<String>,
+    pub status: String,
+    pub summary_saved: bool,
+    pub summary_artifact_path: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringRunChapter {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            authoring_run_id: row::text(r, 0)?,
+            chapter_number: row::int(r, 1)? as i32,
+            planned: row::int(r, 2)? != 0,
+            synopsis: row::text(r, 3)?,
+            pov_character_id: row::opt_text(r, 4)?,
+            status: row::text(r, 5)?,
+            summary_saved: row::int(r, 6)? != 0,
+            summary_artifact_path: row::opt_text(r, 7)?,
+        })
+    }
+}
+
+pub const AUTHORING_RUN_SCENE_COLUMNS: &str = "authoring_run_id, chapter_number, scene_order, character_ids, location_id, content_rating, tone, source_path, phase, scene_id, scene_artifact_path, draft_diagnostics, blocked_reason";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringRunScene {
+    pub authoring_run_id: String,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub character_ids: Vec<String>,
+    pub location_id: String,
+    pub content_rating: String,
+    pub tone: Option<String>,
+    pub source_path: Option<String>,
+    pub phase: String,
+    pub scene_id: Option<String>,
+    pub scene_artifact_path: Option<String>,
+    pub draft_diagnostics: Option<serde_json::Value>,
+    pub blocked_reason: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            authoring_run_id: row::text(r, 0)?,
+            chapter_number: row::int(r, 1)? as i32,
+            scene_order: row::int(r, 2)? as i32,
+            character_ids: row::json(r, 3)?,
+            location_id: row::text(r, 4)?,
+            content_rating: row::text(r, 5)?,
+            tone: row::opt_text(r, 6)?,
+            source_path: row::opt_text(r, 7)?,
+            phase: row::text(r, 8)?,
+            scene_id: row::opt_text(r, 9)?,
+            scene_artifact_path: row::opt_text(r, 10)?,
+            draft_diagnostics: row::opt_json(r, 11)?,
+            blocked_reason: row::opt_text(r, 12)?,
+        })
+    }
+}
+
+pub const AUTHORING_CHECKPOINT_COLUMNS: &str =
+    "authoring_run_id, start_chapter, end_chapter, save_point_id, status, report_artifact_path";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringCheckpoint {
+    pub authoring_run_id: String,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub save_point_id: String,
+    pub status: String,
+    pub report_artifact_path: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringCheckpoint {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            authoring_run_id: row::text(r, 0)?,
+            start_chapter: row::int(r, 1)? as i32,
+            end_chapter: row::int(r, 2)? as i32,
+            save_point_id: row::text(r, 3)?,
+            status: row::text(r, 4)?,
+            report_artifact_path: row::opt_text(r, 5)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

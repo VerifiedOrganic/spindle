@@ -1,19 +1,12 @@
-mod artifacts;
-mod execution;
-mod mcp;
-mod operator;
-mod plan;
-mod state;
-
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use execution::execute_one;
-use mcp::{McpHarnessClient, TransportConfig};
-use operator::{render_status, resolve_scene_block, review_checkpoint};
-use plan::{FindingSeverity, NextAction, reconcile_state};
-use state::{HarnessState, ScenePhase, load_seed};
+use spindle_harness::execution::execute_one;
+use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+use spindle_harness::operator::{render_status, resolve_scene_block, review_checkpoint};
+use spindle_harness::plan::{Finding, FindingSeverity, NextAction, reconcile_state};
+use spindle_harness::state::{HarnessState, ScenePhase, load_seed};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -300,7 +293,7 @@ fn resolve_scene_block_command(command: ResolveSceneBlockCommand) -> Result<()> 
     Ok(())
 }
 
-fn print_findings(findings: &[plan::Finding]) {
+fn print_findings(findings: &[Finding]) {
     if findings.is_empty() {
         println!("No findings.");
         return;

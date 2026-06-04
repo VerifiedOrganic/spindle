@@ -1324,6 +1324,9 @@ fn adapter_kind_for_agent(agent: &ConfiguredAgent) -> String {
     if agent.provider == "grok-cli" {
         return "grok".to_string();
     }
+    if agent.provider == "cli" {
+        return "cli".to_string();
+    }
     if agent.endpoint.starts_with("http://") || agent.endpoint.starts_with("https://") {
         "http".to_string()
     } else {

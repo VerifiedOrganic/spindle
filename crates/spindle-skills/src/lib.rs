@@ -35,6 +35,7 @@ mod tests {
         assert!(names.contains(&"scene-writer"));
         assert!(names.contains(&"worldbuilder"));
         assert!(names.contains(&"editor"));
-        assert_eq!(skills.len(), 9);
+        assert!(names.contains(&"authoring-supervisor"));
+        assert_eq!(skills.len(), 10);
     }
 }

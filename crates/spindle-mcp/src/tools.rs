@@ -116,7 +116,7 @@
 //! | `bible://projects/{id}/chapters/{b}/{c}/scenes` | `list_chapter_scenes` | Resource is cached, tool requires explicit project+chapter params |
 //! | `bible://config/agents` | `list_agents` | Same data; resource is cached |
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -133,6 +133,9 @@ use spindle_core::subject_snapshot::SubjectSnapshot as EntitySubjectSnapshot;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::json_utils::flatten_record_ids;
+use spindle_harness::execution::execute_one;
+use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+use spindle_harness::plan::{NextAction, reconcile_state};
 
 #[derive(Debug, Clone, Default)]
 struct SessionContext {
@@ -271,6 +274,13 @@ impl ToolRouter {
                 "research_query",
                 "pull_chapter_from_file",
                 "push_chapter_to_file",
+                "authoring_prepare_run",
+                "authoring_start_run",
+                "authoring_status",
+                "authoring_execute_next",
+                "authoring_review_checkpoint",
+                "authoring_resolve_block",
+                "authoring_cancel_run",
             ],
             "minimal" => &[
                 "create_project",
@@ -702,6 +712,34 @@ impl ToolRouter {
             tool::<UpdateWriterPositionInput, WriterPosition>(
                 "update_writer_position",
                 "Persist a branch writer cursor position without saving a draft",
+            ),
+            tool::<AuthoringPrepareRunInput, AuthoringPrepareRunOutput>(
+                "authoring_prepare_run",
+                "Inspect the requested chapter range for the project and produce a readiness report before starting",
+            ),
+            tool::<AuthoringStartRunInput, AuthoringStartRunOutput>(
+                "authoring_start_run",
+                "Start a new authoring run for the project and book chapter range",
+            ),
+            tool::<AuthoringStatusInput, AuthoringStatusOutput>(
+                "authoring_status",
+                "Retrieve progress, next action, and status of the active authoring run",
+            ),
+            tool::<AuthoringExecuteNextInput, AuthoringExecuteNextOutput>(
+                "authoring_execute_next",
+                "Execute exactly one safe authoring action for the active run",
+            ),
+            tool::<AuthoringReviewCheckpointInput, AuthoringReviewCheckpointOutput>(
+                "authoring_review_checkpoint",
+                "Mark a checkpoint reviewed and append new editorial directives",
+            ),
+            tool::<AuthoringResolveBlockInput, AuthoringResolveBlockOutput>(
+                "authoring_resolve_block",
+                "Clear a blocked scene/run and advance it manually",
+            ),
+            tool::<AuthoringCancelRunInput, AuthoringCancelRunOutput>(
+                "authoring_cancel_run",
+                "Pause/cancel the active authoring run without deleting progress",
             ),
         ]
     }
@@ -1289,6 +1327,38 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.push_chapter_to_file(input))
                     .await
             }
+            "authoring_prepare_run" => {
+                self.invoke(arguments, |input| self.handle_authoring_prepare_run(input))
+                    .await
+            }
+            "authoring_start_run" => {
+                self.invoke(arguments, |input| self.handle_authoring_start_run(input))
+                    .await
+            }
+            "authoring_status" => {
+                self.invoke(arguments, |input| self.handle_authoring_status(input))
+                    .await
+            }
+            "authoring_execute_next" => {
+                self.invoke(arguments, |input| self.handle_authoring_execute_next(input))
+                    .await
+            }
+            "authoring_review_checkpoint" => {
+                self.invoke(arguments, |input| {
+                    self.handle_authoring_review_checkpoint(input)
+                })
+                .await
+            }
+            "authoring_resolve_block" => {
+                self.invoke(arguments, |input| {
+                    self.handle_authoring_resolve_block(input)
+                })
+                .await
+            }
+            "authoring_cancel_run" => {
+                self.invoke(arguments, |input| self.handle_authoring_cancel_run(input))
+                    .await
+            }
             "configure_agents" => match parse_arguments::<ConfigureAgentsInput>(arguments) {
                 Ok(input) => match self.service.configure_agents(input) {
                     Ok(output) => structured_result(&output),
@@ -1647,6 +1717,1038 @@ impl ToolRouter {
         input: InitGrokSkillsInput,
     ) -> anyhow::Result<InitGrokSkillsOutput> {
         run_init_grok_skills(input.target_dir, input.global)
+    }
+
+    async fn handle_authoring_prepare_run(
+        &self,
+        input: AuthoringPrepareRunInput,
+    ) -> anyhow::Result<AuthoringPrepareRunOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let end_chapter = if let Some(ec) = input.end_chapter {
+            ec
+        } else if let Some(cc) = input.chapter_count {
+            input.start_chapter + cc - 1
+        } else {
+            let chapters = repo
+                .list_chapters_by_book_number(&project_id, input.book_number)
+                .await?;
+            chapters
+                .iter()
+                .map(|c| c.chapter_number)
+                .max()
+                .unwrap_or(input.start_chapter)
+        };
+
+        let mut invalid_inputs = Vec::new();
+        if input.book_number <= 0 {
+            invalid_inputs.push(format!(
+                "book_number must be positive, got {}",
+                input.book_number
+            ));
+        }
+        if input.start_chapter <= 0 {
+            invalid_inputs.push(format!(
+                "start_chapter must be positive, got {}",
+                input.start_chapter
+            ));
+        }
+        if let Some(chapter_count) = input.chapter_count
+            && chapter_count <= 0
+        {
+            invalid_inputs.push(format!(
+                "chapter_count must be positive when provided, got {}",
+                chapter_count
+            ));
+        }
+        if end_chapter < input.start_chapter {
+            invalid_inputs.push(format!(
+                "end_chapter {} is before start_chapter {}",
+                end_chapter, input.start_chapter
+            ));
+        }
+        if !invalid_inputs.is_empty() {
+            return Ok(AuthoringPrepareRunOutput {
+                project_id,
+                book_number: input.book_number,
+                start_chapter: input.start_chapter,
+                end_chapter,
+                ready_to_draft: false,
+                missing_requirements: invalid_inputs,
+                details: Vec::new(),
+            });
+        }
+
+        let active_branch = repo.get_active_branch(&project_id).await?;
+
+        let db_chapters = repo
+            .list_chapters_by_book_number(&project_id, input.book_number)
+            .await?;
+        let db_plans = repo.list_chapter_plans_by_project(&project_id).await?;
+        let known_character_ids = repo
+            .list_characters_by_project_and_branch(&project_id, &active_branch.id)
+            .await?
+            .into_iter()
+            .map(|character| character.id)
+            .collect::<BTreeSet<_>>();
+        let known_location_ids = repo
+            .list_locations_by_project_and_branch(&project_id, &active_branch.id)
+            .await?
+            .into_iter()
+            .map(|location| location.id)
+            .collect::<BTreeSet<_>>();
+
+        let mut missing_requirements = Vec::new();
+        let mut details = Vec::new();
+
+        for ch_num in input.start_chapter..=end_chapter {
+            let mut chapter_missing_items = Vec::new();
+
+            let ch_exists = db_chapters.iter().any(|c| c.chapter_number == ch_num);
+            if !ch_exists {
+                chapter_missing_items.push("missing chapter".to_string());
+                missing_requirements.push(format!("Chapter {}: missing chapter", ch_num));
+            }
+
+            let plan_opt = db_plans.iter().find(|p| {
+                p.book_number == input.book_number
+                    && p.chapter_number == ch_num
+                    && p.branch_id == active_branch.id
+            });
+
+            if let Some(plan) = plan_opt {
+                if plan.scenes.is_empty() {
+                    chapter_missing_items.push("missing scene list".to_string());
+                    missing_requirements.push(format!("Chapter {}: missing scene list", ch_num));
+                } else {
+                    for scene in &plan.scenes {
+                        if scene.character_ids.is_empty() {
+                            chapter_missing_items.push(format!(
+                                "scene {}: missing character IDs",
+                                scene.scene_order
+                            ));
+                            missing_requirements.push(format!(
+                                "Chapter {} scene {}: missing character IDs",
+                                ch_num, scene.scene_order
+                            ));
+                        }
+                        for character_id in &scene.character_ids {
+                            if !known_character_ids.contains(character_id) {
+                                chapter_missing_items.push(format!(
+                                    "scene {}: unknown character ID {}",
+                                    scene.scene_order, character_id
+                                ));
+                                missing_requirements.push(format!(
+                                    "Chapter {} scene {}: unknown character ID {}",
+                                    ch_num, scene.scene_order, character_id
+                                ));
+                            }
+                        }
+
+                        let (loc_id, rating) =
+                            extract_scene_location_and_rating(&scene.summary, &scene.purpose);
+                        if loc_id.is_none() {
+                            chapter_missing_items
+                                .push(format!("scene {}: missing location ID", scene.scene_order));
+                            missing_requirements.push(format!(
+                                "Chapter {} scene {}: missing location ID",
+                                ch_num, scene.scene_order
+                            ));
+                        }
+                        if let Some(location_id) = loc_id.as_ref()
+                            && !known_location_ids.contains(location_id)
+                        {
+                            chapter_missing_items.push(format!(
+                                "scene {}: unknown location ID {}",
+                                scene.scene_order, location_id
+                            ));
+                            missing_requirements.push(format!(
+                                "Chapter {} scene {}: unknown location ID {}",
+                                ch_num, scene.scene_order, location_id
+                            ));
+                        }
+                        if rating.is_none() {
+                            chapter_missing_items.push(format!(
+                                "scene {}: missing content rating",
+                                scene.scene_order
+                            ));
+                            missing_requirements.push(format!(
+                                "Chapter {} scene {}: missing content rating",
+                                ch_num, scene.scene_order
+                            ));
+                        }
+                    }
+                }
+            } else {
+                chapter_missing_items.push("missing chapter plan".to_string());
+                missing_requirements.push(format!("Chapter {}: missing chapter plan", ch_num));
+            }
+
+            details.push(AuthoringPrepareChapterDetails {
+                chapter_number: ch_num,
+                ready: chapter_missing_items.is_empty(),
+                missing_items: chapter_missing_items,
+            });
+        }
+
+        let ready_to_draft = missing_requirements.is_empty();
+        Ok(AuthoringPrepareRunOutput {
+            project_id,
+            book_number: input.book_number,
+            start_chapter: input.start_chapter,
+            end_chapter,
+            ready_to_draft,
+            missing_requirements,
+            details,
+        })
+    }
+
+    async fn handle_authoring_start_run(
+        &self,
+        input: AuthoringStartRunInput,
+    ) -> anyhow::Result<AuthoringStartRunOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        if input.checkpoint_interval == 0 {
+            return Ok(AuthoringStartRunOutput {
+                run_id: String::new(),
+                status: "blocked".to_string(),
+                message: "Cannot start authoring run: checkpoint_interval must be at least 1"
+                    .to_string(),
+            });
+        }
+
+        let prep_input = AuthoringPrepareRunInput {
+            project_id: project_id.clone(),
+            book_number: input.book_number,
+            start_chapter: input.start_chapter,
+            end_chapter: input.end_chapter,
+            chapter_count: input.chapter_count,
+        };
+        let prep_report = self.handle_authoring_prepare_run(prep_input).await?;
+        if !prep_report.ready_to_draft {
+            return Ok(AuthoringStartRunOutput {
+                run_id: "".to_string(),
+                status: "blocked".to_string(),
+                message: format!(
+                    "Cannot start authoring run due to missing requirements: {:?}",
+                    prep_report.missing_requirements
+                ),
+            });
+        }
+
+        let active_branch = repo.get_active_branch(&project_id).await?;
+        let end_chapter = prep_report.end_chapter;
+
+        let db_plans = repo.list_chapter_plans_by_project(&project_id).await?;
+        let mut chapter_seeds = Vec::new();
+
+        for ch_num in input.start_chapter..=end_chapter {
+            let plan = db_plans
+                .iter()
+                .find(|p| {
+                    p.book_number == input.book_number
+                        && p.chapter_number == ch_num
+                        && p.branch_id == active_branch.id
+                })
+                .context("plan not found")?;
+
+            let mut scene_seeds = Vec::new();
+            for scene in &plan.scenes {
+                let (loc_id, rating) =
+                    extract_scene_location_and_rating(&scene.summary, &scene.purpose);
+                let loc_id = loc_id.unwrap();
+                let rating = rating.unwrap();
+
+                scene_seeds.push(spindle_harness::state::SceneSeed {
+                    scene_order: scene.scene_order,
+                    character_ids: scene.character_ids.clone(),
+                    location_id: loc_id,
+                    content_rating: rating,
+                    tone: None,
+                    source_path: None,
+                });
+            }
+
+            chapter_seeds.push(spindle_harness::state::ChapterSeed {
+                chapter_number: ch_num,
+                synopsis: plan.synopsis.clone(),
+                pov_character_id: plan.pov_character_id.clone(),
+                scenes: scene_seeds,
+            });
+        }
+
+        let seed = spindle_harness::state::HarnessSeed {
+            project_id: project_id.clone(),
+            book_number: input.book_number,
+            range: spindle_harness::state::ChapterRange {
+                start_chapter: input.start_chapter,
+                end_chapter,
+            },
+            checkpoint_interval: input.checkpoint_interval,
+            editorial_directives: input.editorial_directives.unwrap_or_default(),
+            chapters: chapter_seeds,
+        };
+
+        let harness_state =
+            spindle_harness::state::HarnessState::from_seed(seed, active_branch.id.clone());
+
+        let run_id = format!(
+            "authoring_run:{}",
+            ulid::Ulid::new().to_string().to_lowercase()
+        );
+        let (run, chapters, scenes, checkpoints) =
+            map_harness_to_records(&run_id, &harness_state, "active", None);
+
+        repo.save_authoring_run(run, chapters, scenes, checkpoints)
+            .await?;
+
+        Ok(AuthoringStartRunOutput {
+            run_id: run_id.clone(),
+            status: "active".to_string(),
+            message: format!(
+                "Started authoring run {} for chapters {}-{}",
+                run_id, input.start_chapter, end_chapter
+            ),
+        })
+    }
+
+    async fn handle_authoring_status(
+        &self,
+        input: AuthoringStatusInput,
+    ) -> anyhow::Result<AuthoringStatusOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+
+        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+
+        let data_dir = repo.data_dir();
+        let active_addr = crate::read_addr_file(data_dir)?;
+        let url = format!("http://{}/mcp", active_addr);
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
+        let snapshot = client.project_snapshot(&harness_state).await?;
+        let outcome = reconcile_state(harness_state.clone(), &snapshot);
+
+        let next_action_str = outcome.next_action.to_string();
+        let mut blocked_reason = None;
+        let mut current_status = run.status.clone();
+
+        if outcome.has_errors() {
+            current_status = "blocked".to_string();
+            let err_msgs: Vec<String> = outcome
+                .findings
+                .iter()
+                .filter(|f| f.severity == spindle_harness::plan::FindingSeverity::Error)
+                .map(|f| f.message.clone())
+                .collect();
+            blocked_reason = Some(err_msgs.join("; "));
+        } else {
+            for ch in &harness_state.chapters {
+                for sc in &ch.scenes {
+                    if let Some(r) = &sc.blocked_reason {
+                        current_status = "blocked".to_string();
+                        blocked_reason = Some(format!(
+                            "Chapter {} scene {} blocked: {}",
+                            ch.chapter_number, sc.scene_order, r
+                        ));
+                    }
+                }
+            }
+        }
+
+        if outcome.next_action == NextAction::Complete {
+            current_status = "completed".to_string();
+        }
+        if matches!(
+            outcome.next_action,
+            NextAction::AwaitCheckpointReview { .. }
+        ) {
+            current_status = "blocked".to_string();
+            blocked_reason = Some("await_checkpoint_review".to_string());
+        }
+
+        if current_status != run.status {
+            let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                &run_id,
+                &harness_state,
+                &current_status,
+                Some(run.created_at),
+            );
+            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                .await?;
+        }
+
+        let checkpoint_state = match outcome.next_action {
+            NextAction::AwaitCheckpointReview { .. } => Some("await_review".to_string()),
+            NextAction::RunCheckpoint { .. } => Some("run_pending".to_string()),
+            _ => None,
+        };
+
+        let mut status_chapters = Vec::new();
+        for ch in &outcome.state.chapters {
+            let mut status_scenes = Vec::new();
+            for sc in &ch.scenes {
+                let phase_str = match sc.phase {
+                    spindle_harness::state::ScenePhase::Pending => "pending",
+                    spindle_harness::state::ScenePhase::DraftSaved => "draft_saved",
+                    spindle_harness::state::ScenePhase::ChangesCommitted => "changes_committed",
+                    spindle_harness::state::ScenePhase::BeatsAnnotated => "beats_annotated",
+                };
+                status_scenes.push(AuthoringStatusScene {
+                    scene_order: sc.scene_order,
+                    phase: phase_str.to_string(),
+                    scene_id: sc.scene_id.clone(),
+                    scene_artifact_path: sc.scene_artifact_path.clone(),
+                    blocked_reason: sc.blocked_reason.clone(),
+                });
+            }
+            let ch_status_str = match ch.status {
+                spindle_harness::state::ChapterStatus::Pending => "pending",
+                spindle_harness::state::ChapterStatus::InProgress => "in_progress",
+                spindle_harness::state::ChapterStatus::Complete => "complete",
+            };
+            status_chapters.push(AuthoringStatusChapter {
+                chapter_number: ch.chapter_number,
+                status: ch_status_str.to_string(),
+                summary_saved: ch.summary_saved,
+                summary_artifact_path: ch.summary_artifact_path.clone(),
+                scenes: status_scenes,
+            });
+        }
+
+        let mut cp_reports = Vec::new();
+        for cp in &outcome.state.checkpoint_history {
+            let cp_status_str = match cp.status {
+                spindle_harness::state::CheckpointStatus::PendingReview => "pending_review",
+                spindle_harness::state::CheckpointStatus::Reviewed => "reviewed",
+            };
+            cp_reports.push(AuthoringStatusCheckpoint {
+                start_chapter: cp.start_chapter,
+                end_chapter: cp.end_chapter,
+                save_point_id: cp.save_point_id.clone(),
+                status: cp_status_str.to_string(),
+                report_artifact_path: cp.report_artifact_path.clone(),
+            });
+        }
+
+        Ok(AuthoringStatusOutput {
+            run_id,
+            project_id,
+            status: current_status,
+            next_action: next_action_str,
+            blocked_reason,
+            checkpoint_state,
+            start_chapter: run.start_chapter,
+            end_chapter: run.end_chapter,
+            completed_chapter_count: outcome.state.completed_chapter_count(),
+            total_chapter_count: outcome.state.chapters.len(),
+            chapters: status_chapters,
+            checkpoint_reports: cp_reports,
+        })
+    }
+
+    async fn handle_authoring_execute_next(
+        &self,
+        input: AuthoringExecuteNextInput,
+    ) -> anyhow::Result<AuthoringExecuteNextOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+
+        if run.status == "completed" {
+            return Ok(AuthoringExecuteNextOutput {
+                run_id: run_id.clone(),
+                next_action: "complete".to_string(),
+                executed_action: "none".to_string(),
+                message: "Authoring run is already completed.".to_string(),
+                status: run.status,
+            });
+        }
+        if run.status == "paused" {
+            return Ok(AuthoringExecuteNextOutput {
+                run_id: run_id.clone(),
+                next_action: "paused".to_string(),
+                executed_action: "none".to_string(),
+                message: "Authoring run is paused; start or select another run before executing."
+                    .to_string(),
+                status: run.status,
+            });
+        }
+
+        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+
+        let data_dir = repo.data_dir();
+        let active_addr = crate::read_addr_file(data_dir)?;
+        let url = format!("http://{}/mcp", active_addr);
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
+        let snapshot = client.project_snapshot(&harness_state).await?;
+        let outcome = reconcile_state(harness_state.clone(), &snapshot);
+
+        if outcome.has_errors() {
+            let (updated_run, updated_ch, updated_sc, updated_cp) =
+                map_harness_to_records(&run_id, &outcome.state, "blocked", Some(run.created_at));
+            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                .await?;
+            return Ok(AuthoringExecuteNextOutput {
+                run_id: run_id.clone(),
+                next_action: outcome.next_action.to_string(),
+                executed_action: "none".to_string(),
+                message: "Execution blocked by errors.".to_string(),
+                status: "blocked".to_string(),
+            });
+        }
+
+        match &outcome.next_action {
+            NextAction::Blocked
+            | NextAction::AwaitCheckpointReview { .. }
+            | NextAction::Complete => {
+                let status_str = match &outcome.next_action {
+                    NextAction::Complete => "completed",
+                    NextAction::Blocked => "blocked",
+                    NextAction::AwaitCheckpointReview { .. } => "blocked",
+                    _ => &run.status,
+                };
+                if status_str != run.status {
+                    let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                        &run_id,
+                        &outcome.state,
+                        status_str,
+                        Some(run.created_at),
+                    );
+                    repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                        .await?;
+                }
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: outcome.next_action.to_string(),
+                    executed_action: "none".to_string(),
+                    message: format!(
+                        "No action executed (action state is {:?})",
+                        outcome.next_action
+                    ),
+                    status: status_str.to_string(),
+                });
+            }
+            _ => {}
+        }
+
+        let action_to_execute = outcome.next_action.clone();
+        let state_path = data_dir.join(format!(
+            "authoring_run_{}_temp.json",
+            run_id.replace(":", "_")
+        ));
+        harness_state.save(&state_path)?;
+
+        let exec_result = execute_one(
+            &state_path,
+            harness_state,
+            &client,
+            action_to_execute.clone(),
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&state_path);
+
+        let exec_res = exec_result?;
+
+        let updated_snapshot = client.project_snapshot(&exec_res.state).await?;
+        let updated_outcome = reconcile_state(exec_res.state.clone(), &updated_snapshot);
+
+        let mut final_status = "active".to_string();
+        if updated_outcome.has_errors() {
+            final_status = "blocked".to_string();
+        } else {
+            for ch in &exec_res.state.chapters {
+                for sc in &ch.scenes {
+                    if sc.blocked_reason.is_some() {
+                        final_status = "blocked".to_string();
+                    }
+                }
+            }
+        }
+        if updated_outcome.next_action == NextAction::Complete {
+            final_status = "completed".to_string();
+        }
+        if matches!(
+            updated_outcome.next_action,
+            NextAction::AwaitCheckpointReview { .. }
+        ) {
+            final_status = "blocked".to_string();
+        }
+
+        let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+            &run_id,
+            &exec_res.state,
+            &final_status,
+            Some(run.created_at),
+        );
+        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+            .await?;
+
+        Ok(AuthoringExecuteNextOutput {
+            run_id: run_id.clone(),
+            next_action: updated_outcome.next_action.to_string(),
+            executed_action: action_to_execute.to_string(),
+            message: exec_res.message,
+            status: final_status,
+        })
+    }
+
+    async fn handle_authoring_review_checkpoint(
+        &self,
+        input: AuthoringReviewCheckpointInput,
+    ) -> anyhow::Result<AuthoringReviewCheckpointOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+
+        let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+
+        let data_dir = repo.data_dir();
+        let state_path = data_dir.join(format!(
+            "authoring_run_{}_temp.json",
+            run_id.replace(":", "_")
+        ));
+        harness_state.save(&state_path)?;
+
+        let review_result = spindle_harness::operator::review_checkpoint(
+            &mut harness_state,
+            &state_path,
+            input.start_chapter,
+            input.end_chapter,
+            &input.directives,
+        );
+
+        let _ = std::fs::remove_file(&state_path);
+
+        let message = review_result?;
+
+        let active_addr = crate::read_addr_file(data_dir)?;
+        let url = format!("http://{}/mcp", active_addr);
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
+        let snapshot = client.project_snapshot(&harness_state).await?;
+        let outcome = reconcile_state(harness_state.clone(), &snapshot);
+
+        let mut final_status = "active".to_string();
+        if outcome.has_errors() {
+            final_status = "blocked".to_string();
+        } else {
+            for ch in &harness_state.chapters {
+                for sc in &ch.scenes {
+                    if sc.blocked_reason.is_some() {
+                        final_status = "blocked".to_string();
+                    }
+                }
+            }
+        }
+        if outcome.next_action == NextAction::Complete {
+            final_status = "completed".to_string();
+        }
+
+        let (updated_run, updated_ch, updated_sc, updated_cp) =
+            map_harness_to_records(&run_id, &harness_state, &final_status, Some(run.created_at));
+        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+            .await?;
+
+        Ok(AuthoringReviewCheckpointOutput {
+            run_id,
+            message,
+            status: final_status,
+        })
+    }
+
+    async fn handle_authoring_resolve_block(
+        &self,
+        input: AuthoringResolveBlockInput,
+    ) -> anyhow::Result<AuthoringResolveBlockOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+
+        let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+
+        let parsed_phase = match input.target_phase.to_ascii_lowercase().as_str() {
+            "pending" => spindle_harness::state::ScenePhase::Pending,
+            "draft_saved" => spindle_harness::state::ScenePhase::DraftSaved,
+            "changes_committed" => spindle_harness::state::ScenePhase::ChangesCommitted,
+            "beats_annotated" => spindle_harness::state::ScenePhase::BeatsAnnotated,
+            _ => anyhow::bail!("Invalid target phase: {}", input.target_phase),
+        };
+
+        let data_dir = repo.data_dir();
+        let state_path = data_dir.join(format!(
+            "authoring_run_{}_temp.json",
+            run_id.replace(":", "_")
+        ));
+        harness_state.save(&state_path)?;
+
+        let resolve_result = spindle_harness::operator::resolve_scene_block(
+            &mut harness_state,
+            &state_path,
+            input.chapter_number,
+            input.scene_order,
+            parsed_phase,
+        );
+
+        let _ = std::fs::remove_file(&state_path);
+
+        let message = resolve_result?;
+
+        let active_addr = crate::read_addr_file(data_dir)?;
+        let url = format!("http://{}/mcp", active_addr);
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
+        let snapshot = client.project_snapshot(&harness_state).await?;
+        let outcome = reconcile_state(harness_state.clone(), &snapshot);
+
+        let mut final_status = "active".to_string();
+        if outcome.has_errors() {
+            final_status = "blocked".to_string();
+        } else {
+            for ch in &harness_state.chapters {
+                for sc in &ch.scenes {
+                    if sc.blocked_reason.is_some() {
+                        final_status = "blocked".to_string();
+                    }
+                }
+            }
+        }
+        if outcome.next_action == NextAction::Complete {
+            final_status = "completed".to_string();
+        }
+
+        let (updated_run, updated_ch, updated_sc, updated_cp) =
+            map_harness_to_records(&run_id, &harness_state, &final_status, Some(run.created_at));
+        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+            .await?;
+
+        Ok(AuthoringResolveBlockOutput {
+            run_id,
+            message,
+            status: final_status,
+        })
+    }
+
+    async fn handle_authoring_cancel_run(
+        &self,
+        input: AuthoringCancelRunInput,
+    ) -> anyhow::Result<AuthoringCancelRunOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+
+        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+
+        let status = "paused".to_string();
+        let (updated_run, updated_ch, updated_sc, updated_cp) =
+            map_harness_to_records(&run_id, &harness_state, &status, Some(run.created_at));
+
+        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+            .await?;
+
+        let message = format!("Successfully paused authoring run {}", run_id);
+        Ok(AuthoringCancelRunOutput {
+            run_id,
+            message,
+            status,
+        })
+    }
+}
+
+fn extract_scene_location_and_rating(
+    summary: &str,
+    purpose: &str,
+) -> (Option<String>, Option<spindle_core::models::ContentRating>) {
+    let combined = format!("{} {}", summary, purpose).to_ascii_lowercase();
+    let combined_orig = format!("{} {}", summary, purpose);
+
+    // 1. Extract location
+    let location_id = if let Some(idx) = combined.find("location:") {
+        let start = idx + "location:".len();
+        let remaining = &combined[start..];
+        let end = remaining
+            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != ':')
+            .unwrap_or(remaining.len());
+        let id_str = &combined_orig[idx..idx + "location:".len() + end];
+        Some(id_str.trim().to_string())
+    } else {
+        None
+    };
+
+    // 2. Extract content rating
+    let rating = if combined.contains("rating:explicit") || combined.contains("explicit rating") {
+        Some(spindle_core::models::ContentRating::Explicit)
+    } else if combined.contains("rating:mature") || combined.contains("mature rating") {
+        Some(spindle_core::models::ContentRating::Mature)
+    } else if combined.contains("rating:teen") || combined.contains("teen rating") {
+        Some(spindle_core::models::ContentRating::Teen)
+    } else if combined.contains("rating:general") || combined.contains("general rating") {
+        Some(spindle_core::models::ContentRating::General)
+    } else {
+        if combined.contains("rating: explicit") {
+            Some(spindle_core::models::ContentRating::Explicit)
+        } else if combined.contains("rating: mature") {
+            Some(spindle_core::models::ContentRating::Mature)
+        } else if combined.contains("rating: teen") {
+            Some(spindle_core::models::ContentRating::Teen)
+        } else if combined.contains("rating: general") {
+            Some(spindle_core::models::ContentRating::General)
+        } else {
+            None
+        }
+    };
+
+    (location_id, rating)
+}
+
+fn map_harness_to_records(
+    run_id: &str,
+    state: &spindle_harness::state::HarnessState,
+    status: &str,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> (
+    spindle_adapters::sqlite::records::AuthoringRun,
+    Vec<spindle_adapters::sqlite::records::AuthoringRunChapter>,
+    Vec<spindle_adapters::sqlite::records::AuthoringRunScene>,
+    Vec<spindle_adapters::sqlite::records::AuthoringCheckpoint>,
+) {
+    let now = chrono::Utc::now();
+    let run = spindle_adapters::sqlite::records::AuthoringRun {
+        id: run_id.to_string(),
+        project_id: state.project_id.clone(),
+        active_branch_id: state.active_branch_id.clone(),
+        book_number: state.book_number,
+        start_chapter: state.range.start_chapter,
+        end_chapter: state.range.end_chapter,
+        checkpoint_interval: state.checkpoint_interval as i64,
+        last_checkpoint_end_chapter: state.last_checkpoint_end_chapter,
+        artifacts_dir: state.artifacts_dir.clone(),
+        editorial_directives: state.editorial_directives.clone(),
+        status: status.to_string(),
+        created_at: created_at.unwrap_or(now),
+        updated_at: now,
+    };
+
+    let mut chapters = Vec::new();
+    let mut scenes = Vec::new();
+    for ch in &state.chapters {
+        let ch_status = match ch.status {
+            spindle_harness::state::ChapterStatus::Pending => "pending",
+            spindle_harness::state::ChapterStatus::InProgress => "in_progress",
+            spindle_harness::state::ChapterStatus::Complete => "complete",
+        };
+        chapters.push(spindle_adapters::sqlite::records::AuthoringRunChapter {
+            authoring_run_id: run_id.to_string(),
+            chapter_number: ch.chapter_number,
+            planned: ch.planned,
+            synopsis: ch.synopsis.clone(),
+            pov_character_id: ch.pov_character_id.clone(),
+            status: ch_status.to_string(),
+            summary_saved: ch.summary_saved,
+            summary_artifact_path: ch.summary_artifact_path.clone(),
+        });
+
+        for sc in &ch.scenes {
+            let sc_phase = match sc.phase {
+                spindle_harness::state::ScenePhase::Pending => "pending",
+                spindle_harness::state::ScenePhase::DraftSaved => "draft_saved",
+                spindle_harness::state::ScenePhase::ChangesCommitted => "changes_committed",
+                spindle_harness::state::ScenePhase::BeatsAnnotated => "beats_annotated",
+            };
+            scenes.push(spindle_adapters::sqlite::records::AuthoringRunScene {
+                authoring_run_id: run_id.to_string(),
+                chapter_number: ch.chapter_number,
+                scene_order: sc.scene_order,
+                character_ids: sc.character_ids.clone(),
+                location_id: sc.location_id.clone(),
+                content_rating: sc.content_rating.as_str().to_string(),
+                tone: sc.tone.clone(),
+                source_path: sc.source_path.clone(),
+                phase: sc_phase.to_string(),
+                scene_id: sc.scene_id.clone(),
+                scene_artifact_path: sc.scene_artifact_path.clone(),
+                draft_diagnostics: sc
+                    .draft_diagnostics
+                    .as_ref()
+                    .map(|d| serde_json::to_value(d).unwrap()),
+                blocked_reason: sc.blocked_reason.clone(),
+            });
+        }
+    }
+
+    let mut checkpoints = Vec::new();
+    for cp in &state.checkpoint_history {
+        let cp_status = match cp.status {
+            spindle_harness::state::CheckpointStatus::PendingReview => "pending_review",
+            spindle_harness::state::CheckpointStatus::Reviewed => "reviewed",
+        };
+        checkpoints.push(spindle_adapters::sqlite::records::AuthoringCheckpoint {
+            authoring_run_id: run_id.to_string(),
+            start_chapter: cp.start_chapter,
+            end_chapter: cp.end_chapter,
+            save_point_id: cp.save_point_id.clone(),
+            status: cp_status.to_string(),
+            report_artifact_path: cp.report_artifact_path.clone(),
+        });
+    }
+
+    (run, chapters, scenes, checkpoints)
+}
+
+fn map_records_to_harness(
+    run: &spindle_adapters::sqlite::records::AuthoringRun,
+    chapters: &[spindle_adapters::sqlite::records::AuthoringRunChapter],
+    scenes: &[spindle_adapters::sqlite::records::AuthoringRunScene],
+    checkpoints: &[spindle_adapters::sqlite::records::AuthoringCheckpoint],
+) -> spindle_harness::state::HarnessState {
+    let mut ch_states = Vec::new();
+    for ch in chapters {
+        let mut ch_scenes = Vec::new();
+        for sc in scenes {
+            if sc.chapter_number == ch.chapter_number {
+                let phase = match sc.phase.as_str() {
+                    "pending" => spindle_harness::state::ScenePhase::Pending,
+                    "draft_saved" => spindle_harness::state::ScenePhase::DraftSaved,
+                    "changes_committed" => spindle_harness::state::ScenePhase::ChangesCommitted,
+                    "beats_annotated" => spindle_harness::state::ScenePhase::BeatsAnnotated,
+                    _ => spindle_harness::state::ScenePhase::Pending,
+                };
+                let content_rating = match sc.content_rating.to_ascii_lowercase().as_str() {
+                    "general" => spindle_core::models::ContentRating::General,
+                    "teen" => spindle_core::models::ContentRating::Teen,
+                    "mature" => spindle_core::models::ContentRating::Mature,
+                    "explicit" => spindle_core::models::ContentRating::Explicit,
+                    _ => spindle_core::models::ContentRating::General,
+                };
+                let draft_diagnostics = sc
+                    .draft_diagnostics
+                    .as_ref()
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                ch_scenes.push(spindle_harness::state::SceneState {
+                    scene_order: sc.scene_order,
+                    character_ids: sc.character_ids.clone(),
+                    location_id: sc.location_id.clone(),
+                    content_rating,
+                    tone: sc.tone.clone(),
+                    source_path: sc.source_path.clone(),
+                    phase,
+                    scene_id: sc.scene_id.clone(),
+                    scene_artifact_path: sc.scene_artifact_path.clone(),
+                    draft_diagnostics,
+                    blocked_reason: sc.blocked_reason.clone(),
+                });
+            }
+        }
+        let status = match ch.status.as_str() {
+            "pending" => spindle_harness::state::ChapterStatus::Pending,
+            "in_progress" => spindle_harness::state::ChapterStatus::InProgress,
+            "complete" => spindle_harness::state::ChapterStatus::Complete,
+            _ => spindle_harness::state::ChapterStatus::Pending,
+        };
+        ch_states.push(spindle_harness::state::ChapterState {
+            chapter_number: ch.chapter_number,
+            planned: ch.planned,
+            synopsis: ch.synopsis.clone(),
+            pov_character_id: ch.pov_character_id.clone(),
+            status,
+            scenes: ch_scenes,
+            summary_saved: ch.summary_saved,
+            summary_artifact_path: ch.summary_artifact_path.clone(),
+        });
+    }
+
+    let mut cp_history = Vec::new();
+    for cp in checkpoints {
+        let status = match cp.status.as_str() {
+            "pending_review" => spindle_harness::state::CheckpointStatus::PendingReview,
+            "reviewed" => spindle_harness::state::CheckpointStatus::Reviewed,
+            _ => spindle_harness::state::CheckpointStatus::PendingReview,
+        };
+        cp_history.push(spindle_harness::state::CheckpointRecord {
+            start_chapter: cp.start_chapter,
+            end_chapter: cp.end_chapter,
+            save_point_id: cp.save_point_id.clone(),
+            status,
+            report_artifact_path: cp.report_artifact_path.clone(),
+        });
+    }
+
+    spindle_harness::state::HarnessState {
+        project_id: run.project_id.clone(),
+        active_branch_id: run.active_branch_id.clone(),
+        book_number: run.book_number,
+        range: spindle_harness::state::ChapterRange {
+            start_chapter: run.start_chapter,
+            end_chapter: run.end_chapter,
+        },
+        checkpoint_interval: run.checkpoint_interval as usize,
+        last_checkpoint_end_chapter: run.last_checkpoint_end_chapter,
+        artifacts_dir: run.artifacts_dir.clone(),
+        editorial_directives: run.editorial_directives.clone(),
+        chapters: ch_states,
+        checkpoint_history: cp_history,
     }
 }
 
