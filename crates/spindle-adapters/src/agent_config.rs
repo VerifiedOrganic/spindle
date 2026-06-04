@@ -152,9 +152,11 @@ pub fn resolve_config_path(explicit: Option<&str>) -> anyhow::Result<Option<Path
         anyhow::bail!("agent config file not found: {}", path.display());
     }
 
-    Ok(default_config_candidates()
-        .into_iter()
-        .find(|path| path.exists()))
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_config = std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from);
+    Ok(crate::workspace::resolve_workspace_config_path(
+        &cwd, env_config,
+    ))
 }
 
 pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentConfig> {

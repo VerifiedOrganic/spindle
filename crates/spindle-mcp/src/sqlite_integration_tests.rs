@@ -1008,3 +1008,104 @@ agent = "cli-agent-review"
     server_handle2.await.unwrap();
     crate::remove_addr_file(&data_dir);
 }
+
+#[tokio::test]
+async fn test_two_independent_book_workspaces() {
+    use spindle_adapters::sqlite::{Repository, SqliteSpindleService};
+    use spindle_adapters::workspace::resolve_workspace;
+
+    // Create temp book dir A and initialize it.
+    let temp_a = TempDir::new().unwrap();
+    let book_a = temp_a.path().join("book-a");
+    std::fs::create_dir_all(&book_a).unwrap();
+    // Simulate spindle init / workspace initialization:
+    std::fs::create_dir_all(book_a.join(".spindle")).unwrap();
+
+    // Create temp book dir B and initialize it.
+    let temp_b = TempDir::new().unwrap();
+    let book_b = temp_b.path().join("book-b");
+    std::fs::create_dir_all(&book_b).unwrap();
+    // Simulate spindle init / workspace initialization:
+    std::fs::create_dir_all(book_b.join(".spindle")).unwrap();
+
+    // Resolve workspace for A
+    let ws_a = resolve_workspace(&book_a, None, None);
+    assert_eq!(ws_a.db_path, book_a.join(".spindle").join("spindle.db"));
+
+    // Resolve workspace for B
+    let ws_b = resolve_workspace(&book_b, None, None);
+    assert_eq!(ws_b.db_path, book_b.join(".spindle").join("spindle.db"));
+
+    // Initialize databases
+    let pool_a = SqlitePool::open(&ws_a.db_path).await.unwrap();
+    let repo_a = Repository::new(pool_a, ws_a.data_dir);
+    let svc_a = SqliteSpindleService::new(repo_a);
+
+    let pool_b = SqlitePool::open(&ws_b.db_path).await.unwrap();
+    let repo_b = Repository::new(pool_b, ws_b.data_dir);
+    let svc_b = SqliteSpindleService::new(repo_b);
+
+    // Create a project in book A
+    let project_a = svc_a
+        .create_project(CreateProjectInput {
+            name: "Book A Project".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Mara holds the gate.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    // Create a different project in book B
+    let project_b = svc_b
+        .create_project(CreateProjectInput {
+            name: "Book B Project".into(),
+            project_type: "novel".into(),
+            genre: "sci-fi".into(),
+            reader_contract: ReaderContract {
+                promise: "Spaceships fly.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    // Prove A cannot see B's data
+    let search_a = svc_a
+        .search_bible(SearchBibleInput {
+            project_id: project_a.project_id.clone(),
+            query: "Book".into(),
+            limit: Some(10),
+            mode: Some(SearchBibleMode::Exact),
+            field: None,
+            subject_table: None,
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    // B's project shouldn't be in A's database
+    assert!(!search_a.results.iter().any(|r| r.title == "Book B Project"));
+
+    // Prove B cannot see A's data
+    let search_b = svc_b
+        .search_bible(SearchBibleInput {
+            project_id: project_b.project_id.clone(),
+            query: "Book".into(),
+            limit: Some(10),
+            mode: Some(SearchBibleMode::Exact),
+            field: None,
+            subject_table: None,
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    // A's project shouldn't be in B's database
+    assert!(!search_b.results.iter().any(|r| r.title == "Book A Project"));
+}

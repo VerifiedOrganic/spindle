@@ -9,10 +9,14 @@ pub mod export;
 pub mod format;
 pub mod guidance;
 pub mod sqlite;
+pub mod workspace;
 
 pub use ai::ModelRouter;
 pub use guidance::{
     EmbeddedReference, get_reference, get_skill, list_references, list_skills, standards_text,
+};
+pub use workspace::{
+    Workspace, default_config_path, default_data_dir, find_workspace_root, resolve_workspace,
 };
 
 // SQLite-backed entry points.

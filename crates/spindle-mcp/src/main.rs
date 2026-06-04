@@ -13,11 +13,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use dirs::data_local_dir;
 use rmcp::ServiceExt;
 use rmcp::transport::io::stdio;
 use spindle_adapters::SqlitePool;
-use spindle_adapters::agent_config::resolve_config_path;
 use spindle_adapters::sqlite::Repository as SpindleRepository;
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -49,6 +47,8 @@ enum McpCommand {
         #[arg(long, default_value_t = true)]
         global: bool,
     },
+    /// Initialize a project-local Spindle workspace in the current directory (creates `.spindle/`).
+    Init,
 }
 
 #[tokio::main]
@@ -70,25 +70,71 @@ async fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            McpCommand::Init => {
+                let cwd = std::env::current_dir().context("getting current directory")?;
+                let spindle_dir = cwd.join(".spindle");
+                std::fs::create_dir_all(&spindle_dir).context("creating .spindle directory")?;
+
+                // Create subdirectories: artifacts, runtime, etc.
+                std::fs::create_dir_all(spindle_dir.join("artifacts"))
+                    .context("creating artifacts directory")?;
+                std::fs::create_dir_all(spindle_dir.join("runtime"))
+                    .context("creating runtime directory")?;
+
+                // Create a basic default config.toml if it doesn't exist
+                let config_path = spindle_dir.join("config.toml");
+                if !config_path.exists() {
+                    let default_config = r#"# Spindle local agent configuration
+# Documented at docs/spindle-agent-config.md
+
+# [[agents]]
+# id = "local-http"
+# name = "Local HTTP model"
+# provider = "openai-compatible"
+# endpoint = "http://localhost:11434/v1"
+# model = "mistral"
+# api_key_env = "OPENAI_API_KEY"
+
+# [[routing]]
+# route = "draft"
+# agent = "local-http"
+"#;
+                    std::fs::write(&config_path, default_config)
+                        .context("writing default config.toml")?;
+                }
+
+                println!(
+                    "Initialized Spindle project-local workspace at {}",
+                    spindle_dir.display()
+                );
+                return Ok(());
+            }
         }
     }
 
-    let data_dir = default_data_dir();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_data_dir = std::env::var_os("SPINDLE_DATA_DIR").map(PathBuf::from);
+    let env_config = std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from);
+    let ws = spindle_adapters::workspace::resolve_workspace(&cwd, env_data_dir, env_config);
+
+    let data_dir = ws.data_dir;
+    let db_path = ws.db_path;
+    let config_path = ws.config_path.map(|p| p.display().to_string());
 
     // Explicit HTTP-only mode (no stdio, no proxy).
     if let Some(addr) = http_listen_addr()? {
-        let db = init_sqlite(&data_dir).await?;
-        let service = build_service(db, &data_dir);
+        let db = init_sqlite(&db_path).await?;
+        let service = build_service(db, &data_dir, config_path);
         http::serve(service, addr).await?;
         return Ok(());
     }
 
     // Default: try to become primary, fall back to secondary with failover.
-    match init_sqlite(&data_dir).await {
-        Ok(db) => run_primary(build_service(db, &data_dir), &data_dir).await,
+    match init_sqlite(&db_path).await {
+        Ok(db) => run_primary(build_service(db, &data_dir, config_path), &data_dir).await,
         Err(e) if is_lock_error(&e) => {
             tracing::info!("database locked, starting in proxy mode");
-            run_secondary(&data_dir).await
+            run_secondary(&data_dir, &db_path).await
         }
         Err(e) => Err(e),
     }
@@ -97,20 +143,23 @@ async fn main() -> anyhow::Result<()> {
 /// Open or create the SQLite-backed Spindle DB at the canonical path inside
 /// `data_dir`. Phase 6 replaces the SurrealDB embedded engine — same data
 /// directory, different on-disk format.
-async fn init_sqlite(data_dir: &Path) -> anyhow::Result<SqlitePool> {
-    std::fs::create_dir_all(data_dir).context("creating spindle data dir")?;
-    let db_path = data_dir.join("spindle.sqlite");
-    SqlitePool::open(&db_path)
+async fn init_sqlite(db_path: &Path) -> anyhow::Result<SqlitePool> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).context("creating spindle data dir")?;
+    }
+    SqlitePool::open(db_path)
         .await
         .with_context(|| format!("opening SQLite DB at {}", db_path.display()))
 }
 
-pub fn build_service(db: SqlitePool, data_dir: &Path) -> SpindleService {
+pub fn build_service(
+    db: SqlitePool,
+    data_dir: &Path,
+    config_path: Option<String>,
+) -> SpindleService {
     let repository = SpindleRepository::new(db, data_dir.to_path_buf());
     let service = SpindleService::new(repository);
-    let _ = service.configure_agents(spindle_core::models::ConfigureAgentsInput {
-        config_path: configured_agent_config_path(),
-    });
+    let _ = service.configure_agents(spindle_core::models::ConfigureAgentsInput { config_path });
     service
 }
 
@@ -143,7 +192,7 @@ async fn run_primary(service: SpindleService, data_dir: &Path) -> anyhow::Result
 
 /// Secondary mode: proxy stdio to the primary's HTTP endpoint.
 /// If the primary dies, try to promote to primary or reconnect to a new one.
-async fn run_secondary(data_dir: &Path) -> anyhow::Result<()> {
+async fn run_secondary(data_dir: &Path, db_path: &Path) -> anyhow::Result<()> {
     // We need to own stdin/stdout across reconnections, so serve over a
     // duplex channel and bridge the real stdio ourselves.
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
@@ -180,7 +229,7 @@ async fn run_secondary(data_dir: &Path) -> anyhow::Result<()> {
         // Small delay to let the old primary release the lock.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        if proxy::try_promote(data_dir).await? {
+        if proxy::try_promote(db_path).await? {
             // Promoted — try_promote blocks until this session ends.
             return Ok(());
         }
@@ -278,29 +327,22 @@ fn init_tracing() {
         .try_init();
 }
 
+#[cfg(test)]
 fn default_data_dir() -> PathBuf {
-    std::env::var_os("SPINDLE_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_platform_data_dir)
+    spindle_adapters::workspace::default_data_dir()
 }
 
+#[cfg(test)]
 fn configured_agent_config_path() -> Option<String> {
     std::env::var("SPINDLE_CONFIG").ok().or_else(|| {
-        resolve_config_path(None)
-            .ok()
-            .flatten()
-            .map(|path| path.display().to_string())
+        spindle_adapters::workspace::default_config_path().map(|path| path.display().to_string())
     })
 }
 
+#[cfg(test)]
 fn default_platform_data_dir() -> PathBuf {
-    data_local_dir()
-        .map(|path| path.join("spindle"))
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".spindle-data")
-        })
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    spindle_adapters::workspace::default_platform_data_dir_for_cwd(&cwd)
 }
 
 #[cfg(test)]

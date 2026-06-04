@@ -51,11 +51,17 @@ impl McpHarnessClient {
                 config_path,
             } => {
                 let workspace_root = workspace_root();
+                let manifest_path = workspace_root.join("Cargo.toml");
                 let transport = TokioChildProcess::new(
                     tokio::process::Command::new("cargo").configure(|command| {
-                        command
-                            .args(["run", "-q", "-p", "spindle-mcp"])
-                            .current_dir(workspace_root);
+                        command.args([
+                            "run",
+                            "-q",
+                            "--manifest-path",
+                            &manifest_path.to_string_lossy(),
+                            "-p",
+                            "spindle-mcp",
+                        ]);
                         if let Some(data_dir) = data_dir {
                             command.env("SPINDLE_DATA_DIR", data_dir);
                         }

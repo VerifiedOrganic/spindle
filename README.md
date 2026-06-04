@@ -58,31 +58,40 @@ the most, but Spindle is genre-agnostic.
 
 You'll need [Rust](https://rustup.rs/) installed.
 
-```bash
-git clone https://github.com/VerifiedOrganic/spindle
-cd spindle
-cargo build --release -p spindle-mcp
-```
+1. **Clone and build Spindle:**
+   ```bash
+   git clone https://github.com/VerifiedOrganic/spindle
+   cd spindle
+   cargo build --release -p spindle-mcp
+   ```
 
-Then point your MCP client at the binary. For **Claude Code**, add this to
-your MCP config:
+2. **Initialize a local book workspace:**
+   Create a new folder for your book project, initialize a git repository, and run Spindle workspace initialization:
+   ```bash
+   mkdir my-book && cd my-book
+   git init
+   /path/to/spindle/target/release/spindle-mcp init
+   ```
+   This creates a project-local `.spindle/` folder containing your `config.toml`, SQLite database, and `artifacts/` subdirectory.
 
-```json
-{
-  "mcpServers": {
-    "spindle": {
-      "command": "cargo",
-      "args": ["run", "-p", "spindle-mcp"],
-      "cwd": "/absolute/path/to/spindle"
-    }
-  }
-}
-```
+3. **Configure your MCP Client:**
+   Point your MCP-capable AI client at the built binary. For **Claude Code**, you can configure it to start from your book directory:
+   ```json
+   {
+     "mcpServers": {
+       "spindle": {
+         "command": "/path/to/spindle/target/release/spindle-mcp",
+         "cwd": "/path/to/my-book"
+       }
+     }
+   }
+   ```
 
-Spindle stores your projects under your platform's local data directory, in
-a `spindle/` folder. Set `SPINDLE_DATA_DIR` to override.
+4. **Start writing:**
+   Connect/use Spindle MCP from that folder and start designing or writing using the `authoring-supervisor` skill!
 
-That's it. Open your MCP client and start a session.
+By default, Spindle resolves to the project-local `.spindle/` directory (climbing up parents to find it). A platform-global data directory is used as a fallback only when no `.spindle/` workspace exists. You can still set `SPINDLE_DATA_DIR` and `SPINDLE_CONFIG` to override this behavior.
+
 
 ## A first session
 

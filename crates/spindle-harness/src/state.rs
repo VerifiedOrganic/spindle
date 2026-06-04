@@ -287,6 +287,13 @@ pub fn load_seed(path: &Path) -> Result<HarnessSeed> {
 }
 
 fn default_artifacts_dir() -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            if ancestor.join(".spindle").is_dir() {
+                return "artifacts".to_string();
+            }
+        }
+    }
     "spindle-harness-artifacts".to_string()
 }
 
