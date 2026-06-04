@@ -377,12 +377,32 @@ impl ModelRouter {
         &self,
         agent_id: &str,
         prompt: Option<&str>,
+        rating: Option<&str>,
     ) -> anyhow::Result<TestAgentOutput> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
         let route_name = runtime
             .routing_rules
             .iter()
-            .find(|rule| rule.agent == agent_id)
+            .find(|rule| {
+                rule.agent == agent_id
+                    && rating.is_some()
+                    && rule.rating.as_deref().is_some_and(|rule_rating| {
+                        normalize_route_rating(rule_rating)
+                            == normalize_route_rating(rating.unwrap_or_default())
+                    })
+            })
+            .or_else(|| {
+                runtime
+                    .routing_rules
+                    .iter()
+                    .find(|rule| rule.agent == agent_id && rule.rating.is_none())
+            })
+            .or_else(|| {
+                runtime
+                    .routing_rules
+                    .iter()
+                    .find(|rule| rule.agent == agent_id)
+            })
             .map(|rule| rule.route.clone())
             .ok_or_else(|| anyhow::anyhow!("unknown agent id: {agent_id}"))?;
 
@@ -392,7 +412,7 @@ impl ModelRouter {
                 prompt: prompt
                     .unwrap_or("Write two short lines that confirm the model is reachable.")
                     .to_string(),
-                rating: None,
+                rating: rating.map(ToString::to_string),
                 context: None,
             })
             .await?;
@@ -404,6 +424,9 @@ impl ModelRouter {
             health_checked: runtime.health_checks_enabled,
             output: response.output,
             truncated: response.truncated,
+            generation_id: None,
+            generation_agent_id: None,
+            generation_output_sha256: None,
         })
     }
 
@@ -819,6 +842,10 @@ fn resolve_route<'r>(
         }
     }
     runtime.routes.get(route_name)
+}
+
+fn normalize_route_rating(rating: &str) -> String {
+    rating.trim().to_ascii_lowercase()
 }
 
 fn system_prompt_for_request(route: &ModelRoute, rating: Option<&str>) -> String {

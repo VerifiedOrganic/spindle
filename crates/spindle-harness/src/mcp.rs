@@ -15,12 +15,12 @@ use serde::de::DeserializeOwned;
 use spindle_core::models::{
     AgentRoutingConfigOutput, AnnotateSceneBeatsInput, AnnotateSceneBeatsOutput, BranchSummary,
     CheckConsistencyInput, CheckConsistencyOutput, CommitSceneChangesInput,
-    CommitSceneChangesOutput, ContextFormat, ContinueGenerationInput, ContinueGenerationOutput,
-    CreateSavePointInput, CreateSavePointOutput, GetChapterBriefingInput, GetChapterBriefingOutput,
-    GetSceneContextInput, ListAgentsOutput, ModelRouteSummary, RunDualPersonaReviewInput,
-    RunDualPersonaReviewOutput, SaveSceneDraftInput, SaveSceneDraftOutput, SaveSummaryInput,
-    SaveSummaryOutput, SceneContextBudgetMeta, SceneContextNovelLayer, SceneContextSceneLayer,
-    TestAgentInput, TestAgentOutput,
+    CommitSceneChangesOutput, ContentRating, ContextFormat, ContinueGenerationInput,
+    ContinueGenerationOutput, CreateSavePointInput, CreateSavePointOutput, GetChapterBriefingInput,
+    GetChapterBriefingOutput, GetSceneContextInput, ListAgentsOutput, ModelRouteSummary,
+    RunDualPersonaReviewInput, RunDualPersonaReviewOutput, SaveSceneDraftInput,
+    SaveSceneDraftOutput, SaveSummaryInput, SaveSummaryOutput, SceneContextBudgetMeta,
+    SceneContextNovelLayer, SceneContextSceneLayer, TestAgentInput, TestAgentOutput,
 };
 
 use crate::plan::{
@@ -273,7 +273,10 @@ impl McpHarnessClient {
         Ok(text.to_string())
     }
 
-    pub async fn resolve_draft_route(&self) -> Result<DraftRouteBinding> {
+    pub async fn resolve_draft_route(
+        &self,
+        rating: Option<ContentRating>,
+    ) -> Result<DraftRouteBinding> {
         let routes: Vec<ModelRouteSummary> = self
             .read_json_resource("bible://system/model-routes".to_string())
             .await?;
@@ -284,56 +287,7 @@ impl McpHarnessClient {
             .read_json_resource("bible://config/agents".to_string())
             .await?;
 
-        let route = routes
-            .into_iter()
-            .find(|route| route.route_name == "draft")
-            .context("missing model route named 'draft'")?;
-        if route.adapter_kind == "local" {
-            anyhow::bail!(
-                "draft route resolves to local adapter {}; configure a real draft model before running the harness",
-                route.model_name
-            );
-        }
-
-        let draft_rule = routing
-            .rules
-            .iter()
-            .find(|rule| rule.route_name == "draft")
-            .context("missing routing rule for route 'draft'")?;
-        let agent = agents
-            .agents
-            .iter()
-            .find(|agent| agent.id == draft_rule.agent_id)
-            .with_context(|| {
-                format!(
-                    "routing rule for draft references unknown agent {}",
-                    draft_rule.agent_id
-                )
-            })?;
-        if agent.status != spindle_core::models::AgentConfigStatus::Active {
-            anyhow::bail!(
-                "draft agent {} is not active ({:?})",
-                agent.id,
-                agent.status
-            );
-        }
-
-        let rule_count_for_agent = routing
-            .rules
-            .iter()
-            .filter(|rule| rule.agent_id == agent.id)
-            .count();
-        if rule_count_for_agent != 1 || agent.route_names != ["draft".to_string()] {
-            anyhow::bail!(
-                "draft agent {} is not dedicated to the draft route; test_agent would be ambiguous",
-                agent.id
-            );
-        }
-
-        Ok(DraftRouteBinding {
-            route_name: route.route_name,
-            agent_id: agent.id.clone(),
-        })
+        select_draft_route_binding(&routes, &routing, &agents, rating)
     }
 
     pub async fn call_tool<I, O>(&self, name: &str, input: &I) -> Result<O>
@@ -368,6 +322,83 @@ impl McpHarnessClient {
         serde_json::from_str(text)
             .with_context(|| format!("resource payload was not valid JSON: {uri}"))
     }
+}
+
+fn select_draft_route_binding(
+    routes: &[ModelRouteSummary],
+    routing: &AgentRoutingConfigOutput,
+    agents: &ListAgentsOutput,
+    rating: Option<ContentRating>,
+) -> Result<DraftRouteBinding> {
+    let requested_rating = rating.map(|rating| rating.as_str().to_string());
+    let draft_rule = requested_rating
+        .as_deref()
+        .and_then(|rating| {
+            routing
+                .rules
+                .iter()
+                .find(|rule| rule.route_name == "draft" && rule.rating.as_deref() == Some(rating))
+        })
+        .or_else(|| {
+            routing
+                .rules
+                .iter()
+                .find(|rule| rule.route_name == "draft" && rule.rating.is_none())
+        })
+        .context("missing routing rule for route 'draft'")?;
+
+    let route = routes
+        .iter()
+        .find(|route| {
+            route.route_name == "draft" && route.rating.as_deref() == draft_rule.rating.as_deref()
+        })
+        .or_else(|| {
+            routes
+                .iter()
+                .find(|route| route.route_name == "draft" && route.rating.is_none())
+        })
+        .context("missing model route named 'draft'")?;
+    if route.adapter_kind == "local" {
+        anyhow::bail!(
+            "draft route resolves to local adapter {}; configure a real draft model before running the harness",
+            route.model_name
+        );
+    }
+
+    let agent = agents
+        .agents
+        .iter()
+        .find(|agent| agent.id == draft_rule.agent_id)
+        .with_context(|| {
+            format!(
+                "routing rule for draft references unknown agent {}",
+                draft_rule.agent_id
+            )
+        })?;
+    if agent.status != spindle_core::models::AgentConfigStatus::Active {
+        anyhow::bail!(
+            "draft agent {} is not active ({:?})",
+            agent.id,
+            agent.status
+        );
+    }
+    if !agent.route_names.is_empty()
+        && agent
+            .route_names
+            .iter()
+            .any(|route_name| route_name != "draft")
+    {
+        anyhow::bail!(
+            "draft agent {} is not dedicated to the draft route; test_agent would be ambiguous",
+            agent.id
+        );
+    }
+
+    Ok(DraftRouteBinding {
+        route_name: route.route_name.clone(),
+        agent_id: agent.id.clone(),
+        rating: draft_rule.rating.clone().or(requested_rating),
+    })
 }
 
 fn parse_call_tool_result<T>(tool_name: &str, result: &rmcp::model::CallToolResult) -> Result<T>
@@ -412,6 +443,7 @@ pub struct SceneContextEnvelope {
 pub struct DraftRouteBinding {
     pub route_name: String,
     pub agent_id: String,
+    pub rating: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -438,4 +470,112 @@ struct ChapterSceneResource {
 struct ChapterSummaryResource {
     book_number: i32,
     chapter_number: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spindle_core::models::{
+        AgentConfigStatus, AgentHealthSummary, AgentRoutingRuleSummary, AgentSummary,
+    };
+
+    fn route(name: &str, model: &str, rating: Option<&str>) -> ModelRouteSummary {
+        ModelRouteSummary {
+            route_name: name.to_string(),
+            adapter_kind: "http".to_string(),
+            model_name: model.to_string(),
+            purpose: "drafting".to_string(),
+            rating: rating.map(ToString::to_string),
+            caller_should_send_brief: false,
+        }
+    }
+
+    fn rule(agent_id: &str, rating: Option<&str>) -> AgentRoutingRuleSummary {
+        AgentRoutingRuleSummary {
+            route_name: "draft".to_string(),
+            agent_id: agent_id.to_string(),
+            fallback_agent_id: None,
+            purpose: Some("drafting".to_string()),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+            rating: rating.map(ToString::to_string),
+            adapter_kind: "http".to_string(),
+            caller_should_send_brief: false,
+        }
+    }
+
+    fn agent(id: &str) -> AgentSummary {
+        AgentSummary {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "test".to_string(),
+            endpoint: "http://localhost".to_string(),
+            model: id.to_string(),
+            max_context: None,
+            ratings: Vec::new(),
+            quality_tier: None,
+            capabilities: Vec::new(),
+            notes: None,
+            status: AgentConfigStatus::Active,
+            health: AgentHealthSummary {
+                checked: false,
+                reachable: true,
+                status_code: None,
+                message: None,
+            },
+            route_names: vec!["draft".to_string()],
+        }
+    }
+
+    #[test]
+    fn select_draft_route_binding_prefers_explicit_override() {
+        let routes = vec![
+            route("draft", "default-model", None),
+            route("draft", "explicit-model", Some("explicit")),
+        ];
+        let routing = AgentRoutingConfigOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            rules: vec![
+                rule("default-draft", None),
+                rule("explicit-draft", Some("explicit")),
+            ],
+        };
+        let agents = ListAgentsOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            agents: vec![agent("default-draft"), agent("explicit-draft")],
+        };
+
+        let binding =
+            select_draft_route_binding(&routes, &routing, &agents, Some(ContentRating::Explicit))
+                .unwrap();
+
+        assert_eq!(binding.agent_id, "explicit-draft");
+        assert_eq!(binding.rating.as_deref(), Some("explicit"));
+    }
+
+    #[test]
+    fn select_draft_route_binding_falls_back_to_default_for_unmatched_rating() {
+        let routes = vec![route("draft", "default-model", None)];
+        let routing = AgentRoutingConfigOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            rules: vec![rule("default-draft", None)],
+        };
+        let agents = ListAgentsOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            agents: vec![agent("default-draft")],
+        };
+
+        let binding =
+            select_draft_route_binding(&routes, &routing, &agents, Some(ContentRating::Mature))
+                .unwrap();
+
+        assert_eq!(binding.agent_id, "default-draft");
+        assert_eq!(binding.rating.as_deref(), Some("mature"));
+    }
 }

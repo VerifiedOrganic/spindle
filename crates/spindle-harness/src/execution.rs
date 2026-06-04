@@ -141,7 +141,9 @@ async fn draft_scene(
         .scene_artifact_path
         .clone()
         .context("scene artifact path missing after initialization")?;
-    let draft_route = client.resolve_draft_route().await?;
+    let draft_route = client
+        .resolve_draft_route(Some(scene.content_rating.clone()))
+        .await?;
     let mut artifact = load_or_create_scene_artifact(
         client,
         artifact_store,
@@ -178,7 +180,7 @@ async fn draft_scene(
                 content_rating: scene.content_rating,
                 tone: package.tone.clone().or(scene.tone.clone()),
                 source_path: scene.source_path.clone(),
-                generation_id: None,
+                generation_id: artifact.generation_id.clone(),
             })
             .await
             .with_context(|| {
@@ -348,7 +350,7 @@ async fn save_chapter_summary(
         .summary_artifact_path
         .clone()
         .context("summary artifact path missing after initialization")?;
-    let draft_route = client.resolve_draft_route().await?;
+    let draft_route = client.resolve_draft_route(None).await?;
     let mut artifact = load_or_create_summary_artifact(
         client,
         artifact_store,
@@ -527,6 +529,7 @@ async fn load_or_create_scene_artifact(
         scene.scene_order,
         draft_route.route_name.clone(),
         draft_route.agent_id.clone(),
+        draft_route.rating.clone(),
         prompt,
     );
     artifact_store.save_json(artifact_path, &artifact)?;
@@ -550,6 +553,7 @@ async fn ensure_scene_package_ready(
                 .test_agent(&TestAgentInput {
                     agent_id: artifact.agent_id.clone(),
                     test_prompt: Some(artifact.prompt.clone()),
+                    rating: artifact.rating.clone(),
                 })
                 .await
                 .context("draft generation failed on initial call")?;
@@ -562,6 +566,9 @@ async fn ensure_scene_package_ready(
             }
             artifact.adapter_kind = Some(response.adapter_kind);
             artifact.model_name = Some(response.model_name);
+            artifact.generation_id = response.generation_id;
+            artifact.generation_agent_id = response.generation_agent_id;
+            artifact.generation_output_sha256 = response.generation_output_sha256;
             artifact.completion_fragments.push(response.output);
             artifact.truncated = response.truncated;
             artifact_store.save_json(artifact_path, artifact)?;
@@ -571,7 +578,7 @@ async fn ensure_scene_package_ready(
                     route: artifact.route_name.clone(),
                     original_prompt: artifact.prompt.clone(),
                     prior_output: artifact.combined_output(),
-                    rating: None,
+                    rating: artifact.rating.clone(),
                     project_id: None,
                     book_id: None,
                     chapter_id: None,
@@ -579,6 +586,9 @@ async fn ensure_scene_package_ready(
                 })
                 .await
                 .context("draft generation continuation failed")?;
+            artifact.generation_id = response.generation_id;
+            artifact.generation_agent_id = response.generation_agent_id;
+            artifact.generation_output_sha256 = response.generation_output_sha256;
             artifact.completion_fragments.push(response.output);
             artifact.truncated = response.truncated;
             artifact_store.save_json(artifact_path, artifact)?;
@@ -660,6 +670,7 @@ async fn ensure_summary_package_ready(
                 .test_agent(&TestAgentInput {
                     agent_id: artifact.agent_id.clone(),
                     test_prompt: Some(artifact.prompt.clone()),
+                    rating: None,
                 })
                 .await
                 .context("summary generation failed on initial call")?;

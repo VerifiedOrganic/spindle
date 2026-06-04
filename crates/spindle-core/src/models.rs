@@ -4331,6 +4331,11 @@ pub struct AgentRoutingConfigOutput {
 pub struct TestAgentInput {
     pub agent_id: String,
     pub test_prompt: Option<String>,
+    /// Optional content rating used when this test call is actually driving a
+    /// draft route. Harness callers use this to select per-rating draft
+    /// routes, especially explicit overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4344,6 +4349,14 @@ pub struct TestAgentOutput {
     /// True when the model hit its token limit and the output is incomplete.
     #[serde(default)]
     pub truncated: bool,
+    /// Server-side receipt id for draft-route output. Present only when the
+    /// call produced non-empty draft text through Spindle's model router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_output_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

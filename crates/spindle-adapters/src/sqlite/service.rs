@@ -2894,10 +2894,27 @@ impl SqliteSpindleService {
     }
 
     pub async fn test_agent(&self, input: TestAgentInput) -> Result<TestAgentOutput> {
-        self.repository
+        let mut output = self
+            .repository
             .model_router()
-            .test_agent(&input.agent_id, input.test_prompt.as_deref())
-            .await
+            .test_agent(
+                &input.agent_id,
+                input.test_prompt.as_deref(),
+                input.rating.as_deref(),
+            )
+            .await?;
+        if output.route_name == "draft" && !output.output.trim().is_empty() {
+            let receipt = self.register_generation_receipt(
+                &output.route_name,
+                input.rating.as_deref(),
+                &output.model_name,
+                &output.output,
+            );
+            output.generation_id = Some(receipt.id);
+            output.generation_agent_id = Some(receipt.agent_id);
+            output.generation_output_sha256 = Some(receipt.output_sha256);
+        }
+        Ok(output)
     }
 
     pub async fn set_arc_pacing_constraints(
@@ -9110,6 +9127,23 @@ impl SqliteSpindleService {
         Ok(Some(receipt))
     }
 
+    fn verified_explicit_save_receipt(
+        &self,
+        generation_id: Option<&str>,
+    ) -> Result<GenerationReceiptRecord> {
+        let receipt = self
+            .verified_revisable_draft_receipt(generation_id)?
+            .ok_or_else(|| anyhow::anyhow!("generation_id is required for explicit draft saves"))?;
+        if receipt.rating.as_deref() != Some("explicit") {
+            anyhow::bail!(
+                "generation_id {:?} was produced with rating {:?}, not \"explicit\"",
+                receipt.id,
+                receipt.rating.as_deref().unwrap_or("default")
+            );
+        }
+        Ok(receipt)
+    }
+
     /// Drive a deterministic, branch-creating alternative-generation
     /// pass: for each requested alternative (2..=5), spin off a new
     /// "alternative" branch from the active branch, switch into it,
@@ -13133,14 +13167,44 @@ impl SqliteSpindleService {
         &self,
         input: SaveSceneDraftInput,
     ) -> Result<SaveSceneDraftOutput> {
+        let mut save_input = input.clone();
+        let mut draft_origin: Option<String> = None;
+        if matches!(
+            input.content_rating,
+            spindle_core::models::ContentRating::Explicit
+        ) {
+            if input
+                .generation_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                let receipt =
+                    self.verified_explicit_save_receipt(input.generation_id.as_deref())?;
+                save_input.full_text = receipt.output_text.clone();
+                draft_origin = Some(format!("agent:{}", receipt.agent_id));
+            } else if crate::sqlite::import_service::contains_explicit_sexual_prose(
+                &input.full_text,
+            ) {
+                anyhow::bail!(
+                    "generation_id is required when saving explicit sexual prose; call continue_generation with route \"draft\" and rating \"explicit\", then pass the returned generation_id"
+                );
+            }
+        }
+
         let branch_id = self
             .repository
-            .active_branch_id_public(&input.project_id)
+            .active_branch_id_public(&save_input.project_id)
             .await?;
-        let (scene, created) = self
+        let (mut scene, created) = self
             .repository
-            .save_scene_draft(&input.project_id, &branch_id, &input)
+            .save_scene_draft(&save_input.project_id, &branch_id, &save_input)
             .await?;
+        if let Some(origin) = draft_origin.as_deref() {
+            self.repository
+                .update_scene_draft_origin(&scene.id, origin)
+                .await?;
+            scene = self.repository.get_scene(&scene.id).await?;
+        }
         // Match SurrealDB semantics: first save returns "saved", subsequent
         // writes to the same (project, branch, scene_order) return "updated".
         let status = if created { "saved" } else { "updated" };
@@ -13151,12 +13215,12 @@ impl SqliteSpindleService {
         // The contemplative-ending check is left to check_consistency, which
         // has the chapter context to know whether this is the last scene.
         let style_directive = self
-            .style_directive_for(&input.project_id, &branch_id)
+            .style_directive_for(&save_input.project_id, &branch_id)
             .await
             .unwrap_or_default();
         let style_hits = style_directive.scan(&spindle_core::style::StyleScanInput {
             prose: &scene.full_text,
-            declared_tone: input.tone.as_deref(),
+            declared_tone: save_input.tone.as_deref(),
             is_chapter_end: false,
         });
         let tone_deviation = style_hits
@@ -19829,6 +19893,142 @@ mod tests {
         assert!(
             err.to_string().contains("not found or has expired"),
             "expected receipt-not-found, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_scene_draft_blocks_explicit_sexual_prose_without_generation_receipt() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "explicit-gate".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-gated drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let err = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "The draft contains an orgasm reference.".to_string(),
+                summary: "Explicit prose should be receipt-gated.".to_string(),
+                content_rating: spindle_core::models::ContentRating::Explicit,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+            })
+            .await
+            .expect_err("explicit sexual prose without generation_id must be rejected");
+        assert!(
+            err.to_string().contains("generation_id is required"),
+            "expected generation_id guard, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_scene_draft_uses_server_held_explicit_generation_output() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "explicit-receipt-save".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-gated drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let receipt = svc.register_generation_receipt(
+            "draft",
+            Some("explicit"),
+            "explicit-agent",
+            "Server-held explicit route output.",
+        );
+        {
+            let mut receipts = svc.generation_receipts.write().unwrap();
+            receipts
+                .get_mut(&receipt.id)
+                .expect("seeded receipt")
+                .explicit_capable_agent = true;
+        }
+
+        let out = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "CLIENT PLACEHOLDER SHOULD NOT PERSIST".to_string(),
+                summary: "Explicit receipt output should win.".to_string(),
+                content_rating: spindle_core::models::ContentRating::Explicit,
+                tone: None,
+                generation_id: Some(receipt.id.clone()),
+                source_path: None,
+            })
+            .await
+            .unwrap();
+
+        let scene = svc.repository.get_scene(&out.scene_id).await.unwrap();
+        assert_eq!(scene.full_text, "Server-held explicit route output.");
+        assert_eq!(out.draft_origin, "agent:explicit-agent");
+    }
+
+    #[tokio::test]
+    async fn save_scene_draft_rejects_non_explicit_receipt_for_explicit_save() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "explicit-wrong-receipt".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-gated drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let receipt = svc.register_generation_receipt(
+            "draft",
+            Some("mature"),
+            "mature-agent",
+            "Mature route output.",
+        );
+
+        let err = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "CLIENT PLACEHOLDER".to_string(),
+                summary: "Wrong receipt rating should fail.".to_string(),
+                content_rating: spindle_core::models::ContentRating::Explicit,
+                tone: None,
+                generation_id: Some(receipt.id),
+                source_path: None,
+            })
+            .await
+            .expect_err("non-explicit receipt must not authorize explicit save");
+        assert!(
+            err.to_string().contains("not \"explicit\""),
+            "expected explicit rating guard, got: {err}"
         );
     }
 

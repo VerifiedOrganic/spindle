@@ -692,6 +692,10 @@ pub fn detect_content_rating(full_text: &str) -> (ContentRating, f64) {
     }
 }
 
+pub(crate) fn contains_explicit_sexual_prose(full_text: &str) -> bool {
+    content_rating_evidence(full_text).explicit_sex_hits > 0
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct ContentRatingEvidence {
     explicit_sex_hits: usize,
