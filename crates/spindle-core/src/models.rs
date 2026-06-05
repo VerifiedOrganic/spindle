@@ -5290,6 +5290,25 @@ pub struct AuthoringReviewCheckpointInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringRecordCheckpointAuditInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    /// The structured output returned by check_consistency with deep_check=true
+    /// for this checkpoint's chapter range.
+    pub deep_consistency: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringRecordCheckpointAuditOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringReviewCheckpointOutput {
     pub run_id: String,
     pub message: String,

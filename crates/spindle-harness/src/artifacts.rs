@@ -202,6 +202,12 @@ pub struct CheckpointReportArtifact {
     pub save_point: CreateSavePointOutput,
     pub consistency: serde_json::Value,
     #[serde(default)]
+    pub deep_consistency: Option<serde_json::Value>,
+    #[serde(default)]
+    pub deep_consistency_status: String,
+    #[serde(default)]
+    pub deep_consistency_instruction: String,
+    #[serde(default)]
     pub sampled_reviews: Vec<serde_json::Value>,
     #[serde(default)]
     pub sampled_review_status: String,

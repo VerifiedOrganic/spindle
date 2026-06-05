@@ -23,7 +23,7 @@ The tables defined in migration `V0007__authoring_runs.sql` are:
 
 ## MCP Tools Interface
 
-The supervisor exposes 7 new MCP tools through the `spindle-mcp` server:
+The supervisor exposes 8 MCP tools through the `spindle-mcp` server:
 
 | Tool Name | Description | Key Input Fields | Key Output Fields |
 |---|---|---|---|
@@ -31,6 +31,7 @@ The supervisor exposes 7 new MCP tools through the `spindle-mcp` server:
 | `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval` | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
 | `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
+| `authoring_record_checkpoint_audit` | Attaches the deep consistency result returned by a separate `check_consistency(deep_check=true)` call to a pending checkpoint. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `deep_consistency` | `run_id`, `status` |
 | `authoring_review_checkpoint` | Marks a checkpoint reviewed and appends directives to resume. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `directives` | `run_id`, `status` |
 | `authoring_resolve_block` | Clears a blocked scene after operator inspection and advances it to the next safe phase. | `project_id`, `run_id`, `chapter_number`, `scene_order`, `target_phase` | `run_id`, `status` |
 | `authoring_cancel_run` | Pauses or cancels the active run without deleting progress. | `project_id`, `run_id` | `run_id`, `status` |
@@ -56,7 +57,8 @@ graph TD
     G -- Host Draft Required --> L[Active assistant drafts and save_scene_draft]
     L --> F
     G -- Active Action --> F
-    G -- Await Checkpoint Review --> H[Run sampled dual-persona review]
+    G -- Await Checkpoint Review --> P[Run deep consistency and record audit]
+    P --> H[Run sampled dual-persona review]
     H --> M{Needs operator decision?}
     M -- No, local fix/directive --> N[Revise or carry directive autonomously]
     N --> I[authoring_review_checkpoint]
@@ -70,8 +72,11 @@ graph TD
 ### Checkpoint Review Policy
 
 When a run reaches `await_checkpoint_review`, the supervisor should inspect the
-checkpoint report and run any missing sampled dual-persona reviews with
-`rounds: 2`. The checkpoint cannot be closed until those sampled reviews are
+checkpoint report. If deep consistency is pending, run `check_consistency` for
+that chapter range with `deep_check: true`, then call
+`authoring_record_checkpoint_audit` with the returned structured payload. Then
+run any missing sampled dual-persona reviews with `rounds: 2`. The checkpoint
+cannot be closed until the deep audit is recorded and sampled reviews are
 current in the local database.
 
 After the review:
@@ -92,7 +97,7 @@ continue the run.
 ### Resuming an Interrupted Run
 If the session or service restarts mid-run:
 1. Call `authoring_status` to fetch the active run.
-2. If the status is `"blocked"` with reason `"await_checkpoint_review"`, inspect the checkpoint report, run any missing sampled dual-persona reviews, resolve local fixes/directives, then call `authoring_review_checkpoint`.
+2. If the status is `"blocked"` with reason `"await_checkpoint_review"`, inspect the checkpoint report, run/record any pending deep consistency audit, run any missing sampled dual-persona reviews, resolve local fixes/directives, then call `authoring_review_checkpoint`.
 3. Call `authoring_execute_next` to continue driving the drafting loop.
 
 Run statuses are `"active"`, `"blocked"`, `"completed"`, or `"paused"`. `authoring_cancel_run` sets `"paused"` and `authoring_execute_next` will not advance a paused run.

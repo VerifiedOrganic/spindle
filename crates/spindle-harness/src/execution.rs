@@ -465,7 +465,7 @@ async fn run_checkpoint(
             ),
             checks: Vec::new(),
             severity_filter: vec![],
-            deep_check: Some(true),
+            deep_check: Some(false),
             subjects: vec![],
             format: None,
             budget_tokens: None,
@@ -529,6 +529,11 @@ async fn run_checkpoint(
          then call authoring_review_checkpoint with operator directives.",
         sampled_scene_ids.join(", ")
     );
+    let deep_consistency_instruction = format!(
+        "Run check_consistency for project {} over book {} chapters {}-{} with deep_check=true, \
+         then call authoring_record_checkpoint_audit with the returned consistency payload.",
+        state.project_id, state.book_number, start_chapter, end_chapter
+    );
 
     artifact_store.save_json(
         &report_path,
@@ -538,6 +543,9 @@ async fn run_checkpoint(
             end_chapter,
             save_point: save_point.clone(),
             consistency: serde_json::to_value(consistency)?,
+            deep_consistency: None,
+            deep_consistency_status: "pending_deep_consistency".to_string(),
+            deep_consistency_instruction: deep_consistency_instruction.clone(),
             sampled_reviews: Vec::new(),
             sampled_review_status: "pending_dual_persona_review".to_string(),
             sampled_review_instruction: sampled_review_instruction.clone(),
@@ -549,8 +557,8 @@ async fn run_checkpoint(
     )?;
 
     Ok(format!(
-        "Created checkpoint for chapters {start_chapter}-{end_chapter}; awaiting sampled dual-persona review ({}) before operator checkpoint review. {}",
-        save_point.save_point_id, sampled_review_instruction
+        "Created checkpoint for chapters {start_chapter}-{end_chapter}; awaiting deep consistency and sampled dual-persona review ({}) before operator checkpoint review. {} {}",
+        save_point.save_point_id, deep_consistency_instruction, sampled_review_instruction
     ))
 }
 

@@ -1020,12 +1020,10 @@ agent = "cli-agent-review"
         "await_checkpoint_review"
     );
 
-    // 18. Checkpoint review is fail-closed until the sampled scenes have
-    // current dual-persona reviews. The checkpoint artifact carries the sample
-    // list so the operator/model can run those review tools as separate,
-    // resumable calls instead of hiding long model calls inside
-    // authoring_execute_next.
-    println!("TEST: Step 18 - Checkpoint Review Requires Sampled Scene Reviews");
+    // 18. Checkpoint review is fail-closed until the model-heavy gates have
+    // been run as separate resumable calls and recorded on the checkpoint:
+    // deep consistency first, then sampled dual-persona reviews.
+    println!("TEST: Step 18 - Checkpoint Review Requires Deep Consistency Audit");
     let review_args = serde_json::json!({
         "project_id": project.project_id,
         "run_id": run_id,
@@ -1041,14 +1039,14 @@ agent = "cli-agent-review"
         .await
         .unwrap();
     assert_eq!(missing_review_res.is_error, Some(true));
-    let missing_review_text = missing_review_res
+    let missing_deep_text = missing_review_res
         .content
         .first()
         .map(|content| format!("{content:?}"))
         .unwrap_or_default();
     assert!(
-        missing_review_text.contains("sampled dual-persona reviews are current"),
-        "expected missing sampled review error, got {missing_review_text:?}"
+        missing_deep_text.contains("deep consistency is recorded"),
+        "expected missing deep consistency error, got {missing_deep_text:?}"
     );
 
     let report_rel = status_val["checkpoint_reports"][0]["report_artifact_path"]
@@ -1064,6 +1062,66 @@ agent = "cli-agent-review"
         .map(|id| id.as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     assert!(!sampled_scene_ids.is_empty());
+
+    let deep_consistency_args = serde_json::json!({
+        "project_id": project.project_id,
+        "scope": {
+            "scope_type": "chapter_range",
+            "book_number": null,
+            "start_book_number": 1,
+            "start_chapter_number": 1,
+            "end_book_number": 1,
+            "end_chapter_number": 1
+        },
+        "checks": [],
+        "severity_filter": [],
+        "deep_check": true,
+        "subjects": []
+    });
+    let deep_consistency_res = router2
+        .call_tool(
+            "check_consistency",
+            Some(deep_consistency_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deep_consistency_res.is_error, Some(false));
+    let deep_consistency = deep_consistency_res.structured_content.unwrap();
+    let record_audit_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "deep_consistency": deep_consistency
+    });
+    let record_audit_res = router2
+        .call_tool(
+            "authoring_record_checkpoint_audit",
+            Some(record_audit_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record_audit_res.is_error, Some(false));
+
+    println!("TEST: Step 18b - Checkpoint Review Requires Sampled Scene Reviews");
+    let missing_sampled_review_res = router2
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_sampled_review_res.is_error, Some(true));
+    let missing_sampled_review_text = missing_sampled_review_res
+        .content
+        .first()
+        .map(|content| format!("{content:?}"))
+        .unwrap_or_default();
+    assert!(
+        missing_sampled_review_text.contains("sampled dual-persona reviews are current"),
+        "expected missing sampled review error, got {missing_sampled_review_text:?}"
+    );
+
     for scene_id in &sampled_scene_ids {
         let sampled_review_args = serde_json::json!({
             "project_id": project.project_id,
@@ -1080,7 +1138,7 @@ agent = "cli-agent-review"
         assert_eq!(sampled_review_res.is_error, Some(false));
     }
 
-    println!("TEST: Step 18b - Review Checkpoint");
+    println!("TEST: Step 18c - Review Checkpoint");
     let review_res = router2
         .call_tool(
             "authoring_review_checkpoint",

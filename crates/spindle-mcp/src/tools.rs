@@ -288,6 +288,7 @@ impl ToolRouter {
                 "authoring_start_run",
                 "authoring_status",
                 "authoring_execute_next",
+                "authoring_record_checkpoint_audit",
                 "authoring_review_checkpoint",
                 "authoring_resolve_block",
                 "authoring_cancel_run",
@@ -770,6 +771,10 @@ impl ToolRouter {
             tool::<AuthoringExecuteNextInput, AuthoringExecuteNextOutput>(
                 "authoring_execute_next",
                 "Execute exactly one safe authoring action for the active run",
+            ),
+            tool::<AuthoringRecordCheckpointAuditInput, AuthoringRecordCheckpointAuditOutput>(
+                "authoring_record_checkpoint_audit",
+                "Attach a completed deep consistency audit to a pending authoring checkpoint",
             ),
             tool::<AuthoringReviewCheckpointInput, AuthoringReviewCheckpointOutput>(
                 "authoring_review_checkpoint",
@@ -1384,6 +1389,12 @@ impl ToolRouter {
             "authoring_execute_next" => {
                 self.invoke(arguments, |input| self.handle_authoring_execute_next(input))
                     .await
+            }
+            "authoring_record_checkpoint_audit" => {
+                self.invoke(arguments, |input| {
+                    self.handle_authoring_record_checkpoint_audit(input)
+                })
+                .await
             }
             "authoring_review_checkpoint" => {
                 self.invoke(arguments, |input| {
@@ -2448,6 +2459,72 @@ impl ToolRouter {
         })
     }
 
+    async fn handle_authoring_record_checkpoint_audit(
+        &self,
+        input: AuthoringRecordCheckpointAuditInput,
+    ) -> anyhow::Result<AuthoringRecordCheckpointAuditOutput> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+        let data_dir = repo.data_dir();
+        let state_path = authoring_state_path(data_dir, &run_id);
+
+        let report_path = checkpoint_report_path(
+            &harness_state,
+            &state_path,
+            input.start_chapter,
+            input.end_chapter,
+        )?;
+        let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+            format!(
+                "failed to read checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+        let mut report: spindle_harness::artifacts::CheckpointReportArtifact =
+            serde_json::from_str(&raw_report).with_context(|| {
+                format!(
+                    "failed to parse checkpoint report artifact {}",
+                    report_path.display()
+                )
+            })?;
+
+        report.deep_consistency = Some(input.deep_consistency);
+        report.deep_consistency_status = "complete".to_string();
+        report.deep_consistency_instruction =
+            "Deep consistency audit recorded from a separate check_consistency(deep_check=true) call.".to_string();
+
+        let report_json = serde_json::to_string_pretty(&report)?;
+        std::fs::write(&report_path, report_json).with_context(|| {
+            format!(
+                "failed to update checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+
+        Ok(AuthoringRecordCheckpointAuditOutput {
+            run_id,
+            message: format!(
+                "Recorded deep consistency audit for checkpoint {}-{}.",
+                input.start_chapter, input.end_chapter
+            ),
+            status: run.status,
+        })
+    }
+
     async fn handle_authoring_review_checkpoint(
         &self,
         input: AuthoringReviewCheckpointInput,
@@ -2472,30 +2549,12 @@ impl ToolRouter {
 
         let data_dir = repo.data_dir();
         let state_path = authoring_state_path(data_dir, &run_id);
-        let checkpoint = harness_state
-            .checkpoint_history
-            .iter()
-            .find(|checkpoint| {
-                checkpoint.start_chapter == input.start_chapter
-                    && checkpoint.end_chapter == input.end_chapter
-            })
-            .with_context(|| {
-                format!(
-                    "checkpoint {}-{} not found in authoring run {}",
-                    input.start_chapter, input.end_chapter, run_id
-                )
-            })?;
-        let report_artifact_path = checkpoint.report_artifact_path.clone().with_context(|| {
-            format!(
-                "checkpoint {}-{} has no report artifact path",
-                input.start_chapter, input.end_chapter
-            )
-        })?;
-        let artifacts_root = state_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(&harness_state.artifacts_dir);
-        let report_path = artifacts_root.join(&report_artifact_path);
+        let report_path = checkpoint_report_path(
+            &harness_state,
+            &state_path,
+            input.start_chapter,
+            input.end_chapter,
+        )?;
         let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
             format!(
                 "failed to read checkpoint report artifact {}",
@@ -2509,6 +2568,18 @@ impl ToolRouter {
                     report_path.display()
                 )
             })?;
+
+        if report.deep_consistency_status == "pending_deep_consistency"
+            || report.deep_consistency_status == "pending"
+        {
+            anyhow::bail!(
+                "checkpoint {}-{} cannot be marked reviewed until deep consistency is recorded. \
+                 Run check_consistency with deep_check=true for this chapter range, then call \
+                 authoring_record_checkpoint_audit with the returned payload.",
+                input.start_chapter,
+                input.end_chapter
+            );
+        }
 
         let mut sampled_reviews = Vec::new();
         let mut missing_reviews = Vec::new();
@@ -2807,6 +2878,37 @@ fn authoring_state_path(data_dir: &Path, run_id: &str) -> PathBuf {
         "authoring_run_{}_temp.json",
         run_id.replace(":", "_")
     ))
+}
+
+fn checkpoint_report_path(
+    state: &spindle_harness::state::HarnessState,
+    state_path: &Path,
+    start_chapter: i32,
+    end_chapter: i32,
+) -> anyhow::Result<PathBuf> {
+    let checkpoint = state
+        .checkpoint_history
+        .iter()
+        .find(|checkpoint| {
+            checkpoint.start_chapter == start_chapter && checkpoint.end_chapter == end_chapter
+        })
+        .with_context(|| {
+            format!(
+                "checkpoint {}-{} not found in authoring run",
+                start_chapter, end_chapter
+            )
+        })?;
+    let report_artifact_path = checkpoint.report_artifact_path.clone().with_context(|| {
+        format!(
+            "checkpoint {}-{} has no report artifact path",
+            start_chapter, end_chapter
+        )
+    })?;
+    let artifacts_root = state_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(&state.artifacts_dir);
+    Ok(artifacts_root.join(report_artifact_path))
 }
 
 fn map_harness_to_records(

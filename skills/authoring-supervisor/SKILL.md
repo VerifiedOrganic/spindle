@@ -121,9 +121,16 @@ This returns:
 When `next_action` becomes `"await_checkpoint_review"`, the execution loop is blocked. You must:
 1. Locate the generated checkpoint report artifact from the `checkpoint_reports` list.
 2. Inspect the checkpoint report. If it lists sampled scenes without embedded
-   reviews, call `run_dual_persona_review` with `rounds: 2` for each sampled
-   scene ID.
-3. Classify the review feedback:
+   reviews, leave them pending for step 4. If it says deep consistency is
+   pending, call `check_consistency` for the checkpoint chapter range with
+   `deep_check: true`, then call `authoring_record_checkpoint_audit` with the
+   returned structured payload. This is mandatory before closing the
+   checkpoint.
+3. If deep consistency returns fixable findings, fix them before proceeding.
+   Treat them the same way as reviewer findings: local fixes are autonomous;
+   only ask for plot/canon/content-boundary choices.
+4. Call `run_dual_persona_review` with `rounds: 2` for each sampled scene ID.
+5. Classify the review feedback:
    - **Autonomous local fix**: line-level prose, sensory grounding, pacing
      trim, repetition, filter words, UI/system gag sharpening, scene-specific
      continuity, or other changes that do not alter canon or author intent.
@@ -136,7 +143,7 @@ When `next_action` becomes `"await_checkpoint_review"`, the execution loop is bl
      directives that capture the lesson.
    - **Operator decision**: feedback requiring a plot/canon/content-boundary
      choice. Only then ask the user a direct question.
-4. Call `authoring_review_checkpoint` to mark the checkpoint reviewed, append
+6. Call `authoring_review_checkpoint` to mark the checkpoint reviewed, append
    new directives, and resume the run:
 
 ```json

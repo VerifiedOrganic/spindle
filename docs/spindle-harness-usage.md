@@ -518,7 +518,7 @@ draft book scene 12.1              → save_scene_draft
 commit scene changes 12.1          → commit_scene_changes
 annotate beats 12.1                → annotate_scene_beats
 save summary for chapter 12        → save_summary
-run checkpoint for chapters 11-12  → check_consistency + sampled scene IDs + create_save_point
+run checkpoint for chapters 11-12  → shallow check_consistency + sampled scene IDs + create_save_point
 (pauses — awaiting human review)
 ```
 
@@ -529,9 +529,10 @@ That is 13 steps total for this batch.
 ## Step 7: Review a Checkpoint
 
 When the harness runs a checkpoint, it creates a save point in Spindle and
-writes a detailed report artifact. The report includes sampled scene IDs for
-dual-persona review. Run those reviews as separate resumable calls before
-marking the checkpoint reviewed.
+writes a detailed report artifact. The report includes instructions for the
+separate deep consistency audit and sampled scene IDs for dual-persona review.
+Run those model-heavy checks as separate resumable calls before marking the
+checkpoint reviewed.
 
 ### Read the Report
 
@@ -543,6 +544,8 @@ cat ~/spindle-harness-artifacts/checkpoints/chapter-0011-0012.json | python3 -m 
 
 The report contains:
 - `consistency` — full output of `check_consistency`
+- `deep_consistency` — recorded output from the separate `check_consistency`
+  call with `deep_check: true`
 - `sampled_reviews` — persisted `run_dual_persona_review` results for sampled scenes, filled when checkpoint review is closed
 - `pacing_overview` — current pacing state
 - `chapter_summaries` — summaries for the chapters in range
@@ -552,9 +555,11 @@ The report contains:
 
 ### Run Sampled Reviews and Mark the Checkpoint Reviewed
 
-Run `run_dual_persona_review` with `rounds: 2` for each `sampled_scene_ids`
-entry, fix or carry forward the findings, then approve the checkpoint and
-optionally add new directives:
+Run `check_consistency` with `deep_check: true` for the checkpoint range and
+record it with `authoring_record_checkpoint_audit` when using the MCP authoring
+supervisor. Run `run_dual_persona_review` with `rounds: 2` for each
+`sampled_scene_ids` entry, fix or carry forward the findings, then approve the
+checkpoint and optionally add new directives:
 
 ```bash
 cargo run -p spindle-harness -- review-checkpoint \
