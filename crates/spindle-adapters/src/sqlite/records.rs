@@ -2554,7 +2554,7 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRunChapter {
     }
 }
 
-pub const AUTHORING_RUN_SCENE_COLUMNS: &str = "authoring_run_id, chapter_number, scene_order, character_ids, location_id, content_rating, tone, source_path, phase, scene_id, scene_artifact_path, draft_diagnostics, blocked_reason";
+pub const AUTHORING_RUN_SCENE_COLUMNS: &str = "authoring_run_id, chapter_number, scene_order, character_ids, location_id, content_rating, tone, source_path, phase, scene_id, scene_artifact_path, draft_diagnostics, blocked_reason, research_required, research_tags, explicit_query";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringRunScene {
@@ -2571,6 +2571,9 @@ pub struct AuthoringRunScene {
     pub scene_artifact_path: Option<String>,
     pub draft_diagnostics: Option<serde_json::Value>,
     pub blocked_reason: Option<String>,
+    pub research_required: Option<bool>,
+    pub research_tags: Vec<String>,
+    pub explicit_query: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
@@ -2590,6 +2593,9 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
             scene_artifact_path: row::opt_text(r, 10)?,
             draft_diagnostics: row::opt_json(r, 11)?,
             blocked_reason: row::opt_text(r, 12)?,
+            research_required: row::opt_int(r, 13)?.map(|value| value != 0),
+            research_tags: row::json(r, 14)?,
+            explicit_query: row::opt_text(r, 15)?,
         })
     }
 }

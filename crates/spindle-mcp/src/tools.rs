@@ -139,7 +139,10 @@ use spindle_harness::artifacts::{
 };
 use spindle_harness::execution::{ExecutionResult, execute_one};
 use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
-use spindle_harness::plan::{NextAction, reconcile_state};
+use spindle_harness::plan::{
+    ChapterPlanSnapshot, ChapterSnapshot, NextAction, PersistedScene, PlannedSceneSnapshot,
+    ProjectSnapshot, reconcile_state,
+};
 use spindle_harness::state::{CheckpointRecord, CheckpointStatus, HarnessState, ScenePhase};
 
 #[derive(Debug, Clone, Default)]
@@ -1831,6 +1834,157 @@ impl ToolRouter {
         run_init_grok_skills(input.target_dir, input.global)
     }
 
+    async fn authoring_project_snapshot(
+        &self,
+        state: &HarnessState,
+    ) -> anyhow::Result<ProjectSnapshot> {
+        let repo = self.service.repository();
+        let active_branch = repo.get_active_branch(&state.project_id).await?;
+        let scenes = repo
+            .list_scenes_by_project_and_branch(&state.project_id, &active_branch.id)
+            .await?;
+        let plans = repo
+            .list_chapter_plans_by_project(&state.project_id)
+            .await?;
+        let summaries = repo
+            .list_chapter_summaries_by_project(&state.project_id)
+            .await?;
+        let summarized_chapters = summaries
+            .into_iter()
+            .filter(|summary| {
+                summary.branch_id == active_branch.id && summary.book_number == state.book_number
+            })
+            .map(|summary| summary.chapter_number)
+            .collect::<BTreeSet<_>>();
+
+        let mut chapters = BTreeMap::new();
+        for chapter in &state.chapters {
+            let chapter_row = repo
+                .get_chapter_by_number(&state.project_id, state.book_number, chapter.chapter_number)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to resolve chapter {} for authoring snapshot",
+                        chapter.chapter_number
+                    )
+                })?;
+
+            let persisted_scenes = scenes
+                .iter()
+                .filter(|scene| {
+                    scene.book_number == state.book_number
+                        && scene.chapter_number == chapter.chapter_number
+                })
+                .map(|scene| {
+                    (
+                        scene.scene_order,
+                        PersistedScene {
+                            scene_id: scene.id.clone(),
+                            scene_order: scene.scene_order,
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+
+            let mut chapter_plan = None;
+            if let Some(plan) = plans.iter().find(|plan| {
+                plan.branch_id == active_branch.id
+                    && plan.book_number == state.book_number
+                    && plan.chapter_number == chapter.chapter_number
+            }) {
+                let mut planned_scenes = Vec::new();
+                for planned in &plan.scenes {
+                    let harness_scene = chapter
+                        .scenes
+                        .iter()
+                        .find(|scene| scene.scene_order == planned.scene_order);
+                    let scene_location = planned
+                        .location_id
+                        .clone()
+                        .or_else(|| harness_scene.map(|scene| scene.location_id.clone()));
+                    let research_tags = planned.research_tags.clone();
+                    let explicit_query = planned.explicit_query.clone();
+
+                    let pack = self
+                        .service
+                        .research_pack_for_scene(ResearchPackForSceneInput {
+                            project_id: state.project_id.clone(),
+                            branch_id: Some(active_branch.id.clone()),
+                            scene_summary: Some(planned.summary.clone()),
+                            scene_location,
+                            character_ids: planned.character_ids.clone(),
+                            tags: research_tags.clone(),
+                            explicit_query: explicit_query.clone(),
+                            limit: Some(10),
+                        })
+                        .await
+                        .unwrap_or(ResearchPackForSceneOutput {
+                            sources: vec![],
+                            notes: vec![],
+                            claims: vec![],
+                        });
+
+                    let research_pack_empty =
+                        pack.sources.is_empty() && pack.notes.is_empty() && pack.claims.is_empty();
+                    let research_tags_matched = if research_tags.is_empty() {
+                        true
+                    } else {
+                        research_tags.iter().any(|tag| {
+                            let tag_lower = tag.to_lowercase();
+                            pack.sources.iter().any(|source| {
+                                source
+                                    .tags
+                                    .iter()
+                                    .any(|source_tag| source_tag.to_lowercase() == tag_lower)
+                            }) || pack.notes.iter().any(|note| {
+                                note.tags
+                                    .iter()
+                                    .any(|note_tag| note_tag.to_lowercase() == tag_lower)
+                            }) || pack.claims.iter().any(|claim| {
+                                claim
+                                    .tags
+                                    .iter()
+                                    .any(|claim_tag| claim_tag.to_lowercase() == tag_lower)
+                            })
+                        })
+                    };
+
+                    planned_scenes.push(PlannedSceneSnapshot {
+                        scene_order: planned.scene_order,
+                        character_ids: planned.character_ids.clone(),
+                        research_required: planned.research_required,
+                        research_tags,
+                        explicit_query,
+                        research_pack_empty,
+                        research_tags_matched,
+                    });
+                }
+
+                chapter_plan = Some(ChapterPlanSnapshot {
+                    synopsis: plan.synopsis.clone(),
+                    pov_character_id: plan.pov_character_id.clone(),
+                    scenes: planned_scenes,
+                });
+            }
+
+            chapters.insert(
+                chapter.chapter_number,
+                ChapterSnapshot {
+                    chapter_id: chapter_row.id,
+                    scenes: persisted_scenes,
+                    chapter_plan,
+                },
+            );
+        }
+
+        Ok(ProjectSnapshot {
+            active_branch_id: active_branch.id,
+            active_branch_name: active_branch.name,
+            chapters,
+            summarized_chapters,
+        })
+    }
+
     async fn handle_authoring_prepare_run(
         &self,
         input: AuthoringPrepareRunInput,
@@ -2089,7 +2243,9 @@ impl ToolRouter {
                     content_rating: rating,
                     tone: None,
                     source_path: None,
-                    ..Default::default()
+                    research_required: scene.research_required,
+                    research_tags: scene.research_tags.clone(),
+                    explicit_query: scene.explicit_query.clone(),
                 });
             }
 
@@ -2159,11 +2315,7 @@ impl ToolRouter {
 
         let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
 
-        let data_dir = repo.data_dir();
-        let active_addr = crate::read_addr_file(data_dir)?;
-        let url = format!("http://{}/mcp", active_addr);
-        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
-        let snapshot = client.project_snapshot(&harness_state).await?;
+        let snapshot = self.authoring_project_snapshot(&harness_state).await?;
         let outcome = reconcile_state(harness_state.clone(), &snapshot);
 
         let next_action_str = outcome.next_action.to_string();
@@ -2330,10 +2482,7 @@ impl ToolRouter {
         let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
 
         let data_dir = repo.data_dir();
-        let active_addr = crate::read_addr_file(data_dir)?;
-        let url = format!("http://{}/mcp", active_addr);
-        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
-        let snapshot = client.project_snapshot(&harness_state).await?;
+        let snapshot = self.authoring_project_snapshot(&harness_state).await?;
         let outcome = reconcile_state(harness_state.clone(), &snapshot);
 
         if outcome.has_errors() {
@@ -2449,6 +2598,9 @@ impl ToolRouter {
                 .await
             }
             _ => {
+                let active_addr = crate::read_addr_file(data_dir)?;
+                let url = format!("http://{}/mcp", active_addr);
+                let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
                 execute_one(
                     &state_path,
                     outcome.state,
@@ -2463,7 +2615,7 @@ impl ToolRouter {
 
         let exec_res = exec_result?;
 
-        let updated_snapshot = client.project_snapshot(&exec_res.state).await?;
+        let updated_snapshot = self.authoring_project_snapshot(&exec_res.state).await?;
         let updated_outcome = reconcile_state(exec_res.state.clone(), &updated_snapshot);
 
         let mut final_status = "active".to_string();
@@ -3102,10 +3254,7 @@ impl ToolRouter {
 
         let message = resolve_result?;
 
-        let active_addr = crate::read_addr_file(data_dir)?;
-        let url = format!("http://{}/mcp", active_addr);
-        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
-        let snapshot = client.project_snapshot(&harness_state).await?;
+        let snapshot = self.authoring_project_snapshot(&harness_state).await?;
         let outcome = reconcile_state(harness_state.clone(), &snapshot);
 
         let mut final_status = "active".to_string();
@@ -3500,6 +3649,9 @@ fn map_harness_to_records(
                     .as_ref()
                     .map(|d| serde_json::to_value(d).unwrap()),
                 blocked_reason: sc.blocked_reason.clone(),
+                research_required: sc.research_required,
+                research_tags: sc.research_tags.clone(),
+                explicit_query: sc.explicit_query.clone(),
             });
         }
     }
@@ -3564,6 +3716,9 @@ fn map_records_to_harness(
                     scene_artifact_path: sc.scene_artifact_path.clone(),
                     draft_diagnostics,
                     blocked_reason: sc.blocked_reason.clone(),
+                    research_required: sc.research_required,
+                    research_tags: sc.research_tags.clone(),
+                    explicit_query: sc.explicit_query.clone(),
                     ..Default::default()
                 });
             }

@@ -12380,13 +12380,15 @@ impl Repository {
         for sc in scenes {
             let char_ids_json =
                 serde_json::to_string(&sc.character_ids).context("serializing character_ids")?;
+            let research_tags_json =
+                serde_json::to_string(&sc.research_tags).context("serializing research_tags")?;
             let diagnostics_json = sc
                 .draft_diagnostics
                 .as_ref()
                 .map(serde_json::to_string)
                 .transpose()
                 .context("serializing draft diagnostics")?;
-            scene_data.push((sc, char_ids_json, diagnostics_json));
+            scene_data.push((sc, char_ids_json, research_tags_json, diagnostics_json));
         }
 
         self.inner
@@ -12445,13 +12447,14 @@ impl Repository {
                     )?;
                 }
 
-                for (sc, char_ids_json, diagnostics_json) in scene_data {
+                for (sc, char_ids_json, research_tags_json, diagnostics_json) in scene_data {
                     tx.execute(
                         "INSERT INTO authoring_run_scene (
                         authoring_run_id, chapter_number, scene_order, character_ids, location_id,
                         content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
-                        draft_diagnostics, blocked_reason
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        draft_diagnostics, blocked_reason, research_required, research_tags,
+                        explicit_query
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                         rusqlite::params![
                             sc.authoring_run_id,
                             sc.chapter_number,
@@ -12466,6 +12469,9 @@ impl Repository {
                             sc.scene_artifact_path,
                             diagnostics_json,
                             sc.blocked_reason,
+                            sc.research_required.map(|required| required as i32),
+                            research_tags_json,
+                            sc.explicit_query,
                         ],
                     )?;
                 }

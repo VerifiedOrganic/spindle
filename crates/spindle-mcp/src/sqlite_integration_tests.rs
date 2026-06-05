@@ -606,6 +606,8 @@ agent = "cli-agent-review"
                 location_id: Some(loc.location_id.clone()),
                 content_rating: Some(ContentRating::General),
                 purpose: "establishing".into(),
+                research_required: Some(false),
+                explicit_query: Some("nonblocking authoring metadata regression marker".into()),
                 ..Default::default()
             },
             PlanChapterSceneInput {
@@ -676,6 +678,21 @@ agent = "cli-agent-review"
     let start_val = start_res.structured_content.unwrap();
     let run_id = start_val["run_id"].as_str().unwrap().to_string();
     assert!(run_id.starts_with("authoring_run:"));
+    let (_, _, persisted_scenes, _) = svc
+        .repository()
+        .get_authoring_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let persisted_scene = persisted_scenes
+        .iter()
+        .find(|scene| scene.chapter_number == 1 && scene.scene_order == 1)
+        .unwrap();
+    assert_eq!(persisted_scene.research_required, Some(false));
+    assert_eq!(
+        persisted_scene.explicit_query.as_deref(),
+        Some("nonblocking authoring metadata regression marker")
+    );
 
     // A paused run must not continue advancing when execute_next is called.
     let paused_start_res = router
