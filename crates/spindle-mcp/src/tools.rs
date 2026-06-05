@@ -268,6 +268,7 @@ impl ToolRouter {
                 "search_bible",
                 "find_scenes_referencing",
                 "check_consistency",
+                "run_dual_persona_review",
                 "backfill_scene_source_offsets",
                 "register_canonical_fact",
                 "extract_canonical_facts_from_scene",
@@ -2471,6 +2472,85 @@ impl ToolRouter {
 
         let data_dir = repo.data_dir();
         let state_path = authoring_state_path(data_dir, &run_id);
+        let checkpoint = harness_state
+            .checkpoint_history
+            .iter()
+            .find(|checkpoint| {
+                checkpoint.start_chapter == input.start_chapter
+                    && checkpoint.end_chapter == input.end_chapter
+            })
+            .with_context(|| {
+                format!(
+                    "checkpoint {}-{} not found in authoring run {}",
+                    input.start_chapter, input.end_chapter, run_id
+                )
+            })?;
+        let report_artifact_path = checkpoint.report_artifact_path.clone().with_context(|| {
+            format!(
+                "checkpoint {}-{} has no report artifact path",
+                input.start_chapter, input.end_chapter
+            )
+        })?;
+        let artifacts_root = state_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&harness_state.artifacts_dir);
+        let report_path = artifacts_root.join(&report_artifact_path);
+        let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+            format!(
+                "failed to read checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+        let mut report: spindle_harness::artifacts::CheckpointReportArtifact =
+            serde_json::from_str(&raw_report).with_context(|| {
+                format!(
+                    "failed to parse checkpoint report artifact {}",
+                    report_path.display()
+                )
+            })?;
+
+        let mut sampled_reviews = Vec::new();
+        let mut missing_reviews = Vec::new();
+        for scene_id in &report.sampled_scene_ids {
+            match repo
+                .get_dual_persona_review(&harness_state.active_branch_id, scene_id)
+                .await?
+            {
+                Some(review) if review.status == "current" && review.rounds_completed >= 2 => {
+                    sampled_reviews.push(serde_json::to_value(review)?);
+                }
+                Some(review) => missing_reviews.push(format!(
+                    "{} (status={}, rounds={})",
+                    scene_id, review.status, review.rounds_completed
+                )),
+                None => missing_reviews.push(format!("{scene_id} (missing)")),
+            }
+        }
+        if !missing_reviews.is_empty() {
+            anyhow::bail!(
+                "checkpoint {}-{} cannot be marked reviewed until sampled dual-persona reviews are current: {}. \
+                 Run run_dual_persona_review with rounds=2 for each sampled scene in the checkpoint report, \
+                 then call authoring_review_checkpoint again.",
+                input.start_chapter,
+                input.end_chapter,
+                missing_reviews.join(", ")
+            );
+        }
+        if !report.sampled_scene_ids.is_empty() {
+            report.sampled_reviews = sampled_reviews;
+            report.sampled_review_status = "complete".to_string();
+            report.sampled_review_instruction =
+                "Sampled dual-persona reviews verified from the local Spindle database before operator checkpoint review.".to_string();
+            let report_json = serde_json::to_string_pretty(&report)?;
+            std::fs::write(&report_path, report_json).with_context(|| {
+                format!(
+                    "failed to update checkpoint report artifact {}",
+                    report_path.display()
+                )
+            })?;
+        }
+
         harness_state.save(&state_path)?;
 
         let review_result = spindle_harness::operator::review_checkpoint(

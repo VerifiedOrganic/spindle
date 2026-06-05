@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use spindle_core::models::{
     AnnotateSceneBeatsInput, CheckConsistencyInput, CommitSceneChangesInput, ConsistencyScopeInput,
     ContextFormat, ContinueGenerationInput, CreateSavePointInput, GetChapterBriefingInput,
-    GetSceneContextInput, ResearchPackForSceneInput, RunDualPersonaReviewInput,
-    SaveSceneDraftInput, SaveSummaryInput, TestAgentInput,
+    GetSceneContextInput, ResearchPackForSceneInput, SaveSceneDraftInput, SaveSummaryInput,
+    TestAgentInput,
 };
 
 use crate::artifacts::{
@@ -476,19 +476,6 @@ async fn run_checkpoint(
         })?;
 
     let sampled_scene_ids = sample_checkpoint_scene_ids(state, start_chapter, end_chapter)?;
-    let mut sampled_reviews = Vec::new();
-    for scene_id in &sampled_scene_ids {
-        let review = client
-            .run_dual_persona_review(&RunDualPersonaReviewInput {
-                project_id: state.project_id.clone(),
-                branch_id: Some(state.active_branch_id.clone()),
-                scene_id: scene_id.clone(),
-                rounds: Some(2),
-            })
-            .await
-            .with_context(|| format!("failed to review scene {scene_id} during checkpoint"))?;
-        sampled_reviews.push(serde_json::to_value(review)?);
-    }
 
     let pacing_overview = client
         .read_json_resource::<serde_json::Value>(format!(
@@ -537,6 +524,12 @@ async fn run_checkpoint(
     state.last_checkpoint_end_chapter = end_chapter;
     state.save(state_path)?;
 
+    let sampled_review_instruction = format!(
+        "Run dual-persona review for sampled scenes [{}], inspect this checkpoint report, \
+         then call authoring_review_checkpoint with operator directives.",
+        sampled_scene_ids.join(", ")
+    );
+
     artifact_store.save_json(
         &report_path,
         &CheckpointReportArtifact {
@@ -545,7 +538,9 @@ async fn run_checkpoint(
             end_chapter,
             save_point: save_point.clone(),
             consistency: serde_json::to_value(consistency)?,
-            sampled_reviews,
+            sampled_reviews: Vec::new(),
+            sampled_review_status: "pending_dual_persona_review".to_string(),
+            sampled_review_instruction: sampled_review_instruction.clone(),
             pacing_overview,
             chapter_summaries,
             narrative_promises,
@@ -554,8 +549,8 @@ async fn run_checkpoint(
     )?;
 
     Ok(format!(
-        "Created checkpoint for chapters {start_chapter}-{end_chapter}; awaiting human review ({})",
-        save_point.save_point_id
+        "Created checkpoint for chapters {start_chapter}-{end_chapter}; awaiting sampled dual-persona review ({}) before operator checkpoint review. {}",
+        save_point.save_point_id, sampled_review_instruction
     ))
 }
 

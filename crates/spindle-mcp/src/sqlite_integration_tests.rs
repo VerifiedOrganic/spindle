@@ -1020,8 +1020,12 @@ agent = "cli-agent-review"
         "await_checkpoint_review"
     );
 
-    // 18. Review checkpoint and resume
-    println!("TEST: Step 18 - Review Checkpoint");
+    // 18. Checkpoint review is fail-closed until the sampled scenes have
+    // current dual-persona reviews. The checkpoint artifact carries the sample
+    // list so the operator/model can run those review tools as separate,
+    // resumable calls instead of hiding long model calls inside
+    // authoring_execute_next.
+    println!("TEST: Step 18 - Checkpoint Review Requires Sampled Scene Reviews");
     let review_args = serde_json::json!({
         "project_id": project.project_id,
         "run_id": run_id,
@@ -1029,6 +1033,54 @@ agent = "cli-agent-review"
         "end_chapter": 1,
         "directives": ["Keep the prose dark."]
     });
+    let missing_review_res = router2
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_review_res.is_error, Some(true));
+    let missing_review_text = missing_review_res
+        .content
+        .first()
+        .map(|content| format!("{content:?}"))
+        .unwrap_or_default();
+    assert!(
+        missing_review_text.contains("sampled dual-persona reviews are current"),
+        "expected missing sampled review error, got {missing_review_text:?}"
+    );
+
+    let report_rel = status_val["checkpoint_reports"][0]["report_artifact_path"]
+        .as_str()
+        .unwrap();
+    let report_path = data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let sampled_scene_ids = report_json["sampled_scene_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(!sampled_scene_ids.is_empty());
+    for scene_id in &sampled_scene_ids {
+        let sampled_review_args = serde_json::json!({
+            "project_id": project.project_id,
+            "scene_id": scene_id,
+            "rounds": 2
+        });
+        let sampled_review_res = router2
+            .call_tool(
+                "run_dual_persona_review",
+                Some(sampled_review_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sampled_review_res.is_error, Some(false));
+    }
+
+    println!("TEST: Step 18b - Review Checkpoint");
     let review_res = router2
         .call_tool(
             "authoring_review_checkpoint",

@@ -203,6 +203,10 @@ pub struct CheckpointReportArtifact {
     pub consistency: serde_json::Value,
     #[serde(default)]
     pub sampled_reviews: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub sampled_review_status: String,
+    #[serde(default)]
+    pub sampled_review_instruction: String,
     pub pacing_overview: serde_json::Value,
     pub chapter_summaries: serde_json::Value,
     pub narrative_promises: serde_json::Value,
