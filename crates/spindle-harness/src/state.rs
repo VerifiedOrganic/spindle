@@ -39,7 +39,7 @@ pub struct ChapterSeed {
     pub scenes: Vec<SceneSeed>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SceneSeed {
     pub scene_order: i32,
     #[serde(default)]
@@ -50,6 +50,12 @@ pub struct SceneSeed {
     pub tone: Option<String>,
     #[serde(default)]
     pub source_path: Option<String>,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +111,11 @@ impl HarnessState {
                             scene_artifact_path: None,
                             draft_diagnostics: None,
                             blocked_reason: None,
+                            research_required: scene.research_required,
+                            research_tags: scene.research_tags,
+                            explicit_query: scene.explicit_query,
+                            research_pack_empty: false,
+                            research_tags_matched: true,
                         })
                         .collect(),
                     summary_saved: false,
@@ -217,7 +228,7 @@ pub enum ChapterStatus {
     Complete,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SceneState {
     pub scene_order: i32,
     #[serde(default)]
@@ -237,11 +248,22 @@ pub struct SceneState {
     pub draft_diagnostics: Option<SceneDraftDiagnostics>,
     #[serde(default)]
     pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
+    #[serde(default)]
+    pub research_pack_empty: bool,
+    #[serde(default)]
+    pub research_tags_matched: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenePhase {
+    #[default]
     Pending,
     DraftSaved,
     ChangesCommitted,

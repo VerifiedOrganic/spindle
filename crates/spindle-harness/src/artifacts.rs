@@ -6,8 +6,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use spindle_core::models::{
     AnnotateSceneBeatsOutput, AnnotatedBeatInput, CanonicalFactEntry, CharacterStatePatchEntry,
-    CommitSceneChangesOutput, CreateSavePointOutput, RelationshipUpdateEntry, SaveSceneDraftOutput,
-    SaveSummaryOutput,
+    CommitSceneChangesOutput, CreateSavePointOutput, RelationshipUpdateEntry, ResearchClaim,
+    ResearchNote, ResearchSource, SaveSceneDraftOutput, SaveSummaryOutput,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -44,6 +44,22 @@ pub struct SceneGenerationArtifact {
     pub commit_output: Option<CommitSceneChangesOutput>,
     #[serde(default)]
     pub beat_annotation_output: Option<AnnotateSceneBeatsOutput>,
+    #[serde(default)]
+    pub research_source_ids: Vec<String>,
+    #[serde(default)]
+    pub research_note_ids: Vec<String>,
+    #[serde(default)]
+    pub research_claim_ids: Vec<String>,
+    #[serde(default)]
+    pub research_query_pack_input: Option<String>,
+    #[serde(default)]
+    pub research_context_hash: Option<String>,
+    #[serde(default)]
+    pub research_sources: Vec<ResearchSource>,
+    #[serde(default)]
+    pub research_notes: Vec<ResearchNote>,
+    #[serde(default)]
+    pub research_claims: Vec<ResearchClaim>,
 }
 
 impl SceneGenerationArtifact {
@@ -75,6 +91,14 @@ impl SceneGenerationArtifact {
             save_draft_output: None,
             commit_output: None,
             beat_annotation_output: None,
+            research_source_ids: Vec::new(),
+            research_note_ids: Vec::new(),
+            research_claim_ids: Vec::new(),
+            research_query_pack_input: None,
+            research_context_hash: None,
+            research_sources: Vec::new(),
+            research_notes: Vec::new(),
+            research_claims: Vec::new(),
         }
     }
 

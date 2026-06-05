@@ -260,6 +260,11 @@ async fn resume(command: ResumeCommand) -> Result<()> {
 
     match outcome.next_action {
         NextAction::Blocked => anyhow::bail!("resume blocked"),
+        NextAction::AwaitResearch { .. } => {
+            anyhow::bail!(
+                "resume blocked: action requires research. Use research tools to satisfy requirements, then resume."
+            );
+        }
         _ => {
             println!("Execution is not implemented yet; this is a continuity-safe dry run.");
             Ok(())

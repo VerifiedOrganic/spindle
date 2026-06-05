@@ -165,18 +165,96 @@ impl McpHarnessClient {
                 })
                 .collect();
 
-            let chapter_plan = briefing.chapter_plan.map(|plan| ChapterPlanSnapshot {
-                synopsis: plan.synopsis,
-                pov_character_id: plan.pov_character_id,
-                scenes: plan
-                    .scenes
-                    .into_iter()
-                    .map(|scene| PlannedSceneSnapshot {
+            let mut chapter_plan = None;
+            if let Some(plan) = briefing.chapter_plan {
+                let mut planned_scenes = Vec::new();
+                for scene in plan.scenes {
+                    let harness_scene = chapter
+                        .scenes
+                        .iter()
+                        .find(|s| s.scene_order == scene.scene_order);
+                    let scene_location = harness_scene.map(|s| s.location_id.clone());
+
+                    let research_tags = scene.research_tags.clone();
+                    let explicit_query = scene.explicit_query.clone();
+
+                    let pack = self
+                        .call_tool::<_, spindle_core::models::ResearchPackForSceneOutput>(
+                            "research_pack_for_scene",
+                            &spindle_core::models::ResearchPackForSceneInput {
+                                project_id: state.project_id.clone(),
+                                branch_id: Some(state.active_branch_id.clone()),
+                                scene_summary: Some(scene.summary.clone()),
+                                scene_location,
+                                character_ids: scene.character_ids.clone(),
+                                tags: research_tags.clone(),
+                                explicit_query: explicit_query.clone(),
+                                limit: Some(10),
+                            },
+                        )
+                        .await
+                        .unwrap_or(spindle_core::models::ResearchPackForSceneOutput {
+                            sources: vec![],
+                            notes: vec![],
+                            claims: vec![],
+                        });
+
+                    let research_pack_empty =
+                        pack.sources.is_empty() && pack.notes.is_empty() && pack.claims.is_empty();
+
+                    let mut research_tags_matched = true;
+                    if !research_tags.is_empty() {
+                        let mut found_tag = false;
+                        for t in &research_tags {
+                            let t_lower = t.to_lowercase();
+                            for s in &pack.sources {
+                                if s.tags.iter().any(|st| st.to_lowercase() == t_lower) {
+                                    found_tag = true;
+                                    break;
+                                }
+                            }
+                            if found_tag {
+                                break;
+                            }
+                            for n in &pack.notes {
+                                if n.tags.iter().any(|nt| nt.to_lowercase() == t_lower) {
+                                    found_tag = true;
+                                    break;
+                                }
+                            }
+                            if found_tag {
+                                break;
+                            }
+                            for c in &pack.claims {
+                                if c.tags.iter().any(|ct| ct.to_lowercase() == t_lower) {
+                                    found_tag = true;
+                                    break;
+                                }
+                            }
+                            if found_tag {
+                                break;
+                            }
+                        }
+                        research_tags_matched = found_tag;
+                    }
+
+                    planned_scenes.push(PlannedSceneSnapshot {
                         scene_order: scene.scene_order,
                         character_ids: scene.character_ids,
-                    })
-                    .collect(),
-            });
+                        research_required: scene.research_required,
+                        research_tags: scene.research_tags,
+                        explicit_query,
+                        research_pack_empty,
+                        research_tags_matched,
+                    });
+                }
+
+                chapter_plan = Some(ChapterPlanSnapshot {
+                    synopsis: plan.synopsis,
+                    pov_character_id: plan.pov_character_id,
+                    scenes: planned_scenes,
+                });
+            }
 
             chapters.insert(
                 chapter.chapter_number,
@@ -265,6 +343,13 @@ impl McpHarnessClient {
         input: &ContinueGenerationInput,
     ) -> Result<ContinueGenerationOutput> {
         self.call_tool("continue_generation", input).await
+    }
+
+    pub async fn research_pack_for_scene(
+        &self,
+        input: &spindle_core::models::ResearchPackForSceneInput,
+    ) -> Result<spindle_core::models::ResearchPackForSceneOutput> {
+        self.call_tool("research_pack_for_scene", input).await
     }
 
     pub async fn read_text_resource(&self, uri: String) -> Result<String> {

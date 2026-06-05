@@ -278,6 +278,7 @@ impl ToolRouter {
                 "research_add_claim",
                 "research_search",
                 "research_pack_for_scene",
+                "research_usage_for_scene",
                 "pull_chapter_from_file",
                 "push_chapter_to_file",
                 "authoring_prepare_run",
@@ -602,6 +603,10 @@ impl ToolRouter {
             tool::<ResearchPackForSceneInput, ResearchPackForSceneOutput>(
                 "research_pack_for_scene",
                 "Retrieve a compact, budget-aware packet of relevant research for a scene or chapter",
+            ),
+            tool::<ResearchUsageForSceneInput, ResearchUsageForSceneOutput>(
+                "research_usage_for_scene",
+                "Retrieve the recorded research usage history for a drafted scene",
             ),
             tool::<ExportEpubInput, ExportEpubOutput>(
                 "export_epub",
@@ -1438,6 +1443,12 @@ impl ToolRouter {
                 })
                 .await
             }
+            "research_usage_for_scene" => {
+                self.invoke(arguments, |input| {
+                    self.service.research_usage_for_scene(input)
+                })
+                .await
+            }
             "export_epub" => {
                 self.invoke(arguments, |input| self.service.export_epub(input))
                     .await
@@ -1652,6 +1663,7 @@ fn tool_requires_session_serialization(name: &str) -> bool {
             | "research_query"
             | "research_search"
             | "research_pack_for_scene"
+            | "research_usage_for_scene"
     )
 }
 
@@ -2019,6 +2031,7 @@ impl ToolRouter {
                     content_rating: rating,
                     tone: None,
                     source_path: None,
+                    ..Default::default()
                 });
             }
 
@@ -2127,10 +2140,14 @@ impl ToolRouter {
         }
         if matches!(
             outcome.next_action,
-            NextAction::AwaitCheckpointReview { .. }
+            NextAction::AwaitCheckpointReview { .. } | NextAction::AwaitResearch { .. }
         ) {
             current_status = "blocked".to_string();
-            blocked_reason = Some("await_checkpoint_review".to_string());
+            if matches!(outcome.next_action, NextAction::AwaitResearch { .. }) {
+                blocked_reason = Some("await_research".to_string());
+            } else {
+                blocked_reason = Some("await_checkpoint_review".to_string());
+            }
         }
 
         if current_status != run.status {
@@ -2279,11 +2296,13 @@ impl ToolRouter {
         match &outcome.next_action {
             NextAction::Blocked
             | NextAction::AwaitCheckpointReview { .. }
+            | NextAction::AwaitResearch { .. }
             | NextAction::Complete => {
                 let status_str = match &outcome.next_action {
                     NextAction::Complete => "completed",
                     NextAction::Blocked => "blocked",
                     NextAction::AwaitCheckpointReview { .. } => "blocked",
+                    NextAction::AwaitResearch { .. } => "blocked",
                     _ => &run.status,
                 };
                 if status_str != run.status {
@@ -2346,7 +2365,7 @@ impl ToolRouter {
         }
         if matches!(
             updated_outcome.next_action,
-            NextAction::AwaitCheckpointReview { .. }
+            NextAction::AwaitCheckpointReview { .. } | NextAction::AwaitResearch { .. }
         ) {
             final_status = "blocked".to_string();
         }
@@ -2747,6 +2766,7 @@ fn map_records_to_harness(
                     scene_artifact_path: sc.scene_artifact_path.clone(),
                     draft_diagnostics,
                     blocked_reason: sc.blocked_reason.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -3480,6 +3500,7 @@ mod tests {
                     tone: Some("grounded".to_string()),
                     source_path: None,
                     generation_id: None,
+                    ..Default::default()
                 })
                 .await
                 .expect("seed scene");
@@ -3506,6 +3527,7 @@ mod tests {
                     tone: Some("grounded".to_string()),
                     source_path: Some(chapter_path),
                     generation_id: None,
+                    ..Default::default()
                 })
                 .expect("save args");
                 let args = args.as_object().cloned().expect("save args object");

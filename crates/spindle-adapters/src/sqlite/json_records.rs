@@ -268,6 +268,12 @@ pub struct StoredPlannedScene {
     #[serde(default)]
     pub character_ids: Vec<String>,
     pub purpose: String,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 impl StoredPlannedScene {
@@ -278,6 +284,9 @@ impl StoredPlannedScene {
             beat_structure: self.beat_structure,
             character_ids: self.character_ids,
             purpose: self.purpose,
+            research_required: self.research_required,
+            research_tags: self.research_tags,
+            explicit_query: self.explicit_query,
         }
     }
 }
@@ -290,6 +299,9 @@ impl From<core::PlannedScene> for StoredPlannedScene {
             beat_structure: value.beat_structure,
             character_ids: value.character_ids,
             purpose: value.purpose,
+            research_required: value.research_required,
+            research_tags: value.research_tags,
+            explicit_query: value.explicit_query,
         }
     }
 }

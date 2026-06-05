@@ -2,11 +2,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use spindle_core::models::{
     AnnotateSceneBeatsInput, CheckConsistencyInput, CommitSceneChangesInput, ConsistencyScopeInput,
     ContextFormat, ContinueGenerationInput, CreateSavePointInput, GetChapterBriefingInput,
-    GetSceneContextInput, RunDualPersonaReviewInput, SaveSceneDraftInput, SaveSummaryInput,
-    TestAgentInput,
+    GetSceneContextInput, ResearchPackForSceneInput, RunDualPersonaReviewInput,
+    SaveSceneDraftInput, SaveSummaryInput, TestAgentInput,
 };
 
 use crate::artifacts::{
@@ -49,6 +50,29 @@ pub async fn execute_one(
             end_chapter,
             save_point_id
         ),
+        NextAction::AwaitResearch {
+            chapter_number,
+            scene_order,
+            missing_tags,
+            query,
+            location,
+        } => {
+            let tags_str = if missing_tags.is_empty() {
+                "none".to_string()
+            } else {
+                missing_tags.join(", ")
+            };
+            anyhow::bail!(
+                "await_research: chapter {} scene {} needs research. \
+                 Searched tags: [{}], query: \"{}\", location: \"{}\". \
+                 Suggested action: use research tools (e.g. research_add_source, research_add_note, research_add_claim) to add relevant research, then resume.",
+                chapter_number,
+                scene_order,
+                tags_str,
+                query.as_deref().unwrap_or("none"),
+                location.as_deref().unwrap_or("none")
+            );
+        }
         NextAction::RunCheckpoint {
             start_chapter,
             end_chapter,
@@ -181,6 +205,11 @@ async fn draft_scene(
                 tone: package.tone.clone().or(scene.tone.clone()),
                 source_path: scene.source_path.clone(),
                 generation_id: artifact.generation_id.clone(),
+                research_source_ids: artifact.research_source_ids.clone(),
+                research_note_ids: artifact.research_note_ids.clone(),
+                research_claim_ids: artifact.research_claim_ids.clone(),
+                research_query_pack_input: artifact.research_query_pack_input.clone(),
+                research_context_hash: artifact.research_context_hash.clone(),
             })
             .await
             .with_context(|| {
@@ -523,8 +552,83 @@ async fn load_or_create_scene_artifact(
         return Ok(artifact);
     }
 
-    let prompt = build_scene_prompt(client, state, chapter, scene).await?;
-    let artifact = SceneGenerationArtifact::new(
+    let briefing = client
+        .get_chapter_briefing(&GetChapterBriefingInput {
+            project_id: state.project_id.clone(),
+            book_number: state.book_number,
+            chapter_number: chapter.chapter_number,
+            scene_order: Some(scene.scene_order),
+            character_ids: scene.character_ids.clone(),
+            location_id: Some(scene.location_id.clone()),
+            format: Some(ContextFormat::Markdown),
+            budget_tokens: Some(CHAPTER_BRIEFING_TOKEN_BUDGET),
+            recent_chapter_limit: Some(CHAPTER_BRIEFING_RECENT_LIMIT),
+            token_budget: Some(CHAPTER_BRIEFING_TOKEN_BUDGET),
+        })
+        .await?;
+
+    let scene_summary = briefing.chapter_plan.as_ref().and_then(|plan| {
+        plan.scenes
+            .iter()
+            .find(|s| s.scene_order == scene.scene_order)
+            .map(|s| s.summary.clone())
+    });
+
+    let research_input = ResearchPackForSceneInput {
+        project_id: state.project_id.clone(),
+        branch_id: Some(state.active_branch_id.clone()),
+        scene_summary,
+        scene_location: Some(scene.location_id.clone()),
+        character_ids: scene.character_ids.clone(),
+        tags: scene.research_tags.clone(),
+        explicit_query: scene.explicit_query.clone(),
+        limit: Some(10),
+    };
+
+    let pack = client
+        .research_pack_for_scene(&research_input)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to retrieve research pack for chapter {} scene {}",
+                chapter.chapter_number, scene.scene_order
+            )
+        })?;
+
+    let mut stable_sources = pack.sources.clone();
+    stable_sources.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut stable_notes = pack.notes.clone();
+    stable_notes.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut stable_claims = pack.claims.clone();
+    stable_claims.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let stable_pack = serde_json::json!({
+        "sources": stable_sources,
+        "notes": stable_notes,
+        "claims": stable_claims,
+    });
+    let serialized = serde_json::to_string(&stable_pack).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(serialized.as_bytes());
+    let hash_result = hasher.finalize();
+    let context_hash = format!("{:x}", hash_result);
+
+    let source_ids = stable_sources
+        .iter()
+        .map(|s| s.id.clone())
+        .collect::<Vec<_>>();
+    let note_ids = stable_notes
+        .iter()
+        .map(|n| n.id.clone())
+        .collect::<Vec<_>>();
+    let claim_ids = stable_claims
+        .iter()
+        .map(|c| c.id.clone())
+        .collect::<Vec<_>>();
+    let query_pack_input_str = serde_json::to_string(&research_input).ok();
+
+    let prompt = build_scene_prompt(client, state, chapter, scene, &briefing, Some(&pack)).await?;
+    let mut artifact = SceneGenerationArtifact::new(
         chapter.chapter_number,
         scene.scene_order,
         draft_route.route_name.clone(),
@@ -532,6 +636,15 @@ async fn load_or_create_scene_artifact(
         draft_route.rating.clone(),
         prompt,
     );
+    artifact.research_source_ids = source_ids;
+    artifact.research_note_ids = note_ids;
+    artifact.research_claim_ids = claim_ids;
+    artifact.research_query_pack_input = query_pack_input_str;
+    artifact.research_context_hash = Some(context_hash);
+    artifact.research_sources = stable_sources;
+    artifact.research_notes = stable_notes;
+    artifact.research_claims = stable_claims;
+
     artifact_store.save_json(artifact_path, &artifact)?;
     Ok(artifact)
 }
@@ -743,21 +856,9 @@ async fn build_scene_prompt(
     state: &HarnessState,
     chapter: &crate::state::ChapterState,
     scene: &crate::state::SceneState,
+    briefing: &spindle_core::models::GetChapterBriefingOutput,
+    research_pack: Option<&spindle_core::models::ResearchPackForSceneOutput>,
 ) -> Result<String> {
-    let briefing = client
-        .get_chapter_briefing(&GetChapterBriefingInput {
-            project_id: state.project_id.clone(),
-            book_number: state.book_number,
-            chapter_number: chapter.chapter_number,
-            scene_order: Some(scene.scene_order),
-            character_ids: scene.character_ids.clone(),
-            location_id: Some(scene.location_id.clone()),
-            format: Some(ContextFormat::Markdown),
-            budget_tokens: Some(CHAPTER_BRIEFING_TOKEN_BUDGET),
-            recent_chapter_limit: Some(CHAPTER_BRIEFING_RECENT_LIMIT),
-            token_budget: Some(CHAPTER_BRIEFING_TOKEN_BUDGET),
-        })
-        .await?;
     let scene_context = client
         .get_scene_context(&GetSceneContextInput {
             project_id: state.project_id.clone(),
@@ -794,6 +895,56 @@ async fn build_scene_prompt(
     }))?;
     let scene_context_json = serde_json::to_string_pretty(&scene_context)?;
 
+    let mut research_section = String::new();
+    if let Some(pack) = research_pack
+        .filter(|p| !p.sources.is_empty() || !p.notes.is_empty() || !p.claims.is_empty())
+    {
+        research_section.push_str("Research materials (use these facts as reference, avoiding fabrication or unsupported claims):\n");
+        if !pack.sources.is_empty() {
+            research_section.push_str("### Sources:\n");
+            for s in &pack.sources {
+                research_section.push_str(&format!(
+                    "- ID: {}\n  Title: {}\n  Type: {}\n  Author: {}\n  Reliability: {}\n  Summary: {}\n",
+                    s.id,
+                    s.title,
+                    s.source_type,
+                    s.author.as_deref().unwrap_or("Unknown"),
+                    s.reliability,
+                    s.summary.as_deref().unwrap_or("No summary available")
+                ));
+            }
+        }
+        if !pack.notes.is_empty() {
+            research_section.push_str("### Notes:\n");
+            for n in &pack.notes {
+                research_section.push_str(&format!(
+                    "- ID: {}\n  Source ID: {}\n  Note: {}\n  Quote: {}\n  Tags: [{}]\n",
+                    n.id,
+                    n.source_id.as_deref().unwrap_or("None"),
+                    n.note,
+                    n.quote.as_deref().unwrap_or("None"),
+                    n.tags.join(", ")
+                ));
+            }
+        }
+        if !pack.claims.is_empty() {
+            research_section.push_str("### Claims:\n");
+            for c in &pack.claims {
+                research_section.push_str(&format!(
+                    "- ID: {}\n  Claim: {}\n  Source ID: {}\n  Note ID: {}\n  Topic: {}\n  Confidence: {}\n  Tags: [{}]\n",
+                    c.id,
+                    c.claim,
+                    c.source_id.as_deref().unwrap_or("None"),
+                    c.note_id.as_deref().unwrap_or("None"),
+                    c.topic.as_deref().unwrap_or("None"),
+                    c.confidence,
+                    c.tags.join(", ")
+                ));
+            }
+        }
+        research_section.push('\n');
+    }
+
     Ok(format!(
         concat!(
             "Write exactly one scene for Spindle and return JSON only.\n\n",
@@ -817,12 +968,14 @@ async fn build_scene_prompt(
             "- Use empty arrays instead of null when you have no structured updates.\n\n",
             "Editorial directives:\n{directives}\n\n",
             "Scene manifest:\n{manifest_json}\n\n",
+            "{research_section}",
             "Chapter briefing markdown:\n{briefing_markdown}\n\n",
             "Scene context envelope:\n{scene_context_json}\n\n",
             "Scene-writer skill guidance:\n{scene_writer_skill}\n"
         ),
         directives = directives,
         manifest_json = manifest_json,
+        research_section = research_section,
         briefing_markdown = briefing.briefing_markdown,
         scene_context_json = scene_context_json,
         scene_writer_skill = scene_writer_skill,

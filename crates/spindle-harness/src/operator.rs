@@ -386,6 +386,7 @@ mod tests {
                     content_rating: ContentRating::Teen,
                     tone: Some("tense".to_string()),
                     source_path: None,
+                    ..Default::default()
                 }],
             }],
         }
@@ -449,6 +450,7 @@ mod tests {
             scene_artifact_path: Some(artifact_rel),
             draft_diagnostics: None,
             blocked_reason: Some("partial commit applied".to_string()),
+            ..Default::default()
         };
 
         let message =

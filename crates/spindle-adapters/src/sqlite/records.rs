@@ -2742,6 +2742,44 @@ impl<'a> TryFrom<&Row<'a>> for ResearchClaim {
     }
 }
 
+pub const RESEARCH_USAGE_COLUMNS: &str = "id, project_id, branch_id, run_id, step_checkpoint_id, scene_id, source_ids, note_ids, claim_ids, query_pack_input, context_hash, created_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchUsage {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub run_id: String,
+    pub step_checkpoint_id: Option<String>,
+    pub scene_id: String,
+    pub source_ids: Vec<String>,
+    pub note_ids: Vec<String>,
+    pub claim_ids: Vec<String>,
+    pub query_pack_input: String,
+    pub context_hash: String,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchUsage {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            run_id: row::text(r, 3)?,
+            step_checkpoint_id: row::opt_text(r, 4)?,
+            scene_id: row::text(r, 5)?,
+            source_ids: row::json(r, 6)?,
+            note_ids: row::json(r, 7)?,
+            claim_ids: row::json(r, 8)?,
+            query_pack_input: row::text(r, 9)?,
+            context_hash: row::text(r, 10)?,
+            created_at: row::time(r, 11)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

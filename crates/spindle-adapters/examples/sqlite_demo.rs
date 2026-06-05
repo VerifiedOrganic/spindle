@@ -178,6 +178,7 @@ async fn main() -> Result<()> {
                 beat_structure: vec!["arrival".into(), "first dark".into()],
                 character_ids: vec![mara.character_id.clone()],
                 purpose: "establishing".into(),
+                ..Default::default()
             }],
         })
         .await?;
@@ -198,6 +199,7 @@ async fn main() -> Result<()> {
             tone: Some("grim".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await?;
     println!("\n[7] scene = {} ({})", scene.scene_id, scene.status);

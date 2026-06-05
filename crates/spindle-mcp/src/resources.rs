@@ -231,6 +231,17 @@ impl ResourceRouter {
             );
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/research/usage"),
+                    format!("project {project_id} research usage"),
+                )
+                .with_description(
+                    "Durable research usage records for drafted scenes in this project.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/reader-contract"),
                     format!("project {project_id} reader contract"),
                 )
@@ -483,6 +494,24 @@ impl ResourceRouter {
             )
             .with_description(
                 "Read all unique tags used in the project-local research library.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research/usage",
+                "research usage log",
+            )
+            .with_description(
+                "Read all durable research usage records for a project.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research/usage/{scene_id}",
+                "research usage for scene",
+            )
+            .with_description(
+                "Read all durable research usage records for a specific scene.",
             )
             .with_mime_type("application/json")
             .no_annotation(),
@@ -748,6 +777,20 @@ mod tests {
             } => {
                 assert_eq!(mime_type.as_deref(), Some("application/json"));
                 assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let usage_uri = format!("bible://projects/{project_id}/research/usage");
+        assert!(resources.resources.iter().any(|r| r.uri == usage_uri));
+
+        let usage_res = router.read_resource(&usage_uri).await.unwrap();
+        match &usage_res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert!(text.contains("[]"));
             }
             _ => panic!("expected text resource"),
         }

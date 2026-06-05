@@ -70,6 +70,7 @@ async fn pull_chapter_from_external_markdown_slices_into_scenes() {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -316,6 +317,7 @@ async fn pull_chapter_byte_ranges_slice_source_exactly() {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();

@@ -3816,6 +3816,12 @@ impl SqliteSpindleService {
                 _ => anyhow::bail!("unknown import resource path: {resource_path}"),
             });
         }
+        if let Some(scene_id) = resource_path.strip_prefix("research/usage/") {
+            let usages = self
+                .list_research_usages_for_scene(&project_id, scene_id)
+                .await?;
+            return Ok(serde_json::to_value(usages)?);
+        }
         let active_branch = self.repository.get_active_branch(&project_id).await?;
         Ok(match resource_path {
             "books" => {
@@ -4398,6 +4404,10 @@ impl SqliteSpindleService {
                     .await?;
                 json!(tags)
             }
+            "research/usage" => {
+                let usages = self.list_research_usages_by_project(&project_id).await?;
+                serde_json::to_value(usages)?
+            }
             _ => anyhow::bail!("unknown project resource path: {resource_path}"),
         })
     }
@@ -4478,6 +4488,11 @@ impl SqliteSpindleService {
             "research_claim" => self
                 .repository
                 .get_research_claim(record_id_str)
+                .await
+                .is_ok(),
+            "research_usage" => self
+                .repository
+                .get_research_usage(record_id_str)
                 .await
                 .is_ok(),
             other => anyhow::bail!("read_entity_by_id does not support table `{other}`"),
@@ -7310,6 +7325,79 @@ impl SqliteSpindleService {
             }
         }
 
+        if should_run_check(&requested_checks_set, "research_accuracy") {
+            // Check 1: Claims without note or source provenance
+            let claims = self
+                .repository
+                .list_research_claims_by_project(&project_id)
+                .await?;
+            for claim in claims {
+                if claim.note_id.is_none() && claim.source_id.is_none() {
+                    issues.push(ConsistencyIssue {
+                        severity: "warning".to_string(),
+                        check_type: "research_accuracy".to_string(),
+                        message: format!(
+                            "Research claim '{}' ({}) has no note or source provenance",
+                            claim.claim, claim.id
+                        ),
+                        entity_ids: vec![claim.id.clone()],
+                        suggested_action: Some(
+                            "Link this claim to a parent note or source".to_string(),
+                        ),
+                    });
+                }
+            }
+
+            // Check 2: Missing usage for scenes requiring research
+            for scene in &scenes {
+                let plan_scene = scoped_plans
+                    .iter()
+                    .find(|plan| {
+                        plan.book_number == scene.book_number
+                            && plan.chapter_number == scene.chapter_number
+                    })
+                    .and_then(|plan| {
+                        plan.scenes
+                            .iter()
+                            .find(|s| s.scene_order == scene.scene_order)
+                    });
+
+                let is_required = plan_scene
+                    .and_then(|ps| ps.research_required)
+                    .unwrap_or(false);
+                let has_required_tags = plan_scene
+                    .map(|ps| !ps.research_tags.is_empty())
+                    .unwrap_or(false);
+
+                if is_required || has_required_tags {
+                    let usages = self
+                        .list_research_usages_for_scene(&project_id, &scene.id)
+                        .await?;
+                    let total_usages: usize = usages
+                        .iter()
+                        .map(|u| u.source_ids.len() + u.note_ids.len() + u.claim_ids.len())
+                        .sum();
+                    if total_usages == 0 {
+                        let reason = if is_required {
+                            "is marked as research_required"
+                        } else {
+                            "has required research tags"
+                        };
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "research_accuracy".to_string(),
+                            message: format!(
+                                "Scene {} (book {}, chapter {} scene {}) {} but has no recorded research usage",
+                                scene.id, scene.book_number, scene.chapter_number, scene.scene_order, reason
+                            ),
+                            entity_ids: vec![scene.id.clone()],
+                            suggested_action: Some("Draft or save the scene with research references".to_string()),
+                        });
+                    }
+                }
+            }
+        }
+
         if let Some(requested_severities) = requested_severities_set.as_ref() {
             issues.retain(|issue| requested_severities.contains(issue.severity.as_str()));
         }
@@ -8849,6 +8937,7 @@ impl SqliteSpindleService {
                     tone: input.tone,
                     source_path: None,
                     generation_id: None,
+                    ..Default::default()
                 },
             )
             .await?;
@@ -9326,6 +9415,7 @@ impl SqliteSpindleService {
                     tone: Some(alternative_tone(&input.variation_strategy, index).to_string()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 })
                 .await?;
 
@@ -10399,6 +10489,40 @@ impl SqliteSpindleService {
             notes,
             claims,
         })
+    }
+
+    pub async fn list_research_usages_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::models::ResearchUsage>> {
+        let rows = self
+            .repository
+            .list_research_usages_by_project(project_id)
+            .await?;
+        Ok(rows.into_iter().map(map_research_usage_record).collect())
+    }
+
+    pub async fn list_research_usages_for_scene(
+        &self,
+        project_id: &str,
+        scene_id: &str,
+    ) -> Result<Vec<spindle_core::models::ResearchUsage>> {
+        self.repository.get_project(project_id).await?;
+        let rows = self
+            .repository
+            .list_research_usages_for_scene(project_id, scene_id)
+            .await?;
+        Ok(rows.into_iter().map(map_research_usage_record).collect())
+    }
+
+    pub async fn research_usage_for_scene(
+        &self,
+        input: spindle_core::models::ResearchUsageForSceneInput,
+    ) -> Result<spindle_core::models::ResearchUsageForSceneOutput> {
+        let usages = self
+            .list_research_usages_for_scene(&input.project_id, &input.scene_id)
+            .await?;
+        Ok(spindle_core::models::ResearchUsageForSceneOutput { usages })
     }
 
     /// Project-scoped diff between two branches' scenes, character
@@ -13726,6 +13850,40 @@ impl SqliteSpindleService {
             .repository
             .save_scene_draft(&save_input.project_id, &branch_id, &save_input)
             .await?;
+
+        if !save_input.research_source_ids.is_empty()
+            || !save_input.research_note_ids.is_empty()
+            || !save_input.research_claim_ids.is_empty()
+        {
+            let run_id = self
+                .repository
+                .find_latest_authoring_run_id(&save_input.project_id)
+                .await?
+                .unwrap_or_else(|| "manual".to_string());
+
+            let query_pack_input = save_input
+                .research_query_pack_input
+                .clone()
+                .unwrap_or_else(|| "{}".to_string());
+
+            let context_hash = save_input.research_context_hash.clone().unwrap_or_default();
+
+            self.repository
+                .create_research_usage(
+                    &save_input.project_id,
+                    &branch_id,
+                    &run_id,
+                    None,
+                    &scene.id,
+                    &save_input.research_source_ids,
+                    &save_input.research_note_ids,
+                    &save_input.research_claim_ids,
+                    &query_pack_input,
+                    &context_hash,
+                )
+                .await?;
+        }
+
         if let Some(origin) = draft_origin.as_deref() {
             self.repository
                 .update_scene_draft_origin(&scene.id, origin)
@@ -15229,6 +15387,7 @@ impl SqliteSpindleService {
                             tone: None,
                             source_path: None,
                             generation_id: None,
+                            ..Default::default()
                         })
                         .await?;
                         if rating_confidence < 0.70 {
@@ -15302,6 +15461,7 @@ impl SqliteSpindleService {
                         tone: None,
                         source_path: None,
                         generation_id: None,
+                        ..Default::default()
                     })
                     .await?;
                     if rating_confidence < 0.70 {
@@ -17607,6 +17767,25 @@ fn map_research_claim(
     }
 }
 
+fn map_research_usage_record(
+    r: crate::sqlite::records::ResearchUsage,
+) -> spindle_core::models::ResearchUsage {
+    spindle_core::models::ResearchUsage {
+        id: r.id,
+        project_id: r.project_id,
+        branch_id: r.branch_id,
+        run_id: r.run_id,
+        step_checkpoint_id: r.step_checkpoint_id,
+        scene_id: r.scene_id,
+        source_ids: r.source_ids,
+        note_ids: r.note_ids,
+        claim_ids: r.claim_ids,
+        query_pack_input: r.query_pack_input,
+        context_hash: r.context_hash,
+        created_at: crate::sqlite::row::timestamp_to_micros(r.created_at),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -17672,6 +17851,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -18106,6 +18286,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -18866,6 +19047,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -19048,6 +19230,7 @@ mod tests {
                         beat_structure: vec!["arrival".into(), "first dark".into()],
                         character_ids: vec![mara.character_id.clone()],
                         purpose: "establishing".into(),
+                        ..Default::default()
                     },
                     PlanChapterSceneInput {
                         scene_order: 2,
@@ -19055,6 +19238,7 @@ mod tests {
                         beat_structure: vec!["arrival".into()],
                         character_ids: vec![mara.character_id.clone(), aldric.character_id.clone()],
                         purpose: "complication".into(),
+                        ..Default::default()
                     },
                 ],
             })
@@ -19076,6 +19260,7 @@ mod tests {
                 tone: Some("grim".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -19096,6 +19281,7 @@ mod tests {
                 tone: Some("grim".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -19366,6 +19552,7 @@ mod tests {
             tone: Some("grim".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -19481,6 +19668,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -19588,6 +19776,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -19687,6 +19876,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -19713,6 +19903,7 @@ mod tests {
             tone: Some("measured".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -19770,6 +19961,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -19986,6 +20178,7 @@ mod tests {
                 tone: Some("Quiet, contained, grief beat".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -20029,6 +20222,7 @@ mod tests {
                 tone: Some("manic, raunchy".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -20201,6 +20395,7 @@ mod tests {
                         beat_structure: vec!["escalation".into()],
                         character_ids: Vec::new(),
                         purpose: "Open with a manic high.".into(),
+                        ..Default::default()
                     },
                     PlanChapterSceneInput {
                         scene_order: 2,
@@ -20208,6 +20403,7 @@ mod tests {
                         beat_structure: vec!["quiet_reflection".into()],
                         character_ids: Vec::new(),
                         purpose: "Quiet, contained. The grief beat of the chapter.".into(),
+                        ..Default::default()
                     },
                 ],
             })
@@ -20258,6 +20454,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -20360,6 +20557,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -20540,6 +20738,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .expect_err("explicit sexual prose without generation_id must be rejected");
@@ -20592,6 +20791,7 @@ mod tests {
                 tone: None,
                 generation_id: Some(receipt.id.clone()),
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -20637,6 +20837,7 @@ mod tests {
                 tone: None,
                 generation_id: Some(receipt.id),
                 source_path: None,
+                ..Default::default()
             })
             .await
             .expect_err("non-explicit receipt must not authorize explicit save");
@@ -20814,6 +21015,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -20846,6 +21048,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21132,6 +21335,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -21285,6 +21489,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -21402,6 +21607,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21500,6 +21706,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21585,6 +21792,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21619,6 +21827,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21642,6 +21851,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21740,6 +21950,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21820,6 +22031,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21847,6 +22059,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21868,6 +22081,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -21927,6 +22141,7 @@ mod tests {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -22001,6 +22216,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -22117,6 +22333,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -22197,6 +22414,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -22953,6 +23171,7 @@ mod tests {
             tone: Some("calm".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -23055,6 +23274,7 @@ mod tests {
                 tone: Some("grim".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23221,6 +23441,7 @@ mod tests {
                 tone: Some("grim".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23269,6 +23490,7 @@ mod tests {
                 tone: Some("grim".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23399,6 +23621,7 @@ mod tests {
                 tone: Some("plainspoken".into()),
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23526,6 +23749,7 @@ mod tests {
             tone: Some("calm".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -23541,6 +23765,7 @@ mod tests {
             tone: Some("calm".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -23629,6 +23854,7 @@ mod tests {
             tone: Some("grim".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -23702,6 +23928,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23804,6 +24031,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23821,6 +24049,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -23917,6 +24146,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -24276,5 +24506,183 @@ mod tests {
             "Casinos used mob skimming techniques extensively until the late 70s crackdowns."
                 .to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn test_check_consistency_research_accuracy() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, ContentRating, PlanChapterInput,
+            PlanChapterSceneInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "research-accuracy-test".into(),
+                project_type: "novel".into(),
+                genre: "historical".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let branch = svc
+            .repository
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+
+        // 1. Create a scene plan that requires research
+        svc.plan_chapter(PlanChapterInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            pov_character_id: None,
+            synopsis: "synopsis".to_string(),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Historical battle scene".to_string(),
+                beat_structure: Vec::new(),
+                character_ids: Vec::new(),
+                purpose: "action".to_string(),
+                research_required: Some(true),
+                research_tags: vec!["battle".to_string()],
+                explicit_query: None,
+            }],
+        })
+        .await
+        .unwrap();
+
+        // 2. Draft the scene with NO research usage
+        let saved_scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "The battle raged on.".to_string(),
+                content_rating: ContentRating::Teen,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // 3. Run check_consistency and assert warning for missing usage
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["research_accuracy".to_string()],
+                severity_filter: Vec::new(),
+                subjects: Vec::new(),
+                deep_check: Some(false),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let missing_usage_issue = out.issues.iter().find(|issue| {
+            issue.check_type == "research_accuracy"
+                && issue.message.contains("no recorded research usage")
+        });
+        assert!(missing_usage_issue.is_some());
+
+        svc.repository
+            .create_research_usage(
+                &proj.project_id,
+                &branch.id,
+                "manual",
+                None,
+                &saved_scene.scene_id,
+                &["research_source:local".to_string()],
+                &[],
+                &[],
+                r#"{"query":"battle"}"#,
+                "usage-hash",
+            )
+            .await
+            .unwrap();
+
+        let scoped_usage = svc
+            .list_research_usages_for_scene(&proj.project_id, &saved_scene.scene_id)
+            .await
+            .unwrap();
+        assert_eq!(scoped_usage.len(), 1);
+
+        let other_project = svc
+            .create_project(CreateProjectInput {
+                name: "usage-scope-other".into(),
+                project_type: "novel".into(),
+                genre: "historical".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let leaked_usage = svc
+            .list_research_usages_for_scene(&other_project.project_id, &saved_scene.scene_id)
+            .await
+            .unwrap();
+        assert!(leaked_usage.is_empty());
+
+        let resource_json = svc
+            .read_project_resource(
+                &other_project.project_id,
+                &format!("research/usage/{}", saved_scene.scene_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resource_json, serde_json::json!([]));
+
+        svc.repository
+            .create_research_claim(
+                &proj.project_id,
+                None,             // source
+                None,             // note
+                Some(&branch.id), // branch
+                "Some orphaned claim",
+                Some("history"),
+                None,
+                None,
+                "high",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        // 5. Run check_consistency and assert warnings for both missing usage AND orphaned claim
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["research_accuracy".to_string()],
+                severity_filter: Vec::new(),
+                subjects: Vec::new(),
+                deep_check: Some(false),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let orphaned_claim_issue = out.issues.iter().find(|issue| {
+            issue.check_type == "research_accuracy"
+                && issue.message.contains("no note or source provenance")
+        });
+        assert!(orphaned_claim_issue.is_some());
     }
 }

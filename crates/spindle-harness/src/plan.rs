@@ -34,6 +34,11 @@ pub struct ChapterPlanSnapshot {
 pub struct PlannedSceneSnapshot {
     pub scene_order: i32,
     pub character_ids: Vec<String>,
+    pub research_required: Option<bool>,
+    pub research_tags: Vec<String>,
+    pub explicit_query: Option<String>,
+    pub research_pack_empty: bool,
+    pub research_tags_matched: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +97,13 @@ pub enum NextAction {
         chapter_number: i32,
         scene_order: i32,
     },
+    AwaitResearch {
+        chapter_number: i32,
+        scene_order: i32,
+        missing_tags: Vec<String>,
+        query: Option<String>,
+        location: Option<String>,
+    },
     CommitSceneChanges {
         chapter_number: i32,
         scene_order: i32,
@@ -131,6 +143,27 @@ impl std::fmt::Display for NextAction {
                 chapter_number,
                 scene_order,
             } => write!(f, "draft book scene {chapter_number}.{scene_order}"),
+            Self::AwaitResearch {
+                chapter_number,
+                scene_order,
+                missing_tags,
+                query,
+                location,
+            } => {
+                let tags_str = if missing_tags.is_empty() {
+                    "none".to_string()
+                } else {
+                    missing_tags.join(", ")
+                };
+                let query_str = query.as_deref().unwrap_or("none");
+                let location_str = location.as_deref().unwrap_or("none");
+                write!(
+                    f,
+                    "await_research: chapter {chapter_number} scene {scene_order} needs research. \
+                     Searched tags: [{tags_str}], query: \"{query_str}\", location: \"{location_str}\". \
+                     Suggested action: use research tools (e.g. research_add_source, research_add_note, research_add_claim) to add relevant research, then resume."
+                )
+            }
             Self::CommitSceneChanges {
                 chapter_number,
                 scene_order,
@@ -397,7 +430,7 @@ fn validate_state_shape(state: &HarnessState) -> Vec<Finding> {
 }
 
 fn reconcile_chapter_plan(
-    chapter: &crate::state::ChapterState,
+    chapter: &mut crate::state::ChapterState,
     snapshot: &ChapterSnapshot,
     findings: &mut Vec<Finding>,
 ) {
@@ -457,10 +490,16 @@ fn reconcile_chapter_plan(
         .iter()
         .map(|scene| (scene.scene_order, scene))
         .collect::<BTreeMap<_, _>>();
-    for scene in &chapter.scenes {
+    for scene in &mut chapter.scenes {
         let Some(plan_scene) = plan_by_order.get(&scene.scene_order) else {
             continue;
         };
+        scene.research_required = plan_scene.research_required;
+        scene.research_tags = plan_scene.research_tags.clone();
+        scene.explicit_query = plan_scene.explicit_query.clone();
+        scene.research_pack_empty = plan_scene.research_pack_empty;
+        scene.research_tags_matched = plan_scene.research_tags_matched;
+
         if scene.character_ids != plan_scene.character_ids {
             findings.push(Finding::error(
                 "chapter_plan_character_mismatch",
@@ -705,6 +744,21 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
         for scene in &chapter.scenes {
             match scene.phase {
                 ScenePhase::Pending => {
+                    let is_required = scene.research_required.unwrap_or(false);
+                    let has_required_tags = !scene.research_tags.is_empty();
+
+                    if (is_required && scene.research_pack_empty)
+                        || (has_required_tags && !scene.research_tags_matched)
+                    {
+                        return NextAction::AwaitResearch {
+                            chapter_number: chapter.chapter_number,
+                            scene_order: scene.scene_order,
+                            missing_tags: scene.research_tags.clone(),
+                            query: scene.explicit_query.clone(),
+                            location: Some(scene.location_id.clone()),
+                        };
+                    }
+
                     return NextAction::DraftScene {
                         chapter_number: chapter.chapter_number,
                         scene_order: scene.scene_order,
@@ -800,6 +854,7 @@ mod tests {
                         content_rating: ContentRating::Teen,
                         tone: Some("tense".to_string()),
                         source_path: None,
+                        ..Default::default()
                     }],
                 },
                 ChapterSeed {
@@ -813,6 +868,7 @@ mod tests {
                         content_rating: ContentRating::Teen,
                         tone: Some("grim".to_string()),
                         source_path: None,
+                        ..Default::default()
                     }],
                 },
             ],
@@ -835,6 +891,11 @@ mod tests {
                             scenes: vec![PlannedSceneSnapshot {
                                 scene_order: 1,
                                 character_ids: vec!["character:pov".to_string()],
+                                research_required: None,
+                                research_tags: vec![],
+                                explicit_query: None,
+                                research_pack_empty: false,
+                                research_tags_matched: true,
                             }],
                         }),
                     },
@@ -850,6 +911,11 @@ mod tests {
                             scenes: vec![PlannedSceneSnapshot {
                                 scene_order: 1,
                                 character_ids: vec!["character:pov".to_string()],
+                                research_required: None,
+                                research_tags: vec![],
+                                explicit_query: None,
+                                research_pack_empty: false,
+                                research_tags_matched: true,
                             }],
                         }),
                     },
@@ -978,5 +1044,70 @@ mod tests {
                 .iter()
                 .any(|finding| { finding.code == "missing_scene_artifact" })
         );
+    }
+
+    #[test]
+    fn test_await_research_when_empty_or_unmatched_tags() {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+
+        // 1. With research required but pack empty
+        {
+            let chapter = state.chapter_mut(1).expect("chapter 1");
+            chapter.scenes[0].research_required = Some(true);
+            chapter.scenes[0].research_pack_empty = true;
+            chapter.scenes[0].research_tags_matched = true;
+
+            let mut snapshot = snapshot();
+            if let Some(plan) = snapshot
+                .chapters
+                .get_mut(&1)
+                .and_then(|ch| ch.chapter_plan.as_mut())
+            {
+                plan.scenes[0].research_required = Some(true);
+                plan.scenes[0].research_pack_empty = true;
+                plan.scenes[0].research_tags_matched = true;
+            }
+
+            let outcome = reconcile_state(state.clone(), &snapshot);
+            assert!(matches!(
+                outcome.next_action,
+                NextAction::AwaitResearch {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    ..
+                }
+            ));
+        }
+
+        // 2. With required tags not matched
+        {
+            let chapter = state.chapter_mut(1).expect("chapter 1");
+            chapter.scenes[0].research_required = Some(false);
+            chapter.scenes[0].research_pack_empty = false;
+            chapter.scenes[0].research_tags = vec!["tag1".to_string()];
+            chapter.scenes[0].research_tags_matched = false;
+
+            let mut snapshot = snapshot();
+            if let Some(plan) = snapshot
+                .chapters
+                .get_mut(&1)
+                .and_then(|ch| ch.chapter_plan.as_mut())
+            {
+                plan.scenes[0].research_required = Some(false);
+                plan.scenes[0].research_pack_empty = false;
+                plan.scenes[0].research_tags = vec!["tag1".to_string()];
+                plan.scenes[0].research_tags_matched = false;
+            }
+
+            let outcome = reconcile_state(state.clone(), &snapshot);
+            assert!(matches!(
+                outcome.next_action,
+                NextAction::AwaitResearch {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    ..
+                }
+            ));
+        }
     }
 }

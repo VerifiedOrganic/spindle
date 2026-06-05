@@ -62,6 +62,7 @@ async fn check_consistency_emits_phase_four_validator_findings() {
         tone: None,
         generation_id: None,
         source_path: None,
+        ..Default::default()
     })
     .await
     .unwrap();

@@ -12,8 +12,9 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, JsonSchema, PartialEq, Eq, Default)]
 pub enum ContentRating {
+    #[default]
     General,
     Teen,
     Mature,
@@ -215,7 +216,7 @@ pub struct CharacterArcMilestone {
     pub unlocks: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct PlannedScene {
     pub scene_order: i32,
     pub summary: String,
@@ -224,6 +225,12 @@ pub struct PlannedScene {
     #[serde(default)]
     pub character_ids: Vec<String>,
     pub purpose: String,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1274,7 +1281,7 @@ pub struct OperatorDeleteSceneOutput {
     pub invalidated_chapter_summary_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct SaveSceneDraftInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
@@ -1304,6 +1311,16 @@ pub struct SaveSceneDraftInput {
     /// When provided, Spindle tracks the file for divergence detection.
     #[serde(default)]
     pub source_path: Option<String>,
+    #[serde(default)]
+    pub research_source_ids: Vec<String>,
+    #[serde(default)]
+    pub research_note_ids: Vec<String>,
+    #[serde(default)]
+    pub research_claim_ids: Vec<String>,
+    #[serde(default)]
+    pub research_query_pack_input: Option<String>,
+    #[serde(default)]
+    pub research_context_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2601,7 +2618,7 @@ pub struct SetArcPacingConstraintsOutput {
     pub pacing_tracker_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct PlanChapterSceneInput {
     pub scene_order: i32,
     pub summary: String,
@@ -2610,6 +2627,12 @@ pub struct PlanChapterSceneInput {
     #[serde(default)]
     pub character_ids: Vec<String>,
     pub purpose: String,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4561,6 +4584,26 @@ pub struct ResearchClaim {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchUsage {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub run_id: String,
+    #[serde(default)]
+    pub step_checkpoint_id: Option<String>,
+    pub scene_id: String,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    #[serde(default)]
+    pub note_ids: Vec<String>,
+    #[serde(default)]
+    pub claim_ids: Vec<String>,
+    pub query_pack_input: String,
+    pub context_hash: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResearchAddSourceInput {
     pub project_id: String,
@@ -5180,6 +5223,17 @@ pub struct AuthoringPrepareChapterDetails {
 
 pub fn normalize_name(input: &str) -> String {
     input.trim().to_lowercase()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchUsageForSceneInput {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchUsageForSceneOutput {
+    pub usages: Vec<ResearchUsage>,
 }
 
 #[cfg(test)]

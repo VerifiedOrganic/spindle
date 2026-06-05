@@ -85,6 +85,7 @@ async fn check_consistency_subjects_list_filters_scene_set() {
         tone: Some("calm".into()),
         generation_id: None,
         source_path: None,
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -100,6 +101,7 @@ async fn check_consistency_subjects_list_filters_scene_set() {
         tone: Some("calm".into()),
         generation_id: None,
         source_path: None,
+        ..Default::default()
     })
     .await
     .unwrap();

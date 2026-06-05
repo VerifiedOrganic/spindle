@@ -92,12 +92,13 @@ use super::records::{
     PACING_CONFIG_COLUMNS, PACING_CURVE_COLUMNS, PACING_TRACKER_COLUMNS, PROGRESSION_EVENT_COLUMNS,
     PacingConfig, PacingCurve, PacingTracker, ProgressionEvent, RELATES_TO_COLUMNS,
     RESEARCH_CLAIM_COLUMNS, RESEARCH_LOG_COLUMNS, RESEARCH_NOTE_COLUMNS, RESEARCH_SOURCE_COLUMNS,
-    REVISION_MARKER_COLUMNS, RelatesTo, ResearchClaim, ResearchLog, ResearchNote, ResearchSource,
-    RevisionMarker, SAVE_POINT_COLUMNS, SCENE_BEAT_ANNOTATION_COLUMNS, SCENE_SOURCE_LINK_COLUMNS,
-    SCENE_VERSION_COLUMNS, SEARCH_EMBEDDING_COLUMNS, SESSION_ACTIVITY_COLUMNS, SavePoint,
-    SceneBeatAnnotation, SceneSourceLink, SceneVersion, SearchEmbedding, SessionActivity,
-    StoredAnnotatedBeat, StoredChapterOutlineBeat, StoredDualPersonaReviewRound,
-    VALIDATOR_FINDING_COLUMNS, ValidatorFinding, WRITER_POSITION_COLUMNS, WriterPosition,
+    RESEARCH_USAGE_COLUMNS, REVISION_MARKER_COLUMNS, RelatesTo, ResearchClaim, ResearchLog,
+    ResearchNote, ResearchSource, ResearchUsage, RevisionMarker, SAVE_POINT_COLUMNS,
+    SCENE_BEAT_ANNOTATION_COLUMNS, SCENE_SOURCE_LINK_COLUMNS, SCENE_VERSION_COLUMNS,
+    SEARCH_EMBEDDING_COLUMNS, SESSION_ACTIVITY_COLUMNS, SavePoint, SceneBeatAnnotation,
+    SceneSourceLink, SceneVersion, SearchEmbedding, SessionActivity, StoredAnnotatedBeat,
+    StoredChapterOutlineBeat, StoredDualPersonaReviewRound, VALIDATOR_FINDING_COLUMNS,
+    ValidatorFinding, WRITER_POSITION_COLUMNS, WriterPosition,
 };
 use super::row::pack_embedding;
 use super::row::timestamp_to_micros;
@@ -1699,6 +1700,7 @@ impl Repository {
             tone: scene_version.tone.clone(),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         };
         let (scene, _created) = self
             .save_scene_draft(&existing.project_id, &existing.branch_id, &input)
@@ -5140,6 +5142,20 @@ impl Repository {
             .await
     }
 
+    pub async fn get_research_usage(&self, id: &str) -> Result<Option<ResearchUsage>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| ResearchUsage::try_from(r))
+                    .optional_inner()
+            })
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn create_research_source(
         &self,
@@ -5404,6 +5420,118 @@ impl Repository {
                 let mut stmt = conn.prepare_cached(&sql)?;
                 let rows = stmt
                     .query_map([&project_id], |r| ResearchClaim::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_research_usage(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        run_id: &str,
+        step_checkpoint_id: Option<&str>,
+        scene_id: &str,
+        source_ids: &[String],
+        note_ids: &[String],
+        claim_ids: &[String],
+        query_pack_input: &str,
+        context_hash: &str,
+    ) -> Result<ResearchUsage> {
+        let id = mint_id("research_usage");
+        let id_out = id.clone();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let run_id = run_id.to_string();
+        let step_checkpoint_id = step_checkpoint_id.map(|s| s.to_string());
+        let scene_id = scene_id.to_string();
+        let source_ids_json = serde_json::to_string(source_ids)?;
+        let note_ids_json = serde_json::to_string(note_ids)?;
+        let claim_ids_json = serde_json::to_string(claim_ids)?;
+        let query_pack_input = query_pack_input.to_string();
+        let context_hash = context_hash.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO research_usage (id, project_id, branch_id, run_id, step_checkpoint_id, scene_id, \
+                     source_ids, note_ids, claim_ids, query_pack_input, context_hash, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        &run_id,
+                        &step_checkpoint_id,
+                        &scene_id,
+                        &source_ids_json,
+                        &note_ids_json,
+                        &claim_ids_json,
+                        &query_pack_input,
+                        &context_hash,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+        let id_lookup = id_out;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id_lookup], |r| ResearchUsage::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("research_usage vanished after insert"))
+    }
+
+    pub async fn list_research_usages_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResearchUsage>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage \
+                     WHERE project_id = ?1 ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id], |r| ResearchUsage::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn list_research_usages_for_scene(
+        &self,
+        project_id: &str,
+        scene_id: &str,
+    ) -> Result<Vec<ResearchUsage>> {
+        let project_id = project_id.to_string();
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage \
+                     WHERE project_id = ?1 AND scene_id = ?2 ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &scene_id], |r| ResearchUsage::try_from(r))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             })
@@ -6792,7 +6920,6 @@ impl Repository {
         let target_conflict_ids_json = serde_json::to_string(&input.target_conflict_ids)?;
         let target_plot_line_ids_json = serde_json::to_string(&input.target_plot_line_ids)?;
 
-        // chapter_plan.scenes is a JSON array of PlannedScene shapes.
         let planned_scenes: Vec<PlannedScene> = input
             .scenes
             .iter()
@@ -6802,6 +6929,9 @@ impl Repository {
                 beat_structure: s.beat_structure.clone(),
                 character_ids: s.character_ids.clone(),
                 purpose: s.purpose.clone(),
+                research_required: s.research_required,
+                research_tags: s.research_tags.clone(),
+                explicit_query: s.explicit_query.clone(),
             })
             .collect();
         let scenes_json = serde_json::to_string(&planned_scenes)?;
@@ -12690,6 +12820,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             },
         )
         .await
@@ -12709,6 +12840,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             },
         )
         .await
@@ -12915,6 +13047,7 @@ mod tests {
                     tone: Some("grim".into()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -12942,6 +13075,7 @@ mod tests {
                     tone: Some("grim".into()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -12986,6 +13120,7 @@ mod tests {
                     tone: Some("grim".into()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -13544,6 +13679,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             },
         )
         .await

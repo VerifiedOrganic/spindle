@@ -97,6 +97,7 @@ async fn mcp_priority_flow_create_project_through_save_scene_draft() {
             tone: None,
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -217,6 +218,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
             beat_structure: Vec::new(),
             character_ids: vec![mara.character_id.clone()],
             purpose: "establishing".into(),
+            ..Default::default()
         }],
     })
     .await
@@ -235,6 +237,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
             tone: Some("grim".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -601,6 +604,7 @@ agent = "cli-agent-review"
                 beat_structure: Vec::new(),
                 character_ids: vec![mara.character_id.clone()],
                 purpose: "establishing".into(),
+                ..Default::default()
             },
             PlanChapterSceneInput {
                 scene_order: 2,
@@ -611,6 +615,7 @@ agent = "cli-agent-review"
                 beat_structure: Vec::new(),
                 character_ids: vec![mara.character_id.clone()],
                 purpose: "climax".into(),
+                ..Default::default()
             },
         ],
     })

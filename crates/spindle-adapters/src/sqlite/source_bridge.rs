@@ -258,6 +258,7 @@ impl SourceBridge {
                     tone: tone_for_scene(&scenes, &staged.scene_id),
                     source_path: Some(source_path_string.clone()),
                     generation_id: None,
+                    ..Default::default()
                 };
                 self.repository
                     .save_scene_draft(&chapter.project_id, &branch_id, &save_input)
