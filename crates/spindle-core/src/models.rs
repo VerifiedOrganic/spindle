@@ -423,7 +423,8 @@ pub struct GetSceneContextInput {
     /// Render format. Defaults to markdown when omitted.
     #[serde(default)]
     pub format: Option<ContextFormat>,
-    /// Preferred token budget for temporary inline trimming.
+    /// Preferred token budget for temporary inline trimming. Mandatory hard
+    /// constraints may expand the effective budget rather than being dropped.
     #[serde(default)]
     pub budget_tokens: Option<usize>,
     /// Legacy budget field retained for backwards compatibility.
@@ -714,7 +715,7 @@ pub struct GetChapterBriefingInput {
     /// Number of prior chapter summaries to include, newest first. Defaults to 3.
     pub recent_chapter_limit: Option<usize>,
     /// Token budget passed through to the bundled scene-context slice.
-    /// Defaults to 3500 for a leaner pre-write packet.
+    /// Defaults to the service's chapter-briefing budget when omitted.
     #[serde(default)]
     pub token_budget: Option<usize>,
 }

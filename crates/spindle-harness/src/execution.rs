@@ -22,8 +22,8 @@ use crate::state::{
 
 const MAX_GENERATION_ROUNDS: usize = 8;
 const CHAPTER_BRIEFING_RECENT_LIMIT: usize = 3;
-const CHAPTER_BRIEFING_TOKEN_BUDGET: usize = 3500;
-const SCENE_CONTEXT_TOKEN_BUDGET: usize = 6000;
+const CHAPTER_BRIEFING_TOKEN_BUDGET: usize = 12_000;
+const SCENE_CONTEXT_TOKEN_BUDGET: usize = 32_000;
 
 pub struct ExecutionResult {
     pub state: HarnessState,

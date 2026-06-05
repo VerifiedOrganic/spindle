@@ -1593,7 +1593,11 @@ pub fn enforce_writer_state_budget(
 // projections.
 // =============================================================================
 
-pub const DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS: usize = 6000;
+pub const DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS: usize = 24_000;
+/// Extra room added when mandatory scene hard constraints alone exceed the
+/// caller's preferred budget. Hard constraints are canon, not optional prompt
+/// filler, so the service expands instead of dropping or rejecting them.
+pub const SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS: usize = 4_000;
 /// Default markdown-render token budget for `check_consistency`. Mirrors the
 /// SurrealDB-era `DEFAULT_CHECK_CONSISTENCY_BUDGET_TOKENS = 4000`.
 pub const DEFAULT_CHECK_CONSISTENCY_BUDGET_TOKENS: usize = 4000;

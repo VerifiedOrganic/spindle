@@ -138,9 +138,9 @@ impl McpHarnessClient {
                         character_ids: first_scene.character_ids.clone(),
                         location_id: Some(first_scene.location_id.clone()),
                         format: Some(ContextFormat::Markdown),
-                        budget_tokens: Some(3500),
+                        budget_tokens: Some(12_000),
                         recent_chapter_limit: Some(1),
-                        token_budget: Some(3500),
+                        token_budget: Some(12_000),
                     },
                 )
                 .await

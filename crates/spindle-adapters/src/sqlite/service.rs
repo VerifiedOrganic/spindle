@@ -5679,11 +5679,12 @@ impl SqliteSpindleService {
         input: spindle_core::models::GetSceneContextInput,
     ) -> Result<spindle_core::models::SceneContextOutput> {
         use crate::format::{
-            DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS, WorldRuleContextCharacter,
-            agency_check_from_scene_history, apply_scene_context_bundle_trims,
-            build_scene_context_bundle, canonical_fact_hard_constraint, canonical_fact_read_model,
-            empty_agency_check_summary, empty_location_summary, empty_reader_contract,
-            empty_world_state_summary, estimate_scene_context_tokens, filter_relevant_world_rules,
+            DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS, SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS,
+            WorldRuleContextCharacter, agency_check_from_scene_history,
+            apply_scene_context_bundle_trims, build_scene_context_bundle,
+            canonical_fact_hard_constraint, canonical_fact_read_model, empty_agency_check_summary,
+            empty_location_summary, empty_reader_contract, empty_world_state_summary,
+            estimate_scene_context_tokens, filter_relevant_world_rules,
             future_knowledge_briefing_item, future_knowledge_summary, knowledge_fact_briefing_item,
             narrative_promise_due_summary, non_truncatable_prefix_tokens_scene_context,
             pacing_directives_for_characters, story_index, story_index_from_placement,
@@ -5698,7 +5699,7 @@ impl SqliteSpindleService {
         use spindle_core::subject::{Subject, SubjectTable};
 
         let format_fmt = input.format.unwrap_or(ContextFormat::Markdown);
-        let budget_tokens = input
+        let mut budget_tokens = input
             .budget_tokens
             .or(input.token_budget)
             .unwrap_or(DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS);
@@ -6277,11 +6278,8 @@ impl SqliteSpindleService {
         let non_truncatable_cost =
             non_truncatable_prefix_tokens_scene_context(format_fmt, &hard_constraints);
         if non_truncatable_cost > budget_tokens {
-            anyhow::bail!(
-                "budget_tokens ({budget_tokens}) too small to fit hard constraints \
-                 (estimated {non_truncatable_cost} tokens). \
-                 Increase budget_tokens or reduce world rules."
-            );
+            budget_tokens =
+                non_truncatable_cost.saturating_add(SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS);
         }
 
         let mut bundle = build_scene_context_bundle(
@@ -22307,6 +22305,126 @@ rating = "explicit"
                 .as_deref()
                 .is_some_and(|markdown| markdown.contains("# Scene context")),
             "public envelope should include markdown when requested"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_expands_budget_for_large_hard_constraints() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            ContextFormat, CreateCharacterInput, CreateLocationInput, CreateWorldRuleInput,
+            GetSceneContextInput, WorldStateInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Large Canon".into(),
+                project_type: "novel".into(),
+                genre: "thriller".into(),
+                reader_contract: ReaderContract {
+                    promise: "Book-scale canon stays available.".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Keeps continuity pressure high.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: Some(CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: None,
+                    source_summary: None,
+                }),
+            })
+            .await
+            .unwrap();
+        let location = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Ash Gate".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A place with a long canon dossier.".into(),
+                initial_state: WorldStateInput {
+                    controlling_faction: None,
+                    status: None,
+                    prosperity: None,
+                    stability: None,
+                    threat_level: None,
+                    sensory_details: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let long_rule =
+            "Mara must preserve every book-scale continuity detail about the Ash Gate. "
+                .repeat(900);
+        svc.create_world_rule(CreateWorldRuleInput {
+            project_id: proj.project_id.clone(),
+            rule_name: "Ash Gate dossier".into(),
+            rule_type: "lore".into(),
+            description: long_rule.clone(),
+            scan_pattern: None,
+            relevance_tags: Vec::new(),
+            established_in: None,
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character.character_id.clone()],
+                max_character_count: None,
+                location_id: location.location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(100),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.hard_constraints
+                .iter()
+                .any(|constraint| constraint.id == "Ash Gate dossier"
+                    && constraint.statement == long_rule),
+            "oversized world rules are mandatory hard constraints"
+        );
+        assert!(
+            ctx.budget.token_budget.is_some_and(|budget| budget > 100),
+            "scene context should expand beyond the preferred budget when canon requires it"
         );
     }
 
