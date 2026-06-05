@@ -436,7 +436,7 @@ The harness determines the next action automatically based on state:
 | Scene is `draft_saved` | `CommitSceneChanges` | Calls `commit_scene_changes` with character states, facts, relationships from the artifact |
 | Scene is `changes_committed` | `AnnotateSceneBeats` | Calls `annotate_scene_beats` with beats from the artifact |
 | All scenes `beats_annotated` | `SaveChapterSummary` | Generates a summary prompt, sends to model, calls `save_summary` |
-| N chapters completed | `RunCheckpoint` | Runs `check_consistency`, samples scenes for `run_dual_persona_review`, reads pacing/promises, creates save point |
+| N chapters completed | `RunCheckpoint` | Runs `check_consistency`, samples scenes for later dual-persona review, reads pacing/promises, creates save point |
 | Checkpoint pending review | `AwaitCheckpointReview` | Refuses to continue until you review the checkpoint |
 
 ### Expected Output
@@ -518,7 +518,7 @@ draft book scene 12.1              → save_scene_draft
 commit scene changes 12.1          → commit_scene_changes
 annotate beats 12.1                → annotate_scene_beats
 save summary for chapter 12        → save_summary
-run checkpoint for chapters 11-12  → check_consistency + dual_persona_review + create_save_point
+run checkpoint for chapters 11-12  → check_consistency + sampled scene IDs + create_save_point
 (pauses — awaiting human review)
 ```
 
@@ -529,8 +529,9 @@ That is 13 steps total for this batch.
 ## Step 7: Review a Checkpoint
 
 When the harness runs a checkpoint, it creates a save point in Spindle and
-writes a detailed report artifact. It then refuses to continue until you
-review.
+writes a detailed report artifact. The report includes sampled scene IDs for
+dual-persona review. Run those reviews as separate resumable calls before
+marking the checkpoint reviewed.
 
 ### Read the Report
 
@@ -542,16 +543,18 @@ cat ~/spindle-harness-artifacts/checkpoints/chapter-0011-0012.json | python3 -m 
 
 The report contains:
 - `consistency` — full output of `check_consistency`
-- `sampled_reviews` — `run_dual_persona_review` results for sampled scenes
+- `sampled_reviews` — persisted `run_dual_persona_review` results for sampled scenes, filled when checkpoint review is closed
 - `pacing_overview` — current pacing state
 - `chapter_summaries` — summaries for the chapters in range
 - `narrative_promises` — promise tracking status
 - `save_point` — the save point ID for rollback
 - `sampled_scene_ids` — which scenes were reviewed
 
-### Mark the Checkpoint as Reviewed
+### Run Sampled Reviews and Mark the Checkpoint Reviewed
 
-After reviewing, approve the checkpoint and optionally add new directives:
+Run `run_dual_persona_review` with `rounds: 2` for each `sampled_scene_ids`
+entry, fix or carry forward the findings, then approve the checkpoint and
+optionally add new directives:
 
 ```bash
 cargo run -p spindle-harness -- review-checkpoint \

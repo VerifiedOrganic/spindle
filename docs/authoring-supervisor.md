@@ -2,6 +2,14 @@
 
 The Spindle Authoring Supervisor is an MCP-native authoring pipeline that enables an interactive, agent-driven long-form drafting workflow. It manages the multi-step drafting, verification, review, and checkpoint loop safely while synchronizing the run state in a SQLite database.
 
+The default authoring posture is autonomous quality supervision: the active
+assistant should keep writing and improving prose without asking the operator to
+approve every local craft decision. Checkpoints are still hard quality gates,
+but reviewer findings are treated as instructions to improve the manuscript,
+not as a prompt for permission. The assistant should fix or carry forward
+findings automatically unless the review requires a plot, canon,
+content-boundary, relationship, or author-intent decision.
+
 ## Architecture & Database Schema
 
 Unlike the traditional CLI-based `spindle-harness` which relies on external harness state files, the Authoring Supervisor persists run states directly in the SQLite database to facilitate robust resumes, state tracking, and integration with the MCP tool router.
@@ -48,17 +56,43 @@ graph TD
     G -- Host Draft Required --> L[Active assistant drafts and save_scene_draft]
     L --> F
     G -- Active Action --> F
-    G -- Await Checkpoint Review --> H[Present report & ask user feedback]
-    H --> I[authoring_review_checkpoint]
+    G -- Await Checkpoint Review --> H[Run sampled dual-persona review]
+    H --> M{Needs operator decision?}
+    M -- No, local fix/directive --> N[Revise or carry directive autonomously]
+    N --> I[authoring_review_checkpoint]
+    M -- Yes --> O[Ask focused operator question]
+    O --> I
     I --> F
     G -- Blocked by Error --> J[Report errors to user / authoring_resolve_block]
     G -- Complete --> K[Drafting finished]
 ```
 
+### Checkpoint Review Policy
+
+When a run reaches `await_checkpoint_review`, the supervisor should inspect the
+checkpoint report and run any missing sampled dual-persona reviews with
+`rounds: 2`. The checkpoint cannot be closed until those sampled reviews are
+current in the local database.
+
+After the review:
+
+- For local craft issues such as missing sensory grounding, repetition,
+  weak line phrasing, pacing trim, filter words, or scene-specific UI/prose
+  punch-up, the assistant should revise the scene itself and rerun the relevant
+  review/check steps before approving the checkpoint.
+- For feedback that should shape later chapters but does not require changing
+  completed prose, approve the checkpoint with clear directives.
+- For plot, canon, content-boundary, relationship-direction, or author-intent
+  choices, ask the operator a focused question instead of guessing.
+
+The supervisor should not ask "revise or approve?" for reviewer findings it can
+address without changing author intent. It should choose the quality path and
+continue the run.
+
 ### Resuming an Interrupted Run
 If the session or service restarts mid-run:
 1. Call `authoring_status` to fetch the active run.
-2. If the status is `"blocked"` with reason `"await_checkpoint_review"`, call `authoring_review_checkpoint` first.
+2. If the status is `"blocked"` with reason `"await_checkpoint_review"`, inspect the checkpoint report, run any missing sampled dual-persona reviews, resolve local fixes/directives, then call `authoring_review_checkpoint`.
 3. Call `authoring_execute_next` to continue driving the drafting loop.
 
 Run statuses are `"active"`, `"blocked"`, `"completed"`, or `"paused"`. `authoring_cancel_run` sets `"paused"` and `authoring_execute_next` will not advance a paused run.
