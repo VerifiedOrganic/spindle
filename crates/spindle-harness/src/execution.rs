@@ -307,14 +307,16 @@ async fn commit_scene_changes(
             .as_ref()
             .map(|path| artifact_store.root().join(path).display().to_string())
             .unwrap_or_else(|| scene_id.clone());
+        let error_summary = commit_error_summary(commit_output);
         live_scene.blocked_reason = Some(format!(
-            "commit_scene_changes applied partial results; inspect {inspect_target} before continuing",
+            "commit_scene_changes applied partial results: {error_summary}. inspect {inspect_target} before continuing",
         ));
         state.save(state_path)?;
         anyhow::bail!(
-            "commit_scene_changes reported per-item errors for chapter {} scene {}",
+            "commit_scene_changes reported per-item errors for chapter {} scene {}: {}",
             chapter_number,
-            scene_order
+            scene_order,
+            error_summary
         );
     }
 
@@ -1392,6 +1394,36 @@ fn commit_output_has_errors(output: &spindle_core::models::CommitSceneChangesOut
             .relationship_updates
             .iter()
             .any(|item| item.error.is_some())
+}
+
+fn commit_error_summary(output: &spindle_core::models::CommitSceneChangesOutput) -> String {
+    let mut errors = Vec::new();
+    for item in &output.character_states {
+        if let Some(error) = item.error.as_deref() {
+            errors.push(format!("character_state {}: {}", item.character_id, error));
+        }
+    }
+    for item in &output.canonical_facts {
+        if let Some(error) = item.error.as_deref() {
+            errors.push(format!(
+                "canonical_fact {}:{}: {}",
+                item.fact_type, item.key, error
+            ));
+        }
+    }
+    for item in &output.relationship_updates {
+        if let Some(error) = item.error.as_deref() {
+            errors.push(format!(
+                "relationship {} -> {}: {}",
+                item.character_a_id, item.character_b_id, error
+            ));
+        }
+    }
+    if errors.is_empty() {
+        "no item-level errors were reported".to_string()
+    } else {
+        errors.join("; ")
+    }
 }
 
 fn sample_checkpoint_scene_ids(

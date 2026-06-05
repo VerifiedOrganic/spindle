@@ -2682,7 +2682,7 @@ impl ToolRouter {
 
     async fn handle_authoring_save_scene_draft(
         &self,
-        input: AuthoringSaveSceneDraftInput,
+        mut input: AuthoringSaveSceneDraftInput,
     ) -> anyhow::Result<AuthoringSaveSceneDraftOutput> {
         let structured_update_count = authoring_structured_update_count(&input);
         if structured_update_count == 0 {
@@ -2739,6 +2739,27 @@ impl ToolRouter {
             );
         }
 
+        if input.full_text.trim() == "_keep_existing_" {
+            let existing_scene_id = harness_state.chapters[chapter_index].scenes[scene_index]
+                .scene_id
+                .clone()
+                .with_context(|| {
+                    format!(
+                        "scene {}.{} has no saved scene text to keep; provide full_text",
+                        input.chapter_number, input.scene_order
+                    )
+                })?;
+            let existing_scene = repo.get_scene(&existing_scene_id).await?;
+            if existing_scene.project_id != project_id {
+                anyhow::bail!(
+                    "scene {} does not belong to project {}; cannot keep existing text",
+                    existing_scene_id,
+                    project_id
+                );
+            }
+            input.full_text = existing_scene.full_text;
+        }
+
         let save_output = self
             .service
             .save_scene_draft(authoring_save_scene_input(&input))
@@ -2783,6 +2804,8 @@ impl ToolRouter {
             continuity_notes: input.continuity_notes.clone(),
         });
         artifact.save_draft_output = Some(save_output.clone());
+        artifact.commit_output = None;
+        artifact.beat_annotation_output = None;
         artifact.research_source_ids = input.research_source_ids.clone();
         artifact.research_note_ids = input.research_note_ids.clone();
         artifact.research_claim_ids = input.research_claim_ids.clone();
@@ -2897,14 +2920,16 @@ impl ToolRouter {
                 .as_ref()
                 .map(|path| artifact_store.root().join(path).display().to_string())
                 .unwrap_or_else(|| scene_id.clone());
+            let error_summary = authoring_commit_error_summary(commit_output);
             live_scene.blocked_reason = Some(format!(
-                "commit_scene_changes applied partial results; inspect {inspect_target} before continuing",
+                "commit_scene_changes applied partial results: {error_summary}. inspect {inspect_target} before continuing",
             ));
             state.save(state_path)?;
             anyhow::bail!(
-                "commit_scene_changes reported per-item errors for chapter {} scene {}",
+                "commit_scene_changes reported per-item errors for chapter {} scene {}: {}",
                 chapter_number,
-                scene_order
+                scene_order,
+                error_summary
             );
         }
 
@@ -3631,6 +3656,36 @@ fn authoring_commit_output_has_errors(output: &CommitSceneChangesOutput) -> bool
             .relationship_updates
             .iter()
             .any(|item| item.error.is_some())
+}
+
+fn authoring_commit_error_summary(output: &CommitSceneChangesOutput) -> String {
+    let mut errors = Vec::new();
+    for item in &output.character_states {
+        if let Some(error) = item.error.as_deref() {
+            errors.push(format!("character_state {}: {}", item.character_id, error));
+        }
+    }
+    for item in &output.canonical_facts {
+        if let Some(error) = item.error.as_deref() {
+            errors.push(format!(
+                "canonical_fact {}:{}: {}",
+                item.fact_type, item.key, error
+            ));
+        }
+    }
+    for item in &output.relationship_updates {
+        if let Some(error) = item.error.as_deref() {
+            errors.push(format!(
+                "relationship {} -> {}: {}",
+                item.character_a_id, item.character_b_id, error
+            ));
+        }
+    }
+    if errors.is_empty() {
+        "no item-level errors were reported".to_string()
+    } else {
+        errors.join("; ")
+    }
 }
 
 fn authoring_save_scene_input(input: &AuthoringSaveSceneDraftInput) -> SaveSceneDraftInput {

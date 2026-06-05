@@ -861,6 +861,97 @@ agent = "cli-agent-review"
             .unwrap()
             .contains("commit scene changes")
     );
+    let scene_1_id = host_saved_val["scene_id"].as_str().unwrap().to_string();
+    let scene_1_text = svc
+        .repository()
+        .get_scene(&scene_1_id)
+        .await
+        .unwrap()
+        .full_text;
+    assert_eq!(
+        scene_1_text,
+        "Mara stood watch at the Ash Gate, clutching her salt charm."
+    );
+    let scene_1_artifact_rel = host_saved_val["scene_artifact_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let scene_1_artifact_path = data_dir.join("artifacts").join(&scene_1_artifact_rel);
+    let committed_artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&scene_1_artifact_path).unwrap()).unwrap();
+    assert!(
+        !committed_artifact["commit_output"].is_null(),
+        "first commit should cache commit_output"
+    );
+
+    println!("TEST: Step 11a - Re-save Scene 1.1 with keep-existing prose");
+    let keep_existing_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "_keep_existing_",
+        "summary": "Mara watch revised package",
+        "content_rating": "general",
+        "tone": "grim",
+        "beats": [{
+            "beat_type": "setup",
+            "summary": "Mara keeps watch at the Ash Gate after package revision."
+        }],
+        "continuity_notes": [
+            "Package-only revision keeps the existing prose intact."
+        ]
+    });
+    let keep_existing_res = router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(keep_existing_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(keep_existing_res.is_error, Some(false));
+    let keep_existing_text = svc
+        .repository()
+        .get_scene(&scene_1_id)
+        .await
+        .unwrap()
+        .full_text;
+    assert_eq!(
+        keep_existing_text, scene_1_text,
+        "_keep_existing_ must not overwrite scene prose"
+    );
+    let resaved_artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&scene_1_artifact_path).unwrap()).unwrap();
+    assert_eq!(
+        resaved_artifact["package"]["full_text"].as_str(),
+        Some(scene_1_text.as_str())
+    );
+    assert!(
+        resaved_artifact["commit_output"].is_null(),
+        "re-saving package must invalidate stale commit output"
+    );
+    assert!(
+        resaved_artifact["beat_annotation_output"].is_null(),
+        "re-saving package must invalidate stale beat annotations"
+    );
+
+    println!("TEST: Step 11a.1 - Re-commit Scene 1.1 after package-only save");
+    let exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(exec_res.is_error, Some(false), "{exec_res:?}");
+    let exec_val = exec_res.structured_content.unwrap();
+    assert!(
+        exec_val["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes")
+    );
 
     // 11b. Execute next step (Annotate Beats Scene 1)
     println!("TEST: Step 11b - Annotate Beats Scene 1.1");

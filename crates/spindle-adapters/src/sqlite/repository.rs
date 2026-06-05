@@ -7911,8 +7911,10 @@ impl Repository {
         self.get_relationship(branch_id, &in_id, &out_id).await
     }
 
-    /// Apply delta updates to an existing relationship's trust + tension,
-    /// set the reason and last_scene_id, and bump updated_at.
+    /// Apply delta updates to a relationship's trust + tension, set the reason
+    /// and last_scene_id, and bump updated_at. If the scene is the first time
+    /// this pair appears, create the relationship with the deltas as its
+    /// initial trust/tension instead of dropping the continuity update.
     pub async fn update_relationship(
         &self,
         branch_id: &str,
@@ -7936,33 +7938,61 @@ impl Repository {
                 let b = b.clone();
                 move |conn| {
                     let tx = conn.transaction()?;
-                    let (in_id, out_id): (String, String) = tx.query_row(
+                    let mut find = tx.prepare_cached(
                         "SELECT in_id, out_id FROM relates_to \
-                             WHERE branch_id = ?1 \
-                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
-                             LIMIT 1",
-                        rusqlite::params![&branch_id_owned, &a, &b],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                         LIMIT 1",
                     )?;
-                    tx.execute(
-                        "UPDATE relates_to SET \
-                            trust = trust + ?1, \
-                            tension = tension + ?2, \
-                            reason = ?3, \
-                            last_scene_id = ?4, \
-                            updated_at = ?5 \
-                         WHERE branch_id = ?6 AND in_id = ?7 AND out_id = ?8",
-                        rusqlite::params![
-                            trust_delta,
-                            tension_delta,
-                            &reason,
-                            &scene_id,
-                            now,
-                            &branch_id_owned,
-                            &in_id,
-                            &out_id,
-                        ],
-                    )?;
+                    let mut rows = find.query(rusqlite::params![&branch_id_owned, &a, &b])?;
+                    let existing: Option<(String, String)> = if let Some(row) = rows.next()? {
+                        Some((row.get(0)?, row.get(1)?))
+                    } else {
+                        None
+                    };
+                    drop(rows);
+                    drop(find);
+
+                    let (in_id, out_id) = if let Some((in_id, out_id)) = existing {
+                        tx.execute(
+                            "UPDATE relates_to SET \
+                                trust = trust + ?1, \
+                                tension = tension + ?2, \
+                                reason = ?3, \
+                                last_scene_id = ?4, \
+                                updated_at = ?5 \
+                             WHERE branch_id = ?6 AND in_id = ?7 AND out_id = ?8",
+                            rusqlite::params![
+                                trust_delta,
+                                tension_delta,
+                                &reason,
+                                &scene_id,
+                                now,
+                                &branch_id_owned,
+                                &in_id,
+                                &out_id,
+                            ],
+                        )?;
+                        (in_id, out_id)
+                    } else {
+                        tx.execute(
+                            "INSERT INTO relates_to (in_id, out_id, branch_id, \
+                             relationship_type, trust, tension, dynamics, reason, last_scene_id, \
+                             updated_at) \
+                             VALUES (?1, ?2, ?3, 'scene_dynamic', ?4, ?5, '[]', ?6, ?7, ?8)",
+                            rusqlite::params![
+                                &a,
+                                &b,
+                                &branch_id_owned,
+                                trust_delta,
+                                tension_delta,
+                                &reason,
+                                &scene_id,
+                                now,
+                            ],
+                        )?;
+                        (a.clone(), b.clone())
+                    };
                     tx.commit()?;
                     Ok((in_id, out_id))
                 }

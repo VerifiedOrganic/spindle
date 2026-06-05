@@ -8801,7 +8801,7 @@ impl SqliteSpindleService {
                 Err(error) => character_states.push(CommitSceneCharacterStateResult {
                     character_id,
                     state_id: None,
-                    error: Some(error.to_string()),
+                    error: Some(format!("{error:#}")),
                 }),
             }
         }
@@ -8857,7 +8857,7 @@ impl SqliteSpindleService {
                     key,
                     canonical_fact_id: None,
                     superseded_fact_id: None,
-                    error: Some(error.to_string()),
+                    error: Some(format!("{error:#}")),
                 }),
             }
         }
@@ -8891,7 +8891,7 @@ impl SqliteSpindleService {
                     relationship_id: None,
                     trust: None,
                     tension: None,
-                    error: Some(error.to_string()),
+                    error: Some(format!("{error:#}")),
                 }),
             }
         }
@@ -24278,10 +24278,11 @@ rating = "explicit"
         );
     }
 
-    /// Happy path for `commit_scene_changes`: one character state and one
-    /// canonical fact, both succeed; the response carries the per-entry
-    /// result rows, no errors, and a zero-finding summary (Phase-4 fan-out
-    /// is gated, so `findings_summary` is documented as empty).
+    /// Happy path for `commit_scene_changes`: character state, canonical fact,
+    /// and first-contact relationship updates succeed; the response carries
+    /// the per-entry result rows, no errors, and a zero-finding summary
+    /// (Phase-4 fan-out is gated, so `findings_summary` is documented as
+    /// empty).
     #[tokio::test]
     async fn commit_scene_changes_happy_path_state_and_fact() {
         use spindle_core::models::{
@@ -24311,6 +24312,35 @@ rating = "explicit"
                 name: "Mara".into(),
                 summary: "Warden".into(),
                 role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let tal = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Tal".into(),
+                summary: "Scout".into(),
+                role: "ally".into(),
                 realm: None,
                 voice_profile: CharacterVoiceProfileData {
                     tone: None,
@@ -24385,7 +24415,13 @@ rating = "explicit"
                     context: None,
                     supersedes_fact_id: None,
                 }],
-                relationship_updates: Vec::new(),
+                relationship_updates: vec![spindle_core::models::RelationshipUpdateEntry {
+                    character_a_id: mara.character_id.clone(),
+                    character_b_id: tal.character_id.clone(),
+                    trust_delta: 2,
+                    tension_delta: 1,
+                    reason: "Mara accepts Tal's warning at the gate.".into(),
+                }],
                 accept_world_rule_risks: false,
             })
             .await
@@ -24407,7 +24443,14 @@ rating = "explicit"
         );
         assert_eq!(out.canonical_facts[0].fact_type, "oath");
         assert_eq!(out.canonical_facts[0].key, "oath");
-        assert!(out.relationship_updates.is_empty());
+        assert_eq!(out.relationship_updates.len(), 1);
+        assert!(
+            out.relationship_updates[0].relationship_id.is_some(),
+            "first-contact relationship update should create a relationship: {:?}",
+            out.relationship_updates[0].error
+        );
+        assert_eq!(out.relationship_updates[0].trust, Some(2));
+        assert_eq!(out.relationship_updates[0].tension, Some(1));
         assert!(out.world_rule_hits.is_empty(), "no world rules seeded");
         // Phase-4 fan-out runs but produces nothing: the only fact has
         // scene_id == this scene's id (validators skip same-scene facts)
