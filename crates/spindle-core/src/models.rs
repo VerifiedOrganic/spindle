@@ -5280,6 +5280,60 @@ pub struct AuthoringExecuteNextOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringSaveSceneDraftInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub book_number: i32,
+    #[serde(default)]
+    pub chapter_number: i32,
+    #[serde(default)]
+    pub chapter_id: Option<String>,
+    pub scene_order: i32,
+    #[serde(alias = "content", alias = "text")]
+    pub full_text: String,
+    pub summary: String,
+    pub content_rating: ContentRating,
+    #[serde(default)]
+    pub tone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub research_source_ids: Vec<String>,
+    #[serde(default)]
+    pub research_note_ids: Vec<String>,
+    #[serde(default)]
+    pub research_claim_ids: Vec<String>,
+    #[serde(default)]
+    pub research_query_pack_input: Option<String>,
+    #[serde(default)]
+    pub research_context_hash: Option<String>,
+    #[serde(default)]
+    pub character_states: Vec<CharacterStatePatchEntry>,
+    #[serde(default)]
+    pub canonical_facts: Vec<CanonicalFactEntry>,
+    #[serde(default)]
+    pub relationship_updates: Vec<RelationshipUpdateEntry>,
+    #[serde(default)]
+    pub beats: Vec<AnnotatedBeatInput>,
+    #[serde(default)]
+    pub continuity_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringSaveSceneDraftOutput {
+    pub run_id: String,
+    pub scene_id: String,
+    pub scene_artifact_path: String,
+    pub status: String,
+    pub structured_update_count: usize,
+    pub save_output: SaveSceneDraftOutput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringReviewCheckpointInput {
     pub project_id: String,
     #[serde(default)]

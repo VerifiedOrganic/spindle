@@ -23,7 +23,7 @@ The tables defined in migration `V0007__authoring_runs.sql` are:
 
 ## MCP Tools Interface
 
-The supervisor exposes 8 MCP tools through the `spindle-mcp` server:
+The supervisor exposes 9 MCP tools through the `spindle-mcp` server:
 
 | Tool Name | Description | Key Input Fields | Key Output Fields |
 |---|---|---|---|
@@ -31,6 +31,7 @@ The supervisor exposes 8 MCP tools through the `spindle-mcp` server:
 | `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval` | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
 | `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
+| `authoring_save_scene_draft` | Saves host-drafted prose plus its required structured continuity package. | `project_id`, `run_id`, scene placement, `full_text`, `summary`, `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes` | `run_id`, `scene_id`, `scene_artifact_path`, `structured_update_count` |
 | `authoring_record_checkpoint_audit` | Attaches the deep consistency result returned by a separate `check_consistency(deep_check=true)` call to a pending checkpoint. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `deep_consistency` | `run_id`, `status` |
 | `authoring_review_checkpoint` | Marks a checkpoint reviewed and appends directives to resume. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `directives` | `run_id`, `status` |
 | `authoring_resolve_block` | Clears a blocked scene after operator inspection and advances it to the next safe phase. | `project_id`, `run_id`, `chapter_number`, `scene_order`, `target_phase` | `run_id`, `status` |
@@ -54,7 +55,7 @@ graph TD
     C -- Yes --> E[authoring_start_run]
     E --> F[authoring_execute_next]
     F --> G{Next Action?}
-    G -- Host Draft Required --> L[Active assistant drafts and save_scene_draft]
+    G -- Host Draft Required --> L[Active assistant drafts and authoring_save_scene_draft]
     L --> F
     G -- Active Action --> F
     G -- Await Checkpoint Review --> P[Run deep consistency and record audit]
@@ -82,8 +83,9 @@ current in the local database.
 After the review:
 
 - For local craft issues such as missing sensory grounding, repetition,
-  weak line phrasing, pacing trim, filter words, or scene-specific UI/prose
-  punch-up, the assistant should revise the scene itself and rerun the relevant
+  weak line phrasing, pacing trim, filter words, scene-specific UI/prose
+  punch-up, missing expected LitRPG/system markup, or required reward/result UI
+  blocks, the assistant should revise the scene itself and rerun the relevant
   review/check steps before approving the checkpoint.
 - For feedback that should shape later chapters but does not require changing
   completed prose, approve the checkpoint with clear directives.
@@ -106,9 +108,15 @@ Run statuses are `"active"`, `"blocked"`, `"completed"`, or `"paused"`. `authori
 
 By default, `authoring_execute_next` is intended for the natural MCP/chat
 workflow: the active assistant writes General, Teen, and Mature prose using
-Spindle context, then saves it with `save_scene_draft`. This keeps the primary
-writing voice in the current conversation. Explicit scenes may still route
-through the explicit-capable backend configured for the project.
+Spindle context, then saves it with `authoring_save_scene_draft`. This keeps
+the primary writing voice in the current conversation while requiring the same
+structured continuity package as offloaded drafting. Explicit scenes may still
+route through the explicit-capable backend configured for the project.
+
+`authoring_save_scene_draft` requires at least one structured continuity entry:
+`character_states`, `canonical_facts`, `relationship_updates`, `beats`, or
+`continuity_notes`. If the scene introduces no durable canon changes, record
+that explicitly in `continuity_notes`.
 
 `mode: "agent"` is an explicit opt-in for fully automated tests or batch runs.
 In that mode, Spindle routes non-explicit scenes through the configured `draft`

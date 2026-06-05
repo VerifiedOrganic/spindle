@@ -135,7 +135,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWrite
 
 use crate::json_utils::flatten_record_ids;
 use spindle_harness::artifacts::{
-    ArtifactStore, CheckpointReportArtifact, SceneGenerationArtifact,
+    ArtifactStore, CheckpointReportArtifact, GeneratedScenePackage, SceneGenerationArtifact,
 };
 use spindle_harness::execution::{ExecutionResult, execute_one};
 use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
@@ -292,6 +292,7 @@ impl ToolRouter {
                 "authoring_start_run",
                 "authoring_status",
                 "authoring_execute_next",
+                "authoring_save_scene_draft",
                 "authoring_record_checkpoint_audit",
                 "authoring_review_checkpoint",
                 "authoring_resolve_block",
@@ -775,6 +776,10 @@ impl ToolRouter {
             tool::<AuthoringExecuteNextInput, AuthoringExecuteNextOutput>(
                 "authoring_execute_next",
                 "Execute exactly one safe authoring action for the active run",
+            ),
+            tool::<AuthoringSaveSceneDraftInput, AuthoringSaveSceneDraftOutput>(
+                "authoring_save_scene_draft",
+                "Save a host-drafted authoring scene with its required structured continuity package",
             ),
             tool::<AuthoringRecordCheckpointAuditInput, AuthoringRecordCheckpointAuditOutput>(
                 "authoring_record_checkpoint_audit",
@@ -1393,6 +1398,12 @@ impl ToolRouter {
             "authoring_execute_next" => {
                 self.invoke(arguments, |input| self.handle_authoring_execute_next(input))
                     .await
+            }
+            "authoring_save_scene_draft" => {
+                self.invoke(arguments, |input| {
+                    self.handle_authoring_save_scene_draft(input)
+                })
+                .await
             }
             "authoring_record_checkpoint_audit" => {
                 self.invoke(arguments, |input| {
@@ -2390,12 +2401,15 @@ impl ToolRouter {
                 executed_action: "none".to_string(),
                 message: format!(
                     "Host draft required for non-explicit scene {chapter_number}.{scene_order}. \
-                     Draft this scene in the active assistant chat using Spindle context, then call \
-                     save_scene_draft with project_id={}, book_number={}, chapter_number={}, \
-                     scene_order={}, content_rating={}, full_text, summary, and any structured updates. \
+                     Draft this scene in the active assistant chat using Spindle context, then call authoring_save_scene_draft \
+                     with project_id={}, run_id={}, book_number={}, chapter_number={}, \
+                     scene_order={}, content_rating={}, full_text, summary, character_states, canonical_facts, \
+                     relationship_updates, beats, and continuity_notes. This structured continuity package is required; \
+                     use continuity_notes to explicitly say when the scene introduces no durable canon changes. \
                      Then call authoring_execute_next again. Use mode='agent' only when you explicitly \
                      want Spindle to offload non-explicit drafting to the configured draft route.",
                     project_id,
+                    run_id,
                     outcome.state.book_number,
                     chapter_number,
                     scene_order,
@@ -2492,6 +2506,139 @@ impl ToolRouter {
         })
     }
 
+    async fn handle_authoring_save_scene_draft(
+        &self,
+        input: AuthoringSaveSceneDraftInput,
+    ) -> anyhow::Result<AuthoringSaveSceneDraftOutput> {
+        let structured_update_count = authoring_structured_update_count(&input);
+        if structured_update_count == 0 {
+            anyhow::bail!(
+                "authoring_save_scene_draft requires a structured continuity package: \
+                 provide character_states, canonical_facts, relationship_updates, beats, \
+                 or continuity_notes. If the scene introduces no durable canon changes, \
+                 add a continuity_notes entry saying that explicitly."
+            );
+        }
+
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+        let run_id = match input.run_id.clone() {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => repo
+                .find_latest_authoring_run_id(&project_id)
+                .await?
+                .context("No active or latest authoring run found for project")?,
+        };
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+        if run.status == "completed" || run.status == "paused" {
+            anyhow::bail!(
+                "authoring run {} is {}; cannot save a scene draft",
+                run_id,
+                run.status
+            );
+        }
+
+        let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+        let (chapter_index, scene_index) =
+            authoring_scene_indices(&harness_state, input.chapter_number, input.scene_order)
+                .with_context(|| {
+                    format!(
+                        "scene {}.{} not found in authoring run {}",
+                        input.chapter_number, input.scene_order, run_id
+                    )
+                })?;
+
+        let expected_rating = harness_state.chapters[chapter_index].scenes[scene_index]
+            .content_rating
+            .clone();
+        if expected_rating != input.content_rating {
+            anyhow::bail!(
+                "scene {}.{} is planned as {}, but draft was saved as {}",
+                input.chapter_number,
+                input.scene_order,
+                expected_rating.as_str(),
+                input.content_rating.as_str()
+            );
+        }
+
+        let save_output = self
+            .service
+            .save_scene_draft(authoring_save_scene_input(&input))
+            .await?;
+
+        let state_path = authoring_state_path(repo.data_dir(), &run_id);
+        let artifact_store =
+            ArtifactStore::new(authoring_artifacts_root(&state_path, &harness_state));
+        let artifact_rel = harness_state.chapters[chapter_index].scenes[scene_index]
+            .scene_artifact_path
+            .clone()
+            .unwrap_or_else(|| {
+                ArtifactStore::scene_relative_path(input.chapter_number, input.scene_order)
+            });
+
+        let mut artifact = artifact_store
+            .load_json::<SceneGenerationArtifact>(&artifact_rel)
+            .unwrap_or_else(|_| {
+                SceneGenerationArtifact::new(
+                    input.chapter_number,
+                    input.scene_order,
+                    "host".to_string(),
+                    "interactive-host".to_string(),
+                    Some(input.content_rating.as_str().to_string()),
+                    "Host-drafted scene saved through authoring_save_scene_draft.".to_string(),
+                )
+            });
+        artifact.rating = Some(input.content_rating.as_str().to_string());
+        artifact.completion_fragments = vec![input.full_text.clone()];
+        artifact.adapter_kind = Some("host".to_string());
+        artifact.model_name = Some("interactive-host".to_string());
+        artifact.truncated = false;
+        artifact.last_parse_error = None;
+        artifact.package = Some(GeneratedScenePackage {
+            full_text: input.full_text.clone(),
+            summary: input.summary.clone(),
+            tone: input.tone.clone(),
+            character_states: input.character_states.clone(),
+            canonical_facts: input.canonical_facts.clone(),
+            relationship_updates: input.relationship_updates.clone(),
+            beats: input.beats.clone(),
+            continuity_notes: input.continuity_notes.clone(),
+        });
+        artifact.save_draft_output = Some(save_output.clone());
+        artifact.research_source_ids = input.research_source_ids.clone();
+        artifact.research_note_ids = input.research_note_ids.clone();
+        artifact.research_claim_ids = input.research_claim_ids.clone();
+        artifact.research_query_pack_input = input.research_query_pack_input.clone();
+        artifact.research_context_hash = input.research_context_hash.clone();
+        artifact_store.save_json(&artifact_rel, &artifact)?;
+
+        let live_scene = &mut harness_state.chapters[chapter_index].scenes[scene_index];
+        live_scene.phase = ScenePhase::DraftSaved;
+        live_scene.scene_id = Some(save_output.scene_id.clone());
+        live_scene.scene_artifact_path = Some(artifact_rel.clone());
+        live_scene.tone = input.tone.clone();
+        live_scene.source_path = input.source_path.clone();
+        live_scene.blocked_reason = None;
+
+        let (updated_run, updated_ch, updated_sc, updated_cp) =
+            map_harness_to_records(&run_id, &harness_state, &run.status, Some(run.created_at));
+        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+            .await?;
+
+        Ok(AuthoringSaveSceneDraftOutput {
+            run_id,
+            scene_id: save_output.scene_id.clone(),
+            scene_artifact_path: artifact_rel,
+            status: save_output.status.clone(),
+            structured_update_count,
+            save_output,
+        })
+    }
+
     async fn execute_authoring_commit_scene_changes(
         &self,
         state_path: &Path,
@@ -2519,17 +2666,31 @@ impl ToolRouter {
             .and_then(|artifact| artifact.commit_output.clone());
 
         if commit_output.is_none() {
-            let (character_states, canonical_facts, relationship_updates) = artifact
+            let package = match artifact
                 .as_ref()
                 .and_then(|artifact| artifact.package.as_ref())
-                .map(|package| {
-                    (
-                        package.character_states.clone(),
-                        package.canonical_facts.clone(),
-                        package.relationship_updates.clone(),
-                    )
-                })
-                .unwrap_or_default();
+            {
+                Some(package) => package,
+                None => {
+                    let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+                    live_scene.blocked_reason = Some(
+                        "missing structured continuity package; save host-authored scenes with authoring_save_scene_draft before committing".to_string(),
+                    );
+                    state.save(state_path)?;
+                    anyhow::bail!(
+                        "authoring scene {}.{} is missing its structured continuity package; \
+                         call authoring_save_scene_draft with character_states, canonical_facts, \
+                         relationship_updates, beats, and/or continuity_notes before resuming",
+                        chapter_number,
+                        scene_order
+                    );
+                }
+            };
+            let (character_states, canonical_facts, relationship_updates) = (
+                package.character_states.clone(),
+                package.canonical_facts.clone(),
+                package.relationship_updates.clone(),
+            );
             let new_commit_output = self
                 .service
                 .commit_scene_changes(CommitSceneChangesInput {
@@ -2663,7 +2824,10 @@ impl ToolRouter {
 
         let sampled_review_instruction = format!(
             "Run dual-persona review for sampled scenes [{}], inspect this checkpoint report, \
-             then call authoring_review_checkpoint with operator directives.",
+             revise any fixable local craft/continuity/system-UI findings before approval, \
+             then call authoring_review_checkpoint with operator directives. Do not ask \
+             'revise or approve?' unless the finding requires an operator plot, canon, \
+             content-boundary, relationship-direction, or author-intent decision.",
             sampled_scene_ids.join(", ")
         );
         let deep_consistency_instruction = format!(
@@ -2878,38 +3042,17 @@ impl ToolRouter {
         let _ = std::fs::remove_file(&state_path);
 
         let message = review_result?;
-
-        let active_addr = crate::read_addr_file(data_dir)?;
-        let url = format!("http://{}/mcp", active_addr);
-        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
-        let snapshot = client.project_snapshot(&harness_state).await?;
-        let outcome = reconcile_state(harness_state.clone(), &snapshot);
-
-        let mut final_status = "active".to_string();
-        if outcome.has_errors() {
-            final_status = "blocked".to_string();
-        } else {
-            for ch in &harness_state.chapters {
-                for sc in &ch.scenes {
-                    if sc.blocked_reason.is_some() {
-                        final_status = "blocked".to_string();
-                    }
-                }
-            }
-        }
-        if outcome.next_action == NextAction::Complete {
-            final_status = "completed".to_string();
-        }
+        let final_status = authoring_status_after_checkpoint_review(&harness_state);
 
         let (updated_run, updated_ch, updated_sc, updated_cp) =
-            map_harness_to_records(&run_id, &harness_state, &final_status, Some(run.created_at));
+            map_harness_to_records(&run_id, &harness_state, final_status, Some(run.created_at));
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
 
         Ok(AuthoringReviewCheckpointOutput {
             run_id,
             message,
-            status: final_status,
+            status: final_status.to_string(),
         })
     }
 
@@ -3150,6 +3293,64 @@ fn authoring_commit_output_has_errors(output: &CommitSceneChangesOutput) -> bool
             .relationship_updates
             .iter()
             .any(|item| item.error.is_some())
+}
+
+fn authoring_save_scene_input(input: &AuthoringSaveSceneDraftInput) -> SaveSceneDraftInput {
+    SaveSceneDraftInput {
+        project_id: input.project_id.clone(),
+        book_number: input.book_number,
+        chapter_number: input.chapter_number,
+        chapter_id: input.chapter_id.clone(),
+        scene_order: input.scene_order,
+        full_text: input.full_text.clone(),
+        summary: input.summary.clone(),
+        content_rating: input.content_rating.clone(),
+        tone: input.tone.clone(),
+        generation_id: input.generation_id.clone(),
+        source_path: input.source_path.clone(),
+        research_source_ids: input.research_source_ids.clone(),
+        research_note_ids: input.research_note_ids.clone(),
+        research_claim_ids: input.research_claim_ids.clone(),
+        research_query_pack_input: input.research_query_pack_input.clone(),
+        research_context_hash: input.research_context_hash.clone(),
+    }
+}
+
+fn authoring_structured_update_count(input: &AuthoringSaveSceneDraftInput) -> usize {
+    input.character_states.len()
+        + input.canonical_facts.len()
+        + input.relationship_updates.len()
+        + input.beats.len()
+        + input.continuity_notes.len()
+}
+
+fn authoring_status_after_checkpoint_review(state: &HarnessState) -> &'static str {
+    if state.chapters.iter().any(|chapter| {
+        chapter
+            .scenes
+            .iter()
+            .any(|scene| scene.blocked_reason.is_some())
+    }) {
+        return "blocked";
+    }
+    if state
+        .checkpoint_history
+        .iter()
+        .any(|checkpoint| checkpoint.status == CheckpointStatus::PendingReview)
+    {
+        return "blocked";
+    }
+    if state.last_checkpoint_end_chapter >= state.range.end_chapter
+        && state.chapters.iter().all(|chapter| {
+            matches!(
+                chapter.status,
+                spindle_harness::state::ChapterStatus::Complete
+            )
+        })
+    {
+        return "completed";
+    }
+    "active"
 }
 
 fn authoring_sample_checkpoint_scene_ids(

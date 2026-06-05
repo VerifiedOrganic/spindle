@@ -558,8 +558,10 @@ The report contains:
 Run `check_consistency` with `deep_check: true` for the checkpoint range and
 record it with `authoring_record_checkpoint_audit` when using the MCP authoring
 supervisor. Run `run_dual_persona_review` with `rounds: 2` for each
-`sampled_scene_ids` entry, fix or carry forward the findings, then approve the
-checkpoint and optionally add new directives:
+`sampled_scene_ids` entry, fix local findings before approval, then approve the
+checkpoint and optionally add new directives. Use `authoring_save_scene_draft`
+for host-written revisions so revised prose carries character states, canonical
+facts, relationship updates, beats, and continuity notes into the commit step:
 
 ```bash
 cargo run -p spindle-harness -- review-checkpoint \

@@ -74,9 +74,17 @@ authoring_execute_next({
 Default mode is interactive/hybrid. For General, Teen, and Mature scenes,
 `authoring_execute_next` stops at `draft book scene X.Y` and returns a host-draft
 instruction. You, the active assistant in the chat, should draft the scene with
-Spindle context/tools, call `save_scene_draft` with the full prose, then call
-`authoring_execute_next` again. Do not opt into agent drafting unless the user
-explicitly asks for a fully automated/offloaded run.
+Spindle context/tools, call `authoring_save_scene_draft` with the full prose and
+its structured continuity package, then call `authoring_execute_next` again. Do
+not opt into agent drafting unless the user explicitly asks for a fully
+automated/offloaded run.
+
+`authoring_save_scene_draft` is mandatory for host-drafted authoring scenes.
+Include `character_states`, `canonical_facts`, `relationship_updates`, `beats`,
+and `continuity_notes`. If the scene introduces no durable canon changes, add a
+`continuity_notes` entry saying that explicitly. Do not use generic
+`save_scene_draft` inside an active authoring run; it lacks the required
+continuity package.
 
 Explicit scenes may route through the configured explicit-capable backend. For
 batch tests or intentional full offload only, pass:
@@ -133,11 +141,12 @@ When `next_action` becomes `"await_checkpoint_review"`, the execution loop is bl
 5. Classify the review feedback:
    - **Autonomous local fix**: line-level prose, sensory grounding, pacing
      trim, repetition, filter words, UI/system gag sharpening, scene-specific
-     continuity, or other changes that do not alter canon or author intent.
+     continuity, missing expected LitRPG/system markup, required reward/result
+     UI blocks, or other changes that do not alter canon or author intent.
      Revise the affected scene yourself, save the full revised prose with
-     `save_scene_draft`, recommit scene changes, refresh beat annotations and
-     chapter summary when applicable, rerun the sampled dual-persona review, and
-     then approve the checkpoint.
+     `authoring_save_scene_draft`, recommit scene changes, refresh beat
+     annotations and chapter summary when applicable, rerun the sampled
+     dual-persona review, and then approve the checkpoint.
    - **Forward directive**: feedback that should influence later chapters but
      does not require changing completed prose. Approve the checkpoint with
      directives that capture the lesson.

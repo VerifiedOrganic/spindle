@@ -762,29 +762,47 @@ agent = "cli-agent-review"
         "expected host draft instruction, got {host_exec_val:?}"
     );
 
-    println!("TEST: Step 10b - Host saves Scene 1.1 directly through Spindle");
-    let host_saved_scene = svc
-        .save_scene_draft(SaveSceneDraftInput {
-            project_id: project.project_id.clone(),
-            book_number: 1,
-            chapter_number: 1,
-            chapter_id: None,
-            scene_order: 1,
-            full_text: "Mara stood watch at the Ash Gate, clutching her salt charm.".into(),
-            summary: "Mara watch".into(),
-            content_rating: ContentRating::General,
-            tone: Some("grim".into()),
-            generation_id: None,
-            source_path: None,
-            research_source_ids: Vec::new(),
-            research_note_ids: Vec::new(),
-            research_claim_ids: Vec::new(),
-            research_query_pack_input: None,
-            research_context_hash: None,
-        })
+    println!("TEST: Step 10b - Host saves Scene 1.1 with structured continuity package");
+    let host_save_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "Mara stood watch at the Ash Gate, clutching her salt charm.",
+        "summary": "Mara watch",
+        "content_rating": "general",
+        "tone": "grim",
+        "canonical_facts": [{
+            "fact_type": "scene_event",
+            "key": "mara_watch_ash_gate",
+            "value": "Mara stood watch at the Ash Gate with her salt charm.",
+            "context": "Chapter 1 scene 1 host draft"
+        }],
+        "beats": [{
+            "beat_type": "setup",
+            "summary": "Mara keeps watch at the Ash Gate."
+        }],
+        "continuity_notes": [
+            "Mara has her salt charm during the Ash Gate watch."
+        ]
+    });
+    let host_saved_scene = router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(host_save_args.as_object().unwrap()),
+        )
         .await
         .unwrap();
-    assert_eq!(host_saved_scene.status, "saved");
+    assert_eq!(host_saved_scene.is_error, Some(false));
+    let host_saved_val = host_saved_scene.structured_content.unwrap();
+    assert_eq!(host_saved_val["status"].as_str(), Some("saved"));
+    assert_eq!(host_saved_val["structured_update_count"].as_u64(), Some(3));
+    assert!(
+        host_saved_val["scene_artifact_path"]
+            .as_str()
+            .is_some_and(|path| path.contains("scene-001.json"))
+    );
 
     let exec_args = serde_json::json!({
         "project_id": project.project_id,

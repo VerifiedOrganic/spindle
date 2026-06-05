@@ -526,7 +526,10 @@ async fn run_checkpoint(
 
     let sampled_review_instruction = format!(
         "Run dual-persona review for sampled scenes [{}], inspect this checkpoint report, \
-         then call authoring_review_checkpoint with operator directives.",
+         revise any fixable local craft/continuity/system-UI findings before approval, \
+         then call authoring_review_checkpoint with operator directives. Do not ask \
+         'revise or approve?' unless the finding requires an operator plot, canon, \
+         content-boundary, relationship-direction, or author-intent decision.",
         sampled_scene_ids.join(", ")
     );
     let deep_consistency_instruction = format!(
