@@ -113,6 +113,13 @@ pub struct SqliteSpindleService {
 }
 
 const STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS: &str = "\
+Context and safety frame:
+- This is factual research for a fictional book project.
+- The purpose is historical, cultural, legal, social, technical, sensory, or setting accuracy for fiction writing.
+- Do not provide real-world operational instructions, evasion tactics, exploitation guidance, or actionable wrongdoing.
+- Do not write story prose, dialogue, or scene drafts in research mode.
+- Keep all output copyright-safe, concise, provenance-aware, and clearly labeled for uncertainty.
+
 You must respond ONLY with a valid JSON object matching the following schema. Do not include any markdown formatting, code blocks (like ```json), or trailing text.
 
 JSON Schema:
@@ -158,12 +165,15 @@ JSON Schema:
 
 const EXPLICIT_RESEARCH_SYSTEM_APPENDIX: &str = "\
 YOU ARE DOING FACTUAL, HISTORICAL, OR SOCIOLOGICAL ADULT/EXPLICIT RESEARCH ONLY.
+This is adult-only factual research for a fictional book project involving consenting adults.
+The purpose is historical, cultural, legal, social, sexual-health, and setting context for fiction writing.
 CRITICAL BOUNDARIES AND RULES:
 1. You may research adult sexual culture, adult entertainment history, sexual health context, adult relationship norms, consent practices, legal/social history, and setting-specific adult context.
 2. DO NOT generate narrative scene prose or story drafts.
 3. DO NOT produce any content or instructions involving exploitation, coercion, abuse, minors, or illegal sexual conduct.
-4. Tag all explicit/adult research claims, notes, and sources clearly with tags like 'explicit' or 'adult'.
-5. Summaries and claims must be copyright-safe, concise, and focused on factual information with provenance.
+4. DO NOT provide pickup tactics, manipulation tactics, pornography, or real-world operational instructions.
+5. Tag all explicit/adult research claims, notes, and sources clearly with tags like 'explicit' or 'adult'.
+6. Summaries and claims must be copyright-safe, concise, and focused on factual information with provenance.
 ";
 
 fn is_prose_like(text: &str) -> bool {
@@ -21239,6 +21249,20 @@ mod tests {
                 .contains("explicit rating requested but no explicit research route configured"),
             "expected explicit research route guard, got: {err}"
         );
+    }
+
+    #[test]
+    fn research_prompt_instructions_include_fiction_safety_frame() {
+        assert!(STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS.contains("fictional book project"));
+        assert!(STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS.contains("fiction writing"));
+        assert!(STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS.contains("Do not write story prose"));
+        assert!(STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS.contains("operational instructions"));
+
+        assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("fictional book project"));
+        assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("consenting adults"));
+        assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("sexual-health"));
+        assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("pickup tactics"));
+        assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("real-world operational instructions"));
     }
 
     #[tokio::test]

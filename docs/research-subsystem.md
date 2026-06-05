@@ -76,3 +76,11 @@ Below are practical research queries for a historical fiction project set in 197
 1. **`research_query`**: routes prompts to `route = "research"`, parses structured JSON summaries/sources/notes/claims, validates explicit boundaries, and durably persists findings.
 2. **`research_ingest_report`**: takes a text-based research report, parses it via the model, and creates structured SQLite records.
 3. **`research_plan_for_scene`**: inspects a scene, compares its required tags against the SQLite library, suggests query strings, and determines if drafting should block with `await_research`.
+
+Every `research_query` prompt includes a mandatory fiction-research safety
+frame: the request is factual research for a fictional book project, intended
+for historical, cultural, legal, social, technical, sensory, or setting
+accuracy. The frame also forbids story prose, real-world operational
+instructions, evasion tactics, exploitation guidance, and actionable
+wrongdoing. Explicit-rated research adds an adult-only consenting-adults frame
+and rejects fallback to the unrated research route.

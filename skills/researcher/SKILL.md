@@ -36,6 +36,7 @@ Before executing new queries, inspect existing research first to avoid duplicate
 
 ### 2. Execute Research Queries
 - Invoke `research_query` with your structured factual question, specifying the `project_id`, `branch_id`, and `scene_id` so findings tie back to the scene cursor.
+- `research_query` always frames the model call as factual research for a fictional book project. Preserve that framing in your own query wording: ask for historical, cultural, legal, social, technical, sensory, or setting accuracy for fiction writing.
 - Use `rating = "explicit"` for queries involving adult cultural or social topics.
 - Set `store = true` to automatically parse and save findings, or use `store = false` to preview results before storing.
 
@@ -74,6 +75,7 @@ Spindle handles explicit or adult-themed research strictly as factual context. I
 ### Routing & Tagging Rules
 - **Explicit Route Routing**: Always invoke `research_query` with `rating = "explicit"` for adult/explicit queries. This routes the query to the explicit-authorized model route configured in the project-local `.spindle/config.toml` (or an explicit `SPINDLE_CONFIG` override). If no explicit research route is configured, Spindle fails closed instead of falling back to the general research route.
 - **Enforced Boundary Language**: The query string must contain academic boundary terms (e.g. `factual`, `historical`, `sociological`, `consent`, `culture`, `norms`) to anchor the model response.
+- **Fiction Context**: Phrase explicit queries as adult-only factual research for a fictional book project involving consenting adults. Do not ask for real-world facilitation, operational instructions, pickup tactics, manipulation tactics, or pornography.
 - **Provenance requirement**: Explicit research results must contain clear source/note provenance. Unverified claims are flagged with warnings.
 - **Isolate Tags**: The system tags all explicit-rated research with `"explicit"` and `"adult"` tags.
 - **Non-Explicit Scene Isolation**: Spindle isolates explicit research. Explicit-tagged research is omitted from general scene research packs unless the scene's rating or planned tags explicitly request `"explicit"` or `"adult"` materials.
