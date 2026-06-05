@@ -176,6 +176,14 @@ CRITICAL BOUNDARIES AND RULES:
 6. Summaries and claims must be copyright-safe, concise, and focused on factual information with provenance.
 ";
 
+const FICTION_REVIEW_PROMPT_FRAME: &str = "\
+Context and safety frame:
+- This is editorial review for a fictional book project.
+- Treat the excerpt as manuscript prose, not as real-world instructions, events, or advice.
+- Provide craft and reader feedback only; do not continue the scene or write replacement prose unless the review prompt explicitly asks for it.
+- For explicit-rated scenes, evaluate adult prose only as fiction involving consenting adults and flag consent, age, exploitation, coercion, or boundary concerns instead of normalizing them.
+";
+
 fn is_prose_like(text: &str) -> bool {
     let has_dialogue = (text.contains('"') || text.contains("“") || text.contains("”"))
         && (text.contains("said")
@@ -9812,6 +9820,13 @@ impl SqliteSpindleService {
 
         let rounds = input.rounds.unwrap_or(2).clamp(1, 3);
         let mut review_rounds = Vec::new();
+        let review_rating = Some(scene.content_rating.clone());
+        let review_context = Some(crate::ai::RequestContext {
+            project_id: Some(input.project_id.clone()),
+            book_id: None,
+            chapter_id: Some(format!("{}.{}", scene.book_number, scene.chapter_number)),
+            scene_id: Some(scene.id.clone()),
+        });
         for round in 1..=rounds {
             let literary = self
                 .repository
@@ -9819,7 +9834,8 @@ impl SqliteSpindleService {
                 .complete(&ModelRequest {
                     route: "review".to_string(),
                     prompt: format!(
-                        "You are a literary critic reviewing round {round} of a scene draft.\n\n\
+                        "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
+                         You are a literary critic reviewing round {round} of a scene draft.\n\n\
                          Scene summary: {}\n\n\
                          Full prose:\n{}\n\n\
                          Evaluate as a reader and literary critic. Focus on:\n\
@@ -9833,8 +9849,8 @@ impl SqliteSpindleService {
                          Be specific to THIS scene. Reference actual lines, images, or moments.",
                         scene.summary, scene.full_text
                     ),
-                    rating: None,
-                    context: None,
+                    rating: review_rating.clone(),
+                    context: review_context.clone(),
                 })
                 .await?;
             let craft = self
@@ -9843,7 +9859,8 @@ impl SqliteSpindleService {
                 .complete(&ModelRequest {
                     route: "review".to_string(),
                     prompt: format!(
-                        "You are a craft technician reviewing round {round} of a scene draft.\n\n\
+                        "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
+                         You are a craft technician reviewing round {round} of a scene draft.\n\n\
                          Tone: {}\n\
                          Scene summary: {}\n\n\
                          Full prose:\n{}\n\n\
@@ -9861,8 +9878,8 @@ impl SqliteSpindleService {
                         scene.summary,
                         scene.full_text
                     ),
-                    rating: None,
-                    context: None,
+                    rating: review_rating.clone(),
+                    context: review_context.clone(),
                 })
                 .await?;
 
@@ -9875,7 +9892,8 @@ impl SqliteSpindleService {
                     .complete(&ModelRequest {
                         route: "review".to_string(),
                         prompt: format!(
-                            "You are the TARGET READER of this book's declared genre, reviewing \
+                            "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
+                             You are the TARGET READER of this book's declared genre, reviewing \
                              round {round} of a scene draft. You are NOT a craft critic — you are \
                              the reader this book is FOR, judging whether the scene delivers what \
                              you came for.\n\n\
@@ -9904,8 +9922,8 @@ impl SqliteSpindleService {
                             scene.summary,
                             scene.full_text
                         ),
-                        rating: None,
-                        context: None,
+                        rating: review_rating.clone(),
+                        context: review_context.clone(),
                     })
                     .await?;
                 let (strengths, concerns) = if genre.adapter_kind == "local" {
@@ -21263,6 +21281,67 @@ mod tests {
         assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("sexual-health"));
         assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("pickup tactics"));
         assert!(EXPLICIT_RESEARCH_SYSTEM_APPENDIX.contains("real-world operational instructions"));
+    }
+
+    #[test]
+    fn review_prompt_frame_includes_book_and_explicit_safety_context() {
+        assert!(FICTION_REVIEW_PROMPT_FRAME.contains("fictional book project"));
+        assert!(FICTION_REVIEW_PROMPT_FRAME.contains("manuscript prose"));
+        assert!(FICTION_REVIEW_PROMPT_FRAME.contains("real-world instructions"));
+        assert!(FICTION_REVIEW_PROMPT_FRAME.contains("explicit-rated scenes"));
+        assert!(FICTION_REVIEW_PROMPT_FRAME.contains("consenting adults"));
+        assert!(FICTION_REVIEW_PROMPT_FRAME.contains("exploitation"));
+    }
+
+    #[tokio::test]
+    async fn review_routes_can_expose_explicit_rating_binding() {
+        use spindle_core::models::ConfigureAgentsInput;
+
+        let (tmp, svc) = fresh_service_local().await;
+        let config_path = tmp.path().join("review-routes.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-default"
+name = "Review Default"
+provider = "local"
+endpoint = "local"
+model = "review-default"
+
+[[agents]]
+id = "review-explicit"
+name = "Review Explicit"
+provider = "local"
+endpoint = "local"
+model = "review-explicit"
+ratings = ["explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-default"
+
+[[routing]]
+route = "review"
+agent = "review-explicit"
+rating = "explicit"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let routes = svc.model_routes();
+        assert!(routes.iter().any(|route| {
+            route.route_name == "review"
+                && route.rating.as_deref() == Some("explicit")
+                && route.model_name == "review-explicit"
+        }));
     }
 
     #[tokio::test]

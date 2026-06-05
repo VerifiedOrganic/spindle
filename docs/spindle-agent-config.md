@@ -140,6 +140,16 @@ agent = "default-draft"
 route = "draft"
 agent = "uncensored"
 rating = "explicit"
+
+[[routing]]
+route = "review"
+agent = "default-draft"
+
+[[routing]]
+route = "review"
+agent = "uncensored"
+rating = "explicit"
+system_prompt = "You are reviewing explicit adult manuscript prose for a fictional book project. Give critique only; do not continue the scene."
 ```
 
 Resolution order at request time:
@@ -150,11 +160,21 @@ Resolution order at request time:
    `rating` field).
 3. If neither exists for the requested route, the request errors.
 
+Scene drafting, continuations, research, and dual-persona review all forward
+their content rating to the router. That means explicit scenes can offload both
+drafting and review to explicit-capable backends while general review stays on
+the default reviewer.
+
 Server-side request paths that honor `rating` today:
 
+- `complete_generation` / scene drafting receipts.
 - `complete_continuation` (used by the public `continue_generation` MCP tool;
   pass `rating: "explicit"` on `ContinueGenerationInput` to land continuations
   on the explicit-capable agent).
+- `revise_generation`, which preserves the source receipt's rating.
+- `research_query`, which passes its optional `rating` to the `research` route.
+- `run_dual_persona_review`, which passes the saved scene `content_rating` to
+  the `review` route.
 - Any future request paths that flow through `ModelRouter::complete` and pass
   `rating` on `ModelRequest`.
 

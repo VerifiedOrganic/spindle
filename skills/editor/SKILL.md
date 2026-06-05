@@ -136,6 +136,12 @@ show-don't-tell, POV discipline, dialogue technique). The result is persisted
 as a `PersistedDualPersonaReview` record with a `review_id` and `status` so
 you can reference it later.
 
+Spindle frames every dual-persona review as editorial feedback for a fictional
+book project, not real-world advice. The tool also forwards the saved scene
+`content_rating` into the `review` model route; if the scene is `explicit` and
+the project-local config has `[[routing]] route = "review" rating = "explicit"`,
+that explicit-capable reviewer is used automatically.
+
 ### 5. Fact-Checking
 
 When the prose makes technical, historical, scientific, or cultural claims,
