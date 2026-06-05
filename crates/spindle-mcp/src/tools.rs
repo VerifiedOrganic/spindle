@@ -791,7 +791,7 @@ impl ToolRouter {
             ),
             tool::<AuthoringReviewCheckpointInput, AuthoringReviewCheckpointOutput>(
                 "authoring_review_checkpoint",
-                "Mark a checkpoint reviewed and append new editorial directives",
+                "Mark a checkpoint reviewed after deep consistency and sampled reviews are complete; rejects unresolved/fix-later directives unless explicitly operator-overridden",
             ),
             tool::<AuthoringResolveBlockInput, AuthoringResolveBlockOutput>(
                 "authoring_resolve_block",
@@ -3360,6 +3360,19 @@ impl ToolRouter {
             })?;
         }
 
+        if !input.operator_override_unresolved_findings
+            && let Some(unresolved) = authoring_unresolved_checkpoint_directive(&input.directives)
+        {
+            anyhow::bail!(
+                "checkpoint {}-{} cannot be marked reviewed because a directive appears to leave fixable findings unresolved: {:?}. \
+                 Apply the prose/canon fixes first, then call authoring_review_checkpoint with resolved directives. \
+                 If the human operator intentionally accepts the unresolved issues, call again with operator_override_unresolved_findings=true.",
+                input.start_chapter,
+                input.end_chapter,
+                unresolved
+            );
+        }
+
         harness_state.save(&state_path)?;
 
         let review_result = spindle_harness::operator::review_checkpoint(
@@ -3679,6 +3692,43 @@ fn authoring_status_after_checkpoint_review(state: &HarnessState) -> &'static st
         return "completed";
     }
     "active"
+}
+
+fn authoring_unresolved_checkpoint_directive(directives: &[String]) -> Option<String> {
+    const UNRESOLVED_MARKERS: &[&str] = &[
+        "acknowledged",
+        "acknowledge",
+        "fix in polish",
+        "polish pass",
+        "not actually fixed",
+        "not fixed",
+        "unfixed",
+        "still unfixed",
+        "defer",
+        "deferred",
+        "fix later",
+        "later pass",
+        "carry forward",
+        "known issue",
+        "known issues",
+        "remaining issue",
+        "remaining issues",
+        "needs fix",
+        "needs fixing",
+        "todo",
+    ];
+
+    directives.iter().find_map(|directive| {
+        let normalized = directive.to_ascii_lowercase();
+        if UNRESOLVED_MARKERS
+            .iter()
+            .any(|marker| normalized.contains(marker))
+        {
+            Some(directive.clone())
+        } else {
+            None
+        }
+    })
 }
 
 fn authoring_build_chapter_summary_package(

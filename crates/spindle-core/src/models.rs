@@ -5341,6 +5341,11 @@ pub struct AuthoringReviewCheckpointInput {
     pub start_chapter: i32,
     pub end_chapter: i32,
     pub directives: Vec<String>,
+    /// Explicit operator escape hatch for approving a checkpoint while known
+    /// fixable findings remain unresolved. Omit or keep false for normal
+    /// fail-closed review behavior.
+    #[serde(default)]
+    pub operator_override_unresolved_findings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

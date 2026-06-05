@@ -1173,6 +1173,32 @@ agent = "cli-agent-review"
         assert_eq!(sampled_review_res.is_error, Some(false));
     }
 
+    println!("TEST: Step 18c - Review Checkpoint Rejects Unresolved Directives");
+    let unresolved_review_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "directives": ["ACKNOWLEDGED: continuity finding needs fixing in polish pass."]
+    });
+    let unresolved_review_res = router2
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(unresolved_review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unresolved_review_res.is_error, Some(true));
+    let unresolved_review_text = unresolved_review_res
+        .content
+        .first()
+        .map(|content| format!("{content:?}"))
+        .unwrap_or_default();
+    assert!(
+        unresolved_review_text.contains("fixable findings unresolved"),
+        "expected unresolved directive rejection, got {unresolved_review_text:?}"
+    );
+
     println!("TEST: Step 18c - Review Checkpoint");
     let review_res = router2
         .call_tool(
