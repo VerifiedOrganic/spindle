@@ -112,6 +112,116 @@ pub struct SqliteSpindleService {
     generation_receipt_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+const STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS: &str = "\
+You must respond ONLY with a valid JSON object matching the following schema. Do not include any markdown formatting, code blocks (like ```json), or trailing text.
+
+JSON Schema:
+{
+  \"summary\": \"Concise summary of the research query answer (copyright-safe, no copy-pasted prose)\",
+  \"sources\": [
+    {
+      \"title\": \"Title of source\",
+      \"source_type\": \"Type of source (e.g. book, website, article, document)\",
+      \"url\": \"URL if available\",
+      \"author\": \"Author if available\",
+      \"publisher\": \"Publisher if available\",
+      \"published_date\": \"Published date if available\",
+      \"reliability\": \"Reliability assessment (e.g. high, medium, low)\",
+      \"tags\": [\"tag1\", \"tag2\"],
+      \"summary\": \"Concise summary of this source\"
+    }
+  ],
+  \"notes\": [
+    {
+      \"source_index\": 0, // 0-based index referring to the sources array above (optional)
+      \"note\": \"Detailed factual note\",
+      \"quote\": \"Short quote if highly relevant\",
+      \"locator\": \"Page number or section locator\",
+      \"tags\": [\"tag1\", \"tag2\"]
+    }
+  ],
+  \"claims\": [
+    {
+      \"note_index\": 0, // 0-based index referring to the notes array above (optional)
+      \"claim\": \"Distilled factual claim\",
+      \"topic\": \"Specific topic\",
+      \"time_period\": \"Time period of claim\",
+      \"location\": \"Geographic location\",
+      \"confidence\": \"Confidence level (e.g. verified, likely, uncertain)\",
+      \"tags\": [\"tag1\", \"tag2\"]
+    }
+  ],
+  \"tags\": [\"general-tag\"],
+  \"uncertainty_level\": \"Assessment of uncertainty\"
+}
+";
+
+const EXPLICIT_RESEARCH_SYSTEM_APPENDIX: &str = "\
+YOU ARE DOING FACTUAL, HISTORICAL, OR SOCIOLOGICAL ADULT/EXPLICIT RESEARCH ONLY.
+CRITICAL BOUNDARIES AND RULES:
+1. You may research adult sexual culture, adult entertainment history, sexual health context, adult relationship norms, consent practices, legal/social history, and setting-specific adult context.
+2. DO NOT generate narrative scene prose or story drafts.
+3. DO NOT produce any content or instructions involving exploitation, coercion, abuse, minors, or illegal sexual conduct.
+4. Tag all explicit/adult research claims, notes, and sources clearly with tags like 'explicit' or 'adult'.
+5. Summaries and claims must be copyright-safe, concise, and focused on factual information with provenance.
+";
+
+fn is_prose_like(text: &str) -> bool {
+    let has_dialogue = (text.contains('"') || text.contains("“") || text.contains("”"))
+        && (text.contains("said")
+            || text.contains("asked")
+            || text.contains("replied")
+            || text.contains("shouted")
+            || text.contains("thought"));
+    let is_very_long_prose = text.len() > 300 && text.split('.').count() > 3;
+    has_dialogue || is_very_long_prose
+}
+
+fn clean_json_response(raw: &str) -> &str {
+    let mut s = raw.trim();
+    if s.starts_with("```json") {
+        s = s.strip_prefix("```json").unwrap_or(s);
+    } else if s.starts_with("```") {
+        s = s.strip_prefix("```").unwrap_or(s);
+    }
+    if s.ends_with("```") {
+        s = s.strip_suffix("```").unwrap_or(s);
+    }
+    s.trim()
+}
+
+fn extend_unique_tags(tags: &mut Vec<String>, additions: &[String]) {
+    for addition in additions {
+        let trimmed = addition.trim();
+        if !trimmed.is_empty()
+            && !tags
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            tags.push(trimmed.to_string());
+        }
+    }
+}
+
+fn has_tag(tags: &[String], needle: &str) -> bool {
+    tags.iter().any(|tag| tag.eq_ignore_ascii_case(needle))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ResearchQueryOutputJson {
+    pub summary: String,
+    #[serde(default)]
+    pub sources: Vec<spindle_core::models::ResearchSourceOutputItem>,
+    #[serde(default)]
+    pub notes: Vec<spindle_core::models::ResearchNoteOutputItem>,
+    #[serde(default)]
+    pub claims: Vec<spindle_core::models::ResearchClaimOutputItem>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub uncertainty_level: Option<String>,
+}
+
 impl SqliteSpindleService {
     pub fn new(repository: Repository) -> Self {
         Self {
@@ -9896,156 +10006,370 @@ impl SqliteSpindleService {
         })
     }
 
-    /// Live research lookup against a Gemini-compatible chat endpoint.
-    /// Frames the prompt with the project's reader contract, world rules,
-    /// and top-5 `search_bible` hits, then persists the response to
-    /// `research_log`. Mirrors the SurrealDB reference
-    /// (services/mod.rs:682..830 in 705b835^) with the same prompt structure,
-    /// env vars (`GEMINI_API_KEY`, `SPINDLE_RESEARCH_MODEL`,
-    /// `SPINDLE_RESEARCH_ENDPOINT`), and retry-on-failure path.
-    ///
-    /// The reference's `search_project_records` was a SurrealDB-only
-    /// repository call; the SQLite path uses `search_bible` with the
-    /// default semantic mode and a 5-result cap, which produces the same
-    /// `(entity_type, excerpt)` rows used to build the system prompt.
+    /// Route-based research lookup that asks the configured research agent
+    /// for structured source/note/claim JSON, optionally persists it to the
+    /// project-local research library, and records the raw model output in
+    /// `research_log`.
     pub async fn research_query(
         &self,
         input: spindle_core::models::ResearchQueryInput,
     ) -> Result<spindle_core::models::ResearchQueryOutput> {
-        use anyhow::Context;
-        use spindle_core::models::{ResearchContextSummary, ResearchQueryOutput, SearchBibleInput};
+        use crate::ai::ModelRequest;
+        use spindle_core::models::SourcePolicy;
 
         let project = self.repository.get_project(&input.project_id).await?;
 
-        let world_rules = self
-            .repository
-            .list_world_rules_by_project(&input.project_id)
+        let branch_id = self
+            .resolve_research_branch_id(&input.project_id, input.branch_id.as_deref())
             .await?;
-        let world_rules_count = world_rules.len();
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+        let resolved_branch_id = branch_id.clone().unwrap_or(active_branch.id);
 
-        let bible_hits = self
-            .search_bible(SearchBibleInput {
-                project_id: input.project_id.clone(),
-                query: input.query.clone(),
-                limit: Some(5),
-                mode: None,
-                field: None,
-                subject_table: None,
-                format: None,
-                budget_tokens: None,
-            })
-            .await?
-            .results;
-        let bible_hits_count = bible_hits.len();
+        let mut warnings = Vec::new();
+        let input_tags = input
+            .tags
+            .as_deref()
+            .map(normalize_tags)
+            .unwrap_or_default();
+        let is_explicit_rating = input
+            .rating
+            .as_deref()
+            .is_some_and(|rating| rating.trim().eq_ignore_ascii_case("explicit"));
 
-        let api_key = std::env::var("GEMINI_API_KEY").context(
-            "GEMINI_API_KEY env var is not set. Set it to a valid Gemini API key to use \
-             research_query.",
-        )?;
-        let model = std::env::var("SPINDLE_RESEARCH_MODEL")
-            .unwrap_or_else(|_| "gemini-3.1-pro-preview".to_string());
-        let endpoint = std::env::var("SPINDLE_RESEARCH_ENDPOINT").unwrap_or_else(|_| {
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string()
-        });
+        // 1. Perform rating and route configurations check
+        if is_explicit_rating {
+            let bindings = self.repository.model_router().list_route_bindings();
+            let has_explicit_route = bindings.iter().any(|b| {
+                b.route.route_name == "research"
+                    && b.rating
+                        .as_deref()
+                        .is_some_and(|rating| rating.trim().eq_ignore_ascii_case("explicit"))
+            });
+            if !has_explicit_route {
+                anyhow::bail!(
+                    "explicit rating requested but no explicit research route configured; add a `[[routing]]` entry with `route = \"research\"` and `rating = \"explicit\"`"
+                );
+            }
 
-        let mut system_parts = vec![
-            format!(
-                "You are a research assistant for a fiction project called \"{}\".",
-                project.name
-            ),
-            format!("Genre: {}.", project.genre),
-            format!(
-                "Reader contract promise: {}.",
-                project.reader_contract.promise
-            ),
-        ];
-
-        if !world_rules.is_empty() {
-            system_parts.push("Established world rules:".to_string());
-            for rule in &world_rules {
-                system_parts.push(format!(
-                    "- {} ({}): {}",
-                    rule.rule_name, rule.rule_type, rule.description
-                ));
+            // Check if query has adult-only boundary language
+            let query_lower = input.query.to_lowercase();
+            let has_boundary = query_lower.contains("factual")
+                || query_lower.contains("historical")
+                || query_lower.contains("sociological")
+                || query_lower.contains("educational")
+                || query_lower.contains("anthropological")
+                || query_lower.contains("non-prose")
+                || query_lower.contains("academic")
+                || query_lower.contains("boundaries")
+                || query_lower.contains("consent")
+                || query_lower.contains("medical")
+                || query_lower.contains("culture")
+                || query_lower.contains("history");
+            if !has_boundary {
+                warnings.push(
+                    "adult/explicit query without adult-only boundary language in the prompt"
+                        .to_string(),
+                );
             }
         }
 
-        if !bible_hits.is_empty() {
-            system_parts.push("Relevant project records:".to_string());
-            for hit in &bible_hits {
-                system_parts.push(format!("- [{}] {}", hit.entity_type, hit.excerpt));
+        // 2. Resolve scene tags if scene_id is provided
+        let mut scene_tags = Vec::new();
+        if let Some(scene_id) = &input.scene_id {
+            let scene = self.repository.get_scene(scene_id).await?;
+            if scene.project_id != input.project_id {
+                anyhow::bail!("scene does not belong to the requested project");
+            }
+            let plans = self
+                .repository
+                .list_chapter_plans_by_project(&input.project_id)
+                .await?;
+            if let Some(tags) = plans
+                .into_iter()
+                .find(|p| {
+                    p.book_number == scene.book_number && p.chapter_number == scene.chapter_number
+                })
+                .and_then(|plan| {
+                    plan.scenes
+                        .into_iter()
+                        .find(|s| s.scene_order == scene.scene_order)
+                })
+                .map(|planned_scene| planned_scene.research_tags)
+            {
+                scene_tags.extend(tags);
             }
         }
+        scene_tags = normalize_tags(&scene_tags);
 
-        system_parts.push(
-            "Answer factual questions grounded in reality. The author needs accurate \
-             information to make their fiction believable. Be specific, cite real-world \
-             sources when possible, and note any caveats or common misconceptions."
-                .to_string(),
-        );
+        // 3. Build the prompt
+        let mut user_message = match &input.context_hint {
+            Some(hint) => format!(
+                "Context: {hint}\n\nQuestion: {}\n\n{}",
+                input.query, STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS
+            ),
+            None => format!(
+                "Question: {}\n\n{}",
+                input.query, STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS
+            ),
+        };
+        if !input_tags.is_empty() || !scene_tags.is_empty() {
+            user_message.push_str(&format!(
+                "\n\nRequired classification tags: {:?}",
+                [&input_tags[..], &scene_tags[..]].concat()
+            ));
+        }
 
-        let system_prompt = system_parts.join("\n");
-
-        let user_message = match &input.context_hint {
-            Some(hint) => format!("Context: {hint}\n\nQuestion: {}", input.query),
-            None => input.query.clone(),
+        let prompt_to_send = if is_explicit_rating {
+            format!(
+                "{}\n\nSAFETY/BOUNDARY INSTRUCTIONS:\n{}",
+                user_message, EXPLICIT_RESEARCH_SYSTEM_APPENDIX
+            )
+        } else {
+            user_message
         };
 
-        let body = serde_json::json!({
-            "model": model,
-            "max_tokens": 4096,
-            "temperature": 0.3,
-            "stream": false,
-            "reasoning_effort": "medium",
-            "messages": [
-                { "role": "system", "content": system_prompt },
-                { "role": "user", "content": user_message },
-            ]
-        });
+        let m_request = ModelRequest {
+            route: "research".to_string(),
+            prompt: prompt_to_send,
+            rating: input.rating.clone(),
+            context: Some(crate::ai::RequestContext {
+                project_id: Some(input.project_id.clone()),
+                book_id: None,
+                chapter_id: None,
+                scene_id: input.scene_id.clone(),
+            }),
+        };
 
-        let client = reqwest::Client::new();
-        let resp = crate::ai::send_request_with_retry(|| {
-            client
-                .post(&endpoint)
-                .header("Authorization", format!("Bearer {api_key}"))
-                .json(&body)
-        })
-        .await
-        .context("failed to call Gemini research API")?;
+        // 4. Execute routed model completion
+        let complete_res = match self.repository.model_router().complete(&m_request).await {
+            Ok(res) => res,
+            Err(e) => {
+                if e.to_string().contains("unknown model route")
+                    || e.to_string().contains("unsupported model adapter")
+                {
+                    anyhow::bail!(
+                        "No research route is configured for Spindle. Please add a `[[routing]]` entry with `route = \"research\"` to your project-local `.spindle/config.toml`."
+                    );
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp
-            .json()
-            .await
-            .context("failed to parse Gemini response body")?;
+        let raw_response = complete_res.output;
+        let cleaned = clean_json_response(&raw_response);
+        let parsed: Result<ResearchQueryOutputJson, _> = serde_json::from_str(cleaned);
 
-        if !status.is_success() {
-            let detail = resp_body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            anyhow::bail!("Gemini API returned {status}: {detail}");
+        let mut parsed_data = match parsed {
+            Ok(data) => data,
+            Err(err) => {
+                if input.source_policy == Some(SourcePolicy::AllowUnsourcedLeads) {
+                    let lead_claim = spindle_core::models::ResearchClaimOutputItem {
+                        note_index: None,
+                        claim: format!("Raw research lead: {}", raw_response),
+                        topic: Some("Unparsed Lead".to_string()),
+                        time_period: None,
+                        location: None,
+                        confidence: "uncertain".to_string(),
+                        tags: vec!["unparsed".to_string()],
+                    };
+                    ResearchQueryOutputJson {
+                        summary: "Failed to parse structured JSON research. Raw output stored as an unsourced lead.".to_string(),
+                        sources: vec![],
+                        notes: vec![],
+                        claims: vec![lead_claim],
+                        tags: vec!["lead".to_string()],
+                        uncertainty_level: Some("uncertain".to_string()),
+                    }
+                } else {
+                    anyhow::bail!(
+                        "Model returned malformed JSON: {}. Response: {}",
+                        err,
+                        raw_response
+                    );
+                }
+            }
+        };
+        extend_unique_tags(&mut parsed_data.tags, &input_tags);
+        extend_unique_tags(&mut parsed_data.tags, &scene_tags);
+        if is_explicit_rating {
+            extend_unique_tags(
+                &mut parsed_data.tags,
+                &["explicit".to_string(), "adult".to_string()],
+            );
         }
 
-        let response_text = resp_body
-            .pointer("/choices/0/message/content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("unexpected Gemini response structure"))?
-            .to_string();
+        // 5. Warnings and validations on parsed data
+        if is_explicit_rating {
+            let mut total_provenance = false;
+            for claim in &parsed_data.claims {
+                let has_prov = claim
+                    .note_index
+                    .and_then(|idx| parsed_data.notes.get(idx))
+                    .and_then(|n| n.source_index)
+                    .is_some();
+                if has_prov {
+                    total_provenance = true;
+                } else {
+                    warnings.push(format!(
+                        "explicit research claim contains no source provenance: \"{}\"",
+                        claim.claim
+                    ));
+                }
+            }
+            if !total_provenance && !parsed_data.claims.is_empty() {
+                warnings.push("explicit research result contains no provenance".to_string());
+            }
+        }
 
+        if is_explicit_rating {
+            for claim in &parsed_data.claims {
+                if is_prose_like(&claim.claim) {
+                    warnings.push(format!(
+                        "explicit research attempting to save prose-like material as a research claim: \"{}\"",
+                        claim.claim
+                    ));
+                }
+            }
+        }
+
+        let classification_tags = [&input_tags[..], &scene_tags[..]].concat();
+
+        let mut source_ids = Vec::new();
+        let mut note_ids = Vec::new();
+
+        // 6. Persist to database if store is true
+        if input.store {
+            for src in &parsed_data.sources {
+                let mut src_tags = src.tags.clone();
+                extend_unique_tags(&mut src_tags, &classification_tags);
+                if is_explicit_rating {
+                    if !has_tag(&src_tags, "explicit") {
+                        src_tags.push("explicit".to_string());
+                    }
+                    if !has_tag(&src_tags, "adult") {
+                        src_tags.push("adult".to_string());
+                    }
+                }
+                let add_src_out = self
+                    .research_add_source(spindle_core::models::ResearchAddSourceInput {
+                        project_id: input.project_id.clone(),
+                        branch_id: Some(resolved_branch_id.clone()),
+                        title: src.title.clone(),
+                        source_type: src.source_type.clone(),
+                        url: src.url.clone(),
+                        file_path: None,
+                        author: src.author.clone(),
+                        publisher: src.publisher.clone(),
+                        published_date: src.published_date.clone(),
+                        accessed_at: None,
+                        reliability: src.reliability.clone(),
+                        tags: src_tags,
+                        summary: src.summary.clone(),
+                    })
+                    .await?;
+                source_ids.push(add_src_out.source_id);
+            }
+
+            for note in &parsed_data.notes {
+                let note_source_id = note
+                    .source_index
+                    .and_then(|idx| source_ids.get(idx).cloned());
+                let mut note_tags = note.tags.clone();
+                extend_unique_tags(&mut note_tags, &classification_tags);
+                if is_explicit_rating {
+                    if !has_tag(&note_tags, "explicit") {
+                        note_tags.push("explicit".to_string());
+                    }
+                    if !has_tag(&note_tags, "adult") {
+                        note_tags.push("adult".to_string());
+                    }
+                }
+                let add_note_out = self
+                    .research_add_note(spindle_core::models::ResearchAddNoteInput {
+                        project_id: input.project_id.clone(),
+                        source_id: note_source_id,
+                        branch_id: Some(resolved_branch_id.clone()),
+                        note: note.note.clone(),
+                        quote: note.quote.clone(),
+                        locator: note.locator.clone(),
+                        tags: note_tags,
+                    })
+                    .await?;
+                note_ids.push(add_note_out.note_id);
+            }
+
+            for claim in &parsed_data.claims {
+                if is_explicit_rating && is_prose_like(&claim.claim) {
+                    warnings.push(format!(
+                        "explicit research claim skipped because it appears prose-like: \"{}\"",
+                        claim.claim
+                    ));
+                    continue;
+                }
+                let linked_note_id = claim.note_index.and_then(|idx| note_ids.get(idx).cloned());
+                let linked_source_id = claim
+                    .note_index
+                    .and_then(|idx| parsed_data.notes.get(idx))
+                    .and_then(|n| n.source_index)
+                    .and_then(|s_idx| source_ids.get(s_idx).cloned());
+                let has_source_provenance = linked_source_id.is_some();
+                let should_store = has_source_provenance
+                    || input.source_policy.unwrap_or(SourcePolicy::RequireSources)
+                        != SourcePolicy::RequireSources;
+                if should_store {
+                    let mut claim_tags = claim.tags.clone();
+                    extend_unique_tags(&mut claim_tags, &classification_tags);
+                    if is_explicit_rating {
+                        if !has_tag(&claim_tags, "explicit") {
+                            claim_tags.push("explicit".to_string());
+                        }
+                        if !has_tag(&claim_tags, "adult") {
+                            claim_tags.push("adult".to_string());
+                        }
+                    }
+                    self.research_add_claim(spindle_core::models::ResearchAddClaimInput {
+                        project_id: input.project_id.clone(),
+                        source_id: linked_source_id,
+                        note_id: linked_note_id,
+                        branch_id: Some(resolved_branch_id.clone()),
+                        claim: claim.claim.clone(),
+                        topic: claim.topic.clone(),
+                        time_period: claim.time_period.clone(),
+                        location: claim.location.clone(),
+                        confidence: claim.confidence.clone(),
+                        tags: claim_tags,
+                    })
+                    .await?;
+                } else {
+                    warnings.push(format!(
+                        "research claim skipped because source_policy=require_sources and no source provenance was returned: \"{}\"",
+                        claim.claim
+                    ));
+                }
+            }
+        }
+
+        // 7. Write to the research log
         let context_summary = format!(
-            "project={} | genre={} | world_rules={} | bible_hits={}",
-            project.name, project.genre, world_rules_count, bible_hits_count
+            "project={} | genre={} | rating={} | store={} | sources={} | notes={} | claims={}",
+            project.name,
+            project.genre,
+            input.rating.as_deref().unwrap_or("none"),
+            input.store,
+            parsed_data.sources.len(),
+            parsed_data.notes.len(),
+            parsed_data.claims.len()
         );
+        let log_model = complete_res.model_name;
         if let Err(error) = self
             .repository
             .create_research_log(
                 &input.project_id,
                 &input.query,
                 input.context_hint.as_deref(),
-                &model,
-                &response_text,
+                &log_model,
+                &raw_response,
                 &context_summary,
             )
             .await
@@ -10053,15 +10377,180 @@ impl SqliteSpindleService {
             eprintln!("failed to persist research log: {error}");
         }
 
-        Ok(ResearchQueryOutput {
-            model,
-            response: response_text,
-            context_used: ResearchContextSummary {
-                project_name: project.name,
-                genre: project.genre,
-                world_rules_count,
-                bible_hits_count,
-            },
+        Ok(spindle_core::models::ResearchQueryOutput {
+            summary: parsed_data.summary,
+            sources: parsed_data.sources,
+            notes: parsed_data.notes,
+            claims: parsed_data.claims,
+            tags: parsed_data.tags,
+            warnings,
+            uncertainty_level: parsed_data.uncertainty_level,
+        })
+    }
+
+    pub async fn research_ingest_report(
+        &self,
+        input: spindle_core::models::ResearchIngestReportInput,
+    ) -> Result<spindle_core::models::ResearchIngestReportOutput> {
+        let prompt = format!(
+            "Analyze and parse the following research report titled \"{}\" into the structured JSON research format. \
+             Report contents:\n{}\n\nRequired tags: {:?}",
+            input.title, input.report, input.tags
+        );
+
+        let query_in = spindle_core::models::ResearchQueryInput {
+            project_id: input.project_id.clone(),
+            query: prompt,
+            context_hint: Some(format!("Parse report: {}", input.title)),
+            branch_id: input.branch_id.clone(),
+            rating: input.rating.clone(),
+            tags: Some(input.tags.clone()),
+            scene_id: None,
+            store: true,
+            source_policy: input.source_policy,
+        };
+
+        let out = self.research_query(query_in).await?;
+        Ok(spindle_core::models::ResearchIngestReportOutput {
+            summary: out.summary,
+            sources: out.sources,
+            notes: out.notes,
+            claims: out.claims,
+            tags: out.tags,
+            warnings: out.warnings,
+            uncertainty_level: out.uncertainty_level,
+        })
+    }
+
+    pub async fn research_plan_for_scene(
+        &self,
+        input: spindle_core::models::ResearchPlanForSceneInput,
+    ) -> Result<spindle_core::models::ResearchPlanForSceneOutput> {
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        let project_id = &input.project_id;
+        if scene.project_id != *project_id {
+            anyhow::bail!("scene does not belong to the requested project");
+        }
+        let branch_id = scene.branch_id.clone();
+
+        let planned_scene_opt = if let Ok(plans) = self
+            .repository
+            .list_chapter_plans_by_project(project_id)
+            .await
+        {
+            plans
+                .into_iter()
+                .find(|p| {
+                    p.book_number == scene.book_number && p.chapter_number == scene.chapter_number
+                })
+                .and_then(|plan| {
+                    plan.scenes
+                        .into_iter()
+                        .find(|s| s.scene_order == scene.scene_order)
+                })
+        } else {
+            None
+        };
+
+        let mut research_required = false;
+        let mut target_tags = Vec::new();
+        let mut explicit_query = None;
+        let scene_summary = input
+            .planned_scene_summary
+            .clone()
+            .unwrap_or(scene.summary.clone());
+
+        if let Some(planned_scene) = planned_scene_opt {
+            research_required = planned_scene.research_required.unwrap_or(false);
+            target_tags = planned_scene.research_tags;
+            explicit_query = planned_scene.explicit_query;
+        }
+
+        if let Some(in_tags) = &input.tags {
+            target_tags.extend(in_tags.clone());
+        }
+        if input.rating.is_some() {
+            research_required = true;
+        }
+
+        let pack = self
+            .research_pack_for_scene(spindle_core::models::ResearchPackForSceneInput {
+                project_id: project_id.clone(),
+                branch_id: Some(branch_id),
+                scene_summary: Some(scene_summary.clone()),
+                scene_location: None,
+                character_ids: vec![],
+                tags: target_tags.clone(),
+                explicit_query: explicit_query.clone(),
+                limit: Some(100),
+            })
+            .await?;
+
+        let research_pack_empty =
+            pack.sources.is_empty() && pack.notes.is_empty() && pack.claims.is_empty();
+
+        let mut research_tags_matched = true;
+        let mut missing_tags = Vec::new();
+        if !target_tags.is_empty() {
+            let mut found_any = false;
+            for t in &target_tags {
+                let t_lower = t.to_lowercase();
+                let mut found_this = false;
+                for s in &pack.sources {
+                    if s.tags.iter().any(|st| st.to_lowercase() == t_lower) {
+                        found_this = true;
+                        break;
+                    }
+                }
+                if !found_this {
+                    for n in &pack.notes {
+                        if n.tags.iter().any(|nt| nt.to_lowercase() == t_lower) {
+                            found_this = true;
+                            break;
+                        }
+                    }
+                }
+                if !found_this {
+                    for c in &pack.claims {
+                        if c.tags.iter().any(|ct| ct.to_lowercase() == t_lower) {
+                            found_this = true;
+                            break;
+                        }
+                    }
+                }
+                if found_this {
+                    found_any = true;
+                } else {
+                    missing_tags.push(t.clone());
+                }
+            }
+            research_tags_matched = found_any;
+        }
+
+        let await_research = (research_required && research_pack_empty)
+            || (!target_tags.is_empty() && !research_tags_matched);
+
+        let mut suggested_queries = Vec::new();
+        if let Some(eq) = explicit_query {
+            suggested_queries.push(eq);
+        }
+        for tag in &missing_tags {
+            suggested_queries.push(format!(
+                "historical context and factual details for {}",
+                tag
+            ));
+        }
+        if suggested_queries.is_empty() && !scene_summary.is_empty() {
+            suggested_queries.push(format!(
+                "factual research query for scene: {}",
+                scene_summary
+            ));
+        }
+
+        Ok(spindle_core::models::ResearchPlanForSceneOutput {
+            suggested_queries,
+            missing_tags,
+            await_research,
         })
     }
 
@@ -10320,6 +10809,18 @@ impl SqliteSpindleService {
             }
         }
 
+        let is_explicit_requested = target_tags.iter().any(|t| {
+            let tl = t.to_lowercase();
+            tl == "explicit" || tl == "adult"
+        }) || input
+            .explicit_query
+            .as_ref()
+            .map(|q| {
+                let ql = q.to_lowercase();
+                ql.contains("explicit") || ql.contains("adult")
+            })
+            .unwrap_or(false);
+
         let all_sources = self
             .repository
             .list_research_sources_by_project(project_id)
@@ -10328,6 +10829,16 @@ impl SqliteSpindleService {
             .filter(|source| {
                 research_branch_matches(source.branch_id.as_deref(), branch_id.as_deref())
             })
+            .filter(|source| {
+                if !is_explicit_requested {
+                    !source.tags.iter().any(|t| {
+                        let tl = t.to_lowercase();
+                        tl == "explicit" || tl == "adult"
+                    })
+                } else {
+                    true
+                }
+            })
             .collect::<Vec<_>>();
         let all_notes = self
             .repository
@@ -10335,6 +10846,16 @@ impl SqliteSpindleService {
             .await?
             .into_iter()
             .filter(|note| research_branch_matches(note.branch_id.as_deref(), branch_id.as_deref()))
+            .filter(|note| {
+                if !is_explicit_requested {
+                    !note.tags.iter().any(|t| {
+                        let tl = t.to_lowercase();
+                        tl == "explicit" || tl == "adult"
+                    })
+                } else {
+                    true
+                }
+            })
             .collect::<Vec<_>>();
         let all_claims = self
             .repository
@@ -10343,6 +10864,16 @@ impl SqliteSpindleService {
             .into_iter()
             .filter(|claim| {
                 research_branch_matches(claim.branch_id.as_deref(), branch_id.as_deref())
+            })
+            .filter(|claim| {
+                if !is_explicit_requested {
+                    !claim.tags.iter().any(|t| {
+                        let tl = t.to_lowercase();
+                        tl == "explicit" || tl == "adult"
+                    })
+                } else {
+                    true
+                }
             })
             .collect::<Vec<_>>();
 
@@ -20483,45 +21014,318 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn research_query_errors_without_gemini_key() {
-        use spindle_core::models::ResearchQueryInput;
+    async fn test_research_subsystem_workflow() {
+        use spindle_core::models::{
+            ContentRating, CreateProjectInput, PlanChapterInput, PlanChapterSceneInput,
+            ReaderContract, ResearchIngestReportInput, ResearchPlanForSceneInput,
+            ResearchQueryInput, SaveSceneDraftInput, SourcePolicy,
+        };
 
-        // Pin GEMINI_API_KEY to unset so this test does the early-bail
-        // path deterministically. The test is single-threaded
-        // (current_thread + #[tokio::test]) but the env var is global —
-        // wrap the mutation in a guard via a serial fence on the env.
-        // SAFETY: each test process serializes its own env writes; the
-        // unsafe block scope is whatever the runner allots this test.
-        // unsafe is required for std::env::remove_var since 2024 edition.
-        unsafe {
-            std::env::remove_var("GEMINI_API_KEY");
-        }
-
-        let (_tmp, svc) = fresh_service().await;
+        let (_tmp, svc) = fresh_service_local().await;
         let proj = svc
             .create_project(CreateProjectInput {
-                name: "Research".into(),
+                name: "Vegas Mob".into(),
                 project_type: "novel".into(),
-                genre: "fantasy".into(),
+                genre: "historical-crime".into(),
                 reader_contract: ReaderContract {
-                    promise: "p".into(),
+                    promise: "Gritty 70s Vegas".into(),
                     style_notes: Vec::new(),
                     boundaries: Vec::new(),
                 },
             })
             .await
             .unwrap();
+
+        // 1. Run a structured query that persists mock sources/notes/claims
+        let out = svc
+            .research_query(ResearchQueryInput {
+                project_id: proj.project_id.clone(),
+                query: "MOCK_VAL: details on skim operations".into(),
+                context_hint: None,
+                branch_id: None,
+                rating: None,
+                tags: Some(vec!["skim".into()]),
+                scene_id: None,
+                store: true,
+                source_policy: Some(SourcePolicy::RequireSources),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.summary, "Mock research summary");
+        assert_eq!(out.sources.len(), 1);
+        assert_eq!(out.sources[0].title, "Mock Source");
+        assert_eq!(out.claims.len(), 1);
+        assert_eq!(out.claims[0].claim, "Mock claim");
+        assert!(out.tags.iter().any(|tag| tag == "skim"));
+        assert!(out.warnings.is_empty());
+
+        // Verify items were persisted in the repository
+        let saved_sources = svc
+            .repository
+            .list_research_sources_by_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert_eq!(saved_sources.len(), 1);
+        assert_eq!(saved_sources[0].title, "Mock Source");
+        assert!(saved_sources[0].tags.iter().any(|tag| tag == "skim"));
+
+        let saved_claims = svc
+            .repository
+            .list_research_claims_by_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert_eq!(saved_claims.len(), 1);
+        assert_eq!(saved_claims[0].claim, "Mock claim");
+        assert!(saved_claims[0].tags.iter().any(|tag| tag == "skim"));
+
+        // 2. Ingest a research report
+        let report_out = svc
+            .research_ingest_report(ResearchIngestReportInput {
+                project_id: proj.project_id.clone(),
+                branch_id: None,
+                title: "MobSkimming".into(),
+                report: "MOCK_VAL: mob skim details".into(),
+                tags: vec!["ingest-tag".into()],
+                rating: None,
+                source_policy: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(report_out.summary, "Mock research summary");
+        assert_eq!(report_out.sources.len(), 1);
+        assert!(report_out.tags.iter().any(|tag| tag == "ingest-tag"));
+        let saved_sources_after_report = svc
+            .repository
+            .list_research_sources_by_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert!(
+            saved_sources_after_report
+                .iter()
+                .any(|source| source.tags.iter().any(|tag| tag == "ingest-tag"))
+        );
+
+        // 3. Plan research for a scene
+        // Setup a planned scene
+        let active_branch = svc
+            .repository
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+        let _plan = svc
+            .plan_chapter(PlanChapterInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                pov_character_id: None,
+                synopsis: "The boss gets sketch outline.".into(),
+                target_theme_ids: Vec::new(),
+                target_conflict_ids: Vec::new(),
+                target_plot_line_ids: Vec::new(),
+                scenes: vec![PlanChapterSceneInput {
+                    scene_order: 1,
+                    summary: "Casino skim meetup.".into(),
+                    beat_structure: Vec::new(),
+                    character_ids: Vec::new(),
+                    purpose: "establish skim stakes".into(),
+                    research_required: Some(true),
+                    research_tags: vec!["skim-tag".into()],
+                    explicit_query: Some("Casino skim operations".into()),
+                }],
+            })
+            .await
+            .unwrap();
+
+        // Create the scene in the DB so it exists for scene_id
+        let scene_ref = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "Prose draft...".into(),
+                summary: "Casino skim meetup.".into(),
+                content_rating: ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Check plan before research is added with "skim-tag": it should block
+        let plan_check = svc
+            .research_plan_for_scene(ResearchPlanForSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene_ref.scene_id.clone(),
+                planned_scene_summary: None,
+                rating: None,
+                tags: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(plan_check.await_research);
+        assert!(plan_check.missing_tags.contains(&"skim-tag".to_string()));
+
+        // Add a claim with "skim-tag"
+        svc.research_add_claim(spindle_core::models::ResearchAddClaimInput {
+            project_id: proj.project_id.clone(),
+            source_id: None,
+            note_id: None,
+            branch_id: Some(active_branch.id.clone()),
+            claim: "Casino skimming is verified".into(),
+            topic: Some("Skim".into()),
+            time_period: None,
+            location: None,
+            confidence: "verified".into(),
+            tags: vec!["skim-tag".into()],
+        })
+        .await
+        .unwrap();
+
+        // Check plan again: it should now NOT block because "skim-tag" is satisfied
+        let plan_check_after = svc
+            .research_plan_for_scene(ResearchPlanForSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene_ref.scene_id.clone(),
+                planned_scene_summary: None,
+                rating: None,
+                tags: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(!plan_check_after.await_research);
+        assert!(plan_check_after.missing_tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_research_query_explicit_requires_explicit_route() {
+        use spindle_core::models::{CreateProjectInput, ReaderContract, ResearchQueryInput};
+
+        let (_tmp, svc) = fresh_service_local().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Vegas Mob Explicit".into(),
+                project_type: "novel".into(),
+                genre: "historical-crime".into(),
+                reader_contract: ReaderContract {
+                    promise: "Gritty 70s Vegas".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
         let err = svc
             .research_query(ResearchQueryInput {
-                project_id: proj.project_id,
-                query: "How do tides work?".into(),
+                project_id: proj.project_id.clone(),
+                query: "MOCK_PROSE: adult entertainment details".into(),
                 context_hint: None,
+                branch_id: None,
+                rating: Some("explicit".into()),
+                tags: None,
+                scene_id: None,
+                store: false,
+                source_policy: None,
             })
             .await
             .unwrap_err();
+
         assert!(
-            err.to_string().contains("GEMINI_API_KEY"),
-            "expected GEMINI_API_KEY guard, got: {err}"
+            err.to_string()
+                .contains("explicit rating requested but no explicit research route configured"),
+            "expected explicit research route guard, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_query_explicit_warnings() {
+        use spindle_core::models::{
+            ConfigureAgentsInput, CreateProjectInput, ReaderContract, ResearchQueryInput,
+        };
+
+        let (tmp, svc) = fresh_service_local().await;
+        let config_path = tmp.path().join("research-routes.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "research-local"
+name = "Research Local"
+provider = "local"
+endpoint = "local"
+model = "research-local"
+ratings = ["safe", "mature", "explicit"]
+
+[[routing]]
+route = "research"
+agent = "research-local"
+
+[[routing]]
+route = "research"
+agent = "research-local"
+rating = "explicit"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Vegas Mob Explicit".into(),
+                project_type: "novel".into(),
+                genre: "historical-crime".into(),
+                reader_contract: ReaderContract {
+                    promise: "Gritty 70s Vegas".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .research_query(ResearchQueryInput {
+                project_id: proj.project_id.clone(),
+                query: "MOCK_PROSE: adult entertainment details".into(),
+                context_hint: None,
+                branch_id: None,
+                rating: Some("explicit".into()),
+                tags: None,
+                scene_id: None,
+                store: false,
+                source_policy: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.warnings
+                .iter()
+                .any(|w| w.contains("no explicit research route configured"))
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("adult/explicit query without adult-only boundary language"))
+        );
+        assert!(out.warnings.iter().any(|w| {
+            w.contains("explicit research claim contains no source provenance")
+                || w.contains("explicit research result contains no provenance")
+        }));
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("prose-like material"))
         );
     }
 

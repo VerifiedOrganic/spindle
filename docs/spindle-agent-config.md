@@ -35,8 +35,10 @@ defaults.
 Spindle resolves agent config in this order:
 
 1. `SPINDLE_CONFIG`, if set
-2. `./spindle.toml` in the current working directory
-3. `~/.spindle/config.toml`
+2. the nearest project-local `.spindle/config.toml` found by walking up from
+   the current working directory
+3. `./spindle.toml` in the current working directory
+4. `~/.spindle/config.toml`
 
 If none of those files exist, Spindle starts with the default built-in routes.
 
@@ -83,6 +85,10 @@ agent = "local-http"
 [[routing]]
 route = "import_validate"
 agent = "local-http"
+
+[[routing]]
+route = "research"
+agent = "local-http"
 ```
 
 ## Route names
@@ -91,6 +97,7 @@ The current runtime understands these route names:
 
 - `draft`
 - `review`
+- `research`
 - `embedding`
 - `import_extract`
 - `import_synthesize`
@@ -159,6 +166,47 @@ Validation rules enforced by the loader:
 
 Inspect the loaded rules through the `bible://config/routing` resource. The
 `rating` and `system_prompt` fields are surfaced on each rule when configured.
+
+## Research routing
+
+`route = "research"` is the first-class route for agent-assisted factual
+research. Research agents should return structured source/note/claim JSON and
+must not draft story prose. Use a default research route for ordinary setting,
+technical, historical, and social research. Add a rating-specific override for
+adult/explicit factual research so those queries do not fall through to the
+general research model.
+
+```toml
+[[agents]]
+id = "general-research"
+name = "General research model"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "research-model"
+api_key_env = "RESEARCH_API_KEY"
+
+[[agents]]
+id = "explicit-research"
+name = "Explicit/adult factual research model"
+provider = "grok-cli"
+endpoint = "grok"
+model = "grok-build"
+ratings = ["safe", "mature", "explicit"]
+agent_profile = "spindle-researcher"
+
+[[routing]]
+route = "research"
+agent = "general-research"
+
+[[routing]]
+route = "research"
+agent = "explicit-research"
+rating = "explicit"
+```
+
+When `research_query` is called with `rating = "explicit"`, Spindle requires
+the explicit research override. This is stricter than generic model routing:
+explicit research should never silently use the unrated research route.
 
 ## Startup behavior
 

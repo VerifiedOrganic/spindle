@@ -129,6 +129,7 @@ Spindle ships writing skills your AI client can load directly:
 - `bible-librarian` — search and lookup across the story bible
 - `authoring-supervisor` — coordinate interactive drafting and checkpoint runs
 - `scene-writer` — draft prose with the right context
+- `researcher` — gather, summarize, and tag factual research ([docs/research-subsystem.md](docs/research-subsystem.md))
 - `character-creator` — build out a character
 - `worldbuilder` — develop locations, factions, rules, lore
 - `plot-architect` — structure, pacing, conflicts, narrative promises

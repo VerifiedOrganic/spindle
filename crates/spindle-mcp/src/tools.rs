@@ -279,6 +279,8 @@ impl ToolRouter {
                 "research_search",
                 "research_pack_for_scene",
                 "research_usage_for_scene",
+                "research_ingest_report",
+                "research_plan_for_scene",
                 "pull_chapter_from_file",
                 "push_chapter_to_file",
                 "authoring_prepare_run",
@@ -607,6 +609,14 @@ impl ToolRouter {
             tool::<ResearchUsageForSceneInput, ResearchUsageForSceneOutput>(
                 "research_usage_for_scene",
                 "Retrieve the recorded research usage history for a drafted scene",
+            ),
+            tool::<ResearchIngestReportInput, ResearchIngestReportOutput>(
+                "research_ingest_report",
+                "Ingest and parse a text-based research report, creating sources, notes, and claims in the project-local database",
+            ),
+            tool::<ResearchPlanForSceneInput, ResearchPlanForSceneOutput>(
+                "research_plan_for_scene",
+                "Determine missing research, suggest queries, and check if a scene is blocked on research",
             ),
             tool::<ExportEpubInput, ExportEpubOutput>(
                 "export_epub",
@@ -1449,6 +1459,18 @@ impl ToolRouter {
                 })
                 .await
             }
+            "research_ingest_report" => {
+                self.invoke(arguments, |input| {
+                    self.service.research_ingest_report(input)
+                })
+                .await
+            }
+            "research_plan_for_scene" => {
+                self.invoke(arguments, |input| {
+                    self.service.research_plan_for_scene(input)
+                })
+                .await
+            }
             "export_epub" => {
                 self.invoke(arguments, |input| self.service.export_epub(input))
                     .await
@@ -1664,6 +1686,7 @@ fn tool_requires_session_serialization(name: &str) -> bool {
             | "research_search"
             | "research_pack_for_scene"
             | "research_usage_for_scene"
+            | "research_plan_for_scene"
     )
 }
 

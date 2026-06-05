@@ -4480,7 +4480,64 @@ pub struct ReviseGenerationOutput {
     pub generation_output_sha256: Option<String>,
 }
 
-// ── Research query (Gemini fact-checking) ───────────────────────────
+// ── Research query and routed research workflow ─────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub enum SourcePolicy {
+    #[default]
+    #[serde(rename = "require_sources")]
+    RequireSources,
+    #[serde(rename = "allow_unsourced_leads")]
+    AllowUnsourcedLeads,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchSourceOutputItem {
+    pub title: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published_date: Option<String>,
+    pub reliability: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchNoteOutputItem {
+    #[serde(default)]
+    pub source_index: Option<usize>,
+    pub note: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchClaimOutputItem {
+    #[serde(default)]
+    pub note_index: Option<usize>,
+    pub claim: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResearchQueryInput {
@@ -4491,24 +4548,75 @@ pub struct ResearchQueryInput {
     /// Optional hint to narrow the research context (e.g. "chapter 5 dive scene").
     #[serde(default)]
     pub context_hint: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub store: bool,
+    #[serde(default)]
+    pub source_policy: Option<SourcePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResearchQueryOutput {
-    /// The model that answered the query.
-    pub model: String,
-    /// The research response text.
-    pub response: String,
-    /// Summary of project context provided to the research model.
-    pub context_used: ResearchContextSummary,
+    pub summary: String,
+    pub sources: Vec<ResearchSourceOutputItem>,
+    pub notes: Vec<ResearchNoteOutputItem>,
+    pub claims: Vec<ResearchClaimOutputItem>,
+    pub tags: Vec<String>,
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub uncertainty_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ResearchContextSummary {
-    pub project_name: String,
-    pub genre: String,
-    pub world_rules_count: usize,
-    pub bible_hits_count: usize,
+pub struct ResearchIngestReportInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub report: String,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub source_policy: Option<SourcePolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchIngestReportOutput {
+    pub summary: String,
+    pub sources: Vec<ResearchSourceOutputItem>,
+    pub notes: Vec<ResearchNoteOutputItem>,
+    pub claims: Vec<ResearchClaimOutputItem>,
+    pub tags: Vec<String>,
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub uncertainty_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPlanForSceneInput {
+    pub project_id: String,
+    pub scene_id: String,
+    #[serde(default)]
+    pub planned_scene_summary: Option<String>,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPlanForSceneOutput {
+    pub suggested_queries: Vec<String>,
+    pub missing_tags: Vec<String>,
+    pub await_research: bool,
 }
 
 // ── Research Library Models & DTOs ──────────────────────────────────
@@ -5434,6 +5542,12 @@ mod tests {
             project_id: "project:demo".to_string(),
             query: "What does decompression sickness feel like?".to_string(),
             context_hint: Some("chapter 5 dive scene".to_string()),
+            branch_id: None,
+            rating: None,
+            tags: None,
+            scene_id: None,
+            store: true,
+            source_policy: None,
         };
         let json = serde_json::to_string(&input).expect("serialize research query input");
         let decoded: ResearchQueryInput =
@@ -5443,23 +5557,20 @@ mod tests {
         assert_eq!(decoded.context_hint, input.context_hint);
 
         let output = ResearchQueryOutput {
-            model: "gemini-3.1-pro-preview".to_string(),
-            response: "Decompression sickness causes joint pain and fatigue.".to_string(),
-            context_used: ResearchContextSummary {
-                project_name: "Deep Blue".to_string(),
-                genre: "thriller".to_string(),
-                world_rules_count: 3,
-                bible_hits_count: 5,
-            },
+            summary: "Decompression sickness causes joint pain and fatigue.".to_string(),
+            sources: vec![],
+            notes: vec![],
+            claims: vec![],
+            tags: vec!["diving".to_string()],
+            warnings: vec![],
+            uncertainty_level: Some("low".to_string()),
         };
         let json = serde_json::to_string(&output).expect("serialize research query output");
         let decoded: ResearchQueryOutput =
             serde_json::from_str(&json).expect("deserialize research query output");
-        assert_eq!(decoded.model, output.model);
-        assert_eq!(decoded.response, output.response);
-        assert_eq!(decoded.context_used.project_name, "Deep Blue");
-        assert_eq!(decoded.context_used.world_rules_count, 3);
-        assert_eq!(decoded.context_used.bible_hits_count, 5);
+        assert_eq!(decoded.summary, output.summary);
+        assert_eq!(decoded.tags, output.tags);
+        assert_eq!(decoded.uncertainty_level, output.uncertainty_level);
     }
 
     #[test]

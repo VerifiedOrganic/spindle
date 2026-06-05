@@ -1420,6 +1420,16 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             stop: Vec::new(),
         },
         ModelRoute {
+            route_name: "research".to_string(),
+            adapter_kind: "local".to_string(),
+            model_name: "research-local".to_string(),
+            purpose: "agent-routed research workflow".to_string(),
+            system_prompt: "agent-routed research workflow".to_string(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+        },
+        ModelRoute {
             route_name: "embedding".to_string(),
             adapter_kind: "local".to_string(),
             model_name: EMBEDDING_VERSION.to_string(),
@@ -1474,6 +1484,56 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
     match route.route_name.as_str() {
         "review" => format!("Literary critic and craft technician both reviewed: {compact_prompt}"),
         "draft" => format!("Local drafting adapter synthesized: {compact_prompt}"),
+        "research" => {
+            if prompt.contains("MOCK_VAL") {
+                r#"{
+  "summary": "Mock research summary",
+  "sources": [
+    {
+      "title": "Mock Source",
+      "source_type": "book",
+      "reliability": "high",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "notes": [
+    {
+      "source_index": 0,
+      "note": "Mock note",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "claims": [
+    {
+      "note_index": 0,
+      "claim": "Mock claim",
+      "confidence": "verified",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "tags": ["mock-tag"],
+  "uncertainty_level": "low"
+}"#
+                .to_string()
+            } else if prompt.contains("MOCK_PROSE") {
+                r#"{
+  "summary": "Mock prose summary",
+  "sources": [],
+  "notes": [],
+  "claims": [
+    {
+      "claim": "\"Hello,\" she said to the researcher.",
+      "confidence": "verified",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "tags": ["mock-tag"]
+}"#
+                .to_string()
+            } else {
+                format!("Local research adapter investigated: {compact_prompt}")
+            }
+        }
         "import_extract" => format!("Local import extraction adapter harvested: {compact_prompt}"),
         "import_synthesize" => {
             format!("Local import synthesis adapter assembled: {compact_prompt}")
@@ -1549,7 +1609,7 @@ mod tests {
 
         assert_eq!(output.adapter_kind, "local");
         assert!(output.output.contains("reviewed"));
-        assert_eq!(router.list_routes().len(), 6);
+        assert_eq!(router.list_routes().len(), 7);
     }
 
     #[tokio::test]
