@@ -675,7 +675,9 @@ impl ResourceRouter {
 mod tests {
     use super::*;
     use spindle_adapters::sqlite::{Repository, SqlitePool};
-    use spindle_core::models::{CreateProjectInput, ReaderContract};
+    use spindle_core::models::{
+        ContentRating, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
+    };
     use tempfile::TempDir;
 
     async fn fresh_router() -> (TempDir, ResourceRouter, String) {
@@ -700,6 +702,55 @@ mod tests {
             .await
             .unwrap();
         (tmp, ResourceRouter::new(service), project.project_id)
+    }
+
+    #[tokio::test]
+    async fn direct_scene_resource_includes_saved_prose() {
+        let (_tmp, router, project_id) = fresh_router().await;
+        let saved = router
+            .service
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Mara stood at the Ash Gate, listening for the old bell.".to_string(),
+                summary: "Mara waits at the gate.".to_string(),
+                content_rating: ContentRating::General,
+                tone: Some("grim".to_string()),
+                generation_id: None,
+                source_path: None,
+                research_source_ids: Vec::new(),
+                research_note_ids: Vec::new(),
+                research_claim_ids: Vec::new(),
+                research_query_pack_input: None,
+                research_context_hash: None,
+            })
+            .await
+            .unwrap();
+
+        let uri = format!("bible://{}", saved.scene_id);
+        let read = router.read_resource(&uri).await.unwrap();
+        let text = match &read.contents[0] {
+            ResourceContents::TextResourceContents { text, .. } => text,
+            ResourceContents::BlobResourceContents { .. } => {
+                panic!("scene resource should be json text")
+            }
+        };
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(value["id"].as_str(), Some(saved.scene_id.as_str()));
+        assert_eq!(value["table"].as_str(), Some("scene"));
+        assert_eq!(
+            value["full_text"].as_str(),
+            Some("Mara stood at the Ash Gate, listening for the old bell.")
+        );
+        assert_eq!(value["summary"].as_str(), Some("Mara waits at the gate."));
+        assert_eq!(value["book_number"].as_i64(), Some(1));
+        assert_eq!(value["chapter_number"].as_i64(), Some(1));
+        assert_eq!(value["scene_order"].as_i64(), Some(1));
+        assert_eq!(value["word_count"].as_u64(), Some(11));
     }
 
     #[tokio::test]

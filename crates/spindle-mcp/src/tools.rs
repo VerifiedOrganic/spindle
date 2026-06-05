@@ -2181,16 +2181,14 @@ impl ToolRouter {
             }
         }
 
-        if current_status != run.status {
-            let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
-                &run_id,
-                &harness_state,
-                &current_status,
-                Some(run.created_at),
-            );
-            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                .await?;
-        }
+        let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+            &run_id,
+            &outcome.state,
+            &current_status,
+            Some(run.created_at),
+        );
+        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+            .await?;
 
         let checkpoint_state = match outcome.next_action {
             NextAction::AwaitCheckpointReview { .. } => Some("await_review".to_string()),
@@ -2367,7 +2365,7 @@ impl ToolRouter {
             scene_order,
         } = &action_to_execute
             && !agent_mode
-            && let Some(scene) = find_harness_scene(&harness_state, *chapter_number, *scene_order)
+            && let Some(scene) = find_harness_scene(&outcome.state, *chapter_number, *scene_order)
             && scene.content_rating != spindle_core::models::ContentRating::Explicit
         {
             return Ok(AuthoringExecuteNextOutput {
@@ -2382,7 +2380,7 @@ impl ToolRouter {
                      Then call authoring_execute_next again. Use mode='agent' only when you explicitly \
                      want Spindle to offload non-explicit drafting to the configured draft route.",
                     project_id,
-                    harness_state.book_number,
+                    outcome.state.book_number,
                     chapter_number,
                     scene_order,
                     scene.content_rating.as_str()
@@ -2392,11 +2390,11 @@ impl ToolRouter {
         }
 
         let state_path = authoring_state_path(data_dir, &run_id);
-        harness_state.save(&state_path)?;
+        outcome.state.save(&state_path)?;
 
         let exec_result = execute_one(
             &state_path,
-            harness_state,
+            outcome.state,
             &client,
             action_to_execute.clone(),
         )

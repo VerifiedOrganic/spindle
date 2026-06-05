@@ -253,47 +253,62 @@ async fn commit_scene_changes(
     let (chapter_index, scene_index) =
         scene_indices(state, chapter_number, scene_order).context("scene not found in state")?;
     let scene = state.chapters[chapter_index].scenes[scene_index].clone();
-    let artifact_path = scene
-        .scene_artifact_path
+    let scene_id = scene
+        .scene_id
         .clone()
-        .context("scene artifact path missing")?;
-    let mut artifact: SceneGenerationArtifact = artifact_store.load_json(&artifact_path)?;
+        .context("scene_id missing for commit_scene_changes")?;
+    let artifact_path = scene.scene_artifact_path.clone();
+    let mut artifact = artifact_path
+        .as_ref()
+        .map(|path| artifact_store.load_json::<SceneGenerationArtifact>(path))
+        .transpose()?;
+    let mut commit_output = artifact
+        .as_ref()
+        .and_then(|artifact| artifact.commit_output.clone());
 
-    if artifact.commit_output.is_none() {
-        let scene_id = scene
-            .scene_id
-            .clone()
-            .context("scene_id missing for commit_scene_changes")?;
-        let package = artifact
-            .package
+    if commit_output.is_none() {
+        let (character_states, canonical_facts, relationship_updates) = artifact
             .as_ref()
-            .context("scene artifact missing generated package")?;
-        let commit_output = client
+            .and_then(|artifact| artifact.package.as_ref())
+            .map(|package| {
+                (
+                    package.character_states.clone(),
+                    package.canonical_facts.clone(),
+                    package.relationship_updates.clone(),
+                )
+            })
+            .unwrap_or_default();
+        let new_commit_output = client
             .commit_scene_changes(&CommitSceneChangesInput {
                 project_id: state.project_id.clone(),
-                scene_id,
-                character_states: package.character_states.clone(),
-                canonical_facts: package.canonical_facts.clone(),
-                relationship_updates: package.relationship_updates.clone(),
+                scene_id: scene_id.clone(),
+                character_states,
+                canonical_facts,
+                relationship_updates,
                 accept_world_rule_risks: true,
             })
             .await
             .with_context(|| {
                 format!("failed to commit scene changes for chapter {chapter_number} scene {scene_order}")
             })?;
-        artifact.commit_output = Some(commit_output.clone());
-        artifact_store.save_json(&artifact_path, &artifact)?;
+        if let (Some(path), Some(artifact)) = (artifact_path.as_ref(), artifact.as_mut()) {
+            artifact.commit_output = Some(new_commit_output.clone());
+            artifact_store.save_json(path, artifact)?;
+        }
+        commit_output = Some(new_commit_output);
     }
 
-    let commit_output = artifact
-        .commit_output
+    let commit_output = commit_output
         .as_ref()
         .context("scene artifact missing commit output")?;
     let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
     if commit_output_has_errors(commit_output) {
+        let inspect_target = artifact_path
+            .as_ref()
+            .map(|path| artifact_store.root().join(path).display().to_string())
+            .unwrap_or_else(|| scene_id.clone());
         live_scene.blocked_reason = Some(format!(
-            "commit_scene_changes applied partial results; inspect artifact {} before continuing",
-            artifact_store.root().join(&artifact_path).display()
+            "commit_scene_changes applied partial results; inspect {inspect_target} before continuing",
         ));
         state.save(state_path)?;
         anyhow::bail!(
@@ -322,26 +337,30 @@ async fn annotate_scene_beats(
     let (chapter_index, scene_index) =
         scene_indices(state, chapter_number, scene_order).context("scene not found in state")?;
     let scene = state.chapters[chapter_index].scenes[scene_index].clone();
-    let artifact_path = scene
-        .scene_artifact_path
+    let scene_id = scene
+        .scene_id
         .clone()
-        .context("scene artifact path missing")?;
-    let mut artifact: SceneGenerationArtifact = artifact_store.load_json(&artifact_path)?;
+        .context("scene_id missing for annotate_scene_beats")?;
+    let artifact_path = scene.scene_artifact_path.clone();
+    let mut artifact = artifact_path
+        .as_ref()
+        .map(|path| artifact_store.load_json::<SceneGenerationArtifact>(path))
+        .transpose()?;
+    let mut beat_annotation_output = artifact
+        .as_ref()
+        .and_then(|artifact| artifact.beat_annotation_output.clone());
 
-    if artifact.beat_annotation_output.is_none() {
-        let scene_id = scene
-            .scene_id
-            .clone()
-            .context("scene_id missing for annotate_scene_beats")?;
-        let package = artifact
-            .package
+    if beat_annotation_output.is_none() {
+        let beats = artifact
             .as_ref()
-            .context("scene artifact missing generated package")?;
+            .and_then(|artifact| artifact.package.as_ref())
+            .map(|package| package.beats.clone())
+            .unwrap_or_default();
         let annotation_output = client
             .annotate_scene_beats(&AnnotateSceneBeatsInput {
                 project_id: state.project_id.clone(),
                 scene_id,
-                beats: package.beats.clone(),
+                beats,
                 motif_ids: Vec::new(),
                 theme_ids: Vec::new(),
                 conflict_ids: Vec::new(),
@@ -350,9 +369,13 @@ async fn annotate_scene_beats(
             .with_context(|| {
                 format!("failed to annotate beats for chapter {chapter_number} scene {scene_order}")
             })?;
-        artifact.beat_annotation_output = Some(annotation_output);
-        artifact_store.save_json(&artifact_path, &artifact)?;
+        if let (Some(path), Some(artifact)) = (artifact_path.as_ref(), artifact.as_mut()) {
+            artifact.beat_annotation_output = Some(annotation_output.clone());
+            artifact_store.save_json(path, artifact)?;
+        }
+        beat_annotation_output = Some(annotation_output);
     }
+    beat_annotation_output.context("missing annotate_scene_beats output")?;
 
     let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
     live_scene.phase = ScenePhase::BeatsAnnotated;
@@ -1102,27 +1125,40 @@ async fn build_summary_prompt(
         })
         .await?;
 
-    let scene_packages = chapter
-        .scenes
-        .iter()
-        .map(|scene| -> Result<serde_json::Value> {
-            let artifact_path = scene
-                .scene_artifact_path
-                .as_ref()
-                .context("scene artifact path missing while building summary prompt")?;
+    let mut scene_packages = Vec::new();
+    for scene in &chapter.scenes {
+        if let Some(artifact_path) = scene.scene_artifact_path.as_ref() {
             let artifact: SceneGenerationArtifact = artifact_store.load_json(artifact_path)?;
-            let package = artifact.package.context(
-                "scene artifact missing generated package while building summary prompt",
-            )?;
-            Ok(serde_json::json!({
-                "scene_order": scene.scene_order,
-                "summary": package.summary,
-                "beats": package.beats,
-                "continuity_notes": package.continuity_notes,
-                "full_text": package.full_text,
-            }))
-        })
-        .collect::<Result<Vec<_>>>()?;
+            if let Some(package) = artifact.package {
+                scene_packages.push(serde_json::json!({
+                    "scene_order": scene.scene_order,
+                    "summary": package.summary,
+                    "beats": package.beats,
+                    "continuity_notes": package.continuity_notes,
+                    "full_text": package.full_text,
+                }));
+                continue;
+            }
+        }
+
+        let scene_id = scene.scene_id.as_ref().with_context(|| {
+            format!(
+                "chapter {} scene {} has no artifact package and no scene_id",
+                chapter.chapter_number, scene.scene_order
+            )
+        })?;
+        let persisted: serde_json::Value = client
+            .read_json_resource(format!("bible://{scene_id}"))
+            .await
+            .with_context(|| format!("failed to read persisted scene resource {scene_id}"))?;
+        scene_packages.push(serde_json::json!({
+            "scene_order": scene.scene_order,
+            "summary": persisted.get("summary").and_then(|value| value.as_str()).unwrap_or(""),
+            "beats": [],
+            "continuity_notes": [],
+            "full_text": persisted.get("full_text").and_then(|value| value.as_str()).unwrap_or(""),
+        }));
+    }
 
     let directives = render_directives(&state.editorial_directives);
     let scene_packages_json = serde_json::to_string_pretty(&scene_packages)?;

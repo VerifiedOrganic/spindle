@@ -762,34 +762,34 @@ agent = "cli-agent-review"
         "expected host draft instruction, got {host_exec_val:?}"
     );
 
-    // Automated mode remains available for harness tests and explicit opt-in
-    // batch/offload runs.
-    println!("TEST: Step 10b - Agent mode drafts Scene 1.1");
-    let exec_args = serde_json::json!({
-        "project_id": project.project_id,
-        "run_id": run_id,
-        "mode": "agent"
-    });
-    let exec_res = router
-        .call_tool(
-            "authoring_execute_next",
-            Some(exec_args.as_object().unwrap()),
-        )
+    println!("TEST: Step 10b - Host saves Scene 1.1 directly through Spindle");
+    let host_saved_scene = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Mara stood watch at the Ash Gate, clutching her salt charm.".into(),
+            summary: "Mara watch".into(),
+            content_rating: ContentRating::General,
+            tone: Some("grim".into()),
+            generation_id: None,
+            source_path: None,
+            research_source_ids: Vec::new(),
+            research_note_ids: Vec::new(),
+            research_claim_ids: Vec::new(),
+            research_query_pack_input: None,
+            research_context_hash: None,
+        })
         .await
         .unwrap();
-    assert_eq!(
-        exec_res.is_error,
-        Some(false),
-        "authoring_execute_next failed: {:?}",
-        exec_res
-    );
-    let exec_val = exec_res.structured_content.unwrap();
-    assert!(
-        exec_val["executed_action"]
-            .as_str()
-            .unwrap()
-            .contains("draft book scene 1.1")
-    );
+    assert_eq!(host_saved_scene.status, "saved");
+
+    let exec_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id
+    });
 
     // Check status
     println!("TEST: Checking status after draft scene 1.1");
@@ -813,6 +813,12 @@ agent = "cli-agent-review"
         )
         .await
         .unwrap();
+    assert_eq!(
+        exec_res.is_error,
+        Some(false),
+        "authoring_execute_next commit failed: {:?}",
+        exec_res
+    );
     let exec_val = exec_res.structured_content.unwrap();
     assert!(
         exec_val["executed_action"]

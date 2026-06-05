@@ -4541,21 +4541,41 @@ impl SqliteSpindleService {
         })
     }
 
-    /// Polymorphic read by record id. Returns a minimal JSON envelope with
-    /// `{id, table}` if the entity exists, errors otherwise. The SurrealDB
-    /// version returned the full SurrealDB record; MCP's set_active_project
-    /// only needs existence validation, so this version keeps the surface
-    /// narrow rather than wiring `#[derive(Serialize)]` across every SQLite
-    /// record type.
+    /// Polymorphic read by record id. Most entity types return a minimal JSON
+    /// envelope with `{id, table}` if the entity exists, errors otherwise.
+    /// Scene reads are intentionally richer because authoring agents use
+    /// `bible://scene:<id>` to continue from already-saved prose.
     pub async fn read_entity_by_id(&self, record_id_str: &str) -> Result<serde_json::Value> {
         let (table, _key) = record_id_str
             .split_once(':')
             .ok_or_else(|| anyhow::anyhow!("expected `table:id` format, got `{record_id_str}`"))?;
+        if table == "scene" {
+            let scene = self.repository.get_scene(record_id_str).await?;
+            let word_count = scene.full_text.split_whitespace().count();
+            return Ok(serde_json::json!({
+                "id": scene.id,
+                "table": "scene",
+                "project_id": scene.project_id,
+                "branch_id": scene.branch_id,
+                "book_id": scene.book_id,
+                "chapter_id": scene.chapter_id,
+                "book_number": scene.book_number,
+                "chapter_number": scene.chapter_number,
+                "scene_order": scene.scene_order,
+                "full_text": scene.full_text,
+                "summary": scene.summary,
+                "content_rating": scene.content_rating,
+                "tone": scene.tone,
+                "draft_origin": scene.draft_origin,
+                "word_count": word_count,
+                "created_at": scene.created_at.to_rfc3339(),
+                "updated_at": scene.updated_at.to_rfc3339(),
+            }));
+        }
         let exists = match table {
             "project" => self.repository.get_project(record_id_str).await.is_ok(),
             "book" => self.repository.get_book(record_id_str).await.is_ok(),
             "chapter" => self.repository.get_chapter(record_id_str).await.is_ok(),
-            "scene" => self.repository.get_scene(record_id_str).await.is_ok(),
             "character" => self.repository.get_character(record_id_str).await.is_ok(),
             "location" => self.repository.get_location(record_id_str).await.is_ok(),
             "bible_branch" => self.repository.get_branch(record_id_str).await.is_ok(),

@@ -414,15 +414,6 @@ fn validate_state_shape(state: &HarnessState) -> Vec<Finding> {
                     ),
                 ));
             }
-            if scene.phase != ScenePhase::Pending && scene.scene_artifact_path.is_none() {
-                findings.push(Finding::error(
-                    "missing_scene_artifact",
-                    format!(
-                        "chapter {} scene {} is {:?} but has no scene artifact path for safe resume",
-                        chapter.chapter_number, scene.scene_order, scene.phase
-                    ),
-                ));
-            }
         }
     }
 
@@ -550,15 +541,6 @@ fn reconcile_persisted_scenes(
                         "phase_promoted_to_draft_saved",
                         format!(
                             "chapter {} scene {} exists in Spindle; promoted phase to draft_saved",
-                            chapter.chapter_number, scene.scene_order
-                        ),
-                    ));
-                }
-                if scene.phase != ScenePhase::Pending && scene.scene_artifact_path.is_none() {
-                    findings.push(Finding::error(
-                        "missing_scene_artifact",
-                        format!(
-                            "chapter {} scene {} exists in Spindle but has no scene artifact path for safe resume",
                             chapter.chapter_number, scene.scene_order
                         ),
                     ));
@@ -926,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_promotes_existing_scene_to_draft_saved_and_blocks_without_artifact() {
+    fn reconcile_promotes_existing_scene_to_draft_saved_without_artifact() {
         let state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
         let mut snapshot = snapshot();
         snapshot
@@ -943,16 +925,17 @@ mod tests {
             );
 
         let outcome = reconcile_state(state, &snapshot);
-        assert!(outcome.has_errors());
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
         let chapter = outcome.state.chapter(1).expect("chapter");
         assert_eq!(chapter.scenes[0].phase, ScenePhase::DraftSaved);
         assert_eq!(chapter.scenes[0].scene_id.as_deref(), Some("scene:1"));
-        assert_eq!(outcome.next_action, NextAction::Blocked);
-        assert!(
-            outcome
-                .findings
-                .iter()
-                .any(|finding| { finding.code == "missing_scene_artifact" })
+        assert_eq!(
+            outcome.next_action,
+            NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
         );
     }
 
@@ -1015,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_saved_scene_without_artifact_blocks() {
+    fn draft_saved_scene_without_artifact_can_commit() {
         let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
         let chapter = state.chapter_mut(1).expect("chapter 1");
         chapter.scenes[0].scene_id = Some("scene:1".to_string());
@@ -1036,13 +1019,14 @@ mod tests {
             );
 
         let outcome = reconcile_state(state, &snapshot);
-        assert!(outcome.has_errors());
-        assert_eq!(outcome.next_action, NextAction::Blocked);
-        assert!(
-            outcome
-                .findings
-                .iter()
-                .any(|finding| { finding.code == "missing_scene_artifact" })
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
+        assert_eq!(
+            outcome.next_action,
+            NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
         );
     }
 
