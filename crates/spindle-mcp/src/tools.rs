@@ -134,11 +134,13 @@ use spindle_core::subject_snapshot::SubjectSnapshot as EntitySubjectSnapshot;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::json_utils::flatten_record_ids;
-use spindle_harness::artifacts::{ArtifactStore, SceneGenerationArtifact};
+use spindle_harness::artifacts::{
+    ArtifactStore, CheckpointReportArtifact, SceneGenerationArtifact,
+};
 use spindle_harness::execution::{ExecutionResult, execute_one};
 use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
 use spindle_harness::plan::{NextAction, reconcile_state};
-use spindle_harness::state::{HarnessState, ScenePhase};
+use spindle_harness::state::{CheckpointRecord, CheckpointStatus, HarnessState, ScenePhase};
 
 #[derive(Debug, Clone, Default)]
 struct SessionContext {
@@ -2407,6 +2409,18 @@ impl ToolRouter {
         outcome.state.save(&state_path)?;
 
         let exec_result = match &action_to_execute {
+            NextAction::RunCheckpoint {
+                start_chapter,
+                end_chapter,
+            } => {
+                self.execute_authoring_run_checkpoint(
+                    &state_path,
+                    outcome.state,
+                    *start_chapter,
+                    *end_chapter,
+                )
+                .await
+            }
             NextAction::CommitSceneChanges {
                 chapter_number,
                 scene_order,
@@ -2566,6 +2580,124 @@ impl ToolRouter {
             state,
             message: format!(
                 "Committed scene changes for chapter {chapter_number} scene {scene_order}"
+            ),
+        })
+    }
+
+    async fn execute_authoring_run_checkpoint(
+        &self,
+        state_path: &Path,
+        mut state: HarnessState,
+        start_chapter: i32,
+        end_chapter: i32,
+    ) -> anyhow::Result<ExecutionResult> {
+        let artifact_store = ArtifactStore::new(authoring_artifacts_root(state_path, &state));
+        let consistency = self
+            .service
+            .check_consistency(CheckConsistencyInput {
+                project_id: state.project_id.clone(),
+                scope: ConsistencyScopeInput::chapter_range(
+                    state.book_number,
+                    start_chapter,
+                    state.book_number,
+                    end_chapter,
+                ),
+                checks: Vec::new(),
+                severity_filter: vec![],
+                deep_check: Some(false),
+                subjects: vec![],
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to run consistency check for chapters {start_chapter}-{end_chapter}"
+                )
+            })?;
+
+        let sampled_scene_ids =
+            authoring_sample_checkpoint_scene_ids(&state, start_chapter, end_chapter)?;
+
+        let pacing_overview = self
+            .service
+            .read_project_resource(&state.project_id, "pacing/overview")
+            .await?;
+        let chapter_summaries = self
+            .service
+            .read_project_resource(&state.project_id, "chapter-summaries")
+            .await?;
+        let narrative_promises = self
+            .service
+            .read_project_resource(&state.project_id, "narrative-promises")
+            .await?;
+
+        let report_path = ArtifactStore::checkpoint_relative_path(start_chapter, end_chapter);
+        let save_point = self
+            .service
+            .create_save_point(CreateSavePointInput {
+                project_id: state.project_id.clone(),
+                name: format!(
+                    "checkpoint-b{}-ch{}-{}",
+                    state.book_number, start_chapter, end_chapter
+                ),
+                description: Some(format!(
+                    "Before editorial decision for book {} chapters {}-{}",
+                    state.book_number, start_chapter, end_chapter
+                )),
+            })
+            .await
+            .with_context(|| {
+                format!("failed to create save point for checkpoint {start_chapter}-{end_chapter}")
+            })?;
+
+        state.checkpoint_history.push(CheckpointRecord {
+            start_chapter,
+            end_chapter,
+            save_point_id: save_point.save_point_id.clone(),
+            status: CheckpointStatus::PendingReview,
+            report_artifact_path: Some(report_path.clone()),
+        });
+        state.last_checkpoint_end_chapter = end_chapter;
+        state.save(state_path)?;
+
+        let sampled_review_instruction = format!(
+            "Run dual-persona review for sampled scenes [{}], inspect this checkpoint report, \
+             then call authoring_review_checkpoint with operator directives.",
+            sampled_scene_ids.join(", ")
+        );
+        let deep_consistency_instruction = format!(
+            "Run check_consistency for project {} over book {} chapters {}-{} with deep_check=true, \
+             then call authoring_record_checkpoint_audit with the returned consistency payload.",
+            state.project_id, state.book_number, start_chapter, end_chapter
+        );
+
+        artifact_store.save_json(
+            &report_path,
+            &CheckpointReportArtifact {
+                version: 1,
+                start_chapter,
+                end_chapter,
+                save_point: save_point.clone(),
+                consistency: serde_json::to_value(consistency)?,
+                deep_consistency: None,
+                deep_consistency_status: "pending_deep_consistency".to_string(),
+                deep_consistency_instruction: deep_consistency_instruction.clone(),
+                sampled_reviews: Vec::new(),
+                sampled_review_status: "pending_dual_persona_review".to_string(),
+                sampled_review_instruction: sampled_review_instruction.clone(),
+                pacing_overview,
+                chapter_summaries,
+                narrative_promises,
+                sampled_scene_ids,
+            },
+        )?;
+
+        Ok(ExecutionResult {
+            state,
+            message: format!(
+                "Created checkpoint for chapters {start_chapter}-{end_chapter}; awaiting deep consistency and sampled dual-persona review ({}) before operator checkpoint review. {} {}",
+                save_point.save_point_id, deep_consistency_instruction, sampled_review_instruction
             ),
         })
     }
@@ -3018,6 +3150,44 @@ fn authoring_commit_output_has_errors(output: &CommitSceneChangesOutput) -> bool
             .relationship_updates
             .iter()
             .any(|item| item.error.is_some())
+}
+
+fn authoring_sample_checkpoint_scene_ids(
+    state: &HarnessState,
+    start_chapter: i32,
+    end_chapter: i32,
+) -> anyhow::Result<Vec<String>> {
+    let selected_chapters = [
+        start_chapter,
+        start_chapter + ((end_chapter - start_chapter) / 2),
+        end_chapter,
+    ];
+    let mut seen = BTreeSet::new();
+    let mut candidates = Vec::new();
+    for chapter_number in selected_chapters {
+        if !seen.insert(chapter_number) {
+            continue;
+        }
+        let chapter = state
+            .chapters
+            .iter()
+            .find(|chapter| chapter.chapter_number == chapter_number)
+            .with_context(|| format!("checkpoint chapter {} missing from state", chapter_number))?;
+        let scene = if chapter_number == end_chapter {
+            chapter.scenes.last()
+        } else {
+            chapter.scenes.first()
+        }
+        .with_context(|| format!("checkpoint chapter {} has no scenes", chapter_number))?;
+        let scene_id = scene.scene_id.clone().with_context(|| {
+            format!(
+                "checkpoint chapter {} scene {} has no scene_id",
+                chapter_number, scene.scene_order
+            )
+        })?;
+        candidates.push(scene_id);
+    }
+    Ok(candidates)
 }
 
 fn authoring_state_path(data_dir: &Path, run_id: &str) -> PathBuf {
