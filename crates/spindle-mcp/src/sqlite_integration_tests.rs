@@ -1179,6 +1179,7 @@ agent = "cli-agent-review"
         "run_id": run_id,
         "start_chapter": 1,
         "end_chapter": 1,
+        "operator_override_unresolved_findings": true,
         "directives": ["ACKNOWLEDGED: continuity finding needs fixing in polish pass."]
     });
     let unresolved_review_res = router2

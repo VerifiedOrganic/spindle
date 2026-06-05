@@ -791,7 +791,7 @@ impl ToolRouter {
             ),
             tool::<AuthoringReviewCheckpointInput, AuthoringReviewCheckpointOutput>(
                 "authoring_review_checkpoint",
-                "Mark a checkpoint reviewed after deep consistency and sampled reviews are complete; rejects unresolved/fix-later directives unless explicitly operator-overridden",
+                "Mark a checkpoint reviewed after deep consistency and sampled reviews are complete; rejects unresolved/fix-later directives",
             ),
             tool::<AuthoringResolveBlockInput, AuthoringResolveBlockOutput>(
                 "authoring_resolve_block",
@@ -3360,13 +3360,10 @@ impl ToolRouter {
             })?;
         }
 
-        if !input.operator_override_unresolved_findings
-            && let Some(unresolved) = authoring_unresolved_checkpoint_directive(&input.directives)
-        {
+        if let Some(unresolved) = authoring_unresolved_checkpoint_directive(&input.directives) {
             anyhow::bail!(
                 "checkpoint {}-{} cannot be marked reviewed because a directive appears to leave fixable findings unresolved: {:?}. \
-                 Apply the prose/canon fixes first, then call authoring_review_checkpoint with resolved directives. \
-                 If the human operator intentionally accepts the unresolved issues, call again with operator_override_unresolved_findings=true.",
+                 Apply the prose/canon fixes first, then call authoring_review_checkpoint with resolved directives.",
                 input.start_chapter,
                 input.end_chapter,
                 unresolved
