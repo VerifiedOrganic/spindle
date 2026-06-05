@@ -12023,7 +12023,7 @@ impl SqliteSpindleService {
             "{}-bible-export.json",
             slugify_filename_component(&artifact.project_name)
         );
-        let export_dir = self.repository.data_dir().join("exports");
+        let export_dir = export_dir_for_data_dir(self.repository.data_dir());
         std::fs::create_dir_all(&export_dir)?;
         let file_path = export_dir.join(&filename);
         std::fs::write(&file_path, serde_json::to_vec_pretty(&artifact.payload)?)?;
@@ -12748,7 +12748,7 @@ impl SqliteSpindleService {
             }
         }
 
-        let export_dir = self.repository.data_dir().join("exports");
+        let export_dir = export_dir_for_data_dir(self.repository.data_dir());
         std::fs::create_dir_all(&export_dir)?;
         let file_path = export_dir.join(&filename);
         std::fs::write(&file_path, &epub_bytes)?;
@@ -16674,6 +16674,15 @@ fn slugify_filename_component(value: &str) -> String {
     }
 }
 
+fn export_dir_for_data_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    if data_dir.file_name().and_then(|name| name.to_str()) == Some(".spindle")
+        && let Some(workspace_root) = data_dir.parent()
+    {
+        return workspace_root.join("exports");
+    }
+    data_dir.join("exports")
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExportChapterScope {
     start_chapter_number: i32,
@@ -18396,6 +18405,23 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         let repo = Repository::with_model_router(pool, data_dir, ModelRouter::local_only());
         (tmp, SqliteSpindleService::new(repo))
+    }
+
+    #[test]
+    fn project_local_exports_resolve_to_workspace_root() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join(".spindle");
+        assert_eq!(
+            export_dir_for_data_dir(&data_dir),
+            tmp.path().join("exports")
+        );
+    }
+
+    #[test]
+    fn global_exports_stay_under_data_dir() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("spindle-data");
+        assert_eq!(export_dir_for_data_dir(&data_dir), data_dir.join("exports"));
     }
 
     async fn project_with_scene(

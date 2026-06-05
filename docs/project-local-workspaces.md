@@ -8,6 +8,7 @@ When you run `spindle-mcp init` (or `spindle init` if aliased) in a folder, Spin
 
 ```
 my-book/
+├── exports/               # EPUB/Bible exports intended to be reviewed or committed
 ├── .spindle/
 │   ├── spindle.db          # The SQLite database holding this book's story bible and runs
 │   ├── config.toml         # Project-specific agent & routing configurations
@@ -43,5 +44,5 @@ You should **not** commit the binary SQLite database to Git. It changes with eve
 ### What to Commit
 
 - **Project Config**: Committing `.spindle/config.toml` is highly recommended. It defines the model routes, custom prompts, and target agents that make your book's compilation environment reproducible for other collaborators or machines.
-- **Human-Readable Exports**: Use Spindle's export capabilities (like EPUB or Markdown exports of the manuscript/canon) and commit those human-readable outputs to Git. This allows you to track changes to your actual text and story bible in a clean, diffable way.
+- **Human-Readable Exports**: In project-local workspaces, EPUB and Bible exports are written to the repository-root `exports/` directory. Commit the outputs you want to preserve or share. This keeps publishable artifacts outside the runtime `.spindle/` directory.
 - **Durable Snapshots/Metadata**: If you generate JSON seed files or durable backup snapshots, commit them to your repository to serve as the source of truth for rebuilding the story bible when cloning the book to a new machine.
