@@ -134,9 +134,11 @@ use spindle_core::subject_snapshot::SubjectSnapshot as EntitySubjectSnapshot;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::json_utils::flatten_record_ids;
-use spindle_harness::execution::execute_one;
+use spindle_harness::artifacts::{ArtifactStore, SceneGenerationArtifact};
+use spindle_harness::execution::{ExecutionResult, execute_one};
 use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
 use spindle_harness::plan::{NextAction, reconcile_state};
+use spindle_harness::state::{HarnessState, ScenePhase};
 
 #[derive(Debug, Clone, Default)]
 struct SessionContext {
@@ -2404,13 +2406,30 @@ impl ToolRouter {
         let state_path = authoring_state_path(data_dir, &run_id);
         outcome.state.save(&state_path)?;
 
-        let exec_result = execute_one(
-            &state_path,
-            outcome.state,
-            &client,
-            action_to_execute.clone(),
-        )
-        .await;
+        let exec_result = match &action_to_execute {
+            NextAction::CommitSceneChanges {
+                chapter_number,
+                scene_order,
+                ..
+            } => {
+                self.execute_authoring_commit_scene_changes(
+                    &state_path,
+                    outcome.state,
+                    *chapter_number,
+                    *scene_order,
+                )
+                .await
+            }
+            _ => {
+                execute_one(
+                    &state_path,
+                    outcome.state,
+                    &client,
+                    action_to_execute.clone(),
+                )
+                .await
+            }
+        };
 
         let _ = std::fs::remove_file(&state_path);
 
@@ -2456,6 +2475,98 @@ impl ToolRouter {
             executed_action: action_to_execute.to_string(),
             message: exec_res.message,
             status: final_status,
+        })
+    }
+
+    async fn execute_authoring_commit_scene_changes(
+        &self,
+        state_path: &Path,
+        mut state: HarnessState,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> anyhow::Result<ExecutionResult> {
+        let artifact_store = ArtifactStore::new(authoring_artifacts_root(state_path, &state));
+        let (chapter_index, scene_index) =
+            authoring_scene_indices(&state, chapter_number, scene_order).with_context(|| {
+                format!("scene {chapter_number}.{scene_order} not found in authoring run state")
+            })?;
+        let scene = state.chapters[chapter_index].scenes[scene_index].clone();
+        let scene_id = scene
+            .scene_id
+            .clone()
+            .with_context(|| format!("scene_id missing for {chapter_number}.{scene_order}"))?;
+        let artifact_path = scene.scene_artifact_path.clone();
+        let mut artifact = artifact_path
+            .as_ref()
+            .map(|path| artifact_store.load_json::<SceneGenerationArtifact>(path))
+            .transpose()?;
+        let mut commit_output = artifact
+            .as_ref()
+            .and_then(|artifact| artifact.commit_output.clone());
+
+        if commit_output.is_none() {
+            let (character_states, canonical_facts, relationship_updates) = artifact
+                .as_ref()
+                .and_then(|artifact| artifact.package.as_ref())
+                .map(|package| {
+                    (
+                        package.character_states.clone(),
+                        package.canonical_facts.clone(),
+                        package.relationship_updates.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            let new_commit_output = self
+                .service
+                .commit_scene_changes(CommitSceneChangesInput {
+                    project_id: state.project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    character_states,
+                    canonical_facts,
+                    relationship_updates,
+                    accept_world_rule_risks: true,
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to commit scene changes for chapter {chapter_number} scene {scene_order}"
+                    )
+                })?;
+            if let (Some(path), Some(artifact)) = (artifact_path.as_ref(), artifact.as_mut()) {
+                artifact.commit_output = Some(new_commit_output.clone());
+                artifact_store.save_json(path, artifact)?;
+            }
+            commit_output = Some(new_commit_output);
+        }
+
+        let commit_output = commit_output
+            .as_ref()
+            .context("scene artifact missing commit output")?;
+        let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+        if authoring_commit_output_has_errors(commit_output) {
+            let inspect_target = artifact_path
+                .as_ref()
+                .map(|path| artifact_store.root().join(path).display().to_string())
+                .unwrap_or_else(|| scene_id.clone());
+            live_scene.blocked_reason = Some(format!(
+                "commit_scene_changes applied partial results; inspect {inspect_target} before continuing",
+            ));
+            state.save(state_path)?;
+            anyhow::bail!(
+                "commit_scene_changes reported per-item errors for chapter {} scene {}",
+                chapter_number,
+                scene_order
+            );
+        }
+
+        live_scene.phase = ScenePhase::ChangesCommitted;
+        live_scene.blocked_reason = None;
+        state.save(state_path)?;
+        Ok(ExecutionResult {
+            state,
+            message: format!(
+                "Committed scene changes for chapter {chapter_number} scene {scene_order}"
+            ),
         })
     }
 
@@ -2871,6 +2982,42 @@ fn find_harness_scene(
         .scenes
         .iter()
         .find(|scene| scene.scene_order == scene_order)
+}
+
+fn authoring_scene_indices(
+    state: &HarnessState,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Option<(usize, usize)> {
+    let chapter_index = state
+        .chapters
+        .iter()
+        .position(|chapter| chapter.chapter_number == chapter_number)?;
+    let scene_index = state.chapters[chapter_index]
+        .scenes
+        .iter()
+        .position(|scene| scene.scene_order == scene_order)?;
+    Some((chapter_index, scene_index))
+}
+
+fn authoring_artifacts_root(state_path: &Path, state: &HarnessState) -> PathBuf {
+    let parent = state_path.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(&state.artifacts_dir)
+}
+
+fn authoring_commit_output_has_errors(output: &CommitSceneChangesOutput) -> bool {
+    output
+        .character_states
+        .iter()
+        .any(|item| item.error.is_some())
+        || output
+            .canonical_facts
+            .iter()
+            .any(|item| item.error.is_some())
+        || output
+            .relationship_updates
+            .iter()
+            .any(|item| item.error.is_some())
 }
 
 fn authoring_state_path(data_dir: &Path, run_id: &str) -> PathBuf {
