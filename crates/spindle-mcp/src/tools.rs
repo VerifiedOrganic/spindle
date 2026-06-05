@@ -1931,8 +1931,12 @@ impl ToolRouter {
                             }
                         }
 
-                        let (loc_id, rating) =
-                            extract_scene_location_and_rating(&scene.summary, &scene.purpose);
+                        let (loc_id, rating) = planned_scene_location_and_rating(
+                            scene.location_id.as_deref(),
+                            scene.content_rating.as_ref(),
+                            &scene.summary,
+                            &scene.purpose,
+                        );
                         if loc_id.is_none() {
                             chapter_missing_items
                                 .push(format!("scene {}: missing location ID", scene.scene_order));
@@ -2042,8 +2046,12 @@ impl ToolRouter {
 
             let mut scene_seeds = Vec::new();
             for scene in &plan.scenes {
-                let (loc_id, rating) =
-                    extract_scene_location_and_rating(&scene.summary, &scene.purpose);
+                let (loc_id, rating) = planned_scene_location_and_rating(
+                    scene.location_id.as_deref(),
+                    scene.content_rating.as_ref(),
+                    &scene.summary,
+                    &scene.purpose,
+                );
                 let loc_id = loc_id.unwrap();
                 let rating = rating.unwrap();
 
@@ -2644,6 +2652,21 @@ fn extract_scene_location_and_rating(
         }
     };
 
+    (location_id, rating)
+}
+
+fn planned_scene_location_and_rating(
+    location_id: Option<&str>,
+    content_rating: Option<&spindle_core::models::ContentRating>,
+    summary: &str,
+    purpose: &str,
+) -> (Option<String>, Option<spindle_core::models::ContentRating>) {
+    let (legacy_location_id, legacy_rating) = extract_scene_location_and_rating(summary, purpose);
+    let location_id = location_id
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .or(legacy_location_id);
+    let rating = content_rating.cloned().or(legacy_rating);
     (location_id, rating)
 }
 

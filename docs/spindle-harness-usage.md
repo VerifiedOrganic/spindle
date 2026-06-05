@@ -83,7 +83,9 @@ like `list_projects`, `search_bible`, or read resources like
 
 Create a JSON file that describes exactly what chapters and scenes to write.
 Every scene must include `character_ids`, `location_id`, and `content_rating`
-because the Spindle DB does not store these on chapter plans.
+because the authoring harness uses those fields to route drafts and build
+scene context. MCP-native runs can store the same fields directly on
+`plan_chapter` scene entries.
 
 ### Minimal Seed — 2 Chapters, 3 Scenes Total
 

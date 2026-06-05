@@ -267,6 +267,10 @@ pub struct StoredPlannedScene {
     pub beat_structure: Vec<String>,
     #[serde(default)]
     pub character_ids: Vec<String>,
+    #[serde(default)]
+    pub location_id: Option<String>,
+    #[serde(default)]
+    pub content_rating: Option<core::ContentRating>,
     pub purpose: String,
     #[serde(default)]
     pub research_required: Option<bool>,
@@ -283,6 +287,8 @@ impl StoredPlannedScene {
             summary: self.summary,
             beat_structure: self.beat_structure,
             character_ids: self.character_ids,
+            location_id: self.location_id,
+            content_rating: self.content_rating,
             purpose: self.purpose,
             research_required: self.research_required,
             research_tags: self.research_tags,
@@ -298,6 +304,8 @@ impl From<core::PlannedScene> for StoredPlannedScene {
             summary: value.summary,
             beat_structure: value.beat_structure,
             character_ids: value.character_ids,
+            location_id: value.location_id,
+            content_rating: value.content_rating,
             purpose: value.purpose,
             research_required: value.research_required,
             research_tags: value.research_tags,

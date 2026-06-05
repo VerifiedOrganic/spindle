@@ -29,6 +29,12 @@ authoring_prepare_run({
 
 If `ready_to_draft` returns `false`, report the `missing_requirements` list directly to the user (e.g., missing location IDs, missing chapter plans, or missing character assignments) and ask them for guidance or add the plans/entities. Do not attempt to start a run when preparation fails.
 
+When missing requirements reference scene `location_id` or `content_rating`,
+fix the chapter plan itself with `plan_chapter`: each planned scene should carry
+first-class `location_id` and `content_rating` fields. Do not rely on parsing
+`location:` / `rating:` text from summaries, and do not try to set location on
+saved scene prose rows.
+
 ### 2. Initialize and Start the Run
 
 Once preparation returns `ready_to_draft: true`, start the run:

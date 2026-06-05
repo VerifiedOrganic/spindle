@@ -27,6 +27,12 @@ The supervisor exposes 7 new MCP tools through the `spindle-mcp` server:
 | `authoring_resolve_block` | Clears a blocked scene after operator inspection and advances it to the next safe phase. | `project_id`, `run_id`, `chapter_number`, `scene_order`, `target_phase` | `run_id`, `status` |
 | `authoring_cancel_run` | Pauses or cancels the active run without deleting progress. | `project_id`, `run_id` | `run_id`, `status` |
 
+Chapter plans are the source of truth for pre-draft scene requirements. Each
+`plan_chapter` scene should carry first-class `character_ids`, `location_id`,
+and `content_rating` fields. `authoring_prepare_run` still accepts old plans
+that encoded `location:` / `rating:` in summary text as a legacy fallback, but
+new supervisor flows should not depend on that parsing convention.
+
 ## Interactive Drafting Workflow
 
 An agent driving the drafting run executes the following loop:

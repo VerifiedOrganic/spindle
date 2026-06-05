@@ -6928,6 +6928,8 @@ impl Repository {
                 summary: s.summary.clone(),
                 beat_structure: s.beat_structure.clone(),
                 character_ids: s.character_ids.clone(),
+                location_id: s.location_id.clone(),
+                content_rating: s.content_rating.clone(),
                 purpose: s.purpose.clone(),
                 research_required: s.research_required,
                 research_tags: s.research_tags.clone(),

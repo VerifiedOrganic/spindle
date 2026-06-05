@@ -21161,6 +21161,7 @@ mod tests {
                     research_required: Some(true),
                     research_tags: vec!["skim-tag".into()],
                     explicit_query: Some("Casino skim operations".into()),
+                    ..Default::default()
                 }],
             })
             .await
@@ -25462,6 +25463,7 @@ rating = "explicit"
                 research_required: Some(true),
                 research_tags: vec!["battle".to_string()],
                 explicit_query: None,
+                ..Default::default()
             }],
         })
         .await

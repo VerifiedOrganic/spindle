@@ -600,20 +600,21 @@ agent = "cli-agent-review"
         scenes: vec![
             PlanChapterSceneInput {
                 scene_order: 1,
-                summary: format!("Mara takes the watch at {} rating:general", loc.location_id),
+                summary: "Mara takes the watch".into(),
                 beat_structure: Vec::new(),
                 character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(ContentRating::General),
                 purpose: "establishing".into(),
                 ..Default::default()
             },
             PlanChapterSceneInput {
                 scene_order: 2,
-                summary: format!(
-                    "Mara encounters the beast at {} rating:explicit",
-                    loc.location_id
-                ),
+                summary: "Mara encounters the beast".into(),
                 beat_structure: Vec::new(),
                 character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(ContentRating::Explicit),
                 purpose: "climax".into(),
                 ..Default::default()
             },

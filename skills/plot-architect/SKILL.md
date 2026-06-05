@@ -196,7 +196,10 @@ For each chapter, define:
 - **Synopsis**: 2-3 sentence summary of what happens
 - **Target themes and conflicts**: Which themes and conflicts are active
 - **Target plot lines**: Which plot threads advance
-- **Scenes**: Each with a summary, beat structure, characters, and purpose
+- **Scenes**: Each with a summary, beat structure, characters, `location_id`,
+  `content_rating`, and purpose. Do not hide location/rating inside summary
+  prose; set the first-class `location_id` and `content_rating` fields so
+  `authoring_prepare_run` can validate and start drafting.
 
 **Chapter design principles:**
 - Every chapter should change something. If the reader's understanding of the story

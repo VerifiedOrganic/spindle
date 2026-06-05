@@ -224,6 +224,10 @@ pub struct PlannedScene {
     pub beat_structure: Vec<String>,
     #[serde(default)]
     pub character_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_rating: Option<ContentRating>,
     pub purpose: String,
     #[serde(default)]
     pub research_required: Option<bool>,
@@ -2626,6 +2630,14 @@ pub struct PlanChapterSceneInput {
     pub beat_structure: Vec<String>,
     #[serde(default)]
     pub character_ids: Vec<String>,
+    /// Record id returned by create_location (e.g. "location:xyz789").
+    /// Required by authoring_prepare_run / authoring_start_run for drafting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_id: Option<String>,
+    /// Planned content rating for this scene. Required by authoring_prepare_run
+    /// / authoring_start_run so draft/review routing can select safe backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_rating: Option<ContentRating>,
     pub purpose: String,
     #[serde(default)]
     pub research_required: Option<bool>,
