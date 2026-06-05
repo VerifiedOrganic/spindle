@@ -22,7 +22,7 @@ The supervisor exposes 7 new MCP tools through the `spindle-mcp` server:
 | `authoring_prepare_run` | Verifies plans and resources are ready before drafting. | `project_id`, `book_number`, `start_chapter`, `end_chapter` | `ready_to_draft`, `missing_requirements` |
 | `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval` | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
-| `authoring_execute_next` | Executes exactly one bounded drafting/commit/checkpoint action. | `project_id`, `run_id` | `run_id`, `executed_action`, `next_action`, `status` |
+| `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
 | `authoring_review_checkpoint` | Marks a checkpoint reviewed and appends directives to resume. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `directives` | `run_id`, `status` |
 | `authoring_resolve_block` | Clears a blocked scene after operator inspection and advances it to the next safe phase. | `project_id`, `run_id`, `chapter_number`, `scene_order`, `target_phase` | `run_id`, `status` |
 | `authoring_cancel_run` | Pauses or cancels the active run without deleting progress. | `project_id`, `run_id` | `run_id`, `status` |
@@ -45,6 +45,8 @@ graph TD
     C -- Yes --> E[authoring_start_run]
     E --> F[authoring_execute_next]
     F --> G{Next Action?}
+    G -- Host Draft Required --> L[Active assistant drafts and save_scene_draft]
+    L --> F
     G -- Active Action --> F
     G -- Await Checkpoint Review --> H[Present report & ask user feedback]
     H --> I[authoring_review_checkpoint]
@@ -60,3 +62,16 @@ If the session or service restarts mid-run:
 3. Call `authoring_execute_next` to continue driving the drafting loop.
 
 Run statuses are `"active"`, `"blocked"`, `"completed"`, or `"paused"`. `authoring_cancel_run` sets `"paused"` and `authoring_execute_next` will not advance a paused run.
+
+### Draft Routing Semantics
+
+By default, `authoring_execute_next` is intended for the natural MCP/chat
+workflow: the active assistant writes General, Teen, and Mature prose using
+Spindle context, then saves it with `save_scene_draft`. This keeps the primary
+writing voice in the current conversation. Explicit scenes may still route
+through the explicit-capable backend configured for the project.
+
+`mode: "agent"` is an explicit opt-in for fully automated tests or batch runs.
+In that mode, Spindle routes non-explicit scenes through the configured `draft`
+route too. Do not use it for normal interactive writing unless the operator
+asks for full offload.

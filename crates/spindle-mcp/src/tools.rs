@@ -2266,6 +2266,7 @@ impl ToolRouter {
         input: AuthoringExecuteNextInput,
     ) -> anyhow::Result<AuthoringExecuteNextOutput> {
         let project_id = input.project_id.clone();
+        let agent_mode = authoring_execute_uses_agent_drafting(input.mode.as_deref());
         let repo = self.service.repository();
 
         let run_id = match input.run_id {
@@ -2361,6 +2362,35 @@ impl ToolRouter {
         }
 
         let action_to_execute = outcome.next_action.clone();
+        if let NextAction::DraftScene {
+            chapter_number,
+            scene_order,
+        } = &action_to_execute
+            && !agent_mode
+            && let Some(scene) = find_harness_scene(&harness_state, *chapter_number, *scene_order)
+            && scene.content_rating != spindle_core::models::ContentRating::Explicit
+        {
+            return Ok(AuthoringExecuteNextOutput {
+                run_id: run_id.clone(),
+                next_action: action_to_execute.to_string(),
+                executed_action: "none".to_string(),
+                message: format!(
+                    "Host draft required for non-explicit scene {chapter_number}.{scene_order}. \
+                     Draft this scene in the active assistant chat using Spindle context, then call \
+                     save_scene_draft with project_id={}, book_number={}, chapter_number={}, \
+                     scene_order={}, content_rating={}, full_text, summary, and any structured updates. \
+                     Then call authoring_execute_next again. Use mode='agent' only when you explicitly \
+                     want Spindle to offload non-explicit drafting to the configured draft route.",
+                    project_id,
+                    harness_state.book_number,
+                    chapter_number,
+                    scene_order,
+                    scene.content_rating.as_str()
+                ),
+                status: run.status.clone(),
+            });
+        }
+
         let state_path = authoring_state_path(data_dir, &run_id);
         harness_state.save(&state_path)?;
 
@@ -2668,6 +2698,30 @@ fn planned_scene_location_and_rating(
         .or(legacy_location_id);
     let rating = content_rating.cloned().or(legacy_rating);
     (location_id, rating)
+}
+
+fn authoring_execute_uses_agent_drafting(mode: Option<&str>) -> bool {
+    let Some(mode) = mode else {
+        return false;
+    };
+    matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "agent" | "agents" | "auto" | "automated" | "offload" | "full_agent" | "fully_automated"
+    )
+}
+
+fn find_harness_scene(
+    state: &spindle_harness::state::HarnessState,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Option<&spindle_harness::state::SceneState> {
+    state
+        .chapters
+        .iter()
+        .find(|chapter| chapter.chapter_number == chapter_number)?
+        .scenes
+        .iter()
+        .find(|scene| scene.scene_order == scene_order)
 }
 
 fn authoring_state_path(data_dir: &Path, run_id: &str) -> PathBuf {

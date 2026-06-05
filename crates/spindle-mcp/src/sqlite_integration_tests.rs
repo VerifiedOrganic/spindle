@@ -730,11 +730,45 @@ agent = "cli-agent-review"
             .unwrap();
     });
 
-    // 10. Execute next step (Draft Scene 1 - General)
-    println!("TEST: Step 10 - Draft Scene 1.1");
-    let exec_args = serde_json::json!({
+    // 10. Default interactive mode should hand non-explicit drafting back to
+    // the host assistant instead of routing it through the configured draft
+    // backend.
+    println!("TEST: Step 10 - Hybrid mode pauses for host draft Scene 1.1");
+    let host_exec_args = serde_json::json!({
         "project_id": project.project_id,
         "run_id": run_id
+    });
+    let host_exec_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(host_exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        host_exec_res.is_error,
+        Some(false),
+        "authoring_execute_next failed: {:?}",
+        host_exec_res
+    );
+    let host_exec_val = host_exec_res.structured_content.unwrap();
+    assert_eq!(host_exec_val["executed_action"].as_str(), Some("none"));
+    assert_eq!(host_exec_val["status"].as_str(), Some("active"));
+    assert!(
+        host_exec_val["message"]
+            .as_str()
+            .unwrap()
+            .contains("Host draft required for non-explicit scene 1.1"),
+        "expected host draft instruction, got {host_exec_val:?}"
+    );
+
+    // Automated mode remains available for harness tests and explicit opt-in
+    // batch/offload runs.
+    println!("TEST: Step 10b - Agent mode drafts Scene 1.1");
+    let exec_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "mode": "agent"
     });
     let exec_res = router
         .call_tool(

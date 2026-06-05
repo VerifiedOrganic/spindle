@@ -627,7 +627,16 @@ async fn load_or_create_scene_artifact(
         .collect::<Vec<_>>();
     let query_pack_input_str = serde_json::to_string(&research_input).ok();
 
-    let prompt = build_scene_prompt(client, state, chapter, scene, &briefing, Some(&pack)).await?;
+    let prompt = build_scene_prompt(
+        client,
+        state,
+        chapter,
+        scene,
+        &briefing,
+        Some(&pack),
+        draft_route,
+    )
+    .await?;
     let mut artifact = SceneGenerationArtifact::new(
         chapter.chapter_number,
         scene.scene_order,
@@ -860,7 +869,12 @@ async fn build_scene_prompt(
     scene: &crate::state::SceneState,
     briefing: &spindle_core::models::GetChapterBriefingOutput,
     research_pack: Option<&spindle_core::models::ResearchPackForSceneOutput>,
+    draft_route: &DraftRouteBinding,
 ) -> Result<String> {
+    if draft_route.caller_should_send_brief {
+        return build_scene_mcp_pull_prompt(state, chapter, scene, research_pack);
+    }
+
     let scene_context = client
         .get_scene_context(&GetSceneContextInput {
             project_id: state.project_id.clone(),
@@ -981,6 +995,85 @@ async fn build_scene_prompt(
         briefing_markdown = briefing.briefing_markdown,
         scene_context_json = scene_context_json,
         scene_writer_skill = scene_writer_skill,
+    ))
+}
+
+fn build_scene_mcp_pull_prompt(
+    state: &HarnessState,
+    chapter: &crate::state::ChapterState,
+    scene: &crate::state::SceneState,
+    research_pack: Option<&spindle_core::models::ResearchPackForSceneOutput>,
+) -> Result<String> {
+    let directives = render_directives(&state.editorial_directives);
+    let research_tags = if scene.research_tags.is_empty() {
+        "none".to_string()
+    } else {
+        scene.research_tags.join(", ")
+    };
+    let research_counts = research_pack
+        .map(|pack| {
+            format!(
+                "{} sources, {} notes, {} claims",
+                pack.sources.len(),
+                pack.notes.len(),
+                pack.claims.len()
+            )
+        })
+        .unwrap_or_else(|| "not requested".to_string());
+    let manifest_json = serde_json::to_string_pretty(&serde_json::json!({
+        "project_id": state.project_id.clone(),
+        "book_number": state.book_number,
+        "chapter_number": chapter.chapter_number,
+        "chapter_synopsis": chapter.synopsis.clone(),
+        "pov_character_id": chapter.pov_character_id.clone(),
+        "scene_order": scene.scene_order,
+        "character_ids": scene.character_ids.clone(),
+        "location_id": scene.location_id.clone(),
+        "content_rating": scene.content_rating.clone(),
+        "target_tone": scene.tone.clone(),
+        "source_path": scene.source_path.clone(),
+        "research_required": scene.research_required,
+        "research_tags": scene.research_tags.clone(),
+        "explicit_query": scene.explicit_query.clone(),
+    }))?;
+
+    Ok(format!(
+        concat!(
+            "You are drafting fiction for a book project through Spindle. This is not real-life advice, targeting, or activity planning.\n",
+            "Write exactly one scene and return JSON only. No markdown fences. No prose outside the JSON object.\n\n",
+            "Use the Spindle MCP server/resources to pull the context you need instead of relying on this prompt to embed canon.\n",
+            "Required context pulls before drafting:\n",
+            "- Call set_active_project for the project_id in the scene manifest if your MCP session is not already scoped.\n",
+            "- Call get_chapter_briefing for this project/book/chapter/scene.\n",
+            "- Call get_scene_context for this exact scene, including the listed character_ids and location_id.\n",
+            "- Read bible://skills/scene-writer if your local skill profile has not already loaded it.\n",
+            "- If research_required is true or research_tags are present, call research_pack_for_scene for this exact scene and use only supported research claims.\n\n",
+            "Output schema:\n",
+            "{{\n",
+            "  \"full_text\": \"string\",\n",
+            "  \"summary\": \"string\",\n",
+            "  \"tone\": \"optional string\",\n",
+            "  \"character_states\": [{{\"character_id\": \"...\", \"summary\": \"...\"}}],\n",
+            "  \"canonical_facts\": [{{\"fact_type\": \"...\", \"key\": \"...\", \"value\": \"...\", \"context\": \"optional\"}}],\n",
+            "  \"relationship_updates\": [{{\"character_a_id\": \"...\", \"character_b_id\": \"...\", \"trust_delta\": 0, \"tension_delta\": 0, \"reason\": \"...\"}}],\n",
+            "  \"beats\": [{{\"beat_type\": \"...\", \"summary\": \"...\"}}],\n",
+            "  \"continuity_notes\": [\"optional notes\"]\n",
+            "}}\n\n",
+            "Rules:\n",
+            "- Use only the provided character ids and location id unless the pulled canon clearly requires another referenced entity.\n",
+            "- Preserve continuity from Spindle canon, prior chapter summaries, scene context, and research claims.\n",
+            "- Keep the scene aligned to the requested content rating and target tone.\n",
+            "- Use empty arrays instead of null when you have no structured updates.\n\n",
+            "Editorial directives:\n{directives}\n\n",
+            "Scene manifest:\n{manifest_json}\n\n",
+            "Research cue: required={research_required}; tags=[{research_tags}]; explicit_query={explicit_query}; preflight pack={research_counts}\n"
+        ),
+        directives = directives,
+        manifest_json = manifest_json,
+        research_required = scene.research_required.unwrap_or(false),
+        research_tags = research_tags,
+        explicit_query = scene.explicit_query.as_deref().unwrap_or("none"),
+        research_counts = research_counts,
     ))
 }
 
@@ -1295,4 +1388,73 @@ fn sample_checkpoint_scene_ids(
         candidates.push(scene_id);
     }
     Ok(candidates)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ChapterState, ChapterStatus, SceneState};
+    use spindle_core::models::ContentRating;
+
+    #[test]
+    fn mcp_pull_scene_prompt_is_compact_and_context_seeking() {
+        let state = HarnessState {
+            project_id: "project:test".to_string(),
+            active_branch_id: "branch:main".to_string(),
+            book_number: 1,
+            range: crate::state::ChapterRange {
+                start_chapter: 1,
+                end_chapter: 1,
+            },
+            checkpoint_interval: 1,
+            last_checkpoint_end_chapter: 0,
+            artifacts_dir: "artifacts".to_string(),
+            editorial_directives: vec!["Keep the voice sharp.".to_string()],
+            chapters: Vec::new(),
+            checkpoint_history: Vec::new(),
+        };
+        let chapter = ChapterState {
+            chapter_number: 1,
+            planned: true,
+            synopsis: "A first turn in the casino.".to_string(),
+            pov_character_id: Some("character:dave".to_string()),
+            status: ChapterStatus::Pending,
+            scenes: Vec::new(),
+            summary_saved: false,
+            summary_artifact_path: None,
+        };
+        let scene = SceneState {
+            scene_order: 1,
+            character_ids: vec!["character:dave".to_string(), "character:ricky".to_string()],
+            location_id: "location:vegas-strip".to_string(),
+            content_rating: ContentRating::Mature,
+            tone: Some("tense comic dread".to_string()),
+            source_path: None,
+            phase: ScenePhase::Pending,
+            scene_id: None,
+            scene_artifact_path: None,
+            draft_diagnostics: None,
+            blocked_reason: None,
+            research_required: Some(true),
+            research_tags: vec!["1970s-vegas".to_string()],
+            explicit_query: None,
+            research_pack_empty: false,
+            research_tags_matched: true,
+        };
+
+        let prompt = build_scene_mcp_pull_prompt(&state, &chapter, &scene, None).unwrap();
+
+        assert!(
+            prompt.len() < 6_000,
+            "prompt was too large: {}",
+            prompt.len()
+        );
+        assert!(prompt.contains("fiction for a book project"));
+        assert!(prompt.contains("\"project_id\": \"project:test\""));
+        assert!(prompt.contains("get_chapter_briefing"));
+        assert!(prompt.contains("get_scene_context"));
+        assert!(prompt.contains("research_pack_for_scene"));
+        assert!(!prompt.contains("Scene context envelope:"));
+        assert!(!prompt.contains("Scene-writer skill guidance:"));
+    }
 }

@@ -54,7 +54,7 @@ This returns a `run_id` (e.g., `authoring_run:xyz`) which persists the run state
 
 ### 3. Drive the Bounded Execution Loop
 
-Drafting proceeds incrementally. Call `authoring_execute_next` to execute exactly one bounded drafting, commit, or beat annotation step:
+Drafting proceeds incrementally. Call `authoring_execute_next` to advance exactly one bounded drafting, commit, or beat annotation step:
 
 ```json
 authoring_execute_next({
@@ -63,8 +63,26 @@ authoring_execute_next({
 })
 ```
 
-This will execute the current transition, such as:
-- `draft book scene X.Y` (invoking the dedicated drafting agent)
+Default mode is interactive/hybrid. For General, Teen, and Mature scenes,
+`authoring_execute_next` stops at `draft book scene X.Y` and returns a host-draft
+instruction. You, the active assistant in the chat, should draft the scene with
+Spindle context/tools, call `save_scene_draft` with the full prose, then call
+`authoring_execute_next` again. Do not opt into agent drafting unless the user
+explicitly asks for a fully automated/offloaded run.
+
+Explicit scenes may route through the configured explicit-capable backend. For
+batch tests or intentional full offload only, pass:
+
+```json
+authoring_execute_next({
+  "project_id": "project:123",
+  "run_id": "authoring_run:xyz",
+  "mode": "agent"
+})
+```
+
+This will advance the current transition, such as:
+- `draft book scene X.Y` (host-drafted by default for non-explicit scenes; route-offloaded only for explicit scenes or `mode: "agent"`)
 - `commit scene changes` (validating and committing draft changes)
 - `annotate beats` (extracting structure and tagging beats)
 - `save summary` (compiling chapter summaries)

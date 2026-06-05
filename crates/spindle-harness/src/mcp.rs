@@ -477,6 +477,7 @@ fn select_draft_route_binding(
         route_name: route.route_name.clone(),
         agent_id: agent.id.clone(),
         rating: draft_rule.rating.clone().or(requested_rating),
+        caller_should_send_brief: route.caller_should_send_brief,
     })
 }
 
@@ -523,6 +524,7 @@ pub struct DraftRouteBinding {
     pub route_name: String,
     pub agent_id: String,
     pub rating: Option<String>,
+    pub caller_should_send_brief: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]

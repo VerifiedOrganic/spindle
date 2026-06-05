@@ -5259,6 +5259,15 @@ pub struct AuthoringExecuteNextInput {
     pub project_id: String,
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Optional execution mode for drafting steps.
+    ///
+    /// Default is "hybrid": the host assistant drafts non-explicit prose in
+    /// the active chat using Spindle context/tools, while explicit scenes may
+    /// still be routed through the configured explicit draft backend.
+    ///
+    /// Set to "agent" only for fully automated test/offload runs.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
