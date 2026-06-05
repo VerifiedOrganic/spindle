@@ -135,7 +135,8 @@ use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWrite
 
 use crate::json_utils::flatten_record_ids;
 use spindle_harness::artifacts::{
-    ArtifactStore, CheckpointReportArtifact, GeneratedScenePackage, SceneGenerationArtifact,
+    ArtifactStore, ChapterSummaryArtifact, CheckpointReportArtifact,
+    GeneratedChapterSummaryPackage, GeneratedScenePackage, SceneGenerationArtifact,
 };
 use spindle_harness::execution::{ExecutionResult, execute_one};
 use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
@@ -2597,6 +2598,27 @@ impl ToolRouter {
                 )
                 .await
             }
+            NextAction::AnnotateSceneBeats {
+                chapter_number,
+                scene_order,
+                ..
+            } => {
+                self.execute_authoring_annotate_scene_beats(
+                    &state_path,
+                    outcome.state,
+                    *chapter_number,
+                    *scene_order,
+                )
+                .await
+            }
+            NextAction::SaveChapterSummary { chapter_number } => {
+                self.execute_authoring_save_chapter_summary(
+                    &state_path,
+                    outcome.state,
+                    *chapter_number,
+                )
+                .await
+            }
             _ => {
                 let active_addr = crate::read_addr_file(data_dir)?;
                 let url = format!("http://{}/mcp", active_addr);
@@ -2894,6 +2916,163 @@ impl ToolRouter {
             message: format!(
                 "Committed scene changes for chapter {chapter_number} scene {scene_order}"
             ),
+        })
+    }
+
+    async fn execute_authoring_annotate_scene_beats(
+        &self,
+        state_path: &Path,
+        mut state: HarnessState,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> anyhow::Result<ExecutionResult> {
+        let artifact_store = ArtifactStore::new(authoring_artifacts_root(state_path, &state));
+        let (chapter_index, scene_index) =
+            authoring_scene_indices(&state, chapter_number, scene_order).with_context(|| {
+                format!("scene {chapter_number}.{scene_order} not found in authoring run state")
+            })?;
+        let scene = state.chapters[chapter_index].scenes[scene_index].clone();
+        let scene_id = scene
+            .scene_id
+            .clone()
+            .with_context(|| format!("scene_id missing for {chapter_number}.{scene_order}"))?;
+        let artifact_path = scene.scene_artifact_path.clone();
+        let mut artifact = artifact_path
+            .as_ref()
+            .map(|path| artifact_store.load_json::<SceneGenerationArtifact>(path))
+            .transpose()?;
+        let mut beat_annotation_output = artifact
+            .as_ref()
+            .and_then(|artifact| artifact.beat_annotation_output.clone());
+
+        if beat_annotation_output.is_none() {
+            let beats = artifact
+                .as_ref()
+                .and_then(|artifact| artifact.package.as_ref())
+                .map(|package| package.beats.clone())
+                .unwrap_or_default();
+            let annotation_output = self
+                .service
+                .annotate_scene_beats(AnnotateSceneBeatsInput {
+                    project_id: state.project_id.clone(),
+                    scene_id,
+                    beats,
+                    motif_ids: Vec::new(),
+                    theme_ids: Vec::new(),
+                    conflict_ids: Vec::new(),
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to annotate beats for chapter {chapter_number} scene {scene_order}"
+                    )
+                })?;
+            if let (Some(path), Some(artifact)) = (artifact_path.as_ref(), artifact.as_mut()) {
+                artifact.beat_annotation_output = Some(annotation_output.clone());
+                artifact_store.save_json(path, artifact)?;
+            }
+            beat_annotation_output = Some(annotation_output);
+        }
+        beat_annotation_output.context("missing annotate_scene_beats output")?;
+
+        let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+        live_scene.phase = ScenePhase::BeatsAnnotated;
+        live_scene.blocked_reason = None;
+        state.save(state_path)?;
+        Ok(ExecutionResult {
+            state,
+            message: format!("Annotated beats for chapter {chapter_number} scene {scene_order}"),
+        })
+    }
+
+    async fn execute_authoring_save_chapter_summary(
+        &self,
+        state_path: &Path,
+        mut state: HarnessState,
+        chapter_number: i32,
+    ) -> anyhow::Result<ExecutionResult> {
+        let artifact_store = ArtifactStore::new(authoring_artifacts_root(state_path, &state));
+        let chapter_index = state
+            .chapters
+            .iter()
+            .position(|chapter| chapter.chapter_number == chapter_number)
+            .with_context(|| {
+                format!("chapter {chapter_number} not found in authoring run state")
+            })?;
+
+        if state.chapters[chapter_index]
+            .summary_artifact_path
+            .is_none()
+        {
+            state.chapters[chapter_index].summary_artifact_path =
+                Some(ArtifactStore::summary_relative_path(chapter_number));
+            state.save(state_path)?;
+        }
+
+        let artifact_path = state.chapters[chapter_index]
+            .summary_artifact_path
+            .clone()
+            .context("summary artifact path missing after initialization")?;
+        let mut artifact = artifact_store
+            .load_json::<ChapterSummaryArtifact>(&artifact_path)
+            .unwrap_or_else(|_| {
+                ChapterSummaryArtifact::new(
+                    chapter_number,
+                    "in-process".to_string(),
+                    "deterministic-summary".to_string(),
+                    "Synthesized from saved scene packages by authoring_execute_next.".to_string(),
+                )
+            });
+        if artifact.chapter_number != chapter_number {
+            anyhow::bail!(
+                "summary artifact is for chapter {}, expected chapter {}",
+                artifact.chapter_number,
+                chapter_number
+            );
+        }
+
+        let package = match artifact.package.clone() {
+            Some(package) => package,
+            None => {
+                let package = authoring_build_chapter_summary_package(
+                    &artifact_store,
+                    &state.chapters[chapter_index],
+                )?;
+                artifact.package = Some(package.clone());
+                artifact.truncated = false;
+                artifact.last_parse_error = None;
+                artifact_store.save_json(&artifact_path, &artifact)?;
+                package
+            }
+        };
+
+        if artifact.save_summary_output.is_none() {
+            let save_output = self
+                .service
+                .save_summary(SaveSummaryInput {
+                    project_id: state.project_id.clone(),
+                    book_number: state.book_number,
+                    chapter_number,
+                    entity_type: None,
+                    entity_id: None,
+                    summary: package.summary.clone(),
+                    key_events: package.key_events.clone(),
+                    character_changes: package.character_changes.clone(),
+                    relationship_shifts: package.relationship_shifts.clone(),
+                    arc_advances: package.arc_advances.clone(),
+                    promise_events: package.promise_events.clone(),
+                })
+                .await
+                .with_context(|| format!("failed to save summary for chapter {chapter_number}"))?;
+            artifact.save_summary_output = Some(save_output);
+            artifact_store.save_json(&artifact_path, &artifact)?;
+        }
+
+        state.chapters[chapter_index].summary_saved = true;
+        state.save(state_path)?;
+        Ok(ExecutionResult {
+            state,
+            message: format!("Saved chapter summary for chapter {chapter_number}"),
         })
     }
 
@@ -3500,6 +3679,176 @@ fn authoring_status_after_checkpoint_review(state: &HarnessState) -> &'static st
         return "completed";
     }
     "active"
+}
+
+fn authoring_build_chapter_summary_package(
+    artifact_store: &ArtifactStore,
+    chapter: &spindle_harness::state::ChapterState,
+) -> anyhow::Result<GeneratedChapterSummaryPackage> {
+    let mut scene_summaries = Vec::new();
+    let mut key_events = Vec::new();
+    let mut character_changes = Vec::new();
+    let mut relationship_shifts = Vec::new();
+    let mut arc_advances = Vec::new();
+    let mut promise_events = Vec::new();
+
+    for scene in &chapter.scenes {
+        let artifact_path = scene.scene_artifact_path.as_ref().with_context(|| {
+            format!(
+                "chapter {} scene {} has no scene artifact path for summary",
+                chapter.chapter_number, scene.scene_order
+            )
+        })?;
+        let artifact: SceneGenerationArtifact = artifact_store
+            .load_json(artifact_path)
+            .with_context(|| format!("failed to load scene artifact {artifact_path}"))?;
+        let package = artifact.package.as_ref().with_context(|| {
+            format!("scene artifact {artifact_path} has no structured package for summary")
+        })?;
+        let scene_prefix = format!("Scene {}", scene.scene_order);
+
+        if !package.summary.trim().is_empty() {
+            scene_summaries.push(format!("{scene_prefix}: {}", package.summary.trim()));
+        }
+
+        for beat in &package.beats {
+            if !beat.summary.trim().is_empty() {
+                let beat_label = beat.beat_type.trim();
+                let entry = if beat_label.is_empty() {
+                    format!("{scene_prefix}: {}", beat.summary.trim())
+                } else {
+                    format!("{scene_prefix} [{beat_label}]: {}", beat.summary.trim())
+                };
+                if beat_label.eq_ignore_ascii_case("promise")
+                    || beat_label.eq_ignore_ascii_case("narrative_promise")
+                {
+                    promise_events.push(entry.clone());
+                }
+                key_events.push(entry);
+            }
+        }
+
+        for fact in &package.canonical_facts {
+            let value = fact
+                .value
+                .as_deref()
+                .or(fact.value_text.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .or_else(|| {
+                    fact.value_json
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .filter(|value| !value.is_empty())
+                });
+            let label = fact
+                .key
+                .as_deref()
+                .or(fact.predicate.as_deref())
+                .unwrap_or("canonical fact")
+                .trim();
+            if let Some(value) = value {
+                key_events.push(format!("{scene_prefix}: {label} = {value}"));
+            }
+        }
+
+        for state_change in &package.character_states {
+            if let Some(summary) = state_change.changes.source_summary.as_deref()
+                && !summary.trim().is_empty()
+            {
+                character_changes.push(format!(
+                    "{scene_prefix}: {} - {}",
+                    state_change.character_id,
+                    summary.trim()
+                ));
+            }
+            if let Some(notes) = state_change.changes.notes.as_ref() {
+                for note in notes {
+                    if !note.trim().is_empty() {
+                        character_changes.push(format!(
+                            "{scene_prefix}: {} - {}",
+                            state_change.character_id,
+                            note.trim()
+                        ));
+                    }
+                }
+            }
+            if let Some(statuses) = state_change.changes.status.as_ref() {
+                for status in statuses {
+                    if !status.trim().is_empty() {
+                        character_changes.push(format!(
+                            "{scene_prefix}: {} status - {}",
+                            state_change.character_id,
+                            status.trim()
+                        ));
+                    }
+                }
+            }
+            if let Some(goals) = state_change.changes.goals.as_ref() {
+                for goal in goals {
+                    if !goal.trim().is_empty() {
+                        arc_advances.push(format!(
+                            "{scene_prefix}: {} goal - {}",
+                            state_change.character_id,
+                            goal.trim()
+                        ));
+                    }
+                }
+            }
+        }
+
+        for relationship in &package.relationship_updates {
+            relationship_shifts.push(format!(
+                "{scene_prefix}: {} <-> {} trust {:+}, tension {:+}: {}",
+                relationship.character_a_id,
+                relationship.character_b_id,
+                relationship.trust_delta,
+                relationship.tension_delta,
+                relationship.reason.trim()
+            ));
+        }
+
+        for note in &package.continuity_notes {
+            if !note.trim().is_empty() {
+                arc_advances.push(format!("{scene_prefix}: {}", note.trim()));
+            }
+        }
+    }
+
+    if key_events.is_empty() {
+        key_events = scene_summaries.clone();
+    }
+
+    let summary = if scene_summaries.is_empty() {
+        chapter.synopsis.clone()
+    } else {
+        format!("{} {}", chapter.synopsis.trim(), scene_summaries.join(" "))
+            .trim()
+            .to_string()
+    };
+
+    Ok(GeneratedChapterSummaryPackage {
+        summary,
+        key_events: authoring_dedup_preserve_order(key_events),
+        character_changes: authoring_dedup_preserve_order(character_changes),
+        relationship_shifts: authoring_dedup_preserve_order(relationship_shifts),
+        arc_advances: authoring_dedup_preserve_order(arc_advances),
+        promise_events: authoring_dedup_preserve_order(promise_events),
+    })
+}
+
+fn authoring_dedup_preserve_order(items: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for item in items {
+        let normalized = item.trim().to_string();
+        if normalized.is_empty() || !seen.insert(normalized.clone()) {
+            continue;
+        }
+        deduped.push(normalized);
+    }
+    deduped
 }
 
 fn authoring_sample_checkpoint_scene_ids(
