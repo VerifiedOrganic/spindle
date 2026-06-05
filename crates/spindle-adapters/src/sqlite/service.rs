@@ -3040,6 +3040,7 @@ impl SqliteSpindleService {
             .test_agent(
                 &input.agent_id,
                 input.test_prompt.as_deref(),
+                input.route.as_deref(),
                 input.rating.as_deref(),
             )
             .await?;

@@ -4366,6 +4366,11 @@ pub struct AgentRoutingConfigOutput {
 pub struct TestAgentInput {
     pub agent_id: String,
     pub test_prompt: Option<String>,
+    /// Optional logical route to force for this call. When omitted, Spindle
+    /// preserves the legacy behavior of choosing the first configured route
+    /// for the agent, preferring a matching rating when provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
     /// Optional content rating used when this test call is actually driving a
     /// draft route. Harness callers use this to select per-rating draft
     /// routes, especially explicit overrides.

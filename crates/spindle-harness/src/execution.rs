@@ -666,6 +666,7 @@ async fn ensure_scene_package_ready(
                 .test_agent(&TestAgentInput {
                     agent_id: artifact.agent_id.clone(),
                     test_prompt: Some(artifact.prompt.clone()),
+                    route: Some(artifact.route_name.clone()),
                     rating: artifact.rating.clone(),
                 })
                 .await
@@ -783,6 +784,7 @@ async fn ensure_summary_package_ready(
                 .test_agent(&TestAgentInput {
                     agent_id: artifact.agent_id.clone(),
                     test_prompt: Some(artifact.prompt.clone()),
+                    route: Some(artifact.route_name.clone()),
                     rating: None,
                 })
                 .await

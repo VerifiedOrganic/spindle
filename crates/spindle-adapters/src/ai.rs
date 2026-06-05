@@ -377,34 +377,11 @@ impl ModelRouter {
         &self,
         agent_id: &str,
         prompt: Option<&str>,
+        route: Option<&str>,
         rating: Option<&str>,
     ) -> anyhow::Result<TestAgentOutput> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
-        let route_name = runtime
-            .routing_rules
-            .iter()
-            .find(|rule| {
-                rule.agent == agent_id
-                    && rating.is_some()
-                    && rule.rating.as_deref().is_some_and(|rule_rating| {
-                        normalize_route_rating(rule_rating)
-                            == normalize_route_rating(rating.unwrap_or_default())
-                    })
-            })
-            .or_else(|| {
-                runtime
-                    .routing_rules
-                    .iter()
-                    .find(|rule| rule.agent == agent_id && rule.rating.is_none())
-            })
-            .or_else(|| {
-                runtime
-                    .routing_rules
-                    .iter()
-                    .find(|rule| rule.agent == agent_id)
-            })
-            .map(|rule| rule.route.clone())
-            .ok_or_else(|| anyhow::anyhow!("unknown agent id: {agent_id}"))?;
+        let route_name = select_test_agent_route(&runtime, agent_id, route, rating)?;
 
         let response = self
             .complete(&ModelRequest {
@@ -1179,6 +1156,47 @@ fn runtime_from_loaded_config(
     }
 }
 
+fn select_test_agent_route(
+    runtime: &RuntimeConfig,
+    agent_id: &str,
+    route: Option<&str>,
+    rating: Option<&str>,
+) -> anyhow::Result<String> {
+    let matches_rating = |rule: &&RoutingRule| {
+        rating.is_some()
+            && rule.rating.as_deref().is_some_and(|rule_rating| {
+                normalize_route_rating(rule_rating)
+                    == normalize_route_rating(rating.unwrap_or_default())
+            })
+    };
+    let matches_route = |rule: &&RoutingRule| route.is_none_or(|route| rule.route == route);
+
+    let selected = runtime
+        .routing_rules
+        .iter()
+        .find(|rule| rule.agent == agent_id && matches_route(rule) && matches_rating(rule))
+        .or_else(|| {
+            runtime
+                .routing_rules
+                .iter()
+                .find(|rule| rule.agent == agent_id && matches_route(rule) && rule.rating.is_none())
+        })
+        .or_else(|| {
+            runtime
+                .routing_rules
+                .iter()
+                .find(|rule| rule.agent == agent_id && matches_route(rule))
+        });
+
+    match (selected, route) {
+        (Some(rule), _) => Ok(rule.route.clone()),
+        (None, Some(route)) => Err(anyhow::anyhow!(
+            "agent {agent_id} is not configured for route {route}"
+        )),
+        (None, None) => Err(anyhow::anyhow!("unknown agent id: {agent_id}")),
+    }
+}
+
 fn health_heartbeat_interval() -> Option<Duration> {
     match std::env::var("SPINDLE_HEALTH_CHECK_INTERVAL_MS") {
         Ok(raw) => match raw.trim().parse::<u64>() {
@@ -1734,6 +1752,57 @@ rating = "explicit"
         // No rating context also falls back to the default rule.
         let none_route = resolve_route(&runtime, "draft", None).expect("default route");
         assert_eq!(none_route.model_name, "default-draft");
+    }
+
+    #[test]
+    fn test_agent_route_selection_allows_shared_agents_when_route_is_explicit() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(
+            &config_path,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "grok-local"
+name = "Grok Local"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "grok-local"
+
+[[routing]]
+route = "research"
+agent = "grok-local"
+
+[[routing]]
+route = "draft"
+agent = "grok-local"
+"####,
+        )
+        .expect("write config");
+
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+
+        let runtime = router
+            .runtime
+            .read()
+            .expect("model router read lock")
+            .clone();
+
+        assert_eq!(
+            select_test_agent_route(&runtime, "grok-local", Some("draft"), None)
+                .expect("draft route"),
+            "draft"
+        );
+        assert_eq!(
+            select_test_agent_route(&runtime, "grok-local", Some("research"), None)
+                .expect("research route"),
+            "research"
+        );
     }
 
     #[test]

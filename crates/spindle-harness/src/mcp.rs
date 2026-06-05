@@ -473,18 +473,6 @@ fn select_draft_route_binding(
             agent.status
         );
     }
-    if !agent.route_names.is_empty()
-        && agent
-            .route_names
-            .iter()
-            .any(|route_name| route_name != "draft")
-    {
-        anyhow::bail!(
-            "draft agent {} is not dedicated to the draft route; test_agent would be ambiguous",
-            agent.id
-        );
-    }
-
     Ok(DraftRouteBinding {
         route_name: route.route_name.clone(),
         agent_id: agent.id.clone(),
@@ -582,8 +570,16 @@ mod tests {
     }
 
     fn rule(agent_id: &str, rating: Option<&str>) -> AgentRoutingRuleSummary {
+        rule_for_route("draft", agent_id, rating)
+    }
+
+    fn rule_for_route(
+        route_name: &str,
+        agent_id: &str,
+        rating: Option<&str>,
+    ) -> AgentRoutingRuleSummary {
         AgentRoutingRuleSummary {
-            route_name: "draft".to_string(),
+            route_name: route_name.to_string(),
             agent_id: agent_id.to_string(),
             fallback_agent_id: None,
             purpose: Some("drafting".to_string()),
@@ -668,5 +664,34 @@ mod tests {
 
         assert_eq!(binding.agent_id, "default-draft");
         assert_eq!(binding.rating.as_deref(), Some("mature"));
+    }
+
+    #[test]
+    fn select_draft_route_binding_allows_shared_draft_research_agent() {
+        let routes = vec![
+            route("draft", "shared-model", None),
+            route("research", "shared-model", None),
+        ];
+        let routing = AgentRoutingConfigOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            rules: vec![
+                rule_for_route("draft", "grok-local", None),
+                rule_for_route("research", "grok-local", None),
+            ],
+        };
+        let mut shared_agent = agent("grok-local");
+        shared_agent.route_names = vec!["draft".to_string(), "research".to_string()];
+        let agents = ListAgentsOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            agents: vec![shared_agent],
+        };
+
+        let binding = select_draft_route_binding(&routes, &routing, &agents, None).unwrap();
+
+        assert_eq!(binding.agent_id, "grok-local");
+        assert_eq!(binding.route_name, "draft");
+        assert_eq!(binding.rating, None);
     }
 }
