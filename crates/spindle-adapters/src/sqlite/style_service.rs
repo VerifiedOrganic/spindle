@@ -1572,6 +1572,255 @@ impl SqliteSpindleService {
             archived_at,
         })
     }
+
+    pub async fn preview_style_revision_patch(
+        &self,
+        input: spindle_core::style::PreviewStyleRevisionPatchInput,
+    ) -> Result<spindle_core::style::PreviewStyleRevisionPatchOutput> {
+        // 1. Accept exactly one target: scene_id or chapter_id
+        match (&input.scene_id, &input.chapter_id) {
+            (Some(_), Some(_)) => {
+                return Err(anyhow!("Provide only one of scene_id or chapter_id"));
+            }
+            (None, None) => return Err(anyhow!("Must provide either scene_id or chapter_id")),
+            _ => {}
+        }
+
+        // 2. Reuse plan_style_revision's validation by invoking plan_style_revision
+        // This resolves active profile, validates scene/chapter project ownership, and rejects archived profiles
+        let plan_input = spindle_core::style::PlanStyleRevisionInput {
+            project_id: input.project_id.clone(),
+            profile_id: input.profile_id.clone(),
+            raw_text: None,
+            scene_id: input.scene_id.clone(),
+            chapter_id: input.chapter_id.clone(),
+            max_suggestions: input.max_suggestions,
+            metrics_only: Some(false),
+            include_rewrite_examples: Some(false),
+        };
+        let plan_output = self.plan_style_revision(plan_input).await?;
+        let resolved_profile_id = plan_output.profile_id.clone();
+
+        // 3. Retrieve target scenes
+        let mut scenes = Vec::new();
+        if let Some(sid) = &input.scene_id {
+            let scene = self.repository().get_scene(sid).await?;
+            scenes.push(scene);
+        } else if let Some(cid) = &input.chapter_id {
+            let chapter_scenes = self.repository().list_scenes_by_chapter(cid).await?;
+            scenes.extend(chapter_scenes);
+        }
+
+        // Fetch style profile
+        let profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &resolved_profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found: {}", resolved_profile_id))?;
+
+        let mut scene_patches = Vec::new();
+        let mut last_receipt = None;
+
+        for scene in scenes {
+            // Cap prose sent to the model with a configurable word budget (default 4000)
+            let word_budget = 4000;
+            let trimmed_prose = trim_to_word_limit(&scene.full_text, word_budget);
+
+            let mut prompt = format!(
+                "You are an expert editor. Revise the following prose to align with the style profile.\n\n\
+                 Style Profile Name: {}\n\
+                 - POV: {}\n\
+                 - Tense: {}\n\
+                 - Narrative Voice: {:?}\n\
+                 - Do Rules: {:?}\n\
+                 - Avoid Rules: {:?}\n\n\
+                 Prose to Revise:\n\
+                 {}\n\n",
+                profile.name,
+                profile.guidance.pov.clone().unwrap_or_default(),
+                profile.guidance.tense.clone().unwrap_or_default(),
+                profile.guidance.narrator_voice,
+                profile.guidance.do_rules,
+                profile.guidance.avoid_rules,
+                trimmed_prose
+            );
+
+            if let Some(inst) = &input.instructions {
+                prompt.push_str(&format!("Instructions: {}\n\n", inst));
+            } else {
+                prompt.push_str(
+                    "Instructions: Revise the prose to match the style profile guidance.\n\n",
+                );
+            }
+
+            prompt.push_str("Return ONLY the revised text. Do not include any explanations, markdown formatting, or tags.");
+
+            let req = crate::ai::ModelRequest {
+                route: "style_revise".to_string(),
+                prompt,
+                rating: None,
+                context: Some(crate::ai::RequestContext {
+                    project_id: Some(input.project_id.clone()),
+                    book_id: None,
+                    chapter_id: input.chapter_id.clone(),
+                    scene_id: Some(scene.id.clone()),
+                }),
+            };
+
+            let response = self.repository().model_router().complete(&req).await?;
+            let revised_text = response.output.trim().to_string();
+
+            let receipt = StyleProfileModelReceipt {
+                model_route: "style_revise".to_string(),
+                model_name: response.model_name,
+                input_tokens: None,
+                output_tokens: None,
+                latency_ms: None,
+            };
+            last_receipt = Some(receipt);
+
+            // Compute word counts
+            let original_word_count = scene.full_text.split_whitespace().count();
+            let revised_word_count = revised_text.split_whitespace().count();
+
+            // Compute hashes
+            let before_hash = hash_text(&scene.full_text);
+            let after_hash = hash_text(&revised_text);
+
+            // Compute unified diff and structured hunks
+            let (unified_diff, hunks) = generate_diff_and_hunks(&scene.full_text, &revised_text);
+
+            scene_patches.push(spindle_core::style::StyleRevisionPatchScene {
+                scene_id: scene.id.clone(),
+                original_word_count,
+                revised_word_count,
+                before_hash,
+                after_hash,
+                unified_diff,
+                hunks: Some(hunks),
+                revised_text,
+            });
+        }
+
+        Ok(spindle_core::style::PreviewStyleRevisionPatchOutput {
+            project_id: input.project_id,
+            profile_id: resolved_profile_id,
+            scenes: scene_patches,
+            model_receipt: last_receipt,
+        })
+    }
+
+    pub async fn apply_style_revision_patch(
+        &self,
+        input: spindle_core::style::ApplyStyleRevisionPatchInput,
+    ) -> Result<spindle_core::style::ApplyStyleRevisionPatchOutput> {
+        // 1. Fetch profile card and reject if archived
+        let profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found: {}", input.profile_id))?;
+        ensure_style_profile_not_archived(&profile)?;
+
+        // 2. Validate all scene targets for project ownership and stale hashes
+        let mut scenes_to_save = Vec::new();
+        let mut before_hashes = Vec::new();
+        let mut after_hashes = Vec::new();
+        let mut target_ids = Vec::new();
+
+        for scene_patch in &input.scenes {
+            let existing_scene = self.repository().get_scene(&scene_patch.scene_id).await?;
+            if existing_scene.project_id != input.project_id {
+                return Err(anyhow!(
+                    "Scene {} does not belong to project {}",
+                    scene_patch.scene_id,
+                    input.project_id
+                ));
+            }
+
+            // Check stale hash
+            let current_hash = hash_text(&existing_scene.full_text);
+            if current_hash != scene_patch.before_hash {
+                return Err(anyhow!(
+                    "Scene {} text has changed; patch is stale",
+                    scene_patch.scene_id
+                ));
+            }
+
+            scenes_to_save.push((existing_scene, scene_patch.revised_text.clone()));
+            before_hashes.push(scene_patch.before_hash.clone());
+            after_hashes.push(scene_patch.after_hash.clone());
+            target_ids.push(scene_patch.scene_id.clone());
+        }
+
+        // 3. Save scene drafts through existing save_scene_draft path
+        let mut applied_scene_ids = Vec::new();
+        for (existing_scene, revised_text) in scenes_to_save {
+            let content_rating = match existing_scene.content_rating.as_str() {
+                "teen" => spindle_core::models::ContentRating::Teen,
+                "mature" => spindle_core::models::ContentRating::Mature,
+                "explicit" => spindle_core::models::ContentRating::Explicit,
+                _ => spindle_core::models::ContentRating::General,
+            };
+
+            let save_input = spindle_core::models::SaveSceneDraftInput {
+                project_id: input.project_id.clone(),
+                book_number: existing_scene.book_number,
+                chapter_number: existing_scene.chapter_number,
+                chapter_id: Some(existing_scene.chapter_id.clone()),
+                scene_order: existing_scene.scene_order,
+                full_text: revised_text,
+                summary: existing_scene.summary.clone(),
+                content_rating,
+                tone: existing_scene.tone.clone(),
+                generation_id: None,
+                source_path: None,
+                research_source_ids: Vec::new(),
+                research_note_ids: Vec::new(),
+                research_claim_ids: Vec::new(),
+                research_query_pack_input: None,
+                research_context_hash: None,
+            };
+
+            self.save_scene_draft(save_input).await?;
+            applied_scene_ids.push(existing_scene.id);
+        }
+
+        // 4. Invalidate style-sensitive validator caches
+        self.resolve_phase_four_caches_for_project(
+            &input.project_id,
+            &[
+                PhaseFourCacheId::StyleCompliance,
+                PhaseFourCacheId::WorldRuleSemanticDrift,
+            ],
+        )
+        .await?;
+
+        // 5. Record an audit row
+        let audit_id = format!("style_patch_audit:{}", ulid::Ulid::new());
+        let applied_at = chrono::Utc::now().to_rfc3339();
+
+        let audit_record = spindle_core::style::StyleRevisionPatchAuditRecord {
+            id: audit_id.clone(),
+            project_id: input.project_id.clone(),
+            profile_id: input.profile_id.clone(),
+            applied_at,
+            target_ids,
+            before_hashes,
+            after_hashes,
+            model_receipt: input.model_receipt.clone(),
+        };
+
+        self.repository()
+            .insert_style_revision_patch_audit(&audit_record)
+            .await?;
+
+        Ok(spindle_core::style::ApplyStyleRevisionPatchOutput {
+            project_id: input.project_id,
+            applied_scene_ids,
+            audit_id,
+        })
+    }
 }
 
 // ── Shared Apply Helpers ───────────────────────────────────────────
@@ -1736,4 +1985,168 @@ fn has_application_guidance(guidance: &StyleProfileGuidance) -> bool {
             .avoid_rules
             .iter()
             .any(|rule| !rule.trim().is_empty())
+}
+
+fn hash_text(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn generate_diff_and_hunks(
+    old: &str,
+    new: &str,
+) -> (String, Vec<spindle_core::style::StyleRevisionPatchHunk>) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // LCS DP
+    let m = old_lines.len();
+    let n = new_lines.len();
+    let mut dp = vec![vec![0; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if old_lines[i - 1] == new_lines[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum EditKind {
+        Unchanged,
+        Delete,
+        Insert,
+    }
+
+    struct Edit<'a> {
+        kind: EditKind,
+        line: &'a str,
+        old_idx: Option<usize>,
+        new_idx: Option<usize>,
+    }
+
+    let mut i = m;
+    let mut j = n;
+    let mut path = Vec::new();
+
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && old_lines[i - 1] == new_lines[j - 1] {
+            path.push(Edit {
+                kind: EditKind::Unchanged,
+                line: old_lines[i - 1],
+                old_idx: Some(i),
+                new_idx: Some(j),
+            });
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            path.push(Edit {
+                kind: EditKind::Insert,
+                line: new_lines[j - 1],
+                old_idx: None,
+                new_idx: Some(j),
+            });
+            j -= 1;
+        } else {
+            path.push(Edit {
+                kind: EditKind::Delete,
+                line: old_lines[i - 1],
+                old_idx: Some(i),
+                new_idx: None,
+            });
+            i -= 1;
+        }
+    }
+    path.reverse();
+
+    let mut hunks = Vec::new();
+    let mut current_hunk_edits = Vec::new();
+    let mut last_change_idx: Option<usize> = None;
+    let context_size = 3;
+
+    for (idx, edit) in path.iter().enumerate() {
+        if edit.kind != EditKind::Unchanged {
+            last_change_idx = Some(idx);
+        }
+    }
+
+    if last_change_idx.is_none() {
+        return (String::new(), Vec::new());
+    }
+
+    let mut idx = 0;
+    while idx < path.len() {
+        // Check if a change is nearby
+        let mut change_nearby = false;
+        for lookahead in idx..(idx + context_size * 2 + 1).min(path.len()) {
+            if path[lookahead].kind != EditKind::Unchanged {
+                change_nearby = true;
+                break;
+            }
+        }
+
+        if change_nearby {
+            current_hunk_edits.push(&path[idx]);
+        } else if !current_hunk_edits.is_empty() {
+            let mut trailing = 0;
+            while idx < path.len()
+                && path[idx].kind == EditKind::Unchanged
+                && trailing < context_size
+            {
+                current_hunk_edits.push(&path[idx]);
+                trailing += 1;
+                idx += 1;
+            }
+            hunks.push(current_hunk_edits);
+            current_hunk_edits = Vec::new();
+            continue;
+        }
+        idx += 1;
+    }
+
+    if !current_hunk_edits.is_empty() {
+        hunks.push(current_hunk_edits);
+    }
+
+    let mut diff_output = String::new();
+    diff_output.push_str("--- original\n+++ revised\n");
+
+    let mut structured_hunks = Vec::new();
+
+    for hunk in hunks {
+        let old_start = hunk.iter().find_map(|e| e.old_idx).unwrap_or(0);
+        let new_start = hunk.iter().find_map(|e| e.new_idx).unwrap_or(0);
+        let old_len = hunk.iter().filter(|e| e.kind != EditKind::Insert).count();
+        let new_len = hunk.iter().filter(|e| e.kind != EditKind::Delete).count();
+
+        diff_output.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            old_start, old_len, new_start, new_len
+        ));
+
+        let mut hunk_lines = Vec::new();
+        for edit in hunk {
+            let prefix = match edit.kind {
+                EditKind::Unchanged => ' ',
+                EditKind::Delete => '-',
+                EditKind::Insert => '+',
+            };
+            let line_str = format!("{}{}", prefix, edit.line);
+            diff_output.push_str(&line_str);
+            diff_output.push('\n');
+            hunk_lines.push(line_str);
+        }
+
+        structured_hunks.push(spindle_core::style::StyleRevisionPatchHunk {
+            old_range: format!("{},{}", old_start, old_len),
+            new_range: format!("{},{}", new_start, new_len),
+            lines: hunk_lines,
+        });
+    }
+
+    (diff_output, structured_hunks)
 }

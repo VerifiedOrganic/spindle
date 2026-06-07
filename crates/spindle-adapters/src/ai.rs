@@ -1604,14 +1604,34 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
   "prompt_snippet": "Write in a contemplative past-tense close-POV style."
 }"#
         .to_string(),
-        "style_revise" => r#"[
+        "style_revise" => {
+            if prompt.contains("Return ONLY the revised text") {
+                if let Some(start) = prompt.find("Prose to Revise:\n") {
+                    let rest = &prompt[start + "Prose to Revise:\n".len()..];
+                    let end = rest.find("\n\nInstructions:").unwrap_or(rest.len());
+                    let original = rest[..end].trim();
+                    if original.contains("This is a remarkably long sentence that triggers drift.")
+                    {
+                        "This is a short sentence. It does not trigger drift.".to_string()
+                    } else if original.is_empty() {
+                        "Revised empty scene.".to_string()
+                    } else {
+                        format!("{} (revised)", original)
+                    }
+                } else {
+                    "Mock revised prose.".to_string()
+                }
+            } else {
+                r#"[
   {
     "original_prose": "She went to the store. She bought some milk. She was happy.",
     "revised_prose": "Walking down the dusty aisle, she grabbed the cool glass bottle of milk, a small smile softening her face.",
     "explanation": "Combined short, choppy sentences into a more fluid narrative with sensory details to match the contemplative, close-POV style."
   }
 ]"#
-        .to_string(),
+                .to_string()
+            }
+        }
         _ => compact_prompt,
     }
 }

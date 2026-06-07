@@ -232,6 +232,7 @@ impl ToolRouter {
                 "plan_style_revision",
                 "compare_style_profiles",
                 "archive_style_profile",
+                "preview_style_revision_patch",
             ],
             "write" => &[
                 "create_project",
@@ -324,6 +325,8 @@ impl ToolRouter {
                 "plan_style_revision",
                 "compare_style_profiles",
                 "archive_style_profile",
+                "preview_style_revision_patch",
+                "apply_style_revision_patch",
             ],
             "minimal" => &[
                 "create_project",
@@ -439,6 +442,14 @@ impl ToolRouter {
             tool::<ArchiveStyleProfileInput, ArchiveStyleProfileOutput>(
                 "archive_style_profile",
                 "Safer profile deletion/archiving. archived profiles cannot be active or default, but preserve audit history.",
+            ),
+            tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
+                "preview_style_revision_patch",
+                "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",
+            ),
+            tool::<ApplyStyleRevisionPatchInput, ApplyStyleRevisionPatchOutput>(
+                "apply_style_revision_patch",
+                "Apply proposed style revision patches to target scenes, saving drafts through the standard writing pipeline, invalidating caches, and writing an audit trail.",
             ),
             tool::<MergeBranchInput, MergeBranchOutput>(
                 "merge_branch",
@@ -1267,6 +1278,18 @@ impl ToolRouter {
             "archive_style_profile" => {
                 self.invoke(arguments, |input| self.service.archive_style_profile(input))
                     .await
+            }
+            "preview_style_revision_patch" => {
+                self.invoke(arguments, |input| {
+                    self.service.preview_style_revision_patch(input)
+                })
+                .await
+            }
+            "apply_style_revision_patch" => {
+                self.invoke(arguments, |input| {
+                    self.service.apply_style_revision_patch(input)
+                })
+                .await
             }
             "merge_branch" => {
                 self.invoke(arguments, |input| self.service.merge_branch(input))
@@ -5774,5 +5797,7 @@ mod tests {
         assert!(tool_names.contains(&"compare_style_profiles"));
         assert!(tool_names.contains(&"archive_style_profile"));
         assert!(tool_names.contains(&"plan_style_revision"));
+        assert!(tool_names.contains(&"preview_style_revision_patch"));
+        assert!(tool_names.contains(&"apply_style_revision_patch"));
     }
 }

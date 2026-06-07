@@ -494,3 +494,68 @@ pub struct ArchiveStyleProfileOutput {
     pub profile_id: String,
     pub archived_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewStyleRevisionPatchInput {
+    pub project_id: String,
+    pub scene_id: Option<String>,
+    pub chapter_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub max_suggestions: Option<usize>,
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPatchHunk {
+    pub old_range: String,
+    pub new_range: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPatchScene {
+    pub scene_id: String,
+    pub original_word_count: usize,
+    pub revised_word_count: usize,
+    pub before_hash: String,
+    pub after_hash: String,
+    pub unified_diff: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hunks: Option<Vec<StyleRevisionPatchHunk>>,
+    pub revised_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewStyleRevisionPatchOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub scenes: Vec<StyleRevisionPatchScene>,
+    pub model_receipt: Option<StyleProfileModelReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApplyStyleRevisionPatchInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub scenes: Vec<StyleRevisionPatchScene>,
+    pub model_receipt: Option<StyleProfileModelReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApplyStyleRevisionPatchOutput {
+    pub project_id: String,
+    pub applied_scene_ids: Vec<String>,
+    pub audit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPatchAuditRecord {
+    pub id: String,
+    pub project_id: String,
+    pub profile_id: String,
+    pub applied_at: String,
+    pub target_ids: Vec<String>,
+    pub before_hashes: Vec<String>,
+    pub after_hashes: Vec<String>,
+    pub model_receipt: Option<StyleProfileModelReceipt>,
+}

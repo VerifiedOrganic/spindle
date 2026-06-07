@@ -5,9 +5,10 @@ use spindle_core::models::{
     ContentRating, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
 };
 use spindle_core::style::{
-    ApplyStyleProfileInput, ArchiveStyleProfileInput, CompareStyleProfilesInput,
-    CreateStyleProfileFromMarkdownInput, GetStyleProfileInput, ListStyleProfilesInput,
-    StyleDriftSummaryScore, StyleProfileApplyMode,
+    ApplyStyleProfileInput, ApplyStyleRevisionPatchInput, ArchiveStyleProfileInput,
+    CompareStyleProfilesInput, CreateStyleProfileFromMarkdownInput, GetStyleProfileInput,
+    ListStyleProfilesInput, PreviewStyleRevisionPatchInput, StyleDriftSummaryScore,
+    StyleProfileApplyMode,
 };
 use tempfile::TempDir;
 
@@ -1946,4 +1947,328 @@ async fn test_plan_style_revision_suite() {
         )
         .unwrap();
     assert_eq!(query_res, 0);
+}
+
+#[tokio::test]
+async fn test_style_revision_patch_lifecycle() {
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Create project
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Patch Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "An adventurous tale".to_string(),
+                style_notes: vec!["User-authored style note".to_string()],
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = project_out.project_id;
+
+    // Create a chapter
+    let book = svc
+        .repository()
+        .list_books_by_project(&project_id)
+        .await
+        .unwrap()[0]
+        .clone();
+    let chapter_out = svc
+        .create_chapter(spindle_core::models::CreateChapterInput {
+            project_id: project_id.clone(),
+            book_number: Some(book.book_number),
+            book_id: Some(book.id.clone()),
+            chapter_number: Some(1),
+            title: Some("Chapter One".to_string()),
+        })
+        .await
+        .unwrap();
+    let chapter_id = chapter_out.chapter_id;
+
+    // Create two scenes in the chapter
+    let scene_input_1 = SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: book.book_number,
+        chapter_number: 1,
+        chapter_id: Some(chapter_id.clone()),
+        scene_order: 1,
+        full_text: "This is a remarkably long sentence that triggers drift.".to_string(),
+        summary: "Scene 1 summary".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        research_source_ids: Vec::new(),
+        research_note_ids: Vec::new(),
+        research_claim_ids: Vec::new(),
+        research_query_pack_input: None,
+        research_context_hash: None,
+    };
+    let scene_out_1 = svc.save_scene_draft(scene_input_1).await.unwrap();
+    let scene_id_1 = scene_out_1.scene_id;
+
+    let scene_input_2 = SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: book.book_number,
+        chapter_number: 1,
+        chapter_id: Some(chapter_id.clone()),
+        scene_order: 2,
+        full_text: "Another scene with some basic prose.".to_string(),
+        summary: "Scene 2 summary".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        research_source_ids: Vec::new(),
+        research_note_ids: Vec::new(),
+        research_claim_ids: Vec::new(),
+        research_query_pack_input: None,
+        research_context_hash: None,
+    };
+    let scene_out_2 = svc.save_scene_draft(scene_input_2).await.unwrap();
+    let scene_id_2 = scene_out_2.scene_id;
+
+    // Create a style profile
+    let dest_dir = tmp.path();
+    let dest_file = dest_dir.join("profile.md");
+    std::fs::write(&dest_file, "Jake ran. Jake won.").unwrap();
+    let create_out = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Test Profile".to_string(),
+            source_paths: vec![dest_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true), // make it active style profile
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap();
+    let profile = create_out.profile;
+
+    // A. Preview for single scene
+    let preview_scene_out = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            scene_id: Some(scene_id_1.clone()),
+            chapter_id: None,
+            profile_id: Some(profile.profile_id.clone()),
+            max_suggestions: None,
+            instructions: Some("Align closely".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(preview_scene_out.scenes.len(), 1);
+    assert_eq!(preview_scene_out.scenes[0].scene_id, scene_id_1);
+    assert!(
+        preview_scene_out.scenes[0]
+            .revised_text
+            .contains("This is a short sentence. It does not trigger drift.")
+    );
+
+    // Verify preview is non-mutating
+    let current_scene_1 = svc.repository().get_scene(&scene_id_1).await.unwrap();
+    assert_eq!(
+        current_scene_1.full_text,
+        "This is a remarkably long sentence that triggers drift."
+    );
+
+    // B. Preview for chapter (returns per-scene patches)
+    let preview_chapter_out = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            scene_id: None,
+            chapter_id: Some(chapter_id.clone()),
+            profile_id: Some(profile.profile_id.clone()),
+            max_suggestions: None,
+            instructions: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(preview_chapter_out.scenes.len(), 2);
+    assert_eq!(preview_chapter_out.scenes[0].scene_id, scene_id_1);
+    assert_eq!(preview_chapter_out.scenes[1].scene_id, scene_id_2);
+
+    // C. Apply patch updates scene text
+    let apply_input = ApplyStyleRevisionPatchInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        scenes: preview_chapter_out.scenes.clone(),
+        model_receipt: preview_chapter_out.model_receipt.clone(),
+    };
+    let apply_out = svc.apply_style_revision_patch(apply_input).await.unwrap();
+    assert_eq!(apply_out.applied_scene_ids.len(), 2);
+
+    // Check scene text is updated
+    let updated_scene_1 = svc.repository().get_scene(&scene_id_1).await.unwrap();
+    assert_eq!(
+        updated_scene_1.full_text,
+        "This is a short sentence. It does not trigger drift."
+    );
+    let updated_scene_2 = svc.repository().get_scene(&scene_id_2).await.unwrap();
+    assert!(updated_scene_2.full_text.contains("(revised)"));
+
+    // D. Stale patch rejection
+    // Let's do another preview
+    let preview_stale = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            scene_id: Some(scene_id_1.clone()),
+            chapter_id: None,
+            profile_id: Some(profile.profile_id.clone()),
+            max_suggestions: None,
+            instructions: None,
+        })
+        .await
+        .unwrap();
+
+    // Now mutate the scene text so the hash changes
+    let scene_mutate_input = SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: book.book_number,
+        chapter_number: 1,
+        chapter_id: Some(chapter_id.clone()),
+        scene_order: 1,
+        full_text: "Mutated scene text to trigger stale hash.".to_string(),
+        summary: "Scene 1 summary".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        research_source_ids: Vec::new(),
+        research_note_ids: Vec::new(),
+        research_claim_ids: Vec::new(),
+        research_query_pack_input: None,
+        research_context_hash: None,
+    };
+    svc.save_scene_draft(scene_mutate_input).await.unwrap();
+
+    // Apply the stale patch, should fail
+    let apply_stale_input = ApplyStyleRevisionPatchInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        scenes: preview_stale.scenes.clone(),
+        model_receipt: preview_stale.model_receipt.clone(),
+    };
+    let apply_stale_res = svc.apply_style_revision_patch(apply_stale_input).await;
+    assert!(apply_stale_res.is_err());
+    assert!(
+        apply_stale_res
+            .unwrap_err()
+            .to_string()
+            .contains("patch is stale")
+    );
+
+    // E. Archived profile rejection
+    svc.archive_style_profile(ArchiveStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        force: Some(true),
+    })
+    .await
+    .unwrap();
+
+    let preview_archived_res = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            scene_id: Some(scene_id_1.clone()),
+            chapter_id: None,
+            profile_id: Some(profile.profile_id.clone()),
+            max_suggestions: None,
+            instructions: None,
+        })
+        .await;
+    assert!(preview_archived_res.is_err());
+    assert!(
+        preview_archived_res
+            .unwrap_err()
+            .to_string()
+            .contains("is archived and cannot be used")
+    );
+
+    let apply_archived_res = svc
+        .apply_style_revision_patch(ApplyStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: preview_stale.scenes.clone(),
+            model_receipt: preview_stale.model_receipt.clone(),
+        })
+        .await;
+    assert!(apply_archived_res.is_err());
+    assert!(
+        apply_archived_res
+            .unwrap_err()
+            .to_string()
+            .contains("is archived and cannot be used")
+    );
+
+    // F. Cross-project scene/chapter rejection
+    // Create another project
+    let project_other_out = svc
+        .create_project(CreateProjectInput {
+            name: "Other Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Other promise".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_other_id = project_other_out.project_id;
+
+    let preview_cross_res = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_other_id.clone(),
+            scene_id: Some(scene_id_1.clone()), // scene_1 belongs to project_id, not project_other_id
+            chapter_id: None,
+            profile_id: None,
+            max_suggestions: None,
+            instructions: None,
+        })
+        .await;
+    assert!(preview_cross_res.is_err());
+
+    // G. Audit stores hashes/metadata but not prose
+    let audits = svc
+        .repository()
+        .list_style_revision_patch_audits(&project_id)
+        .await
+        .unwrap();
+    assert_eq!(audits.len(), 1);
+    let audit = &audits[0];
+    assert_eq!(audit.profile_id, profile.profile_id);
+    assert_eq!(
+        audit.target_ids,
+        vec![scene_id_1.clone(), scene_id_2.clone()]
+    );
+    assert!(audit.before_hashes.len() == 2);
+    assert!(audit.after_hashes.len() == 2);
+
+    let conn = Connection::open(tmp.path().join("svc.db")).unwrap();
+    let audit_prose_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM style_revision_patch_audit \
+             WHERE target_ids_json LIKE '%sentence%' \
+                OR before_hashes_json LIKE '%sentence%' \
+                OR after_hashes_json LIKE '%sentence%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit_prose_count, 0);
 }

@@ -905,7 +905,29 @@ The tool output should include:
 - whether source text was persisted
 - any warnings
 
-Avoid logging source text. Logging paths and hashes is acceptable.
+## Style Revision Patch Workflow (Preview and Apply)
+
+To make style revision planning operational, Spindle supports a non-mutating patch preview and an explicit apply workflow. This enables review of proposed prose changes before committing them to the manuscript.
+
+### Comparison: Drift Check vs Revision Plan vs Patch Preview vs Apply
+
+| Feature | Mutates Manuscript? | Scope | Output | Persisted? | Purpose |
+|---|---|---|---|---|---|
+| **Drift Check** | No | Diagnostic (Scene or Chapter) | Metric deviations and scanner heuristics | No | Identifies *where* and *how much* style drifts from the active profile. |
+| **Revision Plan** | No | Diagnostic (Scene, Chapter, or Raw Text) | Ordered steps and optional rewrite examples | No | Provides edit instructions to correct style drift. |
+| **Patch Preview** | No | Scene or Chapter | Structured hunks, unified diffs, original/revised word counts, and proposed prose | No | Generates and previews the full style-aligned text draft without changing the manuscript. |
+| **Patch Apply** | **Yes** | Scene or Chapter | applied scene IDs, audit ID | Yes (Saves scene drafts, records audit row) | Commits proposed text changes to the manuscript through the standard save pipeline. |
+
+### Privacy and Data Security
+
+Prose sent to the model via the `style_revise` route is processed purely in-memory and **never persisted** during preview.
+The database audit logs recorded on apply (in `style_revision_patch_audit` table) store only metadata, including:
+- Profile ID
+- Target Scene/Chapter IDs
+- Pre-apply and post-apply text hashes
+- Route completion receipt (without prompt or output content)
+
+Crucially, **no source prose, target prose, or generated drafts** are stored in the audit trail database rows. This ensures complete privacy for draft content.
 
 ## Open Questions
 

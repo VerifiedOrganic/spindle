@@ -12856,6 +12856,101 @@ impl Repository {
         Ok(())
     }
 
+    pub async fn insert_style_revision_patch_audit(
+        &self,
+        audit: &spindle_core::style::StyleRevisionPatchAuditRecord,
+    ) -> Result<()> {
+        let audit = audit.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let target_ids = serde_json::to_string(&audit.target_ids)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_hashes = serde_json::to_string(&audit.before_hashes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_hashes = serde_json::to_string(&audit.after_hashes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let receipt_json = audit
+                    .model_receipt
+                    .as_ref()
+                    .map(|r| serde_json::to_string(r))
+                    .transpose()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                conn.execute(
+                "INSERT INTO style_revision_patch_audit (id, project_id, profile_id, applied_at, \
+                 target_ids_json, before_hashes_json, after_hashes_json, model_receipt_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    &audit.id,
+                    &audit.project_id,
+                    &audit.profile_id,
+                    &audit.applied_at,
+                    &target_ids,
+                    &before_hashes,
+                    &after_hashes,
+                    &receipt_json,
+                ],
+            )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_style_revision_patch_audits(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::style::StyleRevisionPatchAuditRecord>> {
+        let project_id = project_id.to_string();
+        let audits = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, target_ids_json, before_hashes_json, \
+                 after_hashes_json, model_receipt_json \
+                 FROM style_revision_patch_audit WHERE project_id = ?1 ORDER BY applied_at DESC",
+            )?;
+            let rows = stmt.query_map([&project_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let target_ids_json: String = r.get(4)?;
+                let before_hashes_json: String = r.get(5)?;
+                let after_hashes_json: String = r.get(6)?;
+                let receipt_json: Option<String> = r.get(7)?;
+
+                let target_ids: Vec<String> = serde_json::from_str(&target_ids_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_hashes: Vec<String> = serde_json::from_str(&before_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_hashes: Vec<String> = serde_json::from_str(&after_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let model_receipt = receipt_json
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleRevisionPatchAuditRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    target_ids,
+                    before_hashes,
+                    after_hashes,
+                    model_receipt,
+                })
+            })?;
+
+            let mut list = Vec::new();
+            for row in rows {
+                list.push(row?);
+            }
+            Ok(list)
+        }).await?;
+        Ok(audits)
+    }
+
     pub async fn list_style_profile_applications(
         &self,
         project_id: &str,
