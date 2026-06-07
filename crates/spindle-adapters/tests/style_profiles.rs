@@ -2812,6 +2812,69 @@ async fn test_style_revision_patch_evaluation() {
         revised_text: worse_text.clone(),
     };
 
+    let empty_eval_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: Vec::new(),
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(empty_eval_res.is_err());
+    assert!(
+        empty_eval_res
+            .unwrap_err()
+            .to_string()
+            .contains("must include at least one scene")
+    );
+
+    let duplicate_eval_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![better_patch_scene.clone(), better_patch_scene.clone()],
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(duplicate_eval_res.is_err());
+    assert!(
+        duplicate_eval_res
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate scene")
+    );
+
+    let tiny_text = "Tiny.".to_string();
+    let mut spoofed_count_patch = better_patch_scene.clone();
+    spoofed_count_patch.original_word_count = 1;
+    spoofed_count_patch.revised_word_count = 1;
+    spoofed_count_patch.revised_text = tiny_text.clone();
+    spoofed_count_patch.after_hash = test_hash(&tiny_text);
+    let spoofed_eval_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![spoofed_count_patch],
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        spoofed_eval_res
+            .risks
+            .iter()
+            .any(|risk| risk.risk_type == "large_word_count_swing")
+    );
+    assert!(
+        spoofed_eval_res
+            .risks
+            .iter()
+            .any(|risk| risk.risk_type == "near_empty_revised_prose")
+    );
+
     // 2. Test: evaluation reports improvement for better patch
     let eval_better_res = svc
         .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {

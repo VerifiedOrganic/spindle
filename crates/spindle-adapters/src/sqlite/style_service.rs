@@ -1742,6 +1742,12 @@ impl SqliteSpindleService {
             .active_branch_id_public(&input.project_id)
             .await?;
 
+        if input.scenes.is_empty() {
+            return Err(anyhow!(
+                "style revision patch evaluation must include at least one scene"
+            ));
+        }
+
         let mut total_before_warnings = 0;
         let mut total_after_warnings = 0;
         let mut total_before_errors = 0;
@@ -1749,9 +1755,16 @@ impl SqliteSpindleService {
         let mut total_improvement = 0.0;
         let mut scene_evals = Vec::new();
         let mut aggregate_risks = Vec::new();
+        let mut seen_scene_ids = std::collections::HashSet::new();
 
         // 3. Evaluate each scene patch
         for scene_patch in &input.scenes {
+            if !seen_scene_ids.insert(scene_patch.scene_id.clone()) {
+                return Err(anyhow!(
+                    "duplicate scene in style revision patch evaluation: {}",
+                    scene_patch.scene_id
+                ));
+            }
             let existing_scene = self.repository().get_scene(&scene_patch.scene_id).await?;
             if existing_scene.project_id != input.project_id {
                 return Err(anyhow!(
@@ -1839,19 +1852,21 @@ impl SqliteSpindleService {
                 });
             }
 
-            let orig_words = scene_patch.original_word_count as f64;
-            let rev_words = scene_patch.revised_word_count as f64;
+            let original_word_count = existing_scene.full_text.split_whitespace().count();
+            let revised_word_count = scene_patch.revised_text.split_whitespace().count();
+            let orig_words = original_word_count as f64;
+            let rev_words = revised_word_count as f64;
             if orig_words > 0.0 {
                 let ratio = (rev_words - orig_words).abs() / orig_words;
-                if ratio > 0.20 {
+                if ratio >= 0.30 {
                     risks.push(spindle_core::style::StyleRevisionPatchRisk {
                         risk_type: "large_word_count_swing".to_string(),
                         severity: "warning".to_string(),
                         description: format!(
                             "Prose word count changed significantly by {:.1}% (from {} to {} words).",
                             ratio * 100.0,
-                            scene_patch.original_word_count,
-                            scene_patch.revised_word_count
+                            original_word_count,
+                            revised_word_count
                         ),
                     });
                 }
@@ -1863,13 +1878,15 @@ impl SqliteSpindleService {
                     severity: "error".to_string(),
                     description: "Revised prose is completely empty.".to_string(),
                 });
-            } else if scene_patch.revised_text.split_whitespace().count() < 5 {
+            } else if revised_word_count < 5 || scene_patch.revised_text.trim().chars().count() < 15
+            {
                 risks.push(spindle_core::style::StyleRevisionPatchRisk {
                     risk_type: "near_empty_revised_prose".to_string(),
                     severity: "warning".to_string(),
                     description: format!(
-                        "Revised prose is extremely short ({} words).",
-                        scene_patch.revised_text.split_whitespace().count()
+                        "Revised prose is extremely short ({} words, {} characters).",
+                        revised_word_count,
+                        scene_patch.revised_text.trim().chars().count()
                     ),
                 });
             }
