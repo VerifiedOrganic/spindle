@@ -1795,10 +1795,11 @@ impl SqliteSpindleService {
         let mut applied_scene_ids = Vec::new();
         for (existing_scene, revised_text) in scenes_to_save {
             let content_rating = match existing_scene.content_rating.as_str() {
-                "teen" => spindle_core::models::ContentRating::Teen,
-                "mature" => spindle_core::models::ContentRating::Mature,
-                "explicit" => spindle_core::models::ContentRating::Explicit,
-                _ => spindle_core::models::ContentRating::General,
+                "General" | "general" => spindle_core::models::ContentRating::General,
+                "Teen" | "teen" => spindle_core::models::ContentRating::Teen,
+                "Mature" | "mature" => spindle_core::models::ContentRating::Mature,
+                "Explicit" | "explicit" => spindle_core::models::ContentRating::Explicit,
+                other => return Err(anyhow!("unknown content_rating in scene: {}", other)),
             };
 
             let save_input = spindle_core::models::SaveSceneDraftInput {
@@ -1895,6 +1896,13 @@ impl SqliteSpindleService {
         if audit.target_ids.is_empty() {
             return Err(anyhow!("style revision patch audit has no target scenes"));
         }
+        if audit.before_hashes.len() != audit.target_ids.len()
+            || audit.after_hashes.len() != audit.target_ids.len()
+        {
+            return Err(anyhow!(
+                "style revision patch audit has mismatched target/hash counts"
+            ));
+        }
 
         // 3. Validations: all target scenes must belong to the project and active branch
         let active_branch_id = self
@@ -1902,9 +1910,16 @@ impl SqliteSpindleService {
             .active_branch_id_public(&input.project_id)
             .await?;
 
+        let mut seen_target_ids = std::collections::HashSet::new();
         let mut scenes_and_versions = Vec::new();
 
         for (i, target_id) in audit.target_ids.iter().enumerate() {
+            if !seen_target_ids.insert(target_id.clone()) {
+                return Err(anyhow!(
+                    "style revision patch audit contains duplicate target scene: {}",
+                    target_id
+                ));
+            }
             let before_hash = &audit.before_hashes[i];
             let after_hash = &audit.after_hashes[i];
 

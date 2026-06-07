@@ -1682,10 +1682,10 @@ impl Repository {
         use spindle_core::models::{ContentRating, SaveSceneDraftInput};
         let existing = self.get_scene(scene_id).await?;
         let content_rating = match scene_version.content_rating.as_str() {
-            "General" => ContentRating::General,
-            "Teen" => ContentRating::Teen,
-            "Mature" => ContentRating::Mature,
-            "Explicit" => ContentRating::Explicit,
+            "General" | "general" => ContentRating::General,
+            "Teen" | "teen" => ContentRating::Teen,
+            "Mature" | "mature" => ContentRating::Mature,
+            "Explicit" | "explicit" => ContentRating::Explicit,
             other => anyhow::bail!("unknown content_rating in scene_version: {other}"),
         };
         let input = SaveSceneDraftInput {

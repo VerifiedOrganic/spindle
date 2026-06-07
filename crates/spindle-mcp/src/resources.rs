@@ -397,6 +397,18 @@ impl ResourceRouter {
 
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/style-revision-patch-audits"),
+                    format!("project {project_id} style revision patch audit history"),
+                )
+                .with_description(
+                    "List the history of applied style revision patches and their rollback status.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/imports"),
                     format!("project {project_id} import sessions"),
                 )
@@ -882,10 +894,48 @@ mod tests {
     async fn style_resources_are_listed_and_readable() {
         let (_tmp, router, project_id) = fresh_router().await;
         let style_uri = format!("bible://projects/{project_id}/style-profiles");
+        let style_applications_uri =
+            format!("bible://projects/{project_id}/style-profile-applications");
+        let style_patch_audits_uri =
+            format!("bible://projects/{project_id}/style-revision-patch-audits");
         let resources = router.list_resources().await.unwrap();
         assert!(resources.resources.iter().any(|r| r.uri == style_uri));
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|r| r.uri == style_applications_uri)
+        );
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|r| r.uri == style_patch_audits_uri)
+        );
 
         let res = router.read_resource(&style_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let res = router.read_resource(&style_applications_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let res = router.read_resource(&style_patch_audits_uri).await.unwrap();
         match &res.contents[0] {
             ResourceContents::TextResourceContents {
                 mime_type, text, ..

@@ -2395,7 +2395,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
         scene_order: 1,
         full_text: initial_text.clone(),
         summary: "Scene 1 summary".to_string(),
-        content_rating: ContentRating::General,
+        content_rating: ContentRating::Teen,
         tone: None,
         generation_id: None,
         source_path: None,
@@ -2480,6 +2480,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
     // Verify scene text is updated
     let updated_scene = svc.repository().get_scene(&scene_id).await.unwrap();
     assert_eq!(updated_scene.full_text, revised_text);
+    assert_eq!(updated_scene.content_rating, "Teen");
 
     // Verify a scene version was recorded for the initial text
     let versions_after_apply = svc
@@ -2534,6 +2535,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
     // Verify scene text has reverted to initial text
     let reverted_scene = svc.repository().get_scene(&scene_id).await.unwrap();
     assert_eq!(reverted_scene.full_text, initial_text);
+    assert_eq!(reverted_scene.content_rating, "Teen");
 
     // Verify audit status updated
     let audits_after = svc
