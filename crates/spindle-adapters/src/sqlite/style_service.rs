@@ -1325,8 +1325,15 @@ impl SqliteSpindleService {
         }
 
         // 7. Generate rewrite examples if requested (and LLM route is allowed)
+        let include_rewrite_examples = input.include_rewrite_examples.unwrap_or(false);
+        let max_rewrite_examples = input.max_suggestions.unwrap_or(3);
         let mut rewrite_examples = None;
-        if input.include_rewrite_examples.unwrap_or(false) && !input.metrics_only.unwrap_or(false) {
+        if include_rewrite_examples
+            && !input.metrics_only.unwrap_or(false)
+            && max_rewrite_examples == 0
+        {
+            rewrite_examples = Some(Vec::new());
+        } else if include_rewrite_examples && !input.metrics_only.unwrap_or(false) {
             let profile = self
                 .repository()
                 .get_style_profile(&input.project_id, &check_output.profile_id)
@@ -1334,7 +1341,6 @@ impl SqliteSpindleService {
                 .ok_or_else(|| anyhow!("style profile not found: {}", check_output.profile_id))?;
 
             let trimmed_prose = trim_to_word_limit(&target_prose, 4000);
-            let max_sugg = input.max_suggestions.unwrap_or(3);
             let prompt = format!(
                 "You are an expert editor. You have been given a style profile and a piece of prose that drifts from this style.\n\n\
                  Style Profile Name: {}\n\
@@ -1363,7 +1369,7 @@ impl SqliteSpindleService {
                 profile.guidance.do_rules,
                 profile.guidance.avoid_rules,
                 trimmed_prose,
-                max_sugg
+                max_rewrite_examples
             );
 
             let req = crate::ai::ModelRequest {
@@ -1380,10 +1386,11 @@ impl SqliteSpindleService {
 
             if let Ok(response) = self.repository().model_router().complete(&req).await {
                 let cleaned = clean_json_response(&response.output);
-                if let Ok(parsed) = serde_json::from_str::<
+                if let Ok(mut parsed) = serde_json::from_str::<
                     Vec<spindle_core::style::StyleRevisionPlanExample>,
                 >(cleaned)
                 {
+                    parsed.truncate(max_rewrite_examples);
                     rewrite_examples = Some(parsed);
                 }
             }

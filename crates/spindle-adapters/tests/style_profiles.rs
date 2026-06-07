@@ -1912,6 +1912,30 @@ async fn test_plan_style_revision_suite() {
             .contains("Walking down the dusty aisle")
     );
 
+    // max_suggestions should cap findings, steps, and rewrite examples.
+    let zero_suggestion_plan = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: Some(profile_2.profile_id.clone()),
+            raw_text: Some("This is a remarkably long sentence that triggers drift.".to_string()),
+            scene_id: None,
+            chapter_id: None,
+            max_suggestions: Some(0),
+            metrics_only: None,
+            include_rewrite_examples: Some(true),
+        })
+        .await
+        .unwrap();
+    assert!(zero_suggestion_plan.findings.is_empty());
+    assert!(zero_suggestion_plan.steps.is_empty());
+    assert_eq!(
+        zero_suggestion_plan
+            .rewrite_examples
+            .unwrap_or_default()
+            .len(),
+        0
+    );
+
     // Test 8: No prose persistence
     let conn = Connection::open(tmp.path().join("svc.db")).unwrap();
     let query_res: i64 = conn

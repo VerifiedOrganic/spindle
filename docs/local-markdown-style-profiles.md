@@ -182,6 +182,7 @@ To turn diagnostic style drift findings into actionable, previewable revision gu
   - It does not rewrite or persist target prose, and guarantees `mutates_prose: false`.
 - **Optional LLM Rewrite Examples**:
   - If `include_rewrite_examples` is enabled, the service uses the `style_revise` model route to synthesize short original-to-revised prose snippets highlighting how to resolve style drift.
+  - `max_suggestions` caps findings, ordered steps, and any generated rewrite examples.
   - To preserve privacy, raw source prose, target prose, and generated examples are processed purely in-memory and are never stored or persisted to the database.
 
 #### Input / Output Examples
