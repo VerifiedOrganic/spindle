@@ -12879,8 +12879,9 @@ impl Repository {
 
                 conn.execute(
                 "INSERT INTO style_revision_patch_audit (id, project_id, profile_id, applied_at, \
-                 target_ids_json, before_hashes_json, after_hashes_json, model_receipt_json) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 target_ids_json, before_hashes_json, after_hashes_json, model_receipt_json, \
+                 rolled_back_at, rollback_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     &audit.id,
                     &audit.project_id,
@@ -12890,6 +12891,8 @@ impl Repository {
                     &before_hashes,
                     &after_hashes,
                     &receipt_json,
+                    &audit.rolled_back_at,
+                    &audit.rollback_status,
                 ],
             )?;
                 Ok(())
@@ -12906,7 +12909,7 @@ impl Repository {
         let audits = self.inner.pool.read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, project_id, profile_id, applied_at, target_ids_json, before_hashes_json, \
-                 after_hashes_json, model_receipt_json \
+                 after_hashes_json, model_receipt_json, rolled_back_at, rollback_status \
                  FROM style_revision_patch_audit WHERE project_id = ?1 ORDER BY applied_at DESC",
             )?;
             let rows = stmt.query_map([&project_id], |r| {
@@ -12918,6 +12921,8 @@ impl Repository {
                 let before_hashes_json: String = r.get(5)?;
                 let after_hashes_json: String = r.get(6)?;
                 let receipt_json: Option<String> = r.get(7)?;
+                let rolled_back_at: Option<String> = r.get(8)?;
+                let rollback_status: String = r.get(9)?;
 
                 let target_ids: Vec<String> = serde_json::from_str(&target_ids_json)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -12939,6 +12944,8 @@ impl Repository {
                     before_hashes,
                     after_hashes,
                     model_receipt,
+                    rolled_back_at,
+                    rollback_status,
                 })
             })?;
 
@@ -12949,6 +12956,87 @@ impl Repository {
             Ok(list)
         }).await?;
         Ok(audits)
+    }
+
+    pub async fn get_style_revision_patch_audit(
+        &self,
+        project_id: &str,
+        audit_id: &str,
+    ) -> Result<Option<spindle_core::style::StyleRevisionPatchAuditRecord>> {
+        let project_id = project_id.to_string();
+        let audit_id = audit_id.to_string();
+        let audit = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, target_ids_json, before_hashes_json, \
+                 after_hashes_json, model_receipt_json, rolled_back_at, rollback_status \
+                 FROM style_revision_patch_audit WHERE project_id = ?1 AND id = ?2",
+            )?;
+            let mut rows = stmt.query_map([&project_id, &audit_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let target_ids_json: String = r.get(4)?;
+                let before_hashes_json: String = r.get(5)?;
+                let after_hashes_json: String = r.get(6)?;
+                let receipt_json: Option<String> = r.get(7)?;
+                let rolled_back_at: Option<String> = r.get(8)?;
+                let rollback_status: String = r.get(9)?;
+
+                let target_ids: Vec<String> = serde_json::from_str(&target_ids_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_hashes: Vec<String> = serde_json::from_str(&before_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_hashes: Vec<String> = serde_json::from_str(&after_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let model_receipt = receipt_json
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleRevisionPatchAuditRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    target_ids,
+                    before_hashes,
+                    after_hashes,
+                    model_receipt,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            })?;
+
+            if let Some(row) = rows.next() {
+                Ok(Some(row?))
+            } else {
+                Ok(None)
+            }
+        }).await?;
+        Ok(audit)
+    }
+
+    pub async fn update_style_revision_patch_audit_rollback(
+        &self,
+        audit_id: &str,
+        rolled_back_at: Option<String>,
+        rollback_status: &str,
+    ) -> Result<()> {
+        let audit_id = audit_id.to_string();
+        let rolled_back_at = rolled_back_at;
+        let rollback_status = rollback_status.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE style_revision_patch_audit SET rolled_back_at = ?1, rollback_status = ?2 WHERE id = ?3",
+                    rusqlite::params![&rolled_back_at, &rollback_status, &audit_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     pub async fn list_style_profile_applications(

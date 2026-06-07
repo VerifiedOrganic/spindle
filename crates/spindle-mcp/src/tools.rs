@@ -233,6 +233,8 @@ impl ToolRouter {
                 "compare_style_profiles",
                 "archive_style_profile",
                 "preview_style_revision_patch",
+                "list_style_revision_patch_audits",
+                "rollback_style_revision_patch",
             ],
             "write" => &[
                 "create_project",
@@ -327,6 +329,8 @@ impl ToolRouter {
                 "archive_style_profile",
                 "preview_style_revision_patch",
                 "apply_style_revision_patch",
+                "list_style_revision_patch_audits",
+                "rollback_style_revision_patch",
             ],
             "minimal" => &[
                 "create_project",
@@ -450,6 +454,14 @@ impl ToolRouter {
             tool::<ApplyStyleRevisionPatchInput, ApplyStyleRevisionPatchOutput>(
                 "apply_style_revision_patch",
                 "Apply proposed style revision patches to target scenes, saving drafts through the standard writing pipeline, invalidating caches, and writing an audit trail.",
+            ),
+            tool::<ListStyleRevisionPatchAuditsInput, ListStyleRevisionPatchAuditsOutput>(
+                "list_style_revision_patch_audits",
+                "List style revision patch audits for a project.",
+            ),
+            tool::<RollbackStyleRevisionPatchInput, RollbackStyleRevisionPatchOutput>(
+                "rollback_style_revision_patch",
+                "Roll back an applied style revision patch, restoring prior prose versions using scene version history.",
             ),
             tool::<MergeBranchInput, MergeBranchOutput>(
                 "merge_branch",
@@ -1288,6 +1300,18 @@ impl ToolRouter {
             "apply_style_revision_patch" => {
                 self.invoke(arguments, |input| {
                     self.service.apply_style_revision_patch(input)
+                })
+                .await
+            }
+            "list_style_revision_patch_audits" => {
+                self.invoke(arguments, |input| {
+                    self.service.list_style_revision_patch_audits(input)
+                })
+                .await
+            }
+            "rollback_style_revision_patch" => {
+                self.invoke(arguments, |input| {
+                    self.service.rollback_style_revision_patch(input)
                 })
                 .await
             }
@@ -5799,5 +5823,7 @@ mod tests {
         assert!(tool_names.contains(&"plan_style_revision"));
         assert!(tool_names.contains(&"preview_style_revision_patch"));
         assert!(tool_names.contains(&"apply_style_revision_patch"));
+        assert!(tool_names.contains(&"list_style_revision_patch_audits"));
+        assert!(tool_names.contains(&"rollback_style_revision_patch"));
     }
 }

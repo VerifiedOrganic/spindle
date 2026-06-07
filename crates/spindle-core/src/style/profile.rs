@@ -558,4 +558,30 @@ pub struct StyleRevisionPatchAuditRecord {
     pub before_hashes: Vec<String>,
     pub after_hashes: Vec<String>,
     pub model_receipt: Option<StyleProfileModelReceipt>,
+    pub rolled_back_at: Option<String>,
+    pub rollback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListStyleRevisionPatchAuditsInput {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListStyleRevisionPatchAuditsOutput {
+    pub audits: Vec<StyleRevisionPatchAuditRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RollbackStyleRevisionPatchInput {
+    pub project_id: String,
+    pub audit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RollbackStyleRevisionPatchOutput {
+    pub project_id: String,
+    pub audit_id: String,
+    pub rolled_back_at: String,
+    pub restored_scene_ids: Vec<String>,
 }

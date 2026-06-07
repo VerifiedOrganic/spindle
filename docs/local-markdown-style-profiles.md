@@ -926,8 +926,21 @@ The database audit logs recorded on apply (in `style_revision_patch_audit` table
 - Target Scene/Chapter IDs
 - Pre-apply and post-apply text hashes
 - Route completion receipt (without prompt or output content)
+- Rollback status metadata (`rolled_back_at`, `rollback_status`)
 
 Crucially, **no source prose, target prose, or generated drafts** are stored in the audit trail database rows. This ensures complete privacy for draft content.
+
+### Patch Audit & Rollback Lifecycle
+
+Every patch application writes a metadata-only audit row to the database. Spindle supports rolling back applied patches to restore the manuscript back to its prior state.
+
+- **Listing Audits**: The `list_style_revision_patch_audits` service method and MCP tool, and the `bible://projects/{project_id}/style-revision-patch-audits` resource list the patch audits, which include fields like `rolled_back_at` and `rollback_status`.
+- **Rollback Process**: Rolling back a patch (via the `rollback_style_revision_patch` tool/service method) performs the following:
+  1. **Validation**: Loads the audit row and ensures it exists and has not been rolled back yet. It preserves project and branch boundaries by validating that all target scenes belong to the project and its active branch.
+  2. **Stale Protection**: Rejects rollback if the current scene text hash has changed since the patch was applied (protecting against stale rollbacks).
+  3. **Metadata-only Restoration**: Restores each scene to its matching previous prose version. Since audit rows contain only metadata (to preserve privacy), the rollback relies on the scene version history (`scene_version` table). It searches for a version whose text hash matches the audit's `before_hash` and restores it using the standard scene save/update pipeline.
+  4. **Audit Update**: Updates the audit row's `rollback_status` to `"rolled_back"` and records `rolled_back_at`.
+  5. **Cache Invalidation**: Invalidates the style-sensitive validator caches (`StyleCompliance` and `WorldRuleSemanticDrift`).
 
 ## Open Questions
 

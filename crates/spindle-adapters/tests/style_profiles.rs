@@ -2345,3 +2345,298 @@ async fn test_style_revision_patch_lifecycle() {
         .unwrap();
     assert_eq!(audit_prose_count, 0);
 }
+
+#[tokio::test]
+async fn test_style_revision_patch_rollback_lifecycle() {
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Create project
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Rollback Test Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: vec!["Old note".to_string()],
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = project_out.project_id;
+
+    // Create a chapter
+    let book = svc
+        .repository()
+        .list_books_by_project(&project_id)
+        .await
+        .unwrap()[0]
+        .clone();
+    let chapter_out = svc
+        .create_chapter(spindle_core::models::CreateChapterInput {
+            project_id: project_id.clone(),
+            book_number: Some(book.book_number),
+            book_id: Some(book.id.clone()),
+            chapter_number: Some(1),
+            title: Some("Chapter One".to_string()),
+        })
+        .await
+        .unwrap();
+    let chapter_id = chapter_out.chapter_id;
+
+    // Create one scene with initial text
+    let initial_text = "Initial scene prose before patch.".to_string();
+    let scene_input = SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: book.book_number,
+        chapter_number: 1,
+        chapter_id: Some(chapter_id.clone()),
+        scene_order: 1,
+        full_text: initial_text.clone(),
+        summary: "Scene 1 summary".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        research_source_ids: Vec::new(),
+        research_note_ids: Vec::new(),
+        research_claim_ids: Vec::new(),
+        research_query_pack_input: None,
+        research_context_hash: None,
+    };
+    let scene_out = svc.save_scene_draft(scene_input).await.unwrap();
+    let scene_id = scene_out.scene_id;
+
+    // Verify no scene version was recorded yet (only first insert)
+    let versions_before = svc
+        .repository()
+        .list_scene_versions(&scene_id)
+        .await
+        .unwrap();
+    assert!(versions_before.is_empty());
+
+    // Create a style profile
+    let dest_dir = tmp.path();
+    let dest_file = dest_dir.join("profile.md");
+    std::fs::write(&dest_file, "Jake ran. Jake won.").unwrap();
+    let create_out = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Test Profile".to_string(),
+            source_paths: vec![dest_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap();
+    let profile = create_out.profile;
+
+    // 2. Preview style revision patch
+    let preview_out = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            scene_id: Some(scene_id.clone()),
+            chapter_id: None,
+            profile_id: Some(profile.profile_id.clone()),
+            max_suggestions: None,
+            instructions: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(preview_out.scenes.len(), 1);
+    let mut patch_scene = preview_out.scenes[0].clone();
+
+    // We override revised_text and after_hash to be deterministic in test
+    let revised_text = "Revised scene prose after patch.".to_string();
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(revised_text.as_bytes());
+    let computed_after_hash = format!("{:x}", hasher.finalize());
+
+    patch_scene.revised_text = revised_text.clone();
+    patch_scene.after_hash = computed_after_hash;
+
+    // 3. Apply the patch
+    let apply_input = ApplyStyleRevisionPatchInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        scenes: vec![patch_scene.clone()],
+        model_receipt: preview_out.model_receipt.clone(),
+    };
+    let apply_out = svc.apply_style_revision_patch(apply_input).await.unwrap();
+    let audit_id = apply_out.audit_id;
+
+    // Verify scene text is updated
+    let updated_scene = svc.repository().get_scene(&scene_id).await.unwrap();
+    assert_eq!(updated_scene.full_text, revised_text);
+
+    // Verify a scene version was recorded for the initial text
+    let versions_after_apply = svc
+        .repository()
+        .list_scene_versions(&scene_id)
+        .await
+        .unwrap();
+    assert_eq!(versions_after_apply.len(), 1);
+    assert_eq!(versions_after_apply[0].full_text, initial_text);
+
+    // Verify audit is listed
+    let audits_out = svc
+        .list_style_revision_patch_audits(spindle_core::style::ListStyleRevisionPatchAuditsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(audits_out.audits.len(), 1);
+    assert_eq!(audits_out.audits[0].id, audit_id);
+    assert_eq!(audits_out.audits[0].rollback_status, "not_rolled_back");
+    assert!(audits_out.audits[0].rolled_back_at.is_none());
+
+    // 4. Test invalid project or wrong audit_id rollback rejection
+    let bad_project_res = svc
+        .rollback_style_revision_patch(spindle_core::style::RollbackStyleRevisionPatchInput {
+            project_id: "other_project".to_string(),
+            audit_id: audit_id.clone(),
+        })
+        .await;
+    assert!(bad_project_res.is_err());
+
+    let bad_audit_res = svc
+        .rollback_style_revision_patch(spindle_core::style::RollbackStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            audit_id: "other_audit_id".to_string(),
+        })
+        .await;
+    assert!(bad_audit_res.is_err());
+
+    // 5. Perform a successful rollback
+    let rollback_out = svc
+        .rollback_style_revision_patch(spindle_core::style::RollbackStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            audit_id: audit_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(rollback_out.project_id, project_id);
+    assert_eq!(rollback_out.audit_id, audit_id);
+    assert_eq!(rollback_out.restored_scene_ids, vec![scene_id.clone()]);
+
+    // Verify scene text has reverted to initial text
+    let reverted_scene = svc.repository().get_scene(&scene_id).await.unwrap();
+    assert_eq!(reverted_scene.full_text, initial_text);
+
+    // Verify audit status updated
+    let audits_after = svc
+        .list_style_revision_patch_audits(spindle_core::style::ListStyleRevisionPatchAuditsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(audits_after.audits[0].rollback_status, "rolled_back");
+    assert!(audits_after.audits[0].rolled_back_at.is_some());
+
+    // 6. Reject already rolled back rollback
+    let repeat_rollback_res = svc
+        .rollback_style_revision_patch(spindle_core::style::RollbackStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            audit_id: audit_id.clone(),
+        })
+        .await;
+    assert!(repeat_rollback_res.is_err());
+    assert!(
+        repeat_rollback_res
+            .unwrap_err()
+            .to_string()
+            .contains("already been rolled back")
+    );
+
+    // 7. Test stale rollback rejection
+    // Let's create a new patch, apply it, mutate the scene text, then try to rollback.
+    let preview_out2 = svc
+        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            scene_id: Some(scene_id.clone()),
+            chapter_id: None,
+            profile_id: Some(profile.profile_id.clone()),
+            max_suggestions: None,
+            instructions: None,
+        })
+        .await
+        .unwrap();
+    let mut patch_scene2 = preview_out2.scenes[0].clone();
+    let revised_text2 = "Second patch revised prose.".to_string();
+    let mut hasher2 = Sha256::new();
+    hasher2.update(revised_text2.as_bytes());
+    let computed_after_hash2 = format!("{:x}", hasher2.finalize());
+    patch_scene2.revised_text = revised_text2.clone();
+    patch_scene2.after_hash = computed_after_hash2;
+
+    let apply_input2 = ApplyStyleRevisionPatchInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        scenes: vec![patch_scene2],
+        model_receipt: preview_out2.model_receipt.clone(),
+    };
+    let apply_out2 = svc.apply_style_revision_patch(apply_input2).await.unwrap();
+    let audit_id2 = apply_out2.audit_id;
+
+    // Mutate the scene text to trigger a stale hash
+    let mutate_input = SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: book.book_number,
+        chapter_number: 1,
+        chapter_id: Some(chapter_id.clone()),
+        scene_order: 1,
+        full_text: "User edited the scene directly after applying the patch.".to_string(),
+        summary: "Scene 1 summary".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        research_source_ids: Vec::new(),
+        research_note_ids: Vec::new(),
+        research_claim_ids: Vec::new(),
+        research_query_pack_input: None,
+        research_context_hash: None,
+    };
+    svc.save_scene_draft(mutate_input).await.unwrap();
+
+    // Try rollback of audit_id2, should fail
+    let stale_rollback_res = svc
+        .rollback_style_revision_patch(spindle_core::style::RollbackStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            audit_id: audit_id2,
+        })
+        .await;
+    assert!(stale_rollback_res.is_err());
+    assert!(
+        stale_rollback_res
+            .unwrap_err()
+            .to_string()
+            .contains("rollback is stale")
+    );
+
+    // 8. Verify audit rows still contain hashes/metadata only, no prose
+    let conn2 = Connection::open(tmp.path().join("svc.db")).unwrap();
+    let audit_prose_count: i64 = conn2
+        .query_row(
+            "SELECT COUNT(*) FROM style_revision_patch_audit \
+             WHERE target_ids_json LIKE '%prose%' \
+                OR before_hashes_json LIKE '%prose%' \
+                OR after_hashes_json LIKE '%prose%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit_prose_count, 0);
+}

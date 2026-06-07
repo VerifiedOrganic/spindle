@@ -1847,6 +1847,8 @@ impl SqliteSpindleService {
             before_hashes,
             after_hashes,
             model_receipt: input.model_receipt.clone(),
+            rolled_back_at: None,
+            rollback_status: "not_rolled_back".to_string(),
         };
 
         self.repository()
@@ -1857,6 +1859,138 @@ impl SqliteSpindleService {
             project_id: input.project_id,
             applied_scene_ids,
             audit_id,
+        })
+    }
+
+    pub async fn list_style_revision_patch_audits(
+        &self,
+        input: spindle_core::style::ListStyleRevisionPatchAuditsInput,
+    ) -> Result<spindle_core::style::ListStyleRevisionPatchAuditsOutput> {
+        let audits = self
+            .repository()
+            .list_style_revision_patch_audits(&input.project_id)
+            .await?;
+        Ok(spindle_core::style::ListStyleRevisionPatchAuditsOutput { audits })
+    }
+
+    pub async fn rollback_style_revision_patch(
+        &self,
+        input: spindle_core::style::RollbackStyleRevisionPatchInput,
+    ) -> Result<spindle_core::style::RollbackStyleRevisionPatchOutput> {
+        // 1. Load the audit row
+        let audit = self
+            .repository()
+            .get_style_revision_patch_audit(&input.project_id, &input.audit_id)
+            .await?
+            .ok_or_else(|| anyhow!("style revision patch audit not found: {}", input.audit_id))?;
+
+        // 2. Reject if already rolled back
+        if audit.rollback_status == "rolled_back" {
+            return Err(anyhow!(
+                "style revision patch audit {} has already been rolled back",
+                input.audit_id
+            ));
+        }
+
+        if audit.target_ids.is_empty() {
+            return Err(anyhow!("style revision patch audit has no target scenes"));
+        }
+
+        // 3. Validations: all target scenes must belong to the project and active branch
+        let active_branch_id = self
+            .repository()
+            .active_branch_id_public(&input.project_id)
+            .await?;
+
+        let mut scenes_and_versions = Vec::new();
+
+        for (i, target_id) in audit.target_ids.iter().enumerate() {
+            let before_hash = &audit.before_hashes[i];
+            let after_hash = &audit.after_hashes[i];
+
+            // Load existing scene
+            let existing_scene = self.repository().get_scene(target_id).await?;
+            if existing_scene.project_id != input.project_id {
+                return Err(anyhow!(
+                    "Scene {} does not belong to project {}",
+                    target_id,
+                    input.project_id
+                ));
+            }
+            if existing_scene.branch_id != active_branch_id {
+                return Err(anyhow!(
+                    "Scene {} does not belong to active branch {}",
+                    target_id,
+                    active_branch_id
+                ));
+            }
+
+            // Reject if current scene hash does not match after_hash
+            let current_hash = hash_text(&existing_scene.full_text);
+            if current_hash != *after_hash {
+                return Err(anyhow!(
+                    "Scene {} text has changed; rollback is stale (current hash: {}, expected after_hash: {})",
+                    target_id,
+                    current_hash,
+                    after_hash
+                ));
+            }
+
+            // Find matching before version
+            let versions = self.repository().list_scene_versions(target_id).await?;
+            let mut matching_version = None;
+            for version in versions {
+                if hash_text(&version.full_text) == *before_hash {
+                    matching_version = Some(version);
+                    break;
+                }
+            }
+
+            let Some(matched_version) = matching_version else {
+                return Err(anyhow!(
+                    "No matching prior scene version with before_hash {} found for scene {}",
+                    before_hash,
+                    target_id
+                ));
+            };
+
+            scenes_and_versions.push((existing_scene.id.clone(), matched_version));
+        }
+
+        // 4. Perform the rollback/restores
+        let mut restored_scene_ids = Vec::new();
+        for (scene_id, version) in scenes_and_versions {
+            self.repository()
+                .restore_scene_version_and_mark_reviews_stale(&scene_id, &version)
+                .await?;
+            restored_scene_ids.push(scene_id);
+        }
+
+        // 5. Invalidate caches
+        self.resolve_phase_four_caches_for_project(
+            &input.project_id,
+            &[
+                PhaseFourCacheId::StyleCompliance,
+                PhaseFourCacheId::WorldRuleSemanticDrift,
+            ],
+        )
+        .await?;
+
+        // 6. Update audit row
+        let rolled_back_at = chrono::Utc::now().to_rfc3339();
+        self.repository()
+            .update_style_revision_patch_audit_rollback(
+                &input.audit_id,
+                Some(rolled_back_at.clone()),
+                "rolled_back",
+            )
+            .await?;
+
+        Ok(spindle_core::style::RollbackStyleRevisionPatchOutput {
+            project_id: input.project_id,
+            audit_id: input.audit_id,
+            rolled_back_at,
+            restored_scene_ids,
         })
     }
 }
