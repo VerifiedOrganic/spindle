@@ -15,6 +15,8 @@ pub mod repository;
 pub mod row;
 pub mod service;
 pub mod source_bridge;
+pub mod style_helper;
+pub mod style_service;
 pub mod validators;
 
 pub use service::SqliteSpindleService;

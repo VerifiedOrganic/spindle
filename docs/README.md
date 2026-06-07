@@ -15,6 +15,8 @@ Start here if you are new to the repository.
 - [`spindle-agent-config.md`](spindle-agent-config.md) — runtime model-agent
   configuration (`spindle.toml`, `SPINDLE_CONFIG`).
 - [`project-local-workspaces.md`](project-local-workspaces.md) — guide to project-local workspaces (`.spindle/`), setup, resolution logic, and Git conventions.
+- [`local-markdown-style-profiles.md`](local-markdown-style-profiles.md) —
+  design for deriving reusable style cards from user-provided Markdown corpora.
 - [`spindle-harness-usage.md`](spindle-harness-usage.md) — operator workflow
   for the `spindle-harness` batch drafting CLI.
 - [`spindle-harness-seed.example.json`](spindle-harness-seed.example.json) —

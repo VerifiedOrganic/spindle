@@ -12599,6 +12599,152 @@ impl Repository {
         }).await?;
         Ok(run_id_opt)
     }
+
+    pub async fn update_project_reader_contract(
+        &self,
+        project_id: &str,
+        reader_contract: &spindle_core::models::ReaderContract,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let stored: super::records::StoredReaderContract = reader_contract.clone().into();
+        let serialized = serde_json::to_string(&stored)?;
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE project SET reader_contract = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&serialized, now, &project_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_style_profile(
+        &self,
+        profile: &spindle_core::style::StyleProfileCard,
+    ) -> Result<()> {
+        let profile = profile.clone();
+        self.inner.pool.write(move |conn| {
+            let tx = conn.transaction()?;
+            let card_json = serde_json::to_string(&profile)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let metrics_json = serde_json::to_string(&profile.metrics)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let guidance_json = serde_json::to_string(&profile.guidance)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let source_policy_json = serde_json::to_string(&profile.source_policy)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let model_receipt_json = profile.model_receipt.as_ref()
+                .map(|r| serde_json::to_string(r))
+                .transpose()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let status_str = match profile.status {
+                spindle_core::style::StyleProfileStatus::Ready => "ready",
+                spindle_core::style::StyleProfileStatus::NeedsReview => "needs_review",
+                spindle_core::style::StyleProfileStatus::Failed => "failed",
+            };
+
+            tx.execute(
+                "INSERT OR REPLACE INTO style_profile (id, project_id, name, status, card_json, \
+                 metrics_json, guidance_json, source_policy_json, model_receipt_json, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    &profile.profile_id,
+                    &profile.project_id,
+                    &profile.name,
+                    status_str,
+                    &card_json,
+                    &metrics_json,
+                    &guidance_json,
+                    &source_policy_json,
+                    &model_receipt_json,
+                    &profile.created_at,
+                    &profile.updated_at,
+                ],
+            )?;
+
+            // Delete old sources for this profile if replacing
+            tx.execute("DELETE FROM style_profile_source WHERE profile_id = ?1", rusqlite::params![&profile.profile_id])?;
+
+            for (i, source_ref) in profile.corpus.source_refs.iter().enumerate() {
+                let source_id = format!("{}:source:{}", profile.profile_id, i);
+                tx.execute(
+                    "INSERT INTO style_profile_source (id, profile_id, display_name, canonical_path, \
+                     sha256, word_count, included, skip_reason, source_order, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        &source_id,
+                        &profile.profile_id,
+                        &source_ref.display_name,
+                        &source_ref.canonical_path,
+                        &source_ref.sha256,
+                        &(source_ref.word_count as i64),
+                        if source_ref.included { 1i64 } else { 0i64 },
+                        &source_ref.skip_reason,
+                        &(i as i64),
+                        &profile.created_at,
+                    ],
+                )?;
+            }
+
+            tx.commit()?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn list_style_profiles(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::style::StyleProfileCard>> {
+        let project_id = project_id.to_string();
+        let profiles = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare("SELECT card_json FROM style_profile WHERE project_id = ?1 ORDER BY created_at DESC")?;
+            let rows = stmt.query_map([&project_id], |r| {
+                let card_json: String = r.get(0)?;
+                Ok(card_json)
+            })?;
+            let mut res = Vec::new();
+            for card_json_res in rows {
+                let card_json = card_json_res?;
+                let profile: spindle_core::style::StyleProfileCard = serde_json::from_str(&card_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                res.push(profile);
+            }
+            Ok(res)
+        }).await?;
+        Ok(profiles)
+    }
+
+    pub async fn get_style_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<Option<spindle_core::style::StyleProfileCard>> {
+        let project_id = project_id.to_string();
+        let profile_id = profile_id.to_string();
+        let profile_opt = self
+            .inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT card_json FROM style_profile WHERE project_id = ?1 AND id = ?2",
+                )?;
+                stmt.query_row([&project_id, &profile_id], |r| {
+                    let card_json: String = r.get(0)?;
+                    let profile: spindle_core::style::StyleProfileCard =
+                        serde_json::from_str(&card_json)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Ok(profile)
+                })
+                .optional_inner()
+            })
+            .await?;
+        Ok(profile_opt)
+    }
 }
 
 #[cfg(test)]

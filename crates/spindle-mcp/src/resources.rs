@@ -375,6 +375,16 @@ impl ResourceRouter {
 
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/style-profiles"),
+                    format!("project {project_id} derived style profiles"),
+                )
+                .with_description("Style profile summaries list derived from user-provided Markdown. Resource-only read; use create_style_profile_from_markdown tool to write.")
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/imports"),
                     format!("project {project_id} import sessions"),
                 )
@@ -442,6 +452,15 @@ impl ResourceRouter {
                 )
                 .with_mime_type("application/json")
                 .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/style-profiles/{profile_id}",
+                "derived style profile card detail",
+            )
+            .with_description(
+                "Read the complete derived style profile card detail, including synthesized guidance and model receipt. Resource-only read; use get_style_profile tool for direct tool invocation.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
             RawResourceTemplate::new(
                 "bible://projects/{project_id}/chapters/{book_number}/{chapter_number}/scenes",
                 "chapter scenes",
@@ -842,6 +861,25 @@ mod tests {
             } => {
                 assert_eq!(mime_type.as_deref(), Some("application/json"));
                 assert!(text.contains("[]"));
+            }
+            _ => panic!("expected text resource"),
+        }
+    }
+
+    #[tokio::test]
+    async fn style_resources_are_listed_and_readable() {
+        let (_tmp, router, project_id) = fresh_router().await;
+        let style_uri = format!("bible://projects/{project_id}/style-profiles");
+        let resources = router.list_resources().await.unwrap();
+        assert!(resources.resources.iter().any(|r| r.uri == style_uri));
+
+        let res = router.read_resource(&style_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
             }
             _ => panic!("expected text resource"),
         }

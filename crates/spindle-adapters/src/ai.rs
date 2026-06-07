@@ -1487,6 +1487,16 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             temperature: None,
             stop: Vec::new(),
         },
+        ModelRoute {
+            route_name: "style_analyze".to_string(),
+            adapter_kind: "local".to_string(),
+            model_name: "style-analyze-local".to_string(),
+            purpose: "extract and synthesize prose style guidelines from local text".to_string(),
+            system_prompt: "You are an expert stylometry and literary analysis agent. Analyze prose style and return structured JSON guidance.".to_string(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+        },
     ]
     .into_iter()
     .map(|route| (route.route_name.clone(), route))
@@ -1557,6 +1567,33 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
             format!("Local import synthesis adapter assembled: {compact_prompt}")
         }
         "import_validate" => format!("Local import validation adapter triaged: {compact_prompt}"),
+        "style_analyze" => r#"{
+  "summary": "Mock style profile guidance summary",
+  "pov": "third_person_close",
+  "tense": "past",
+  "narrator_distance": "close",
+  "narrator_voice": {
+    "comedy_density": "none",
+    "pacing_feel": "contemplative",
+    "interiority_ratio": "heavy interiority",
+    "emotional_register": "brooding-and-reflective",
+    "chapter_ending_style": "resolution",
+    "notes": ["Note 1", "Note 2"]
+  },
+  "pacing": ["Slow, reflective pacing"],
+  "paragraphing": ["Dense paragraphs"],
+  "sentence_rhythm": ["Varied sentence lengths"],
+  "diction": ["Formal, literary diction"],
+  "dialogue": ["Minimal, meaningful dialogue"],
+  "exposition": ["Heavy exposition"],
+  "interiority": ["Heavy focus on inner thoughts"],
+  "humor_or_tension": ["Low humor, subtle tension"],
+  "scene_structure": ["Traditional structure"],
+  "do_rules": ["Do use sensory details", "Do maintain close POV"],
+  "avoid_rules": ["Avoid modern slang", "Avoid abrupt perspective shifts"],
+  "prompt_snippet": "Write in a contemplative past-tense close-POV style."
+}"#
+        .to_string(),
         _ => compact_prompt,
     }
 }
@@ -1627,7 +1664,7 @@ mod tests {
 
         assert_eq!(output.adapter_kind, "local");
         assert!(output.output.contains("reviewed"));
-        assert_eq!(router.list_routes().len(), 7);
+        assert_eq!(router.list_routes().len(), 8);
     }
 
     #[tokio::test]

@@ -22,8 +22,10 @@
 //! semantic and belongs to the LLM-backed review persona — this scanner is the
 //! cheap, always-on first line, not the whole defense.
 
+pub mod profile;
 pub mod scanner;
 
+pub use profile::*;
 pub use scanner::{StyleDriftHit, StyleDriftSeverity, StyleScanInput};
 
 use schemars::JsonSchema;

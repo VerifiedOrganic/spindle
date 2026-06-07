@@ -404,6 +404,11 @@ temperature = 0.3
 route = "import_validate"
 agent = "local-http"
 temperature = 0.1
+
+[[routing]]
+route = "style_analyze"
+agent = "local-http"
+temperature = 0.2
 "#
 }
 

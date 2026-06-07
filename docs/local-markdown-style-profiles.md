@@ -1,0 +1,772 @@
+# Local Markdown Style Profiles
+
+Status: implemented
+
+## Summary
+
+Spindle should support deriving a reusable style profile from one or more
+user-provided local Markdown files. The user is responsible for how the files
+arrived on disk and whether they have rights to use them. Spindle's job is to
+read the local corpus, measure and summarize prose style, produce a structured
+style card, and optionally apply that card to the project's existing style
+contract surfaces.
+
+This should be implemented as a local corpus feature, not as a web crawler.
+Web import can be layered on later by any external tool that produces Markdown.
+
+The output is not "write like this author." The output is an abstract,
+project-local style profile: POV, tense, rhythm, paragraph density, dialogue
+habits, pacing, exposition style, diction, scene shape, humor mechanics, and
+concrete do/avoid guidance. Drafting tools then use this profile as style
+context without copying source text.
+
+## Why Local Markdown First
+
+Local Markdown is the right first version because it avoids crawler-specific
+complexity and makes the trust boundary clear.
+
+- No site-specific extraction logic.
+- No auth, paywall, robots, or rate-limit behavior inside Spindle.
+- No need to infer provenance from URLs.
+- Easy deterministic tests with fixture files.
+- Works for web serials, personal drafts, exports, transcripts, and any other
+  source once the user has converted them to Markdown.
+- Aligns with existing external Markdown manuscript support in the import
+  slicer.
+
+## Goals
+
+1. Accept one or more local Markdown files, or a directory of Markdown files,
+   as a style corpus.
+2. Normalize and chunk the corpus without persisting long source excerpts by
+   default.
+3. Compute deterministic style statistics before asking a model for synthesis.
+4. Produce a structured style profile card that can be inspected, saved, and
+   applied to a project.
+5. Integrate with Spindle's existing project style contract:
+   `ReaderContract.style_notes`, `style` world rules, and `NarratorVoice`.
+6. Invalidate style-sensitive validator caches when an applied profile changes
+   project style state.
+7. Keep MCP thin: DTOs in `spindle-core`, service orchestration in
+   `spindle-adapters`, tool wiring in `spindle-mcp`.
+
+## Non-Goals
+
+- Crawling web pages or downloading URLs.
+- Verifying ownership, copyright status, license status, or provenance of the
+  local files.
+- Generating prose that imitates a named living author or reuses distinctive
+  source phrasing.
+- Storing the entire source corpus in SQLite as the default behavior.
+- Building a general plagiarism detector.
+- Replacing character-specific voice profiles. This feature describes the
+  narrator/prose style for the whole project or branch.
+- Supporting binary formats directly. EPUB, DOCX, PDF, and HTML can be handled
+  by existing or future import/export tools that produce Markdown first.
+
+## User Experience
+
+### Create A Profile
+
+The user points Spindle at files:
+
+```json
+{
+  "project_id": "project:abc",
+  "profile_name": "Fast close-POV serial",
+  "source_paths": [
+    "corpus/series/chapter-001.md",
+    "corpus/series/chapter-002.md"
+  ],
+  "recursive": false,
+  "apply": false
+}
+```
+
+Or a directory:
+
+```json
+{
+  "project_id": "project:abc",
+  "profile_name": "Season 1 reference style",
+  "source_paths": ["corpus/season-1"],
+  "recursive": true,
+  "include_globs": ["**/*.md", "**/*.markdown"],
+  "apply": true
+}
+```
+
+Spindle returns:
+
+- profile id
+- corpus summary
+- deterministic stats
+- generated style card
+- warnings and skipped files
+- whether the profile was applied
+- which project style fields were changed
+
+### Inspect A Profile
+
+The user can inspect saved profiles through either a dynamic tool or a stable
+resource:
+
+- `list_style_profiles`
+- `get_style_profile`
+- `bible://projects/{project_id}/style-profiles`
+- `bible://projects/{project_id}/style-profiles/{profile_id}`
+
+### Apply A Profile
+
+Applying a profile should update the project style contract, not silently change
+drafting behavior through a hidden side channel.
+
+MVP application should:
+
+1. set `NarratorVoice` from the profile's narrator-facing fields
+2. append or replace selected `ReaderContract.style_notes`
+3. optionally create or update a `style` world rule named after the profile
+4. invalidate style-related validator cache rows
+
+The create tool can support `apply: true`, but application should also exist as
+an explicit follow-up operation:
+
+```json
+{
+  "project_id": "project:abc",
+  "profile_id": "style_profile:def",
+  "mode": "merge"
+}
+```
+
+## Product Language
+
+Use neutral corpus/profile language in public fields and prompts.
+
+Use:
+
+- "style profile"
+- "style card"
+- "derived from user-provided local Markdown"
+- "abstract prose guidance"
+- "do/avoid rules"
+
+Avoid:
+
+- "clone"
+- "copy"
+- "write exactly like"
+- "author imitation"
+
+## Data Model
+
+### `StyleProfileCard`
+
+Add a public DTO in `spindle-core/src/models.rs` or a new
+`spindle-core/src/style/profile.rs` module re-exported from core.
+
+Proposed shape:
+
+```rust
+pub struct StyleProfileCard {
+    pub profile_id: String,
+    pub project_id: String,
+    pub name: String,
+    pub status: StyleProfileStatus,
+    pub created_at: String,
+    pub updated_at: String,
+    pub corpus: StyleCorpusSummary,
+    pub metrics: StyleCorpusMetrics,
+    pub guidance: StyleProfileGuidance,
+    pub source_policy: StyleProfileSourcePolicy,
+    pub model_receipt: Option<StyleProfileModelReceipt>,
+}
+```
+
+### `StyleCorpusSummary`
+
+```rust
+pub struct StyleCorpusSummary {
+    pub source_count: usize,
+    pub analyzed_source_count: usize,
+    pub skipped_source_count: usize,
+    pub total_words: usize,
+    pub total_characters: usize,
+    pub chunk_count: usize,
+    pub source_refs: Vec<StyleSourceRef>,
+    pub warnings: Vec<String>,
+}
+
+pub struct StyleSourceRef {
+    pub display_name: String,
+    pub canonical_path: String,
+    pub sha256: String,
+    pub word_count: usize,
+    pub included: bool,
+    pub skip_reason: Option<String>,
+}
+```
+
+`canonical_path` should be stored for reproducibility, but source text should
+not be stored by default.
+
+### `StyleCorpusMetrics`
+
+The deterministic metrics should be computed in Rust and included in the model
+prompt. They should also be persisted so the profile remains useful even when a
+model call fails.
+
+```rust
+pub struct StyleCorpusMetrics {
+    pub average_sentence_words: f64,
+    pub median_sentence_words: f64,
+    pub p90_sentence_words: f64,
+    pub average_paragraph_words: f64,
+    pub median_paragraph_words: f64,
+    pub dialogue_line_ratio: f64,
+    pub dialogue_word_ratio: f64,
+    pub question_mark_rate_per_1k_words: f64,
+    pub exclamation_rate_per_1k_words: f64,
+    pub semicolon_rate_per_1k_words: f64,
+    pub em_dash_rate_per_1k_words: f64,
+    pub ellipsis_rate_per_1k_words: f64,
+    pub first_person_pronoun_rate_per_1k_words: f64,
+    pub third_person_pronoun_rate_per_1k_words: f64,
+    pub top_functional_markers: Vec<String>,
+}
+```
+
+These are signals, not absolute judgements. The generated guidance should treat
+them as evidence.
+
+### `StyleProfileGuidance`
+
+```rust
+pub struct StyleProfileGuidance {
+    pub summary: String,
+    pub pov: Option<String>,
+    pub tense: Option<String>,
+    pub narrator_distance: Option<String>,
+    pub narrator_voice: NarratorVoice,
+    pub pacing: Vec<String>,
+    pub paragraphing: Vec<String>,
+    pub sentence_rhythm: Vec<String>,
+    pub diction: Vec<String>,
+    pub dialogue: Vec<String>,
+    pub exposition: Vec<String>,
+    pub interiority: Vec<String>,
+    pub humor_or_tension: Vec<String>,
+    pub scene_structure: Vec<String>,
+    pub do_rules: Vec<String>,
+    pub avoid_rules: Vec<String>,
+    pub prompt_snippet: String,
+}
+```
+
+`prompt_snippet` is the compact form inserted into drafting/review context.
+It must be abstract guidance only. It must not contain source passages longer
+than the configured excerpt limit.
+
+### `StyleProfileSourcePolicy`
+
+```rust
+pub struct StyleProfileSourcePolicy {
+    pub local_user_provided: bool,
+    pub source_text_persisted: bool,
+    pub max_excerpt_words: usize,
+    pub allowed_roots: Vec<String>,
+}
+```
+
+MVP default:
+
+- `local_user_provided = true`
+- `source_text_persisted = false`
+- `max_excerpt_words = 0`
+
+### SQLite Tables
+
+Add a migration in `crates/spindle-adapters/migrations`.
+
+Recommended minimal tables:
+
+```sql
+CREATE TABLE style_profile (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    card_json TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    guidance_json TEXT NOT NULL,
+    source_policy_json TEXT NOT NULL,
+    model_receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_style_profile_project
+    ON style_profile(project_id, created_at);
+
+CREATE TABLE style_profile_source (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    word_count INTEGER NOT NULL,
+    included INTEGER NOT NULL,
+    skip_reason TEXT,
+    source_order INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_style_profile_source_profile
+    ON style_profile_source(profile_id, source_order);
+```
+
+Do not add a source-text table in the MVP. If later needed for audit/debug,
+make it opt-in and store excerpts only.
+
+## Tool Surface
+
+### `create_style_profile_from_markdown`
+
+Category: compute/write
+
+Input:
+
+```rust
+pub struct CreateStyleProfileFromMarkdownInput {
+    pub project_id: String,
+    pub profile_name: String,
+    pub source_paths: Vec<String>,
+    pub recursive: Option<bool>,
+    pub include_globs: Option<Vec<String>>,
+    pub exclude_globs: Option<Vec<String>>,
+    pub max_files: Option<usize>,
+    pub max_bytes_per_file: Option<usize>,
+    pub max_total_words: Option<usize>,
+    pub apply: Option<bool>,
+    pub application_mode: Option<StyleProfileApplyMode>,
+}
+```
+
+Output:
+
+```rust
+pub struct CreateStyleProfileFromMarkdownOutput {
+    pub profile: StyleProfileCard,
+    pub applied: bool,
+    pub application: Option<ApplyStyleProfileOutput>,
+}
+```
+
+Behavior:
+
+1. Validate project exists.
+2. Resolve and validate local paths.
+3. Collect Markdown files deterministically by canonical path.
+4. Normalize and chunk the text.
+5. Compute deterministic metrics.
+6. Run model synthesis through `style_analyze`.
+7. Validate model JSON and repair once if needed.
+8. Persist the profile and source metadata.
+9. If requested, apply the profile.
+
+### `list_style_profiles`
+
+Input:
+
+```rust
+pub struct ListStyleProfilesInput {
+    pub project_id: String,
+}
+```
+
+Output:
+
+```rust
+pub struct ListStyleProfilesOutput {
+    pub profiles: Vec<StyleProfileCard>,
+}
+```
+
+### `get_style_profile`
+
+Input:
+
+```rust
+pub struct GetStyleProfileInput {
+    pub project_id: String,
+    pub profile_id: String,
+}
+```
+
+Output:
+
+```rust
+pub struct GetStyleProfileOutput {
+    pub profile: StyleProfileCard,
+}
+```
+
+### `apply_style_profile`
+
+Input:
+
+```rust
+pub enum StyleProfileApplyMode {
+    Merge,
+    ReplaceGeneratedStyleNotes,
+}
+
+pub struct ApplyStyleProfileInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub mode: StyleProfileApplyMode,
+}
+```
+
+Output:
+
+```rust
+pub struct ApplyStyleProfileOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub narrator_voice: NarratorVoice,
+    pub reader_contract_style_notes: Vec<String>,
+    pub style_rule_id: Option<String>,
+    pub invalidated_validator_findings: usize,
+}
+```
+
+MVP should support `Merge`. `ReplaceGeneratedStyleNotes` can be implemented
+once generated notes are tagged well enough to avoid overwriting user-authored
+style notes.
+
+## Resource Surface
+
+Add resources:
+
+- `bible://projects/{id}/style-profiles`
+- `bible://projects/{id}/style-profiles/{profile_id}`
+
+The list resource should omit bulky model receipts and source refs beyond a
+small summary. The detail resource can return the full card.
+
+## Path And File Safety
+
+This feature reads local files, so path handling must be explicit.
+
+Rules:
+
+1. Resolve every input path to a canonical path before reading.
+2. Follow symlinks only after canonicalizing and checking the final target.
+3. By default, allow files under the project workspace root and the repository
+   data directory.
+4. Optionally allow additional roots from config later:
+   `style_corpus_roots = ["/path/to/corpus"]`.
+5. Reject device files, sockets, FIFOs, and files larger than
+   `max_bytes_per_file`.
+6. Reject non-UTF-8 files in MVP.
+7. Ignore hidden directories by default unless explicitly passed as a file.
+8. Sort files by canonical path for deterministic output.
+
+The implementation should not try to determine where the text originally came
+from. The explicit contract is "user-provided local Markdown."
+
+## Markdown Normalization
+
+Create a small normalizer in `spindle-adapters`, preferably near the existing
+import slicer code.
+
+MVP normalization:
+
+1. Strip UTF-8 BOM.
+2. Strip YAML frontmatter delimited by `---` at the start of the file.
+3. Strip HTML comments.
+4. Strip fenced code blocks.
+5. Convert ATX headings to blank-line separators while keeping heading text as
+   optional chunk labels.
+6. Treat `***`, `---`, and `_ _ _` separator lines as scene breaks.
+7. Collapse runs of more than three blank lines to two.
+8. Keep quoted dialogue and prose punctuation intact.
+
+Do not over-normalize. The point is to measure prose rhythm, so punctuation and
+paragraph boundaries matter.
+
+## Chunking
+
+Chunk after normalization. Reuse existing manuscript slicer behavior where it
+fits, but style analysis should not require valid chapter/scene structure.
+
+MVP chunking rules:
+
+- Prefer heading and scene-break boundaries.
+- Target 1,200 to 2,500 words per chunk.
+- Keep paragraphs intact.
+- Drop chunks below 150 words unless the entire corpus is small.
+- Cap total prompt payload with `max_total_words`.
+- Preserve source ref, byte offsets, word count, and label in memory.
+
+Only metrics and source metadata are persisted by default.
+
+## Deterministic Metrics
+
+Metrics should run before model synthesis and should be covered by unit tests.
+
+Required MVP metrics:
+
+- file count, included count, skipped count
+- word count
+- paragraph count
+- sentence count
+- average, median, and p90 sentence length
+- average and median paragraph length
+- dialogue line ratio
+- dialogue word ratio
+- punctuation rates per 1,000 words:
+  - question marks
+  - exclamation marks
+  - semicolons
+  - em dashes
+  - ellipses
+- first-person and third-person pronoun rates
+- top repeated non-content markers, excluding ordinary stopwords
+
+Approximate is acceptable if documented. These numbers are there to ground the
+LLM, not to be a perfect stylometry engine.
+
+## Model Route
+
+Add a dedicated model route:
+
+```toml
+[[routing]]
+route = "style_analyze"
+agent = "local-http"
+```
+
+Default local route behavior should exist so tests and offline usage do not
+fail. The route should use a low temperature, structured-output prompt.
+
+Files to update:
+
+- `crates/spindle-adapters/src/ai.rs`
+- `crates/spindle-adapters/src/agent_config.rs`
+- `docs/spindle-agent-config.md`
+- config resource tests that assert route names
+
+If this is too much for the first implementation PR, temporarily route through
+`import_synthesize`, but keep the service code behind a constant named
+`STYLE_ANALYZE_ROUTE` so the dedicated route can be added without touching
+business logic.
+
+## Model Prompt Contract
+
+The style synthesis prompt must require JSON and must forbid source copying.
+
+Prompt requirements:
+
+- State that the corpus is user-provided local Markdown.
+- Ask for abstract prose guidance, not imitation.
+- Include deterministic metrics.
+- Include short anonymized chunk summaries if available.
+- Forbid quoting source passages except very short examples when
+  `max_excerpt_words > 0`.
+- Require every guidance claim to be supported by either a metric or a chunk
+  observation.
+- Require uncertainty fields when the corpus is thin or inconsistent.
+- Require output that maps cleanly to `StyleProfileGuidance`.
+
+The service should parse JSON strictly. If parsing fails, run one repair prompt
+using the same route. If repair fails, persist a profile with metrics and
+`status = "needs_review"` rather than dropping all work.
+
+## Application Semantics
+
+Applying a profile is a normal project mutation.
+
+MVP mapping:
+
+- `guidance.narrator_voice` -> `SetNarratorVoiceInput`
+- compact summary and strongest do/avoid rules -> `ReaderContract.style_notes`
+- `guidance.prompt_snippet` -> optional `style` world rule
+
+Application must:
+
+1. preserve user-authored style notes in merge mode
+2. avoid adding duplicate generated notes
+3. record which profile was applied
+4. invalidate validator caches whose context hash included style state
+5. return a clear diff of changed style fields
+
+The profile itself should remain saved even if application fails.
+
+## Drafting And Review Integration
+
+The existing `StyleDirective::assemble` path is the right integration point.
+Do not create a second style context path in drafting.
+
+Once a profile is applied:
+
+1. scene context rendering should show the applied style guidance through the
+   existing style directive section
+2. `save_scene_draft` and `revise_scene` should continue to use the existing
+   style compliance scanner and review surfaces
+3. dual-persona review should see the profile through the target reader style
+   contract
+
+The style profile source corpus should not be injected into drafting prompts.
+Only the abstract profile guidance should be injected.
+
+## Tests
+
+### Unit Tests
+
+Add focused tests for:
+
+- Markdown frontmatter stripping
+- code fence stripping
+- scene separator recognition
+- chunk sizing and paragraph preservation
+- sentence and paragraph metrics
+- dialogue ratio calculation
+- path canonicalization and root rejection
+- JSON parsing and repair fallback
+
+### Service Tests
+
+Add tests under `crates/spindle-adapters/tests` or service tests for:
+
+- create profile from two Markdown fixture files
+- skipped non-Markdown and oversized files
+- persisted source refs contain hashes but not source text
+- list/get profile round trip
+- apply profile updates narrator voice and style notes
+- style cache invalidation is triggered on apply
+- thin corpus returns warnings
+
+### MCP Tests
+
+Add tests for:
+
+- tool schema generation
+- calling create/list/get/apply through the tool router
+- resource read for list and detail
+- tool profile exposure if any restricted profiles need the new tools
+
+### Regression Fixtures
+
+Add small files under `testdata/style/`:
+
+- `fast-serial-chapter-1.md`
+- `dialogue-heavy-scene.md`
+- `frontmatter-and-code.md`
+- `thin-corpus.md`
+
+Keep fixtures original and purpose-built for the test suite.
+
+## Rollout Plan
+
+### Phase 1: Profile MVP
+
+- Core DTOs.
+- SQLite migration and repository methods.
+- Local Markdown collection, normalization, chunking, metrics.
+- `create_style_profile_from_markdown`.
+- Deterministic local model fallback.
+- Persist profile and source metadata.
+- Unit and service tests.
+
+### Phase 2: Apply And Context Integration
+
+- `apply_style_profile`.
+- `list_style_profiles` and `get_style_profile`.
+- Style-profile resources.
+- Merge profile guidance into existing `StyleDirective` sources.
+- Validator cache invalidation.
+- MCP tests.
+
+### Phase 3: Route And Config Polish
+
+- Add `style_analyze` route to config docs and route defaults.
+- Add model route resource coverage.
+- Tune prompt and repair behavior.
+- Add CLI/harness examples if needed.
+
+### Phase 4: Optional Enhancements
+
+- Multiple active profiles with weights.
+- Compare two style profiles.
+- Profile drift report for a scene or chapter.
+- Opt-in excerpt retention for local audit.
+- External importer command that converts URLs or documents to Markdown before
+  calling this feature.
+
+## Error Handling
+
+Use specific, user-actionable errors:
+
+- `source path is outside allowed roots`
+- `source path does not exist`
+- `source path is not a regular UTF-8 Markdown file`
+- `source file exceeds max_bytes_per_file`
+- `no analyzable Markdown files found`
+- `corpus is too small for confident style analysis`
+- `style model returned invalid JSON`
+- `style profile was saved but could not be applied`
+
+Warnings should not fail the whole operation when at least one file is
+analyzable.
+
+## Observability
+
+The tool output should include:
+
+- analyzed file count
+- skipped file count
+- total words
+- chunk count
+- model adapter and model name
+- whether model output was repaired
+- whether source text was persisted
+- any warnings
+
+Avoid logging source text. Logging paths and hashes is acceptable.
+
+## Open Questions
+
+1. Should style profiles be project-wide only in the MVP, or branch-scoped from
+   day one?
+2. Should applying a profile update the reader contract directly, or should
+   reader-contract rendering include applied profile guidance as a separate
+   source?
+3. Should `ReplaceGeneratedStyleNotes` wait until style notes have stable
+   provenance tags?
+4. Should additional allowed corpus roots live in `.spindle/config.toml`, a
+   per-project DB setting, or both?
+
+Recommended MVP answers:
+
+1. Project-wide only.
+2. Update existing style surfaces so all current drafting/review paths work.
+3. Wait.
+4. Config later; start with workspace/data-dir roots.
+
+## Implementation Checklist
+
+1. Add core DTOs for profile create/list/get/apply.
+2. Add style profile storage migration.
+3. Add repository methods for profile/source insert and lookup.
+4. Add Markdown corpus collector with canonical path checks.
+5. Add normalizer, chunker, and metrics modules.
+6. Add style synthesis prompt and parser.
+7. Add service methods.
+8. Wire MCP tools.
+9. Add resources.
+10. Add route/config docs for `style_analyze`.
+11. Add tests and fixtures.
+12. Update public docs and examples.
+

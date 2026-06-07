@@ -282,7 +282,7 @@ impl SqliteSpindleService {
         Ok(resolved)
     }
 
-    async fn resolve_phase_four_caches_for_project(
+    pub(crate) async fn resolve_phase_four_caches_for_project(
         &self,
         project_id: &str,
         ids: &[PhaseFourCacheId],
@@ -3772,6 +3772,43 @@ impl SqliteSpindleService {
                     paginated_project_resource_response(&project_id, page, entries, None)
                 }
             });
+        }
+        if resource_path == "style-profiles" {
+            let profiles = self.repository.list_style_profiles(&project_id).await?;
+            let summaries: Vec<serde_json::Value> = profiles
+                .into_iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "profile_id": p.profile_id,
+                        "project_id": p.project_id,
+                        "name": p.name,
+                        "status": p.status,
+                        "created_at": p.created_at,
+                        "updated_at": p.updated_at,
+                        "corpus": {
+                            "source_count": p.corpus.source_count,
+                            "analyzed_source_count": p.corpus.analyzed_source_count,
+                            "skipped_source_count": p.corpus.skipped_source_count,
+                            "total_words": p.corpus.total_words,
+                            "total_characters": p.corpus.total_characters,
+                            "chunk_count": p.corpus.chunk_count,
+                            "warnings": p.corpus.warnings,
+                        },
+                        "metrics": p.metrics,
+                        "guidance": p.guidance,
+                        "source_policy": p.source_policy,
+                    })
+                })
+                .collect();
+            return Ok(serde_json::to_value(summaries)?);
+        }
+        if let Some(profile_id) = resource_path.strip_prefix("style-profiles/") {
+            let profile = self
+                .repository
+                .get_style_profile(&project_id, profile_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("style profile not found: {}", profile_id))?;
+            return Ok(serde_json::to_value(profile)?);
         }
         if resource_path == "continuity/health" {
             return self.continuity_health_resource(&project_id).await;
@@ -17595,7 +17632,7 @@ fn should_run_check(requested_checks: &std::collections::BTreeSet<String>, check
 // ── Phase-4 validator helpers ────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PhaseFourCacheId {
+pub(crate) enum PhaseFourCacheId {
     CanonicalFactProseDrift,
     WorldRuleSemanticDrift,
     VoiceDrift,

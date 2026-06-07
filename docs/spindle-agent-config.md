@@ -89,6 +89,10 @@ agent = "local-http"
 [[routing]]
 route = "research"
 agent = "local-http"
+
+[[routing]]
+route = "style_analyze"
+agent = "local-http"
 ```
 
 ## Route names
@@ -102,6 +106,7 @@ The current runtime understands these route names:
 - `import_extract`
 - `import_synthesize`
 - `import_validate`
+- `style_analyze`
 
 `embedding` stays local by default, but it now switches through the same config
 path when you bind that route to an HTTP agent. Spindle uses the configured

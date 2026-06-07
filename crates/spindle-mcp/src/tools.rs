@@ -130,6 +130,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Number, Value};
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 use spindle_core::models::*;
+use spindle_core::style::*;
 use spindle_core::subject_snapshot::SubjectSnapshot as EntitySubjectSnapshot;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
@@ -220,6 +221,10 @@ impl ToolRouter {
                 "search_bible",
                 "find_scenes_referencing",
                 "get_chapter_briefing",
+                "create_style_profile_from_markdown",
+                "list_style_profiles",
+                "get_style_profile",
+                "apply_style_profile",
             ],
             "write" => &[
                 "create_project",
@@ -301,6 +306,10 @@ impl ToolRouter {
                 "authoring_review_checkpoint",
                 "authoring_resolve_block",
                 "authoring_cancel_run",
+                "create_style_profile_from_markdown",
+                "list_style_profiles",
+                "get_style_profile",
+                "apply_style_profile",
             ],
             "minimal" => &[
                 "create_project",
@@ -372,6 +381,22 @@ impl ToolRouter {
             tool::<DiffBranchesInput, DiffBranchesOutput>(
                 "diff_branches",
                 "Compare two project branches across scenes, states, relationships, and pacing",
+            ),
+            tool::<CreateStyleProfileFromMarkdownInput, CreateStyleProfileFromMarkdownOutput>(
+                "create_style_profile_from_markdown",
+                "Derive a reusable project style profile from user-provided local Markdown files or folders. Persists metadata, hashes, metrics, and generated guidance, but no source text by default.",
+            ),
+            tool::<ListStyleProfilesInput, ListStyleProfilesOutput>(
+                "list_style_profiles",
+                "List derived style profiles saved for a project.",
+            ),
+            tool::<GetStyleProfileInput, GetStyleProfileOutput>(
+                "get_style_profile",
+                "Retrieve a specific derived style profile by its profile_id.",
+            ),
+            tool::<ApplyStyleProfileInput, ApplyStyleProfileOutput>(
+                "apply_style_profile",
+                "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows.",
             ),
             tool::<MergeBranchInput, MergeBranchOutput>(
                 "merge_branch",
@@ -1143,6 +1168,24 @@ impl ToolRouter {
             }
             "diff_branches" => {
                 self.invoke(arguments, |input| self.service.diff_branches(input))
+                    .await
+            }
+            "create_style_profile_from_markdown" => {
+                self.invoke(arguments, |input| {
+                    self.service.create_style_profile_from_markdown(input)
+                })
+                .await
+            }
+            "list_style_profiles" => {
+                self.invoke(arguments, |input| self.service.list_style_profiles(input))
+                    .await
+            }
+            "get_style_profile" => {
+                self.invoke(arguments, |input| self.service.get_style_profile(input))
+                    .await
+            }
+            "apply_style_profile" => {
+                self.invoke(arguments, |input| self.service.apply_style_profile(input))
                     .await
             }
             "merge_branch" => {
@@ -5633,5 +5676,16 @@ mod tests {
         // surfaced via `CreateProjectOutput.branch_id`. The session default
         // resolved through set_active_project must round-trip to that id.
         assert_eq!(active.branch_id, project.branch_id);
+    }
+
+    #[tokio::test]
+    async fn test_style_profile_mcp_tools() {
+        let router = router().await;
+        let tools = router.list_tools();
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(tool_names.contains(&"create_style_profile_from_markdown"));
+        assert!(tool_names.contains(&"list_style_profiles"));
+        assert!(tool_names.contains(&"get_style_profile"));
+        assert!(tool_names.contains(&"apply_style_profile"));
     }
 }
