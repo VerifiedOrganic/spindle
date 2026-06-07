@@ -233,6 +233,7 @@ impl ToolRouter {
                 "compare_style_profiles",
                 "archive_style_profile",
                 "preview_style_revision_patch",
+                "evaluate_style_revision_patch",
                 "list_style_revision_patch_audits",
                 "rollback_style_revision_patch",
             ],
@@ -328,6 +329,7 @@ impl ToolRouter {
                 "compare_style_profiles",
                 "archive_style_profile",
                 "preview_style_revision_patch",
+                "evaluate_style_revision_patch",
                 "apply_style_revision_patch",
                 "list_style_revision_patch_audits",
                 "rollback_style_revision_patch",
@@ -450,6 +452,10 @@ impl ToolRouter {
             tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
                 "preview_style_revision_patch",
                 "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",
+            ),
+            tool::<EvaluateStyleRevisionPatchInput, EvaluateStyleRevisionPatchOutput>(
+                "evaluate_style_revision_patch",
+                "Evaluate a proposed style revision patch for alignment improvement and risks without persisting changes.",
             ),
             tool::<ApplyStyleRevisionPatchInput, ApplyStyleRevisionPatchOutput>(
                 "apply_style_revision_patch",
@@ -1294,6 +1300,12 @@ impl ToolRouter {
             "preview_style_revision_patch" => {
                 self.invoke(arguments, |input| {
                     self.service.preview_style_revision_patch(input)
+                })
+                .await
+            }
+            "evaluate_style_revision_patch" => {
+                self.invoke(arguments, |input| {
+                    self.service.evaluate_style_revision_patch(input)
                 })
                 .await
             }
@@ -5822,6 +5834,7 @@ mod tests {
         assert!(tool_names.contains(&"archive_style_profile"));
         assert!(tool_names.contains(&"plan_style_revision"));
         assert!(tool_names.contains(&"preview_style_revision_patch"));
+        assert!(tool_names.contains(&"evaluate_style_revision_patch"));
         assert!(tool_names.contains(&"apply_style_revision_patch"));
         assert!(tool_names.contains(&"list_style_revision_patch_audits"));
         assert!(tool_names.contains(&"rollback_style_revision_patch"));

@@ -909,14 +909,54 @@ The tool output should include:
 
 To make style revision planning operational, Spindle supports a non-mutating patch preview and an explicit apply workflow. This enables review of proposed prose changes before committing them to the manuscript.
 
-### Comparison: Drift Check vs Revision Plan vs Patch Preview vs Apply
+### Comparison: Style Workflow Features
 
 | Feature | Mutates Manuscript? | Scope | Output | Persisted? | Purpose |
 |---|---|---|---|---|---|
 | **Drift Check** | No | Diagnostic (Scene or Chapter) | Metric deviations and scanner heuristics | No | Identifies *where* and *how much* style drifts from the active profile. |
 | **Revision Plan** | No | Diagnostic (Scene, Chapter, or Raw Text) | Ordered steps and optional rewrite examples | No | Provides edit instructions to correct style drift. |
 | **Patch Preview** | No | Scene or Chapter | Structured hunks, unified diffs, original/revised word counts, and proposed prose | No | Generates and previews the full style-aligned text draft without changing the manuscript. |
-| **Patch Apply** | **Yes** | Scene or Chapter | applied scene IDs, audit ID | Yes (Saves scene drafts, records audit row) | Commits proposed text changes to the manuscript through the standard save pipeline. |
+| **Patch Evaluation** | No | Proposed Scenes | Aggregate and per-scene metrics comparison, improvement scores, status, and safety risks | No | Assesses proposed revisions for style improvement, warnings, and safety risks before applying. |
+| **Patch Apply** | **Yes** | Proposed Scenes | Applied scene IDs, audit ID | Yes (Saves scene drafts, records audit row) | Commits proposed text changes to the manuscript through the standard save pipeline. |
+| **Patch Rollback** | **Yes** | Prior Audit ID | Restored scene IDs, rollback timestamp | Yes (Restores prior scene versions, updates audit) | Reverts the changes made by a specific patch application using historical scene versions. |
+
+### Style Revision Patch Evaluation
+
+To build trust and verify the quality of proposed edits before committing them, Spindle provides a non-mutating patch evaluation workflow. It analyzes the proposed revised prose against the original text and style profile to ensure the revision actually improves style alignment without introducing structural or semantic risks.
+
+#### Key Validation Rules
+
+Before evaluation takes place, the following guards are enforced:
+1. **Ownership & Active Branch**: Verifies that all target scenes belong to the specified project and exist on the project's active branch.
+2. **Profile Status**: Rejects evaluation if the style profile is archived.
+3. **Stale Protection**: Validates that each patch's `before_hash` matches the current scene text hash in the database.
+4. **Integrity Check**: Verifies that each patch's `after_hash` matches the calculated SHA256 of its proposed `revised_text`.
+
+#### Analysis & Risk Detection Heuristics
+
+The evaluation performs the following checks for each scene:
+- **Style Metrics Delta**: Compares sentence length, paragraph length, and dialogue ratio distributions before and after revision.
+- **Drift Warnings**: Runs the style drift scanner on both the original and revised text.
+- **Improvement Score**: Computes a numeric improvement score based on the reduction of warnings and errors.
+- **Status Classification**: Classifies each scene and the overall patch as:
+  - `improved`: Warnings/errors decreased and improvement score is positive.
+  - `neutral`: Warnings/errors remained the same.
+  - `regressed`: Warnings/errors increased, or risks triggered regression.
+- **Risk Identification**: Detects and reports critical risks:
+  - *Increased Style Drift*: Warnings/errors increased.
+  - *Large Word-Count Swings*: A word-count change of 30% or more.
+  - *Empty/Near-Empty Prose*: Revised prose that is empty or contains fewer than 5 words or 15 characters.
+  - *Content Rating / Safety Violations*: Major tone or rating changes.
+  - *Validator Preflight Errors*: Optionally runs style-sensitive validators in-memory (using the phase-four registry with in-memory scene snapshots) to catch semantic/rule violations without persisting any draft.
+
+#### Integration Points
+
+1. **Preview Integration**: The `preview_style_revision_patch` input supports an optional `run_evaluation` flag. If `true`, the preview output embeds a complete `EvaluateStyleRevisionPatchOutput`.
+2. **Apply Gating Integration**: The `apply_style_revision_patch` input accepts `require_positive_evaluation: Option<bool>` and `minimum_improvement_score: Option<f64>`. When enabled:
+   - It runs the evaluation before applying.
+   - It rejects the apply with an error if the overall patch status is `regressed` or if the score falls below the minimum threshold.
+   - Default behavior preserves explicit applying of patches without evaluation.
+3. **MCP Interface**: Exposed via the `evaluate_style_revision_patch` MCP tool.
 
 ### Privacy and Data Security
 

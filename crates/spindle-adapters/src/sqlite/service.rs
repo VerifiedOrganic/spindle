@@ -8263,7 +8263,7 @@ impl SqliteSpindleService {
     /// evaluate scenes against. Pulls active canonical facts, world rules,
     /// character voice profiles, timeline events, and temporal interventions
     /// for the project. Mirrors `services/mod.rs:6089` in 705b835^.
-    async fn build_phase_four_validator_context(
+    pub(crate) async fn build_phase_four_validator_context(
         &self,
         project_id: &str,
         branch_id: &str,

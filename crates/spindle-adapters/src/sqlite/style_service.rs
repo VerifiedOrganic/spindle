@@ -1702,11 +1702,305 @@ impl SqliteSpindleService {
             });
         }
 
+        let evaluation = if input.run_evaluation == Some(true) {
+            let eval_input = spindle_core::style::EvaluateStyleRevisionPatchInput {
+                project_id: input.project_id.clone(),
+                profile_id: resolved_profile_id.clone(),
+                scenes: scene_patches.clone(),
+                run_validator_preflight: input.run_validator_preflight,
+                minimum_improvement_score: input.minimum_improvement_score,
+            };
+            Some(self.evaluate_style_revision_patch(eval_input).await?)
+        } else {
+            None
+        };
+
         Ok(spindle_core::style::PreviewStyleRevisionPatchOutput {
             project_id: input.project_id,
             profile_id: resolved_profile_id,
             scenes: scene_patches,
             model_receipt: last_receipt,
+            evaluation,
+        })
+    }
+
+    pub async fn evaluate_style_revision_patch(
+        &self,
+        input: spindle_core::style::EvaluateStyleRevisionPatchInput,
+    ) -> Result<spindle_core::style::EvaluateStyleRevisionPatchOutput> {
+        // 1. Fetch profile card and reject if archived
+        let profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found: {}", input.profile_id))?;
+        ensure_style_profile_not_archived(&profile)?;
+
+        // 2. Resolve active branch ID
+        let active_branch_id = self
+            .repository()
+            .active_branch_id_public(&input.project_id)
+            .await?;
+
+        let mut total_before_warnings = 0;
+        let mut total_after_warnings = 0;
+        let mut total_before_errors = 0;
+        let mut total_after_errors = 0;
+        let mut total_improvement = 0.0;
+        let mut scene_evals = Vec::new();
+        let mut aggregate_risks = Vec::new();
+
+        // 3. Evaluate each scene patch
+        for scene_patch in &input.scenes {
+            let existing_scene = self.repository().get_scene(&scene_patch.scene_id).await?;
+            if existing_scene.project_id != input.project_id {
+                return Err(anyhow!(
+                    "Scene {} does not belong to project {}",
+                    scene_patch.scene_id,
+                    input.project_id
+                ));
+            }
+            if existing_scene.branch_id != active_branch_id {
+                return Err(anyhow!(
+                    "Scene {} does not belong to active branch {}",
+                    scene_patch.scene_id,
+                    active_branch_id
+                ));
+            }
+
+            // Verify before_hash matches current scene text
+            let current_hash = hash_text(&existing_scene.full_text);
+            if current_hash != scene_patch.before_hash {
+                return Err(anyhow!(
+                    "Scene {} text has changed; patch is stale",
+                    scene_patch.scene_id
+                ));
+            }
+
+            // Verify after_hash matches revised_text
+            let computed_after_hash = hash_text(&scene_patch.revised_text);
+            if computed_after_hash != scene_patch.after_hash {
+                return Err(anyhow!(
+                    "style revision patch after_hash does not match revised text for scene {}",
+                    scene_patch.scene_id
+                ));
+            }
+
+            // Run style drift checks
+            let before_drift_findings = self.check_style_against_prose(
+                &profile,
+                &existing_scene.full_text,
+                Some(scene_patch.scene_id.clone()),
+            );
+            let after_drift_findings = self.check_style_against_prose(
+                &profile,
+                &scene_patch.revised_text,
+                Some(scene_patch.scene_id.clone()),
+            );
+
+            let before_warnings = before_drift_findings
+                .iter()
+                .filter(|f| f.severity == "warning")
+                .count();
+            let before_errors = before_drift_findings
+                .iter()
+                .filter(|f| f.severity == "error")
+                .count();
+            let after_warnings = after_drift_findings
+                .iter()
+                .filter(|f| f.severity == "warning")
+                .count();
+            let after_errors = after_drift_findings
+                .iter()
+                .filter(|f| f.severity == "error")
+                .count();
+
+            let before_score_val = before_warnings + 3 * before_errors;
+            let after_score_val = after_warnings + 3 * after_errors;
+            let improvement_score = (before_score_val as f64) - (after_score_val as f64);
+
+            let status = if improvement_score > 0.0 {
+                spindle_core::style::StyleRevisionPatchStatus::Improved
+            } else if improvement_score < 0.0 {
+                spindle_core::style::StyleRevisionPatchStatus::Regressed
+            } else {
+                spindle_core::style::StyleRevisionPatchStatus::Neutral
+            };
+
+            let mut risks = Vec::new();
+            if after_score_val > before_score_val {
+                risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                    risk_type: "increased_style_drift".to_string(),
+                    severity: "warning".to_string(),
+                    description: format!(
+                        "Style drift findings increased from (warnings: {}, errors: {}) to (warnings: {}, errors: {}).",
+                        before_warnings, before_errors, after_warnings, after_errors
+                    ),
+                });
+            }
+
+            let orig_words = scene_patch.original_word_count as f64;
+            let rev_words = scene_patch.revised_word_count as f64;
+            if orig_words > 0.0 {
+                let ratio = (rev_words - orig_words).abs() / orig_words;
+                if ratio > 0.20 {
+                    risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                        risk_type: "large_word_count_swing".to_string(),
+                        severity: "warning".to_string(),
+                        description: format!(
+                            "Prose word count changed significantly by {:.1}% (from {} to {} words).",
+                            ratio * 100.0,
+                            scene_patch.original_word_count,
+                            scene_patch.revised_word_count
+                        ),
+                    });
+                }
+            }
+
+            if scene_patch.revised_text.trim().is_empty() {
+                risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                    risk_type: "empty_revised_prose".to_string(),
+                    severity: "error".to_string(),
+                    description: "Revised prose is completely empty.".to_string(),
+                });
+            } else if scene_patch.revised_text.split_whitespace().count() < 5 {
+                risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                    risk_type: "near_empty_revised_prose".to_string(),
+                    severity: "warning".to_string(),
+                    description: format!(
+                        "Revised prose is extremely short ({} words).",
+                        scene_patch.revised_text.split_whitespace().count()
+                    ),
+                });
+            }
+
+            let (before_rating, _) =
+                crate::sqlite::import_service::detect_content_rating(&existing_scene.full_text);
+            let (after_rating, _) =
+                crate::sqlite::import_service::detect_content_rating(&scene_patch.revised_text);
+            if before_rating != after_rating {
+                risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                    risk_type: "content_rating_change".to_string(),
+                    severity: "warning".to_string(),
+                    description: format!(
+                        "Detected content rating change from {:?} to {:?}.",
+                        before_rating, after_rating
+                    ),
+                });
+            }
+
+            if crate::sqlite::import_service::contains_explicit_sexual_prose(
+                &scene_patch.revised_text,
+            ) {
+                risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                    risk_type: "unsafe_explicit_save_constraint".to_string(),
+                    severity: "error".to_string(),
+                    description: "Revised prose contains explicit sexual prose but has no generation_id, which will block saving.".to_string(),
+                });
+            }
+
+            // Run validator preflight
+            if input.run_validator_preflight == Some(true) {
+                let mut preflight_context = self
+                    .build_phase_four_validator_context(
+                        &input.project_id,
+                        &active_branch_id,
+                        &[existing_scene.clone()],
+                    )
+                    .await?;
+                if let Some(snap) = preflight_context.scenes.iter_mut().next() {
+                    snap.full_text = scene_patch.revised_text.clone();
+                }
+                let registry = crate::sqlite::validators::phase_four_validator_registry();
+                if let Some(snap) = preflight_context.scenes.first() {
+                    match registry.validate_scene(snap, &preflight_context) {
+                        Ok(findings) => {
+                            for finding in findings {
+                                let sev = match finding.severity {
+                                    spindle_core::validators::ValidatorSeverity::Error => "error",
+                                    spindle_core::validators::ValidatorSeverity::Warning => {
+                                        "warning"
+                                    }
+                                    spindle_core::validators::ValidatorSeverity::Info => "info",
+                                };
+                                if sev == "error" || sev == "warning" {
+                                    risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                                        risk_type: format!("preflight:{}", finding.check_type),
+                                        severity: sev.to_string(),
+                                        description: finding.message,
+                                    });
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                                risk_type: "preflight_error".to_string(),
+                                severity: "error".to_string(),
+                                description: format!("Validator preflight failed to run: {}", e),
+                            });
+                        }
+                    }
+                }
+            }
+
+            total_before_warnings += before_warnings;
+            total_after_warnings += after_warnings;
+            total_before_errors += before_errors;
+            total_after_errors += after_errors;
+            total_improvement += improvement_score;
+
+            aggregate_risks.extend(risks.clone());
+
+            scene_evals.push(spindle_core::style::StyleRevisionPatchEvaluation {
+                scene_id: scene_patch.scene_id.clone(),
+                score: spindle_core::style::StyleRevisionPatchScore {
+                    before_warnings,
+                    after_warnings,
+                    before_errors,
+                    after_errors,
+                    improvement_score,
+                },
+                status,
+                risks,
+            });
+        }
+
+        let aggregate_score = spindle_core::style::StyleRevisionPatchScore {
+            before_warnings: total_before_warnings,
+            after_warnings: total_after_warnings,
+            before_errors: total_before_errors,
+            after_errors: total_after_errors,
+            improvement_score: total_improvement,
+        };
+
+        let aggregate_status = if total_improvement > 0.0 {
+            spindle_core::style::StyleRevisionPatchStatus::Improved
+        } else if total_improvement < 0.0 {
+            spindle_core::style::StyleRevisionPatchStatus::Regressed
+        } else {
+            spindle_core::style::StyleRevisionPatchStatus::Neutral
+        };
+
+        if let Some(min_score) = input.minimum_improvement_score {
+            if total_improvement < min_score {
+                aggregate_risks.push(spindle_core::style::StyleRevisionPatchRisk {
+                    risk_type: "minimum_improvement_score_failed".to_string(),
+                    severity: "error".to_string(),
+                    description: format!(
+                        "Aggregate improvement score ({:.2}) is less than the required minimum threshold ({:.2}).",
+                        total_improvement, min_score
+                    ),
+                });
+            }
+        }
+
+        Ok(spindle_core::style::EvaluateStyleRevisionPatchOutput {
+            project_id: input.project_id,
+            profile_id: input.profile_id,
+            scenes: scene_evals,
+            aggregate_score,
+            status: aggregate_status,
+            risks: aggregate_risks,
         })
     }
 
@@ -1726,6 +2020,30 @@ impl SqliteSpindleService {
             return Err(anyhow!(
                 "style revision patch must include at least one scene"
             ));
+        }
+
+        // Apply integration check:
+        if input.require_positive_evaluation == Some(true) {
+            let eval_input = spindle_core::style::EvaluateStyleRevisionPatchInput {
+                project_id: input.project_id.clone(),
+                profile_id: input.profile_id.clone(),
+                scenes: input.scenes.clone(),
+                run_validator_preflight: Some(false),
+                minimum_improvement_score: input.minimum_improvement_score,
+            };
+            let eval_output = self.evaluate_style_revision_patch(eval_input).await?;
+            if eval_output.status == spindle_core::style::StyleRevisionPatchStatus::Regressed {
+                return Err(anyhow!("style revision patch evaluation regressed"));
+            }
+            if let Some(min_score) = input.minimum_improvement_score {
+                if eval_output.aggregate_score.improvement_score < min_score {
+                    return Err(anyhow!(
+                        "style revision patch evaluation failed minimum threshold: score {:.2} < required {:.2}",
+                        eval_output.aggregate_score.improvement_score,
+                        min_score
+                    ));
+                }
+            }
         }
 
         // 2. Validate all scene targets for project ownership and stale hashes

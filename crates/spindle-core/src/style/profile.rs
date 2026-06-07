@@ -503,6 +503,9 @@ pub struct PreviewStyleRevisionPatchInput {
     pub profile_id: Option<String>,
     pub max_suggestions: Option<usize>,
     pub instructions: Option<String>,
+    pub run_evaluation: Option<bool>,
+    pub run_validator_preflight: Option<bool>,
+    pub minimum_improvement_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -531,6 +534,8 @@ pub struct PreviewStyleRevisionPatchOutput {
     pub profile_id: String,
     pub scenes: Vec<StyleRevisionPatchScene>,
     pub model_receipt: Option<StyleProfileModelReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<EvaluateStyleRevisionPatchOutput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -539,6 +544,8 @@ pub struct ApplyStyleRevisionPatchInput {
     pub profile_id: String,
     pub scenes: Vec<StyleRevisionPatchScene>,
     pub model_receipt: Option<StyleProfileModelReceipt>,
+    pub require_positive_evaluation: Option<bool>,
+    pub minimum_improvement_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -584,4 +591,55 @@ pub struct RollbackStyleRevisionPatchOutput {
     pub audit_id: String,
     pub rolled_back_at: String,
     pub restored_scene_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvaluateStyleRevisionPatchInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub scenes: Vec<StyleRevisionPatchScene>,
+    pub run_validator_preflight: Option<bool>,
+    pub minimum_improvement_score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleRevisionPatchStatus {
+    Improved,
+    Neutral,
+    Regressed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPatchScore {
+    pub before_warnings: usize,
+    pub after_warnings: usize,
+    pub before_errors: usize,
+    pub after_errors: usize,
+    pub improvement_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct StyleRevisionPatchRisk {
+    pub risk_type: String,
+    pub severity: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPatchEvaluation {
+    pub scene_id: String,
+    pub score: StyleRevisionPatchScore,
+    pub status: StyleRevisionPatchStatus,
+    pub risks: Vec<StyleRevisionPatchRisk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvaluateStyleRevisionPatchOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub scenes: Vec<StyleRevisionPatchEvaluation>,
+    pub aggregate_score: StyleRevisionPatchScore,
+    pub status: StyleRevisionPatchStatus,
+    pub risks: Vec<StyleRevisionPatchRisk>,
 }

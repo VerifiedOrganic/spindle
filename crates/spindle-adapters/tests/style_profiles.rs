@@ -2066,6 +2066,9 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             max_suggestions: None,
             instructions: Some("Align closely".to_string()),
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await
         .unwrap();
@@ -2094,6 +2097,9 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             max_suggestions: None,
             instructions: None,
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await
         .unwrap();
@@ -2108,6 +2114,8 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: profile.profile_id.clone(),
             scenes: Vec::new(),
             model_receipt: None,
+            require_positive_evaluation: None,
+            minimum_improvement_score: None,
         })
         .await;
     assert!(empty_apply_res.is_err());
@@ -2126,6 +2134,8 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: profile.profile_id.clone(),
             scenes: vec![tampered_scene_patch],
             model_receipt: preview_scene_out.model_receipt.clone(),
+            require_positive_evaluation: None,
+            minimum_improvement_score: None,
         })
         .await;
     assert!(tampered_apply_res.is_err());
@@ -2158,6 +2168,8 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: profile.profile_id.clone(),
             scenes: preview_scene_out.scenes.clone(),
             model_receipt: preview_scene_out.model_receipt.clone(),
+            require_positive_evaluation: None,
+            minimum_improvement_score: None,
         })
         .await;
     assert!(branch_mismatch_res.is_err());
@@ -2180,6 +2192,8 @@ async fn test_style_revision_patch_lifecycle() {
         profile_id: profile.profile_id.clone(),
         scenes: preview_chapter_out.scenes.clone(),
         model_receipt: preview_chapter_out.model_receipt.clone(),
+        require_positive_evaluation: None,
+        minimum_improvement_score: None,
     };
     let apply_out = svc.apply_style_revision_patch(apply_input).await.unwrap();
     assert_eq!(apply_out.applied_scene_ids.len(), 2);
@@ -2203,6 +2217,9 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             max_suggestions: None,
             instructions: None,
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await
         .unwrap();
@@ -2234,6 +2251,8 @@ async fn test_style_revision_patch_lifecycle() {
         profile_id: profile.profile_id.clone(),
         scenes: preview_stale.scenes.clone(),
         model_receipt: preview_stale.model_receipt.clone(),
+        require_positive_evaluation: None,
+        minimum_improvement_score: None,
     };
     let apply_stale_res = svc.apply_style_revision_patch(apply_stale_input).await;
     assert!(apply_stale_res.is_err());
@@ -2261,6 +2280,9 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             max_suggestions: None,
             instructions: None,
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await;
     assert!(preview_archived_res.is_err());
@@ -2277,6 +2299,8 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: profile.profile_id.clone(),
             scenes: preview_stale.scenes.clone(),
             model_receipt: preview_stale.model_receipt.clone(),
+            require_positive_evaluation: None,
+            minimum_improvement_score: None,
         })
         .await;
     assert!(apply_archived_res.is_err());
@@ -2312,6 +2336,9 @@ async fn test_style_revision_patch_lifecycle() {
             profile_id: None,
             max_suggestions: None,
             instructions: None,
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await;
     assert!(preview_cross_res.is_err());
@@ -2450,6 +2477,9 @@ async fn test_style_revision_patch_rollback_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             max_suggestions: None,
             instructions: None,
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await
         .unwrap();
@@ -2473,6 +2503,8 @@ async fn test_style_revision_patch_rollback_lifecycle() {
         profile_id: profile.profile_id.clone(),
         scenes: vec![patch_scene.clone()],
         model_receipt: preview_out.model_receipt.clone(),
+        require_positive_evaluation: None,
+        minimum_improvement_score: None,
     };
     let apply_out = svc.apply_style_revision_patch(apply_input).await.unwrap();
     let audit_id = apply_out.audit_id;
@@ -2572,6 +2604,9 @@ async fn test_style_revision_patch_rollback_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             max_suggestions: None,
             instructions: None,
+            run_evaluation: None,
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
         })
         .await
         .unwrap();
@@ -2588,6 +2623,8 @@ async fn test_style_revision_patch_rollback_lifecycle() {
         profile_id: profile.profile_id.clone(),
         scenes: vec![patch_scene2],
         model_receipt: preview_out2.model_receipt.clone(),
+        require_positive_evaluation: None,
+        minimum_improvement_score: None,
     };
     let apply_out2 = svc.apply_style_revision_patch(apply_input2).await.unwrap();
     let audit_id2 = apply_out2.audit_id;
@@ -2641,4 +2678,332 @@ async fn test_style_revision_patch_rollback_lifecycle() {
         )
         .unwrap();
     assert_eq!(audit_prose_count, 0);
+}
+
+#[tokio::test]
+async fn test_style_revision_patch_evaluation() {
+    use spindle_core::models::{CreateBranchInput, SwitchBranchInput};
+    use spindle_core::style::{
+        ApplyStyleRevisionPatchInput, ArchiveStyleProfileInput, EvaluateStyleRevisionPatchInput,
+    };
+
+    // 1. Setup service and project
+    let (tmp, svc) = fresh_service().await;
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Evaluation Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "SciFi".to_string(),
+            reader_contract: ReaderContract {
+                promise: "YA scifi".to_string(),
+                style_notes: vec!["Short sentences only.".to_string()],
+                boundaries: vec!["no graphic sex".to_string()],
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = project_out.project_id;
+    let book = svc
+        .repository()
+        .list_books_by_project(&project_id)
+        .await
+        .unwrap()[0]
+        .clone();
+    let chapter_out = svc
+        .create_chapter(spindle_core::models::CreateChapterInput {
+            project_id: project_id.clone(),
+            book_number: Some(book.book_number),
+            book_id: Some(book.id.clone()),
+            chapter_number: Some(1),
+            title: Some("Chapter One".to_string()),
+        })
+        .await
+        .unwrap();
+    let chapter_id = chapter_out.chapter_id;
+
+    // Save initial scene draft
+    let initial_text = "This is a remarkably long sentence that triggers drift.".to_string();
+    let scene_input = SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: book.book_number,
+        chapter_number: 1,
+        chapter_id: Some(chapter_id.clone()),
+        scene_order: 1,
+        full_text: initial_text.clone(),
+        summary: "Scene 1 summary".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        research_source_ids: Vec::new(),
+        research_note_ids: Vec::new(),
+        research_claim_ids: Vec::new(),
+        research_query_pack_input: None,
+        research_context_hash: None,
+    };
+    let scene_out = svc.save_scene_draft(scene_input).await.unwrap();
+    let scene_id = scene_out.scene_id;
+
+    // Create a style profile that expects short sentences
+    let dest_dir = tmp.path();
+    let dest_file = dest_dir.join("eval_profile.md");
+    std::fs::write(
+        &dest_file,
+        "Jake ran. He won. They played. It was fun. Cats sleep.",
+    )
+    .unwrap();
+    let create_out = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Eval Profile".to_string(),
+            source_paths: vec![dest_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap();
+    let profile = create_out.profile;
+
+    // Helper to compute hash in test
+    fn test_hash(text: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    // Let's create two revisions for testing:
+    // A better patch (short sentences):
+    let better_text = "Jake ran. He won. They played. It was fun. Cats sleep.".to_string();
+    let better_before_hash = test_hash(&initial_text);
+    let better_after_hash = test_hash(&better_text);
+    let better_patch_scene = spindle_core::style::StyleRevisionPatchScene {
+        scene_id: scene_id.clone(),
+        original_word_count: initial_text.split_whitespace().count(),
+        revised_word_count: better_text.split_whitespace().count(),
+        before_hash: better_before_hash.clone(),
+        after_hash: better_after_hash.clone(),
+        unified_diff: "".to_string(),
+        hunks: None,
+        revised_text: better_text.clone(),
+    };
+
+    // A worse patch (even longer sentences):
+    let worse_text = "This is a remarkably long sentence that triggers drift.\n\nIt is very long.\n\nAnd complex.\n\nWith many clauses.\n\nThat cause drift.".to_string();
+    let worse_before_hash = test_hash(&initial_text);
+    let worse_after_hash = test_hash(&worse_text);
+    let worse_patch_scene = spindle_core::style::StyleRevisionPatchScene {
+        scene_id: scene_id.clone(),
+        original_word_count: initial_text.split_whitespace().count(),
+        revised_word_count: worse_text.split_whitespace().count(),
+        before_hash: worse_before_hash,
+        after_hash: worse_after_hash,
+        unified_diff: "".to_string(),
+        hunks: None,
+        revised_text: worse_text.clone(),
+    };
+
+    // 2. Test: evaluation reports improvement for better patch
+    let eval_better_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![better_patch_scene.clone()],
+            run_validator_preflight: Some(true),
+            minimum_improvement_score: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        eval_better_res.status,
+        spindle_core::style::StyleRevisionPatchStatus::Improved
+    );
+    assert!(eval_better_res.aggregate_score.improvement_score > 0.0);
+
+    // 3. Test: evaluation reports regression for worse patch
+    let eval_worse_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![worse_patch_scene.clone()],
+            run_validator_preflight: Some(true),
+            minimum_improvement_score: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        eval_worse_res.status,
+        spindle_core::style::StyleRevisionPatchStatus::Regressed
+    );
+    assert!(eval_worse_res.aggregate_score.improvement_score < 0.0);
+
+    // Verify evaluation is non-mutating/non-persisting
+    let current_scene = svc.repository().get_scene(&scene_id).await.unwrap();
+    assert_eq!(current_scene.full_text, initial_text);
+
+    // 4. Test: stale patch rejection
+    let mut stale_patch = better_patch_scene.clone();
+    stale_patch.before_hash = "some_stale_hash".to_string();
+    let stale_eval_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![stale_patch],
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(stale_eval_res.is_err());
+    assert!(
+        stale_eval_res
+            .unwrap_err()
+            .to_string()
+            .contains("patch is stale")
+    );
+
+    // 5. Test: archived profile rejection
+    svc.archive_style_profile(ArchiveStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        force: Some(true),
+    })
+    .await
+    .unwrap();
+
+    let archived_eval_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![better_patch_scene.clone()],
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(archived_eval_res.is_err());
+    assert!(
+        archived_eval_res
+            .unwrap_err()
+            .to_string()
+            .contains("archived")
+    );
+
+    // Re-create style profile to run other tests
+    let create_out2 = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Eval Profile 2".to_string(),
+            source_paths: vec![dest_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap();
+    let profile2 = create_out2.profile;
+
+    // 6. Test: wrong-project rejection
+    let wrong_project_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: "wrong_project".to_string(),
+            profile_id: profile2.profile_id.clone(),
+            scenes: vec![better_patch_scene.clone()],
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(wrong_project_res.is_err());
+
+    // 7. Test: wrong-branch rejection
+    let feature_branch = svc
+        .create_branch(CreateBranchInput {
+            project_id: project_id.clone(),
+            parent_branch_id: Some(project_out.branch_id.clone()),
+            name: "eval branch".to_string(),
+            branch_type: "experiment".to_string(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: feature_branch.branch_id,
+    })
+    .await
+    .unwrap();
+
+    let wrong_branch_res = svc
+        .evaluate_style_revision_patch(EvaluateStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile2.profile_id.clone(),
+            scenes: vec![better_patch_scene.clone()],
+            run_validator_preflight: None,
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(wrong_branch_res.is_err());
+    assert!(
+        wrong_branch_res
+            .unwrap_err()
+            .to_string()
+            .contains("does not belong to active branch")
+    );
+
+    // Switch back
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: project_out.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    // 8. Test: require_positive_evaluation blocks bad apply
+    let bad_apply_res = svc
+        .apply_style_revision_patch(ApplyStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile2.profile_id.clone(),
+            scenes: vec![worse_patch_scene.clone()],
+            model_receipt: None,
+            require_positive_evaluation: Some(true),
+            minimum_improvement_score: None,
+        })
+        .await;
+    assert!(bad_apply_res.is_err());
+    assert!(
+        bad_apply_res
+            .unwrap_err()
+            .to_string()
+            .contains("evaluation regressed")
+    );
+
+    // 9. Test: require_positive_evaluation succeeds for better patch
+    let good_apply_res = svc
+        .apply_style_revision_patch(ApplyStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile2.profile_id.clone(),
+            scenes: vec![better_patch_scene.clone()],
+            model_receipt: None,
+            require_positive_evaluation: Some(true),
+            minimum_improvement_score: Some(0.1),
+        })
+        .await;
+    assert!(good_apply_res.is_ok());
 }
