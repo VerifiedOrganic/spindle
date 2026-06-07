@@ -2,7 +2,8 @@ use rusqlite::Connection;
 use spindle_adapters::ModelRouter;
 use spindle_adapters::sqlite::{Repository, SqlitePool, SqliteSpindleService};
 use spindle_core::models::{
-    ContentRating, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
+    ContentRating, CreateBranchInput, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
+    SwitchBranchInput,
 };
 use spindle_core::style::{
     ApplyStyleProfileInput, ApplyStyleRevisionPatchInput, ArchiveStyleProfileInput,
@@ -2100,6 +2101,78 @@ async fn test_style_revision_patch_lifecycle() {
     assert_eq!(preview_chapter_out.scenes.len(), 2);
     assert_eq!(preview_chapter_out.scenes[0].scene_id, scene_id_1);
     assert_eq!(preview_chapter_out.scenes[1].scene_id, scene_id_2);
+
+    let empty_apply_res = svc
+        .apply_style_revision_patch(ApplyStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: Vec::new(),
+            model_receipt: None,
+        })
+        .await;
+    assert!(empty_apply_res.is_err());
+    assert!(
+        empty_apply_res
+            .unwrap_err()
+            .to_string()
+            .contains("must include at least one scene")
+    );
+
+    let mut tampered_scene_patch = preview_scene_out.scenes[0].clone();
+    tampered_scene_patch.revised_text = "Tampered revised prose.".to_string();
+    let tampered_apply_res = svc
+        .apply_style_revision_patch(ApplyStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: vec![tampered_scene_patch],
+            model_receipt: preview_scene_out.model_receipt.clone(),
+        })
+        .await;
+    assert!(tampered_apply_res.is_err());
+    assert!(
+        tampered_apply_res
+            .unwrap_err()
+            .to_string()
+            .contains("after_hash does not match revised text")
+    );
+
+    let feature_branch = svc
+        .create_branch(CreateBranchInput {
+            project_id: project_id.clone(),
+            parent_branch_id: Some(project_out.branch_id.clone()),
+            name: "style patch feature branch".to_string(),
+            branch_type: "experiment".to_string(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: feature_branch.branch_id,
+    })
+    .await
+    .unwrap();
+    let branch_mismatch_res = svc
+        .apply_style_revision_patch(ApplyStyleRevisionPatchInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            scenes: preview_scene_out.scenes.clone(),
+            model_receipt: preview_scene_out.model_receipt.clone(),
+        })
+        .await;
+    assert!(branch_mismatch_res.is_err());
+    assert!(
+        branch_mismatch_res
+            .unwrap_err()
+            .to_string()
+            .contains("does not belong to active branch")
+    );
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: project_out.branch_id.clone(),
+    })
+    .await
+    .unwrap();
 
     // C. Apply patch updates scene text
     let apply_input = ApplyStyleRevisionPatchInput {

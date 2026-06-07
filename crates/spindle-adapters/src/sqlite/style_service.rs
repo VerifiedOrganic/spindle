@@ -1722,19 +1722,57 @@ impl SqliteSpindleService {
             .ok_or_else(|| anyhow!("style profile not found: {}", input.profile_id))?;
         ensure_style_profile_not_archived(&profile)?;
 
+        if input.scenes.is_empty() {
+            return Err(anyhow!(
+                "style revision patch must include at least one scene"
+            ));
+        }
+
         // 2. Validate all scene targets for project ownership and stale hashes
+        let active_branch_id = self
+            .repository()
+            .active_branch_id_public(&input.project_id)
+            .await?;
+        let mut seen_scene_ids = std::collections::HashSet::new();
         let mut scenes_to_save = Vec::new();
         let mut before_hashes = Vec::new();
         let mut after_hashes = Vec::new();
         let mut target_ids = Vec::new();
 
         for scene_patch in &input.scenes {
+            if !seen_scene_ids.insert(scene_patch.scene_id.clone()) {
+                return Err(anyhow!(
+                    "duplicate scene in style revision patch: {}",
+                    scene_patch.scene_id
+                ));
+            }
+            if scene_patch.revised_text.trim().is_empty() {
+                return Err(anyhow!(
+                    "style revision patch revised text is empty for scene {}",
+                    scene_patch.scene_id
+                ));
+            }
+            let computed_after_hash = hash_text(&scene_patch.revised_text);
+            if computed_after_hash != scene_patch.after_hash {
+                return Err(anyhow!(
+                    "style revision patch after_hash does not match revised text for scene {}",
+                    scene_patch.scene_id
+                ));
+            }
+
             let existing_scene = self.repository().get_scene(&scene_patch.scene_id).await?;
             if existing_scene.project_id != input.project_id {
                 return Err(anyhow!(
                     "Scene {} does not belong to project {}",
                     scene_patch.scene_id,
                     input.project_id
+                ));
+            }
+            if existing_scene.branch_id != active_branch_id {
+                return Err(anyhow!(
+                    "Scene {} does not belong to active branch {}",
+                    scene_patch.scene_id,
+                    active_branch_id
                 ));
             }
 
