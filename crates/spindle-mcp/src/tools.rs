@@ -229,6 +229,7 @@ impl ToolRouter {
                 "list_style_profile_applications",
                 "rollback_style_profile_application",
                 "check_style_against_profile",
+                "plan_style_revision",
                 "compare_style_profiles",
                 "archive_style_profile",
             ],
@@ -320,6 +321,7 @@ impl ToolRouter {
                 "list_style_profile_applications",
                 "rollback_style_profile_application",
                 "check_style_against_profile",
+                "plan_style_revision",
                 "compare_style_profiles",
                 "archive_style_profile",
             ],
@@ -425,6 +427,10 @@ impl ToolRouter {
             tool::<CheckStyleAgainstProfileInput, CheckStyleAgainstProfileOutput>(
                 "check_style_against_profile",
                 "Check a scene or raw text for style drift against a derived style profile.",
+            ),
+            tool::<PlanStyleRevisionInput, PlanStyleRevisionOutput>(
+                "plan_style_revision",
+                "Generate a non-mutating style revision plan for a target (scene, chapter, or raw text) against a derived style profile.",
             ),
             tool::<CompareStyleProfilesInput, CompareStyleProfilesOutput>(
                 "compare_style_profiles",
@@ -1247,6 +1253,10 @@ impl ToolRouter {
                     self.service.check_style_against_profile(input)
                 })
                 .await
+            }
+            "plan_style_revision" => {
+                self.invoke(arguments, |input| self.service.plan_style_revision(input))
+                    .await
             }
             "compare_style_profiles" => {
                 self.invoke(arguments, |input| {
@@ -5763,5 +5773,6 @@ mod tests {
         assert!(tool_names.contains(&"check_style_against_profile"));
         assert!(tool_names.contains(&"compare_style_profiles"));
         assert!(tool_names.contains(&"archive_style_profile"));
+        assert!(tool_names.contains(&"plan_style_revision"));
     }
 }

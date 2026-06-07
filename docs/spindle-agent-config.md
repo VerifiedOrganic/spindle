@@ -107,6 +107,7 @@ The current runtime understands these route names:
 - `import_synthesize`
 - `import_validate`
 - `style_analyze`
+- `style_revise`
 
 `embedding` stays local by default, but it now switches through the same config
 path when you bind that route to an HTTP agent. Spindle uses the configured
@@ -585,9 +586,9 @@ This implementation keeps the current architecture boundaries intact.
 
 The active source of truth is the resolved `spindle.toml` file plus environment variables used for API key resolution.
 
-## Privacy & Routing Implications for style_analyze
+## Privacy & Routing Implications for style_analyze and style_revise
 
-The `style_analyze` route handles processing of user-provided drafting corpora. Because these corpora may contain sensitive or copyrighted material, Spindle provides specific privacy controls:
+The `style_analyze` and `style_revise` routes handle processing of user-provided drafting corpora and target prose. Because these may contain sensitive or copyrighted material, Spindle provides specific privacy controls:
 
 1. **`metrics_only` Mode**: When creating a style profile, if `metrics_only` is set to `true`, Spindle completely strips all raw prose chunks from the synthesis prompt. The prompt only includes deterministic statistics (average sentence length, dialogue ratios, punctuation rates) and high-level structure metadata. This prevents any source text from leaking to the model.
 2. **Local vs. External Routing**:

@@ -171,6 +171,130 @@ Spindle supports checking drift for a scene or a full chapter against a style pr
 - **Default Active Comparison**: By default, checks against the project's currently active profile.
 - **Non-mutating**: Drift checking is purely diagnostic and never rewrites manuscript prose.
 
+### Style Revision Planning
+
+To turn diagnostic style drift findings into actionable, previewable revision guidance, Spindle provides a non-mutating style revision planner:
+- **Tool**: `plan_style_revision`
+- **Goal**: Analyzes a target (`raw_text`, `scene_id`, or `chapter_id`) against the active profile (or a specified `profile_id`) and returns a structured plan to align the target's prose with the profile.
+- **Difference from Drift Checking**: While drift checking diagnostics highlight *where* style diverges (e.g., specific metrics deviations or scanner rules triggered), the revision planner translates these findings into ordered instructions and (optionally) concrete rewrite examples to assist the user in editing the prose.
+- **Deterministic and Non-Mutating**:
+  - The revision planner strictly defaults to deterministic metrics and scanner heuristic findings.
+  - It does not rewrite or persist target prose, and guarantees `mutates_prose: false`.
+- **Optional LLM Rewrite Examples**:
+  - If `include_rewrite_examples` is enabled, the service uses the `style_revise` model route to synthesize short original-to-revised prose snippets highlighting how to resolve style drift.
+  - To preserve privacy, raw source prose, target prose, and generated examples are processed purely in-memory and are never stored or persisted to the database.
+
+#### Input / Output Examples
+
+##### 1. Raw Text Target
+**Input**:
+```json
+{
+  "project_id": "project_1",
+  "raw_text": "She went to the store. She bought some milk. She was happy.",
+  "include_rewrite_examples": true
+}
+```
+
+**Output**:
+```json
+{
+  "project_id": "project_1",
+  "profile_id": "style_profile_1",
+  "target_summary": "Raw text target (word count: 12)",
+  "drift_summary_score": "mild_drift",
+  "findings": [
+    {
+      "severity": "warning",
+      "category": "sentence_length",
+      "evidence_summary": "Draft average sentence length is 4.0 words, but the style profile average is 15.0 words.",
+      "suggested_correction": "Combine short, choppy sentences to flow more naturally."
+    }
+  ],
+  "steps": [
+    {
+      "order": 1,
+      "finding_category": "sentence_length",
+      "instructions": "Combine short, choppy sentences to flow more naturally.",
+      "target_scope": "raw_text",
+      "confidence": "high"
+    }
+  ],
+  "rewrite_examples": [
+    {
+      "original_prose": "She went to the store. She bought some milk. She was happy.",
+      "revised_prose": "Walking down the dusty aisle, she grabbed the cool glass bottle of milk, a small smile softening her face.",
+      "explanation": "Combined short, choppy sentences into a more fluid narrative with sensory details to match the style profile."
+    }
+  ],
+  "mutates_prose": false
+}
+```
+
+##### 2. Scene Target
+**Input**:
+```json
+{
+  "project_id": "project_1",
+  "scene_id": "scene_abc123",
+  "metrics_only": true
+}
+```
+
+**Output**:
+```json
+{
+  "project_id": "project_1",
+  "profile_id": "style_profile_1",
+  "target_summary": "Scene: scene_abc123 (word count: 320)",
+  "drift_summary_score": "aligned",
+  "findings": [],
+  "steps": [],
+  "rewrite_examples": null,
+  "mutates_prose": false
+}
+```
+
+##### 3. Chapter Target
+**Input**:
+```json
+{
+  "project_id": "project_1",
+  "chapter_id": "chapter_xyz789"
+}
+```
+
+**Output**:
+```json
+{
+  "project_id": "project_1",
+  "profile_id": "style_profile_1",
+  "target_summary": "Chapter: chapter_xyz789 (Chapter 1, 2 scenes, total word count: 850)",
+  "drift_summary_score": "strong_drift",
+  "findings": [
+    {
+      "severity": "warning",
+      "category": "sentence_length",
+      "evidence_summary": "Draft average sentence length is 24.5 words, but the style profile average is 12.0 words.",
+      "suggested_correction": "Break up long sentences into shorter, punchier clauses.",
+      "scene_id": "scene_1"
+    }
+  ],
+  "steps": [
+    {
+      "order": 1,
+      "finding_category": "sentence_length",
+      "instructions": "Break up long sentences into shorter, punchier clauses.",
+      "target_scope": "scene",
+      "target_id": "scene_1",
+      "confidence": "high"
+    }
+  ],
+  "rewrite_examples": null,
+  "mutates_prose": false
+}
+```
+
 ### Profile Comparison and Management
 
 - **Comparison**: Use `compare_style_profiles` to compare two profiles in the same project, showing metric deltas and guidance differences.

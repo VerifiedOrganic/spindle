@@ -272,6 +272,86 @@ pub struct RollbackStyleProfileApplicationOutput {
     pub invalidated_validator_findings: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleRevisionSeverity {
+    Warning,
+    Info,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleRevisionTargetScope {
+    RawText,
+    Scene,
+    Chapter,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleRevisionConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanStyleRevisionInput {
+    pub project_id: String,
+    pub profile_id: Option<String>,
+    pub raw_text: Option<String>,
+    pub scene_id: Option<String>,
+    pub chapter_id: Option<String>,
+    pub max_suggestions: Option<usize>,
+    pub metrics_only: Option<bool>,
+    pub include_rewrite_examples: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPlanFinding {
+    pub severity: StyleRevisionSeverity,
+    pub category: String,
+    pub evidence_summary: String,
+    pub suggested_correction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_delta: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPlanStep {
+    pub order: usize,
+    pub finding_category: String,
+    pub instructions: String,
+    pub target_scope: StyleRevisionTargetScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    pub confidence: StyleRevisionConfidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleRevisionPlanExample {
+    pub original_prose: String,
+    pub revised_prose: String,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanStyleRevisionOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub target_summary: String,
+    pub drift_summary_score: StyleDriftSummaryScore,
+    pub findings: Vec<StyleRevisionPlanFinding>,
+    pub steps: Vec<StyleRevisionPlanStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewrite_examples: Option<Vec<StyleRevisionPlanExample>>,
+    pub mutates_prose: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckStyleAgainstProfileInput {
     pub project_id: String,

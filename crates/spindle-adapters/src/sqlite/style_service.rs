@@ -1170,6 +1170,237 @@ impl SqliteSpindleService {
         })
     }
 
+    pub async fn plan_style_revision(
+        &self,
+        input: spindle_core::style::PlanStyleRevisionInput,
+    ) -> Result<spindle_core::style::PlanStyleRevisionOutput> {
+        // 1. Build CheckStyleAgainstProfileInput to reuse existing logic
+        let check_input = spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: input.project_id.clone(),
+            profile_id: input.profile_id.clone(),
+            scene_id: input.scene_id.clone(),
+            raw_text: input.raw_text.clone(),
+            chapter_id: input.chapter_id.clone(),
+        };
+
+        // This resolves active profile, validates scene/chapter ownership, rejects archived profile, and rejects ambiguous targets
+        let check_output = self.check_style_against_profile(check_input).await?;
+
+        // 2. Fetch full text and build target summary
+        let mut target_prose = String::new();
+        let target_summary = if let Some(cid) = &input.chapter_id {
+            let chapter = self.repository().get_chapter(cid).await?;
+            let scenes = self.repository().list_scenes_by_chapter(cid).await?;
+            let mut total_words = 0;
+            for s in &scenes {
+                target_prose.push_str(&s.full_text);
+                target_prose.push('\n');
+                total_words += s.full_text.split_whitespace().count();
+            }
+            let title = chapter.title.as_deref().unwrap_or("Untitled");
+            format!(
+                "Chapter: {} ({}, {} scenes, total word count: {})",
+                chapter.id,
+                title,
+                scenes.len(),
+                total_words
+            )
+        } else if let Some(sid) = &input.scene_id {
+            let scene = self.repository().get_scene(sid).await?;
+            target_prose = scene.full_text.clone();
+            let word_count = scene.full_text.split_whitespace().count();
+            format!("Scene: {} (word count: {})", scene.id, word_count)
+        } else if let Some(raw) = &input.raw_text {
+            target_prose = raw.clone();
+            let word_count = raw.split_whitespace().count();
+            format!("Raw text target (word count: {})", word_count)
+        } else {
+            return Err(anyhow!(
+                "Must provide either chapter_id, scene_id or raw_text"
+            ));
+        };
+
+        // 3. Filter findings based on metrics_only
+        let mut raw_findings = check_output.findings;
+        if input.metrics_only.unwrap_or(false) {
+            raw_findings.retain(|f| {
+                f.category == "sentence_length"
+                    || f.category == "paragraph_length"
+                    || f.category == "dialogue_ratio"
+            });
+        }
+
+        // 4. Recalculate drift summary score for the filtered findings
+        let warning_count = raw_findings
+            .iter()
+            .filter(|f| f.severity == "warning")
+            .count();
+        let error_count = raw_findings
+            .iter()
+            .filter(|f| f.severity == "error")
+            .count();
+
+        let drift_summary_score = if error_count > 0 || warning_count >= 3 {
+            spindle_core::style::StyleDriftSummaryScore::StrongDrift
+        } else if warning_count > 0 {
+            spindle_core::style::StyleDriftSummaryScore::MildDrift
+        } else {
+            spindle_core::style::StyleDriftSummaryScore::Aligned
+        };
+
+        // 5. Convert findings to DTO format
+        let mut findings = Vec::new();
+        for f in raw_findings {
+            let severity = match f.severity.as_str() {
+                "warning" => spindle_core::style::StyleRevisionSeverity::Warning,
+                _ => spindle_core::style::StyleRevisionSeverity::Info,
+            };
+            findings.push(spindle_core::style::StyleRevisionPlanFinding {
+                severity,
+                category: f.category,
+                evidence_summary: f.evidence_summary,
+                suggested_correction: f.suggested_correction,
+                scene_id: f.scene_id,
+                metric_name: f.metric_name,
+                metric_delta: f.metric_delta,
+            });
+        }
+
+        // Sort findings: Warnings first, then Info
+        findings.sort_by(|a, b| {
+            let a_val = match a.severity {
+                spindle_core::style::StyleRevisionSeverity::Warning => 0,
+                spindle_core::style::StyleRevisionSeverity::Info => 1,
+            };
+            let b_val = match b.severity {
+                spindle_core::style::StyleRevisionSeverity::Warning => 0,
+                spindle_core::style::StyleRevisionSeverity::Info => 1,
+            };
+            a_val.cmp(&b_val)
+        });
+
+        // 6. Generate revision steps from sorted findings
+        let mut steps = Vec::new();
+        for (i, finding) in findings.iter().enumerate() {
+            let instructions = finding
+                .suggested_correction
+                .clone()
+                .unwrap_or_else(|| finding.evidence_summary.clone());
+
+            let target_scope = if finding.scene_id.is_some() {
+                spindle_core::style::StyleRevisionTargetScope::Scene
+            } else if input.chapter_id.is_some() {
+                spindle_core::style::StyleRevisionTargetScope::Chapter
+            } else if input.scene_id.is_some() {
+                spindle_core::style::StyleRevisionTargetScope::Scene
+            } else {
+                spindle_core::style::StyleRevisionTargetScope::RawText
+            };
+
+            let confidence = match finding.category.as_str() {
+                "sentence_length" | "paragraph_length" | "dialogue_ratio" => {
+                    spindle_core::style::StyleRevisionConfidence::High
+                }
+                _ => spindle_core::style::StyleRevisionConfidence::Medium,
+            };
+
+            steps.push(spindle_core::style::StyleRevisionPlanStep {
+                order: i + 1,
+                finding_category: finding.category.clone(),
+                instructions,
+                target_scope,
+                target_id: finding.scene_id.clone(),
+                confidence,
+            });
+        }
+
+        // Apply max suggestions limit if present
+        if let Some(max_sugg) = input.max_suggestions {
+            if findings.len() > max_sugg {
+                findings.truncate(max_sugg);
+            }
+            if steps.len() > max_sugg {
+                steps.truncate(max_sugg);
+            }
+        }
+
+        // 7. Generate rewrite examples if requested (and LLM route is allowed)
+        let mut rewrite_examples = None;
+        if input.include_rewrite_examples.unwrap_or(false) && !input.metrics_only.unwrap_or(false) {
+            let profile = self
+                .repository()
+                .get_style_profile(&input.project_id, &check_output.profile_id)
+                .await?
+                .ok_or_else(|| anyhow!("style profile not found: {}", check_output.profile_id))?;
+
+            let trimmed_prose = trim_to_word_limit(&target_prose, 4000);
+            let max_sugg = input.max_suggestions.unwrap_or(3);
+            let prompt = format!(
+                "You are an expert editor. You have been given a style profile and a piece of prose that drifts from this style.\n\n\
+                 Style Profile Name: {}\n\
+                 - POV: {}\n\
+                 - Tense: {}\n\
+                 - Narrative Voice: {:?}\n\
+                 - Do Rules: {:?}\n\
+                 - Avoid Rules: {:?}\n\n\
+                 Prose to Revise:\n\
+                 {}\n\n\
+                 Please provide at most {} short rewrite examples showing how to align the prose with the style profile.\n\
+                 Each example must show an original snippet (max 2-3 sentences), the revised style-aligned version, and an explanation of the changes.\n\
+                 Output MUST be a valid JSON array matching this schema:\n\
+                 [\n\
+                   {{\n\
+                     \"original_prose\": \"string\",\n\
+                     \"revised_prose\": \"string\",\n\
+                     \"explanation\": \"string\"\n\
+                   }}\n\
+                 ]\n\
+                 Do not wrap in markdown code blocks.",
+                profile.name,
+                profile.guidance.pov.clone().unwrap_or_default(),
+                profile.guidance.tense.clone().unwrap_or_default(),
+                profile.guidance.narrator_voice,
+                profile.guidance.do_rules,
+                profile.guidance.avoid_rules,
+                trimmed_prose,
+                max_sugg
+            );
+
+            let req = crate::ai::ModelRequest {
+                route: "style_revise".to_string(),
+                prompt,
+                rating: None,
+                context: Some(crate::ai::RequestContext {
+                    project_id: Some(input.project_id.clone()),
+                    book_id: None,
+                    chapter_id: input.chapter_id.clone(),
+                    scene_id: input.scene_id.clone(),
+                }),
+            };
+
+            if let Ok(response) = self.repository().model_router().complete(&req).await {
+                let cleaned = clean_json_response(&response.output);
+                if let Ok(parsed) = serde_json::from_str::<
+                    Vec<spindle_core::style::StyleRevisionPlanExample>,
+                >(cleaned)
+                {
+                    rewrite_examples = Some(parsed);
+                }
+            }
+        }
+
+        Ok(spindle_core::style::PlanStyleRevisionOutput {
+            project_id: input.project_id,
+            profile_id: check_output.profile_id,
+            target_summary,
+            drift_summary_score,
+            findings,
+            steps,
+            rewrite_examples,
+            mutates_prose: false,
+        })
+    }
+
     pub async fn compare_style_profiles(
         &self,
         input: spindle_core::style::CompareStyleProfilesInput,

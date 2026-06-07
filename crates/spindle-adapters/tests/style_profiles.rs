@@ -1569,3 +1569,357 @@ agent = "mock-analyze"
         "Source prose should be included in standard prompt"
     );
 }
+
+#[tokio::test]
+async fn test_plan_style_revision_suite() {
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Create project 1
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Style Revision Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+    let chapter_id = project_out.chapter_id;
+
+    // 2. Create style profile with short sentences
+    let corpus_file = tmp.path().join("corpus.md");
+    std::fs::write(
+        &corpus_file,
+        "Jake ran. Jake jumped. Jake succeeded. Jake was quick. Jake won.",
+    )
+    .unwrap();
+
+    let profile = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Short Sentences Profile".to_string(),
+            source_paths: vec![corpus_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true), // apply it to make it the active style profile
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    // Test 1: Active profile default behavior & Raw text planning
+    // We pass profile_id: None. It should default to the active profile.
+    let raw_text = "This is a remarkably long sentence designed specifically to mismatch with the style profile and produce a deterministic warning about sentence length which should be easily detected by the style drift checking service method. And this is another extremely long and winding sentence that just goes on and on to ensure the average sentence length exceeds the threshold significantly.";
+
+    let raw_plan = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            raw_text: Some(raw_text.to_string()),
+            scene_id: None,
+            chapter_id: None,
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(raw_plan.project_id, project_id);
+    assert_eq!(raw_plan.profile_id, profile.profile_id);
+    assert!(raw_plan.target_summary.contains("Raw text target"));
+    assert_eq!(
+        raw_plan.drift_summary_score,
+        spindle_core::style::StyleDriftSummaryScore::MildDrift
+    );
+    assert_eq!(raw_plan.mutates_prose, false);
+    assert!(raw_plan.rewrite_examples.is_none());
+
+    // Check findings and steps
+    assert!(!raw_plan.findings.is_empty());
+    assert_eq!(
+        raw_plan.findings[0].severity,
+        spindle_core::style::StyleRevisionSeverity::Warning
+    );
+    assert_eq!(raw_plan.findings[0].category, "sentence_length");
+    assert!(
+        raw_plan.findings[0]
+            .evidence_summary
+            .contains("sentence length")
+    );
+
+    assert!(!raw_plan.steps.is_empty());
+    assert_eq!(raw_plan.steps[0].order, 1);
+    assert_eq!(raw_plan.steps[0].finding_category, "sentence_length");
+    assert_eq!(
+        raw_plan.steps[0].target_scope,
+        spindle_core::style::StyleRevisionTargetScope::RawText
+    );
+    assert_eq!(
+        raw_plan.steps[0].confidence,
+        spindle_core::style::StyleRevisionConfidence::High
+    );
+
+    // Test 2: Ambiguous target rejection (e.g. providing both raw_text and chapter_id)
+    let ambig_err = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            raw_text: Some(raw_text.to_string()),
+            scene_id: None,
+            chapter_id: Some(chapter_id.clone()),
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        ambig_err
+            .to_string()
+            .contains("provide only one of chapter_id, scene_id, or raw_text")
+    );
+
+    // Test 3: Project ownership guard for scenes
+    // Create a different project
+    let other_project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Other Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "sci-fi".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Spaceships".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let other_project_id = other_project_out.project_id;
+    let other_chapter_id = other_project_out.chapter_id;
+
+    let other_scene = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: other_project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: Some(other_chapter_id.clone()),
+            scene_order: 1,
+            full_text: "Other project scene text.".to_string(),
+            summary: "Other Scene".to_string(),
+            content_rating: ContentRating::Teen,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // Planning with project 1's ID but other_scene's ID should fail ownership guard
+    let ownership_err = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            raw_text: None,
+            scene_id: Some(other_scene.scene_id.clone()),
+            chapter_id: None,
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        ownership_err
+            .to_string()
+            .contains("scene does not belong to project")
+    );
+
+    // Test 4: Scene planning
+    let my_scene = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: Some(chapter_id.clone()),
+            scene_order: 1,
+            full_text: raw_text.to_string(),
+            summary: "My Scene".to_string(),
+            content_rating: ContentRating::Teen,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let scene_plan = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            raw_text: None,
+            scene_id: Some(my_scene.scene_id.clone()),
+            chapter_id: None,
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(scene_plan.target_summary.contains("Scene:"));
+    assert_eq!(
+        scene_plan.findings[0].scene_id,
+        Some(my_scene.scene_id.clone())
+    );
+    assert_eq!(
+        scene_plan.steps[0].target_scope,
+        spindle_core::style::StyleRevisionTargetScope::Scene
+    );
+    assert_eq!(
+        scene_plan.steps[0].target_id,
+        Some(my_scene.scene_id.clone())
+    );
+
+    // Test 5: Chapter planning with scene-scoped suggestions
+    let chapter_plan = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            raw_text: None,
+            scene_id: None,
+            chapter_id: Some(chapter_id.clone()),
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(chapter_plan.target_summary.contains("Chapter:"));
+    // Verify it preserves the scene-scoped finding for the scene in the chapter
+    assert_eq!(
+        chapter_plan.findings[0].scene_id,
+        Some(my_scene.scene_id.clone())
+    );
+    assert_eq!(
+        chapter_plan.steps[0].target_scope,
+        spindle_core::style::StyleRevisionTargetScope::Scene
+    );
+
+    // Test 6: Archived profile rejection
+    svc.archive_style_profile(ArchiveStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id: profile.profile_id.clone(),
+        force: Some(true),
+    })
+    .await
+    .unwrap();
+
+    let archived_err = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: Some(profile.profile_id.clone()),
+            raw_text: Some("Some text".to_string()),
+            scene_id: None,
+            chapter_id: None,
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        archived_err
+            .to_string()
+            .contains("style profile is archived")
+    );
+
+    // Test 7: Optional rewrite examples (disabled by default)
+    // Create another active style profile to replace the archived one
+    let profile_2 = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Active Profile 2".to_string(),
+            source_paths: vec![corpus_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    // Plan without examples first
+    let no_examples_plan = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: Some(profile_2.profile_id.clone()),
+            raw_text: Some("This is a remarkably long sentence that triggers drift.".to_string()),
+            scene_id: None,
+            chapter_id: None,
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: Some(false),
+        })
+        .await
+        .unwrap();
+    assert!(no_examples_plan.rewrite_examples.is_none());
+
+    // Plan with examples enabled
+    let examples_plan = svc
+        .plan_style_revision(spindle_core::style::PlanStyleRevisionInput {
+            project_id: project_id.clone(),
+            profile_id: Some(profile_2.profile_id.clone()),
+            raw_text: Some("This is a remarkably long sentence that triggers drift.".to_string()),
+            scene_id: None,
+            chapter_id: None,
+            max_suggestions: None,
+            metrics_only: None,
+            include_rewrite_examples: Some(true),
+        })
+        .await
+        .unwrap();
+
+    assert!(examples_plan.rewrite_examples.is_some());
+    let examples = examples_plan.rewrite_examples.unwrap();
+    assert_eq!(examples.len(), 1);
+    assert_eq!(
+        examples[0].original_prose,
+        "She went to the store. She bought some milk. She was happy."
+    );
+    assert!(
+        examples[0]
+            .revised_prose
+            .contains("Walking down the dusty aisle")
+    );
+
+    // Test 8: No prose persistence
+    let conn = Connection::open(tmp.path().join("svc.db")).unwrap();
+    let query_res: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='style_revision_plan'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(query_res, 0);
+}

@@ -1497,6 +1497,16 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             temperature: None,
             stop: Vec::new(),
         },
+        ModelRoute {
+            route_name: "style_revise".to_string(),
+            adapter_kind: "local".to_string(),
+            model_name: "style-revise-local".to_string(),
+            purpose: "suggest rewrite examples and revision plans matching style profile".to_string(),
+            system_prompt: "You are an expert editor and stylometrist. Provide style-aligned rewrite examples and suggestions.".to_string(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+        },
     ]
     .into_iter()
     .map(|route| (route.route_name.clone(), route))
@@ -1594,6 +1604,14 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
   "prompt_snippet": "Write in a contemplative past-tense close-POV style."
 }"#
         .to_string(),
+        "style_revise" => r#"[
+  {
+    "original_prose": "She went to the store. She bought some milk. She was happy.",
+    "revised_prose": "Walking down the dusty aisle, she grabbed the cool glass bottle of milk, a small smile softening her face.",
+    "explanation": "Combined short, choppy sentences into a more fluid narrative with sensory details to match the contemplative, close-POV style."
+  }
+]"#
+        .to_string(),
         _ => compact_prompt,
     }
 }
@@ -1664,7 +1682,7 @@ mod tests {
 
         assert_eq!(output.adapter_kind, "local");
         assert!(output.output.contains("reviewed"));
-        assert_eq!(router.list_routes().len(), 8);
+        assert_eq!(router.list_routes().len(), 9);
     }
 
     #[tokio::test]
