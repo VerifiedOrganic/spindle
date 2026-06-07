@@ -389,6 +389,92 @@ impl SqliteSpindleService {
             status = StyleProfileStatus::NeedsReview;
         }
 
+        // 5b. Compute quality report
+        let mut quality_warnings = corpus_summary.warnings.clone();
+
+        let fp = metrics.first_person_pronoun_rate_per_1k_words;
+        let tp = metrics.third_person_pronoun_rate_per_1k_words;
+        let pov_tense_confidence = if fp + tp > 0.0 {
+            ((fp - tp).abs() / (fp + tp)).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let pov_tense_confidence = (0.5 + 0.5 * pov_tense_confidence).clamp(0.0, 1.0);
+
+        let mut chunk_dialogue_ratios = Vec::new();
+        let mut chunk_sentence_averages = Vec::new();
+        for chunk in &chunks {
+            let normalized = style_helper::normalize_markdown(&chunk.text);
+            let elements = style_helper::parse_elements(&normalized);
+            let cm = style_helper::compute_metrics(&elements);
+            chunk_dialogue_ratios.push(cm.dialogue_word_ratio);
+            chunk_sentence_averages.push(cm.average_sentence_words);
+        }
+
+        let chunk_consistency = if chunk_dialogue_ratios.len() > 1 {
+            let avg_dialogue =
+                chunk_dialogue_ratios.iter().sum::<f64>() / chunk_dialogue_ratios.len() as f64;
+            let dev_dialogue = chunk_dialogue_ratios
+                .iter()
+                .map(|&x| (x - avg_dialogue).abs())
+                .sum::<f64>()
+                / chunk_dialogue_ratios.len() as f64;
+            let dialogue_consistency = (1.0 - dev_dialogue * 2.0).clamp(0.0, 1.0);
+
+            let avg_sentence =
+                chunk_sentence_averages.iter().sum::<f64>() / chunk_sentence_averages.len() as f64;
+            let dev_sentence = if avg_sentence > 0.0 {
+                chunk_sentence_averages
+                    .iter()
+                    .map(|&x| (x - avg_sentence).abs())
+                    .sum::<f64>()
+                    / chunk_sentence_averages.len() as f64
+                    / avg_sentence
+            } else {
+                0.0
+            };
+            let sentence_consistency = (1.0 - dev_sentence).clamp(0.0, 1.0);
+
+            (dialogue_consistency * 0.5 + sentence_consistency * 0.5).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        let size_score = (total_words as f64 / 3000.0).clamp(0.0, 1.0);
+        let confidence_score =
+            (size_score * 0.4 + pov_tense_confidence * 0.3 + chunk_consistency * 0.3)
+                .clamp(0.0, 1.0);
+
+        let classification = if total_words < 3000 {
+            spindle_core::style::StyleProfileQualityClassification::Thin
+        } else if chunk_consistency < 0.6 {
+            spindle_core::style::StyleProfileQualityClassification::Inconsistent
+        } else {
+            spindle_core::style::StyleProfileQualityClassification::Ready
+        };
+
+        if classification == spindle_core::style::StyleProfileQualityClassification::Thin {
+            quality_warnings.push("The corpus is thin (under 3,000 words). Style metrics and synthesis may be less reliable.".to_string());
+        }
+        if classification == spindle_core::style::StyleProfileQualityClassification::Inconsistent {
+            quality_warnings.push("The corpus is style-inconsistent across chunks. Derived rules might not represent the whole text uniformly.".to_string());
+        }
+        if pov_tense_confidence < 0.6 {
+            quality_warnings.push("Low confidence in POV/tense consistency.".to_string());
+        }
+        quality_warnings.dedup();
+
+        let quality = spindle_core::style::StyleProfileQualityReport {
+            corpus_size_words: total_words,
+            dialogue_coverage: metrics.dialogue_word_ratio,
+            pov_tense_confidence,
+            chunk_consistency,
+            file_count: md_files.len(),
+            warnings: quality_warnings,
+            confidence_score,
+            classification,
+        };
+
         let profile_id = format!("style_profile:{}", ulid::Ulid::new());
         let now_str = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
@@ -400,6 +486,8 @@ impl SqliteSpindleService {
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect(),
+            metrics_only,
+            source_sample_word_budget: input.source_sample_word_budget,
         };
 
         let profile = StyleProfileCard {
@@ -414,7 +502,21 @@ impl SqliteSpindleService {
             guidance: final_guidance,
             source_policy,
             model_receipt: receipt,
+            quality,
+            archived_at: None,
         };
+
+        let should_apply = input.apply.unwrap_or(false);
+        if should_apply
+            && profile.quality.classification
+                != spindle_core::style::StyleProfileQualityClassification::Ready
+            && !input.force_apply.unwrap_or(false)
+        {
+            return Err(anyhow!(
+                "Style profile quality is too low to auto-apply (classification: {:?}). Use force_apply=true to override.",
+                profile.quality.classification
+            ));
+        }
 
         // 7. Persist profile
         self.repository().insert_style_profile(&profile).await?;
@@ -422,7 +524,7 @@ impl SqliteSpindleService {
         // 8. Optionally apply profile
         let mut applied = false;
         let mut application = None;
-        if input.apply.unwrap_or(false) {
+        if should_apply {
             let app_out = self
                 .apply_style_profile(ApplyStyleProfileInput {
                     project_id: input.project_id.clone(),
@@ -483,6 +585,7 @@ impl SqliteSpindleService {
                 profile.status
             ));
         }
+        ensure_style_profile_not_archived(&profile)?;
         if !has_application_guidance(&profile.guidance) {
             return Err(anyhow!(
                 "style profile has no application guidance to apply: {}",
@@ -634,6 +737,10 @@ impl SqliteSpindleService {
             .insert_style_profile_application(&audit_record)
             .await?;
 
+        self.repository()
+            .set_active_style_profile_id(&input.project_id, Some(input.profile_id.clone()))
+            .await?;
+
         Ok(ApplyStyleProfileOutput {
             project_id: input.project_id,
             profile_id: input.profile_id,
@@ -657,6 +764,7 @@ impl SqliteSpindleService {
         if profile.status != StyleProfileStatus::Ready {
             return Err(anyhow!("style profile is not ready: {:?}", profile.status));
         }
+        ensure_style_profile_not_archived(&profile)?;
         if !has_application_guidance(&profile.guidance) {
             return Err(anyhow!(
                 "style profile has no application guidance to preview: {}",
@@ -797,6 +905,32 @@ impl SqliteSpindleService {
             .update_style_profile_application_rollback(&app.id, &rolled_back_at, "rolled_back")
             .await?;
 
+        // 7. Clear or restore active style profile ID
+        if project.active_style_profile_id.as_ref() == Some(&app.profile_id) {
+            let apps = self
+                .repository()
+                .list_style_profile_applications(&input.project_id)
+                .await?;
+            let mut previous_active = None;
+            for a in apps {
+                if a.id != app.id && a.rollback_status != "rolled_back" {
+                    if let Ok(Some(prof)) = self
+                        .repository()
+                        .get_style_profile(&input.project_id, &a.profile_id)
+                        .await
+                    {
+                        if prof.archived_at.is_none() {
+                            previous_active = Some(a.profile_id);
+                            break;
+                        }
+                    }
+                }
+            }
+            self.repository()
+                .set_active_style_profile_id(&input.project_id, previous_active)
+                .await?;
+        }
+
         Ok(spindle_core::style::RollbackStyleProfileApplicationOutput {
             project_id: input.project_id,
             application_id: app.id,
@@ -808,46 +942,13 @@ impl SqliteSpindleService {
         })
     }
 
-    pub async fn check_style_against_profile(
+    fn check_style_against_prose(
         &self,
-        input: spindle_core::style::CheckStyleAgainstProfileInput,
-    ) -> Result<spindle_core::style::CheckStyleAgainstProfileOutput> {
-        // 1. Determine profile_id
-        let profile_id = match input.profile_id {
-            Some(pid) => pid,
-            None => {
-                self.repository()
-                    .get_most_recently_applied_profile_id(&input.project_id)
-                    .await?
-                    .ok_or_else(|| anyhow!("No profile_id specified and no profile has been applied to this project yet"))?
-            }
-        };
-
-        // 2. Fetch profile card
-        let profile = self
-            .repository()
-            .get_style_profile(&input.project_id, &profile_id)
-            .await?
-            .ok_or_else(|| anyhow!("style profile not found: {}", profile_id))?;
-
-        // 3. Fetch/retrieve prose text
-        let draft_prose = match (&input.scene_id, &input.raw_text) {
-            (Some(_), Some(_)) => {
-                return Err(anyhow!("provide either scene_id or raw_text, not both"));
-            }
-            (Some(scene_id), None) => {
-                let scene = self.repository().get_scene(scene_id).await?;
-                if scene.project_id != input.project_id {
-                    return Err(anyhow!("scene does not belong to project: {}", scene_id));
-                }
-                scene.full_text
-            }
-            (None, Some(text)) => text.clone(),
-            (None, None) => return Err(anyhow!("Must provide either scene_id or raw_text")),
-        };
-
-        // 4. Compute metrics on the draft prose
-        let normalized = style_helper::normalize_markdown(&draft_prose);
+        profile: &spindle_core::style::StyleProfileCard,
+        draft_prose: &str,
+        scene_id: Option<String>,
+    ) -> Vec<spindle_core::style::StyleDriftFinding> {
+        let normalized = style_helper::normalize_markdown(draft_prose);
         let elements = style_helper::parse_elements(&normalized);
         let draft_metrics = style_helper::compute_metrics(&elements);
 
@@ -861,6 +962,8 @@ impl SqliteSpindleService {
             let ratio =
                 draft_metrics.average_sentence_words / profile.metrics.average_sentence_words;
             if ratio > 1.3 || ratio < 0.7 {
+                let delta =
+                    draft_metrics.average_sentence_words - profile.metrics.average_sentence_words;
                 findings.push(spindle_core::style::StyleDriftFinding {
                     severity: "warning".to_string(),
                     category: "sentence_length".to_string(),
@@ -874,6 +977,9 @@ impl SqliteSpindleService {
                     } else {
                         "Combine short, choppy sentences to flow more naturally."
                     }.to_string()),
+                    scene_id: scene_id.clone(),
+                    metric_name: Some("average_sentence_words".to_string()),
+                    metric_delta: Some(delta),
                 });
             }
         }
@@ -885,6 +991,8 @@ impl SqliteSpindleService {
             let ratio =
                 draft_metrics.average_paragraph_words / profile.metrics.average_paragraph_words;
             if ratio > 1.5 || ratio < 0.6 {
+                let delta =
+                    draft_metrics.average_paragraph_words - profile.metrics.average_paragraph_words;
                 findings.push(spindle_core::style::StyleDriftFinding {
                     severity: "warning".to_string(),
                     category: "paragraph_length".to_string(),
@@ -898,6 +1006,9 @@ impl SqliteSpindleService {
                     } else {
                         "Merge short paragraphs into longer cohesive thematic blocks."
                     }.to_string()),
+                    scene_id: scene_id.clone(),
+                    metric_name: Some("average_paragraph_words".to_string()),
+                    metric_delta: Some(delta),
                 });
             }
         }
@@ -907,6 +1018,7 @@ impl SqliteSpindleService {
             let diff =
                 (draft_metrics.dialogue_word_ratio - profile.metrics.dialogue_word_ratio).abs();
             if diff > 0.2 {
+                let delta = draft_metrics.dialogue_word_ratio - profile.metrics.dialogue_word_ratio;
                 findings.push(spindle_core::style::StyleDriftFinding {
                     severity: "warning".to_string(),
                     category: "dialogue_ratio".to_string(),
@@ -920,6 +1032,9 @@ impl SqliteSpindleService {
                     } else {
                         "Reduce dialogue frequency in favor of interiority or action narration."
                     }.to_string()),
+                    scene_id: scene_id.clone(),
+                    metric_name: Some("dialogue_word_ratio".to_string()),
+                    metric_delta: Some(delta),
                 });
             }
         }
@@ -940,7 +1055,7 @@ impl SqliteSpindleService {
         );
 
         let scan_input = spindle_core::style::StyleScanInput {
-            prose: &draft_prose,
+            prose: draft_prose,
             declared_tone: None,
             is_chapter_end: false,
         };
@@ -954,13 +1069,269 @@ impl SqliteSpindleService {
                 category: "scanner_heuristic".to_string(),
                 evidence_summary: hit.message.clone(),
                 suggested_correction: None,
+                scene_id: scene_id.clone(),
+                metric_name: None,
+                metric_delta: None,
             });
         }
+
+        findings
+    }
+
+    pub async fn check_style_against_profile(
+        &self,
+        input: spindle_core::style::CheckStyleAgainstProfileInput,
+    ) -> Result<spindle_core::style::CheckStyleAgainstProfileOutput> {
+        // 1. Determine profile_id
+        let profile_id = match input.profile_id {
+            Some(pid) => pid,
+            None => {
+                let project = self.repository().get_project(&input.project_id).await?;
+                project.active_style_profile_id
+                    .ok_or_else(|| anyhow!("No profile_id specified and no active style profile is set for this project"))?
+            }
+        };
+
+        // 2. Fetch profile card
+        let profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found: {}", profile_id))?;
+        ensure_style_profile_not_archived(&profile)?;
+
+        let mut findings = Vec::new();
+
+        // 3. Determine targets: chapter, scene, or raw text
+        if let Some(chapter_id) = &input.chapter_id {
+            if input.scene_id.is_some() || input.raw_text.is_some() {
+                return Err(anyhow!(
+                    "provide only one of chapter_id, scene_id, or raw_text"
+                ));
+            }
+            let chapter = self.repository().get_chapter(chapter_id).await?;
+            if chapter.project_id != input.project_id {
+                return Err(anyhow!(
+                    "chapter does not belong to project: {}",
+                    chapter_id
+                ));
+            }
+            let scenes = self.repository().list_scenes_by_chapter(chapter_id).await?;
+            for scene in scenes {
+                let scene_findings = self.check_style_against_prose(
+                    &profile,
+                    &scene.full_text,
+                    Some(scene.id.clone()),
+                );
+                findings.extend(scene_findings);
+            }
+        } else {
+            let (prose, scene_id) = match (&input.scene_id, &input.raw_text) {
+                (Some(_), Some(_)) => {
+                    return Err(anyhow!(
+                        "provide only one of chapter_id, scene_id, or raw_text"
+                    ));
+                }
+                (Some(sid), None) => {
+                    let scene = self.repository().get_scene(sid).await?;
+                    if scene.project_id != input.project_id {
+                        return Err(anyhow!("scene does not belong to project: {}", sid));
+                    }
+                    (scene.full_text, Some(sid.clone()))
+                }
+                (None, Some(text)) => (text.clone(), None),
+                (None, None) => {
+                    return Err(anyhow!(
+                        "Must provide either chapter_id, scene_id or raw_text"
+                    ));
+                }
+            };
+            let scene_findings = self.check_style_against_prose(&profile, &prose, scene_id);
+            findings.extend(scene_findings);
+        }
+
+        // 4. Compute summary score
+        let warning_count = findings.iter().filter(|f| f.severity == "warning").count();
+        let error_count = findings.iter().filter(|f| f.severity == "error").count();
+
+        let summary_score = if error_count > 0 || warning_count >= 3 {
+            spindle_core::style::StyleDriftSummaryScore::StrongDrift
+        } else if warning_count > 0 {
+            spindle_core::style::StyleDriftSummaryScore::MildDrift
+        } else {
+            spindle_core::style::StyleDriftSummaryScore::Aligned
+        };
 
         Ok(spindle_core::style::CheckStyleAgainstProfileOutput {
             project_id: input.project_id,
             profile_id,
             findings,
+            summary_score,
+        })
+    }
+
+    pub async fn compare_style_profiles(
+        &self,
+        input: spindle_core::style::CompareStyleProfilesInput,
+    ) -> Result<spindle_core::style::CompareStyleProfilesOutput> {
+        let profile_a = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id_a)
+            .await?
+            .ok_or_else(|| anyhow!("style profile A not found: {}", input.profile_id_a))?;
+        ensure_style_profile_not_archived(&profile_a)?;
+        let profile_b = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id_b)
+            .await?
+            .ok_or_else(|| anyhow!("style profile B not found: {}", input.profile_id_b))?;
+        ensure_style_profile_not_archived(&profile_b)?;
+
+        // 1. Calculate metric deltas
+        let ma = &profile_a.metrics;
+        let mb = &profile_b.metrics;
+        let metric_deltas = spindle_core::style::StyleCorpusMetricsDeltas {
+            average_sentence_words_delta: mb.average_sentence_words - ma.average_sentence_words,
+            median_sentence_words_delta: mb.median_sentence_words - ma.median_sentence_words,
+            p90_sentence_words_delta: mb.p90_sentence_words - ma.p90_sentence_words,
+            average_paragraph_words_delta: mb.average_paragraph_words - ma.average_paragraph_words,
+            median_paragraph_words_delta: mb.median_paragraph_words - ma.median_paragraph_words,
+            dialogue_line_ratio_delta: mb.dialogue_line_ratio - ma.dialogue_line_ratio,
+            dialogue_word_ratio_delta: mb.dialogue_word_ratio - ma.dialogue_word_ratio,
+            question_mark_rate_delta: mb.question_mark_rate_per_1k_words
+                - ma.question_mark_rate_per_1k_words,
+            exclamation_rate_delta: mb.exclamation_rate_per_1k_words
+                - ma.exclamation_rate_per_1k_words,
+            semicolon_rate_delta: mb.semicolon_rate_per_1k_words - ma.semicolon_rate_per_1k_words,
+            em_dash_rate_delta: mb.em_dash_rate_per_1k_words - ma.em_dash_rate_per_1k_words,
+            ellipsis_rate_delta: mb.ellipsis_rate_per_1k_words - ma.ellipsis_rate_per_1k_words,
+            first_person_pronoun_rate_delta: mb.first_person_pronoun_rate_per_1k_words
+                - ma.first_person_pronoun_rate_per_1k_words,
+            third_person_pronoun_rate_delta: mb.third_person_pronoun_rate_per_1k_words
+                - ma.third_person_pronoun_rate_per_1k_words,
+        };
+
+        // 2. Guidance differences
+        let ga = &profile_a.guidance;
+        let gb = &profile_b.guidance;
+
+        let summary_changed = ga.summary != gb.summary;
+        let pov_changed = ga.pov != gb.pov;
+        let tense_changed = ga.tense != gb.tense;
+        let narrator_distance_changed = ga.narrator_distance != gb.narrator_distance;
+        let voice_changed = ga.narrator_voice != gb.narrator_voice;
+
+        let mut do_rules_added = Vec::new();
+        let mut do_rules_removed = Vec::new();
+        for r in &gb.do_rules {
+            if !ga.do_rules.contains(r) {
+                do_rules_added.push(r.clone());
+            }
+        }
+        for r in &ga.do_rules {
+            if !gb.do_rules.contains(r) {
+                do_rules_removed.push(r.clone());
+            }
+        }
+
+        let mut avoid_rules_added = Vec::new();
+        let mut avoid_rules_removed = Vec::new();
+        for r in &gb.avoid_rules {
+            if !ga.avoid_rules.contains(r) {
+                avoid_rules_added.push(r.clone());
+            }
+        }
+        for r in &ga.avoid_rules {
+            if !gb.avoid_rules.contains(r) {
+                avoid_rules_removed.push(r.clone());
+            }
+        }
+
+        let guidance_differences = spindle_core::style::StyleProfileGuidanceDifferences {
+            summary_changed,
+            pov_changed,
+            tense_changed,
+            narrator_distance_changed,
+            voice_changed,
+            do_rules_added,
+            do_rules_removed,
+            avoid_rules_added,
+            avoid_rules_removed,
+        };
+
+        // 3. Determine if material change is likely
+        let mut change_reasons = Vec::new();
+        if pov_changed {
+            change_reasons.push(format!("POV changed from {:?} to {:?}", ga.pov, gb.pov));
+        }
+        if tense_changed {
+            change_reasons.push(format!(
+                "Tense changed from {:?} to {:?}",
+                ga.tense, gb.tense
+            ));
+        }
+        if metric_deltas.average_sentence_words_delta.abs() > 3.0 {
+            change_reasons.push(format!(
+                "Significant change in average sentence length: delta of {:.1} words",
+                metric_deltas.average_sentence_words_delta
+            ));
+        }
+        if metric_deltas.average_paragraph_words_delta.abs() > 10.0 {
+            change_reasons.push(format!(
+                "Significant change in average paragraph length: delta of {:.1} words",
+                metric_deltas.average_paragraph_words_delta
+            ));
+        }
+        if metric_deltas.dialogue_word_ratio_delta.abs() > 0.15 {
+            change_reasons.push(format!(
+                "Significant change in dialogue ratio: delta of {:.1}%",
+                metric_deltas.dialogue_word_ratio_delta * 100.0
+            ));
+        }
+
+        let likely_material_change = !change_reasons.is_empty();
+
+        Ok(spindle_core::style::CompareStyleProfilesOutput {
+            project_id: input.project_id,
+            profile_id_a: input.profile_id_a,
+            profile_id_b: input.profile_id_b,
+            metric_deltas,
+            guidance_differences,
+            likely_material_change,
+            change_reasons,
+        })
+    }
+
+    pub async fn archive_style_profile(
+        &self,
+        input: spindle_core::style::ArchiveStyleProfileInput,
+    ) -> Result<spindle_core::style::ArchiveStyleProfileOutput> {
+        let project = self.repository().get_project(&input.project_id).await?;
+        if let Some(active_id) = &project.active_style_profile_id {
+            if active_id == &input.profile_id && !input.force.unwrap_or(false) {
+                return Err(anyhow!(
+                    "Cannot archive the active style profile unless force=true is provided"
+                ));
+            }
+        }
+
+        let archived_at = self
+            .repository()
+            .archive_style_profile(&input.project_id, &input.profile_id)
+            .await?;
+
+        if let Some(active_id) = &project.active_style_profile_id {
+            if active_id == &input.profile_id {
+                self.repository()
+                    .set_active_style_profile_id(&input.project_id, None)
+                    .await?;
+            }
+        }
+
+        Ok(spindle_core::style::ArchiveStyleProfileOutput {
+            project_id: input.project_id,
+            profile_id: input.profile_id,
+            archived_at,
         })
     }
 }
@@ -969,6 +1340,16 @@ impl SqliteSpindleService {
 
 fn is_generated_style_note(note: &str) -> bool {
     note.contains(" (Style Profile: style_profile:")
+}
+
+fn ensure_style_profile_not_archived(profile: &StyleProfileCard) -> Result<()> {
+    if profile.archived_at.is_some() {
+        return Err(anyhow!(
+            "style profile is archived and cannot be used: {}",
+            profile.profile_id
+        ));
+    }
+    Ok(())
 }
 
 fn make_generated_style_note(text: &str, profile_id: &str, profile_name: &str) -> String {

@@ -320,6 +320,8 @@ pub struct ProjectSummary {
     pub name: String,
     pub project_type: String,
     pub genre: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_style_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -484,6 +486,8 @@ pub struct SceneContextNovelLayer {
     pub world_rules: Vec<WorldRuleSummary>,
     #[serde(default)]
     pub subjects: Vec<SubjectSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_style_profile_id: Option<String>,
     #[serde(default)]
     pub system_overlays: Vec<SystemOverlaySummary>,
     #[serde(default)]

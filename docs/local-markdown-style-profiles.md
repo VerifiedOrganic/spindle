@@ -149,15 +149,41 @@ Applying a profile supports two modes:
 ### Preview, Auditing, and Rollback
 
 - **Preview**: Users can run `preview_apply_style_profile` to view proposed changes (including narrator voice changes, added/removed style notes, world rule creation/updates, and validation cache invalidations) without mutating any project state.
-- **Auditing**: Every successful application is logged in the `style_profile_application` table. This audit log stores the pre- and post-application states of narrator voice, style notes, and the world rule changes.
-- **Rollback**: Users can revert any application via the `rollback_style_profile_application` tool. The rollback restores the original narrator voice and style notes, and conservatively reverts the style world rules (deleting the rule if created, or restoring the previous description if updated).
+- **Auditing & Active State**: Every successful application is logged in the `style_profile_application` table. In addition, the project's `active_style_profile_id` is set to the applied profile.
+- **Rollback**: Users can revert any application via the `rollback_style_profile_application` tool. The rollback restores the original narrator voice and style notes, conservatively reverts the style world rules, and appropriately clears or restores the project's `active_style_profile_id` to its previous state.
+
+### Quality Scoring and Safeguards
+
+During profile creation, Spindle computes a `StyleProfileQualityReport` containing:
+- **Corpus Size**: Number of words and files.
+- **Dialogue Coverage**: Proportion of dialogue words.
+- **POV/Tense Confidence**: Confidence scores for POV and tense.
+- **Chunk Consistency**: Variance across prose chunks.
+- **Classification**: Classified as `Ready`, `Thin`, or `Inconsistent`.
+- **Safeguard**: Auto-apply is blocked by default if quality is below a safe threshold (e.g. thin or inconsistent corpus), unless `force_apply = true` is passed.
+
+### Drift Checking
+
+Spindle supports checking drift for a scene or a full chapter against a style profile:
+- **Chapter Drift**: Analyzes all scenes in a chapter and returns scene-scoped findings.
+- **Metric Deltas**: Computes specific delta metrics (e.g. sentence length or dialogue ratio variance).
+- **Summary Score**: Classified as `Aligned`, `Mild Drift`, or `Strong Drift`.
+- **Default Active Comparison**: By default, checks against the project's currently active profile.
+- **Non-mutating**: Drift checking is purely diagnostic and never rewrites manuscript prose.
+
+### Profile Comparison and Management
+
+- **Comparison**: Use `compare_style_profiles` to compare two profiles in the same project, showing metric deltas and guidance differences.
+- **Archiving**: Profiles can be archived using `archive_style_profile` (setting `archived_at` timestamp). Archiving an active profile is blocked unless `force = true` is passed. Archived profiles are omitted from active/default selections, but their historical audit logs remain preserved.
 
 ### Privacy and Data Minimization
 
 - Creating a style profile sends capped chunks of source prose to the configured `style_analyze` model route.
 - `source_sample_word_budget` controls the maximum source-sample words sent to that route.
 - A `metrics_only` option is supported: when enabled, the analysis prompt excludes all raw prose chunks and relies entirely on deterministic statistics and local observations.
-- Spindle does not persist raw source prose in style profiles, application audit logs, or drift findings by default.
+- **Privacy Implications**:
+  - Routing `style_analyze` to an external provider transmits source chunks. If privacy is paramount, configure a local agent (e.g. local llama/ollama) or use `metrics_only` mode.
+  - Spindle does not persist raw source prose in style profiles, application audit logs, or drift findings.
 
 ## Product Language
 

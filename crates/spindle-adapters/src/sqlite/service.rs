@@ -390,6 +390,7 @@ impl SqliteSpindleService {
                 name: p.name,
                 project_type: p.project_type,
                 genre: p.genre,
+                active_style_profile_id: p.active_style_profile_id,
             })
             .collect();
         Ok(ListProjectsOutput { projects })
@@ -3797,6 +3798,8 @@ impl SqliteSpindleService {
                         "metrics": p.metrics,
                         "guidance": p.guidance,
                         "source_policy": p.source_policy,
+                        "quality": p.quality,
+                        "archived_at": p.archived_at,
                     })
                 })
                 .collect();
@@ -5214,6 +5217,7 @@ impl SqliteSpindleService {
                 name: project.name,
                 project_type: project.project_type,
                 genre: project.genre,
+                active_style_profile_id: project.active_style_profile_id.clone(),
             },
             branch: format::branch_summary(&branch, Some(active_branch.id.as_str())),
             book: book_summary,
@@ -6232,6 +6236,7 @@ impl SqliteSpindleService {
             } else {
                 None
             },
+            active_style_profile_id: project.active_style_profile_id.clone(),
             world_rules: if want_world_rules {
                 let mut summaries: Vec<WorldRuleSummary> = relevant_world_rules
                     .clone()

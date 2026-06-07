@@ -5,8 +5,9 @@ use spindle_core::models::{
     ContentRating, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
 };
 use spindle_core::style::{
-    ApplyStyleProfileInput, CreateStyleProfileFromMarkdownInput, GetStyleProfileInput,
-    ListStyleProfilesInput, StyleProfileApplyMode,
+    ApplyStyleProfileInput, ArchiveStyleProfileInput, CompareStyleProfilesInput,
+    CreateStyleProfileFromMarkdownInput, GetStyleProfileInput, ListStyleProfilesInput,
+    StyleDriftSummaryScore, StyleProfileApplyMode,
 };
 use tempfile::TempDir;
 
@@ -71,6 +72,7 @@ async fn test_create_and_apply_style_profile_lifecycle() {
         application_mode: None,
         source_sample_word_budget: None,
         metrics_only: None,
+        force_apply: None,
     };
 
     let create_out = svc
@@ -216,6 +218,7 @@ async fn test_create_style_profile_thin_corpus_warnings() {
             application_mode: None,
             source_sample_word_budget: None,
             metrics_only: None,
+            force_apply: None,
         })
         .await
         .unwrap();
@@ -279,6 +282,7 @@ async fn test_style_profile_audit_rollback_and_drift_lifecycle() {
             application_mode: None,
             source_sample_word_budget: None,
             metrics_only: None,
+            force_apply: None,
         })
         .await
         .unwrap();
@@ -368,6 +372,7 @@ async fn test_style_profile_audit_rollback_and_drift_lifecycle() {
             profile_id: Some(profile.profile_id.clone()),
             scene_id: None,
             raw_text: Some(draft_prose.to_string()),
+            chapter_id: None,
         })
         .await
         .unwrap();
@@ -477,6 +482,7 @@ async fn test_style_drift_rejects_cross_project_scene() {
             application_mode: None,
             source_sample_word_budget: None,
             metrics_only: Some(true),
+            force_apply: None,
         })
         .await
         .unwrap()
@@ -506,9 +512,1060 @@ async fn test_style_drift_rejects_cross_project_scene() {
             profile_id: Some(profile.profile_id),
             scene_id: Some(scene.scene_id),
             raw_text: None,
+            chapter_id: None,
         })
         .await
         .unwrap_err();
 
     assert!(err.to_string().contains("scene does not belong to project"));
+}
+
+#[tokio::test]
+async fn test_style_drift_rejects_cross_project_chapter_and_ambiguous_targets() {
+    let (tmp, svc) = fresh_service().await;
+
+    let source_project = svc
+        .create_project(CreateProjectInput {
+            name: "Source Chapter Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "An adventurous tale".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let other_project = svc
+        .create_project(CreateProjectInput {
+            name: "Other Chapter Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "A different tale".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let corpus_path = tmp.path().join("corpus.md");
+    std::fs::write(
+        &corpus_path,
+        "Jake ran. Jake jumped. Jake succeeded. Jake was quick. Jake won.",
+    )
+    .unwrap();
+    let profile = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: source_project.project_id.clone(),
+            profile_name: "Source Chapter Profile".to_string(),
+            source_paths: vec![corpus_path.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: None,
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    let cross_project_err = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: source_project.project_id.clone(),
+            profile_id: Some(profile.profile_id.clone()),
+            chapter_id: Some(other_project.chapter_id),
+            scene_id: None,
+            raw_text: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        cross_project_err
+            .to_string()
+            .contains("chapter does not belong to project")
+    );
+
+    let ambiguous_err = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: source_project.project_id,
+            profile_id: Some(profile.profile_id),
+            chapter_id: Some(source_project.chapter_id),
+            scene_id: None,
+            raw_text: Some("Mixed target input should be rejected.".to_string()),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        ambiguous_err
+            .to_string()
+            .contains("provide only one of chapter_id, scene_id, or raw_text")
+    );
+}
+
+#[tokio::test]
+async fn test_active_style_profile_lifecycle() {
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Create a project
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Test Project Active".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: vec!["Existing note".to_string()],
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+
+    // Verify initially no active profile is set
+    let project = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(project.active_style_profile_id, None);
+
+    // 2. Prepare test data paths.
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/style");
+    let src1 = base.join("fast-serial-chapter-1.md");
+    let dest1 = tmp.path().join("fast-serial-chapter-1.md");
+    std::fs::copy(&src1, &dest1).unwrap();
+    let fixture1 = dest1.to_string_lossy().to_string();
+
+    // 3. Create style profile from Markdown
+    let create_out = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Profile A".to_string(),
+            source_paths: vec![fixture1.clone()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+    let profile_a = create_out.profile;
+
+    let create_out_b = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Profile B".to_string(),
+            source_paths: vec![fixture1],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+    let profile_b = create_out_b.profile;
+
+    // Check drift before active profile: it should fail when no profile_id is specified
+    let drift_err = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            scene_id: None,
+            raw_text: Some("Jake ran. Jake winced.".to_string()),
+            chapter_id: None,
+        })
+        .await;
+    assert!(drift_err.is_err());
+    assert!(
+        drift_err
+            .unwrap_err()
+            .to_string()
+            .contains("No profile_id specified and no active style profile is set")
+    );
+
+    // Apply Profile A
+    let apply_a = svc
+        .apply_style_profile(ApplyStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile_a.profile_id.clone(),
+            mode: StyleProfileApplyMode::Merge,
+        })
+        .await
+        .unwrap();
+    assert_eq!(apply_a.profile_id, profile_a.profile_id);
+
+    // Verify active_style_profile_id is set to Profile A
+    let project = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(
+        project.active_style_profile_id,
+        Some(profile_a.profile_id.clone())
+    );
+
+    // Verify drift checking defaults to Profile A
+    let drift_default_a = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            scene_id: None,
+            raw_text: Some("Jake ran. Jake winced.".to_string()),
+            chapter_id: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(drift_default_a.profile_id, profile_a.profile_id);
+
+    // Apply Profile B
+    let apply_b = svc
+        .apply_style_profile(ApplyStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile_b.profile_id.clone(),
+            mode: StyleProfileApplyMode::Merge,
+        })
+        .await
+        .unwrap();
+    assert_eq!(apply_b.profile_id, profile_b.profile_id);
+
+    // Verify active_style_profile_id is set to Profile B
+    let project = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(
+        project.active_style_profile_id,
+        Some(profile_b.profile_id.clone())
+    );
+
+    // Verify drift checking defaults to Profile B
+    let drift_default_b = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: project_id.clone(),
+            profile_id: None,
+            scene_id: None,
+            raw_text: Some("Jake ran. Jake winced.".to_string()),
+            chapter_id: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(drift_default_b.profile_id, profile_b.profile_id);
+
+    // Get list of applications to retrieve audit application IDs
+    let apps = svc
+        .list_style_profile_applications(spindle_core::style::ListStyleProfileApplicationsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(apps.applications.len(), 2);
+    let app_b = &apps.applications[0]; // most recent is first
+    let app_a = &apps.applications[1];
+
+    // Rollback Profile B
+    svc.rollback_style_profile_application(
+        spindle_core::style::RollbackStyleProfileApplicationInput {
+            project_id: project_id.clone(),
+            application_id: app_b.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Verify active_style_profile_id restored to Profile A
+    let project = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(
+        project.active_style_profile_id,
+        Some(profile_a.profile_id.clone())
+    );
+
+    // Rollback Profile A
+    svc.rollback_style_profile_application(
+        spindle_core::style::RollbackStyleProfileApplicationInput {
+            project_id: project_id.clone(),
+            application_id: app_a.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Verify active_style_profile_id is now None
+    let project = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(project.active_style_profile_id, None);
+}
+
+#[tokio::test]
+async fn test_profile_quality_report() {
+    let (tmp, svc) = fresh_service().await;
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Quality Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+
+    // 1. Thin corpus: under 3000 words
+    let thin_file = tmp.path().join("thin.md");
+    std::fs::write(
+        &thin_file,
+        "This is a thin corpus. It has very few words. Just fifteen words in total.",
+    )
+    .unwrap();
+    let thin_path = thin_file.to_string_lossy().to_string();
+
+    let thin_res = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Thin Profile".to_string(),
+            source_paths: vec![thin_path.clone()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        thin_res.profile.quality.classification,
+        spindle_core::style::StyleProfileQualityClassification::Thin
+    );
+    assert!(
+        thin_res
+            .profile
+            .quality
+            .warnings
+            .iter()
+            .any(|w| w.contains("thin"))
+    );
+
+    // Auto-apply should fail for thin profile
+    let auto_apply_err = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Thin Apply Fail".to_string(),
+            source_paths: vec![thin_path.clone()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await;
+    assert!(auto_apply_err.is_err());
+    assert!(
+        auto_apply_err
+            .unwrap_err()
+            .to_string()
+            .contains("quality is too low to auto-apply")
+    );
+    let profiles_after_failed_apply = svc
+        .list_style_profiles(ListStyleProfilesInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        profiles_after_failed_apply
+            .profiles
+            .iter()
+            .all(|profile| profile.name != "Thin Apply Fail")
+    );
+
+    // Auto-apply should succeed if force_apply is true
+    let auto_apply_forced = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Thin Apply Forced".to_string(),
+            source_paths: vec![thin_path],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: Some(true),
+        })
+        .await;
+    assert!(auto_apply_forced.is_ok());
+
+    // 2. Inconsistent corpus: dialogue ratios are extremely different between chunks
+    // We want total words >= 3000 to avoid Thin classification taking priority.
+    let inconsistent_file_1 = tmp.path().join("inconsistent_1.md");
+    let inconsistent_file_2 = tmp.path().join("inconsistent_2.md");
+
+    // File 1: 1600 words, no dialogue, short sentences
+    let mut f1_content = String::new();
+    for _ in 0..400 {
+        f1_content.push_str("Jake ran fast. He was quick. The wind blew. He jumped high. ");
+    }
+    std::fs::write(&inconsistent_file_1, f1_content).unwrap();
+
+    // File 2: 1600 words, all dialogue, long sentences
+    let mut f2_content = String::new();
+    for _ in 0..60 {
+        f2_content.push_str("\"This is an extremely long dialogue sentence that we repeat over and over to make sure the average sentence length is high,\" he said to the other person who was standing right next to him. ");
+    }
+    std::fs::write(&inconsistent_file_2, f2_content).unwrap();
+
+    let inconsistent_res = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Inconsistent Profile".to_string(),
+            source_paths: vec![
+                inconsistent_file_1.to_string_lossy().to_string(),
+                inconsistent_file_2.to_string_lossy().to_string(),
+            ],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        inconsistent_res.profile.quality.classification,
+        spindle_core::style::StyleProfileQualityClassification::Inconsistent
+    );
+    assert!(
+        inconsistent_res
+            .profile
+            .quality
+            .warnings
+            .iter()
+            .any(|w| w.contains("inconsistent"))
+    );
+}
+
+#[tokio::test]
+async fn test_drift_chapter_level_and_summary_score() {
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Create project
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Drift Chapter Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+    let chapter_id = project_out.chapter_id;
+
+    // 2. Create profile with short sentences
+    let corpus_file = tmp.path().join("corpus.md");
+    std::fs::write(
+        &corpus_file,
+        "Jake ran. Jake jumped. Jake succeeded. Jake was quick. Jake won.",
+    )
+    .unwrap();
+
+    let _profile = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Short Sentences".to_string(),
+            source_paths: vec![corpus_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true), // apply it so it is the active profile
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    // 3. Add scenes to Chapter 1 with extremely long sentences (strong drift)
+    let long_sentence_prose = "This is a remarkably long sentence designed specifically to mismatch with the style profile and produce a deterministic warning about sentence length which should be easily detected by the style drift checking service method. And this is another extremely long and winding sentence that just goes on and on to ensure the average sentence length exceeds the threshold significantly.";
+
+    let scene_1 = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: Some(chapter_id.clone()),
+            scene_order: 1,
+            full_text: long_sentence_prose.to_string(),
+            summary: "Scene 1".to_string(),
+            content_rating: ContentRating::Teen,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let scene_2 = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: Some(chapter_id.clone()),
+            scene_order: 2,
+            full_text: long_sentence_prose.to_string(),
+            summary: "Scene 2".to_string(),
+            content_rating: ContentRating::Teen,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // 4. Run drift check for the full chapter
+    let drift_res = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: project_id.clone(),
+            profile_id: None, // default to active profile
+            chapter_id: Some(chapter_id.clone()),
+            scene_id: None,
+            raw_text: None,
+        })
+        .await
+        .unwrap();
+
+    // Verify scene-scoped findings and metric deltas
+    assert!(!drift_res.findings.is_empty());
+
+    let findings_s1: Vec<_> = drift_res
+        .findings
+        .iter()
+        .filter(|f| f.scene_id.as_ref() == Some(&scene_1.scene_id))
+        .collect();
+    let findings_s2: Vec<_> = drift_res
+        .findings
+        .iter()
+        .filter(|f| f.scene_id.as_ref() == Some(&scene_2.scene_id))
+        .collect();
+
+    assert!(!findings_s1.is_empty(), "Should have findings for scene 1");
+    assert!(!findings_s2.is_empty(), "Should have findings for scene 2");
+
+    // Check for metric deltas
+    let s1_sentence_finding = findings_s1
+        .iter()
+        .find(|f| f.metric_name.as_deref() == Some("average_sentence_words"))
+        .unwrap();
+    assert!(s1_sentence_finding.metric_delta.unwrap() > 10.0);
+
+    // Check summary score
+    assert_eq!(drift_res.summary_score, StyleDriftSummaryScore::StrongDrift);
+}
+
+#[tokio::test]
+async fn test_compare_style_profiles() {
+    let (tmp, svc) = fresh_service().await;
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Compare Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+
+    // Profile A: Short sentences, no dialogue
+    let file_a = tmp.path().join("a.md");
+    std::fs::write(
+        &file_a,
+        "Jake ran. Jake jumped. Jake succeeded. Jake was quick. Jake won.",
+    )
+    .unwrap();
+    let profile_a = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Short Sentences".to_string(),
+            source_paths: vec![file_a.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: None,
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    // Profile B: Long sentences, lots of dialogue
+    let file_b = tmp.path().join("b.md");
+    std::fs::write(
+        &file_b,
+        "\"This is a very long dialogue sentence that we write to make sure the metrics delta between A and B is extremely high,\" he said to the other person who was standing right next to him. \"And this is another extremely long dialogue sentence to ensure consistency.\""
+    )
+    .unwrap();
+
+    let profile_b = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Long Sentences Dialogue".to_string(),
+            source_paths: vec![file_b.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: None,
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    let compare_res = svc
+        .compare_style_profiles(CompareStyleProfilesInput {
+            project_id: project_id.clone(),
+            profile_id_a: profile_a.profile_id,
+            profile_id_b: profile_b.profile_id,
+        })
+        .await
+        .unwrap();
+
+    assert!(compare_res.metric_deltas.average_sentence_words_delta.abs() > 3.0);
+    assert!(compare_res.metric_deltas.dialogue_word_ratio_delta.abs() > 0.15);
+    assert!(compare_res.likely_material_change);
+    assert!(!compare_res.change_reasons.is_empty());
+}
+
+#[tokio::test]
+async fn test_archive_style_profile_behavior() {
+    let (tmp, svc) = fresh_service().await;
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Archive Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+
+    let corpus_file = tmp.path().join("corpus.md");
+    std::fs::write(
+        &corpus_file,
+        "Jake ran. Jake jumped. Jake succeeded. Jake was quick. Jake won.",
+    )
+    .unwrap();
+
+    let profile = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Archive Target".to_string(),
+            source_paths: vec![corpus_file.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true), // active profile
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap()
+        .profile;
+
+    // Try to archive active profile without force=true: should fail
+    let archive_err = svc
+        .archive_style_profile(ArchiveStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            force: None,
+        })
+        .await;
+    assert!(archive_err.is_err());
+    assert!(
+        archive_err
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot archive the active style profile")
+    );
+
+    // Archive active profile with force=true: should succeed
+    let archive_ok = svc
+        .archive_style_profile(ArchiveStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            force: Some(true),
+        })
+        .await
+        .unwrap();
+    assert!(!archive_ok.archived_at.is_empty());
+
+    // Verify it is no longer the active style profile
+    let project = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(project.active_style_profile_id, None);
+
+    // Verify it is excluded from list_style_profiles
+    let list_res = svc
+        .list_style_profiles(ListStyleProfilesInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        list_res
+            .profiles
+            .iter()
+            .all(|p| p.profile_id != profile.profile_id)
+    );
+
+    let drift_err = svc
+        .check_style_against_profile(spindle_core::style::CheckStyleAgainstProfileInput {
+            project_id: project_id.clone(),
+            profile_id: Some(profile.profile_id.clone()),
+            scene_id: None,
+            raw_text: Some("A short style check sample.".to_string()),
+            chapter_id: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(drift_err.to_string().contains("style profile is archived"));
+
+    let compare_err = svc
+        .compare_style_profiles(CompareStyleProfilesInput {
+            project_id,
+            profile_id_a: profile.profile_id.clone(),
+            profile_id_b: profile.profile_id,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        compare_err
+            .to_string()
+            .contains("style profile is archived")
+    );
+}
+
+#[tokio::test]
+async fn test_privacy_metrics_only_prompt_construction() {
+    use std::io::{Read, Write};
+
+    let tmp = TempDir::new().unwrap();
+    let pool = SqlitePool::open(&tmp.path().join("svc.db")).await.unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Spawn test TcpListener on a random local port
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Write a spindle.toml file that routes `style_analyze` to our mock HTTP server
+    let config_path = tmp.path().join("spindle.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "mock-analyze"
+name = "Mock Analyze Agent"
+provider = "openai-compatible"
+endpoint = "http://{}/v1"
+model = "mock-model"
+
+[[routing]]
+route = "style_analyze"
+agent = "mock-analyze"
+"####,
+            addr
+        ),
+    )
+    .unwrap();
+
+    let router = ModelRouter::default();
+    router
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+
+    let repo = Repository::with_model_router(pool, data_dir, router);
+    let svc = SqliteSpindleService::new(repo);
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Privacy Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+
+    // Create a corpus file containing a distinctive "secret" prose sequence
+    let corpus_file = tmp.path().join("secret_prose.md");
+    let secret_prose = "Jake stared at the status screen. The glowing runes hovered in the dark air. It was a secret sequence of words.";
+    std::fs::write(&corpus_file, secret_prose).unwrap();
+    let corpus_path = corpus_file.to_string_lossy().to_string();
+
+    // 1. Run in metrics_only mode: the captured prompt MUST NOT contain the secret prose
+    let svc_clone = svc.clone();
+    let project_id_clone = project_id.clone();
+    let corpus_path_clone = corpus_path.clone();
+
+    let listener_clone = listener.try_clone().unwrap();
+    let thread_handle_1 = std::thread::spawn(move || {
+        let (mut stream, _) = listener_clone.accept().unwrap();
+        let mut buffer = [0_u8; 16384];
+        let count = stream.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..count]).to_string();
+
+        let mock_response = r#"{
+            "summary": "Mock style profile guidance summary",
+            "pov": "third_person_close",
+            "tense": "past",
+            "narrator_distance": "close",
+            "narrator_voice": {
+              "comedy_density": "none",
+              "pacing_feel": "contemplative",
+              "interiority_ratio": "heavy interiority",
+              "emotional_register": "brooding-and-reflective",
+              "chapter_ending_style": "resolution",
+              "notes": []
+            },
+            "pacing": [],
+            "paragraphing": [],
+            "sentence_rhythm": [],
+            "diction": [],
+            "dialogue": [],
+            "exposition": [],
+            "interiority": [],
+            "humor_or_tension": [],
+            "scene_structure": [],
+            "do_rules": [],
+            "avoid_rules": [],
+            "prompt_snippet": "Snippet"
+        }"#;
+
+        let response_body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": mock_response
+                }
+            }]
+        })
+        .to_string();
+
+        let response_http = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response_http.as_bytes()).unwrap();
+        stream.flush().unwrap();
+
+        request
+    });
+
+    let _create_out_1 = svc_clone
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id_clone,
+            profile_name: "Metrics Only Profile".to_string(),
+            source_paths: vec![corpus_path_clone],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+
+    let captured_request_1 = thread_handle_1.join().unwrap();
+    assert!(
+        captured_request_1.contains("[METRICS ONLY MODE]"),
+        "Request should be flagged as metrics only"
+    );
+    assert!(
+        !captured_request_1.contains("Jake stared at the status screen"),
+        "Source prose should not be included in metrics_only prompt"
+    );
+
+    // 2. Run in standard mode: the captured prompt MUST contain the secret prose
+    let svc_clone_2 = svc.clone();
+    let project_id_clone_2 = project_id.clone();
+    let corpus_path_clone_2 = corpus_path.clone();
+
+    // Spawn another listener accept (since we set connection: close)
+    let thread_handle_2 = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 16384];
+        let count = stream.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..count]).to_string();
+
+        let mock_response = r#"{
+            "summary": "Mock style profile guidance summary",
+            "pov": "third_person_close",
+            "tense": "past",
+            "narrator_distance": "close",
+            "narrator_voice": {
+              "comedy_density": "none",
+              "pacing_feel": "contemplative",
+              "interiority_ratio": "heavy interiority",
+              "emotional_register": "brooding-and-reflective",
+              "chapter_ending_style": "resolution",
+              "notes": []
+            },
+            "pacing": [],
+            "paragraphing": [],
+            "sentence_rhythm": [],
+            "diction": [],
+            "dialogue": [],
+            "exposition": [],
+            "interiority": [],
+            "humor_or_tension": [],
+            "scene_structure": [],
+            "do_rules": [],
+            "avoid_rules": [],
+            "prompt_snippet": "Snippet"
+        }"#;
+
+        let response_body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": mock_response
+                }
+            }]
+        })
+        .to_string();
+
+        let response_http = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response_http.as_bytes()).unwrap();
+        stream.flush().unwrap();
+
+        request
+    });
+
+    let _create_out_2 = svc_clone_2
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id_clone_2,
+            profile_name: "Standard Profile".to_string(),
+            source_paths: vec![corpus_path_clone_2],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(false),
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+
+    let captured_request_2 = thread_handle_2.join().unwrap();
+    assert!(
+        captured_request_2.contains("[CORPUS CHUNKS]"),
+        "Request should contain corpus chunks section"
+    );
+    assert!(
+        captured_request_2.contains("Jake stared at the status screen"),
+        "Source prose should be included in standard prompt"
+    );
 }

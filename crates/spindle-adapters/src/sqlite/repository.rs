@@ -12649,8 +12649,8 @@ impl Repository {
 
             tx.execute(
                 "INSERT OR REPLACE INTO style_profile (id, project_id, name, status, card_json, \
-                 metrics_json, guidance_json, source_policy_json, model_receipt_json, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 metrics_json, guidance_json, source_policy_json, model_receipt_json, created_at, updated_at, archived_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 rusqlite::params![
                     &profile.profile_id,
                     &profile.project_id,
@@ -12663,6 +12663,7 @@ impl Repository {
                     &model_receipt_json,
                     &profile.created_at,
                     &profile.updated_at,
+                    &profile.archived_at,
                 ],
             )?;
 
@@ -12702,7 +12703,7 @@ impl Repository {
     ) -> Result<Vec<spindle_core::style::StyleProfileCard>> {
         let project_id = project_id.to_string();
         let profiles = self.inner.pool.read(move |conn| {
-            let mut stmt = conn.prepare("SELECT card_json FROM style_profile WHERE project_id = ?1 ORDER BY created_at DESC")?;
+            let mut stmt = conn.prepare("SELECT card_json FROM style_profile WHERE project_id = ?1 AND (archived_at IS NULL) ORDER BY created_at DESC")?;
             let rows = stmt.query_map([&project_id], |r| {
                 let card_json: String = r.get(0)?;
                 Ok(card_json)
@@ -12717,6 +12718,60 @@ impl Repository {
             Ok(res)
         }).await?;
         Ok(profiles)
+    }
+
+    pub async fn set_active_style_profile_id(
+        &self,
+        project_id: &str,
+        active_style_profile_id: Option<String>,
+    ) -> Result<Project> {
+        let project_id_owned = project_id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE project SET active_style_profile_id = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&active_style_profile_id, now, &project_id_owned],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.get_project(project_id).await
+    }
+
+    pub async fn archive_style_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<String> {
+        let project_id = project_id.to_string();
+        let profile_id = profile_id.to_string();
+        let archived_at = chrono::Utc::now().to_rfc3339();
+        let archived_at_clone = archived_at.clone();
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT card_json FROM style_profile WHERE project_id = ?1 AND id = ?2",
+                )?;
+                let card_json: String = stmt.query_row([&project_id, &profile_id], |r| r.get(0))?;
+                let mut profile: spindle_core::style::StyleProfileCard = serde_json::from_str(&card_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                profile.archived_at = Some(archived_at_clone.clone());
+                let new_card_json = serde_json::to_string(&profile)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                conn.execute(
+                    "UPDATE style_profile SET archived_at = ?1, card_json = ?2, updated_at = ?3 WHERE project_id = ?4 AND id = ?5",
+                    rusqlite::params![&archived_at_clone, &new_card_json, &archived_at_clone, &project_id, &profile_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(archived_at)
     }
 
     pub async fn get_style_profile(

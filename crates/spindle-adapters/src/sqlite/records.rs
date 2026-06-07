@@ -29,7 +29,7 @@ pub use super::json_records::{
 // Project
 // =============================================================================
 
-pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice";
+pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice, active_style_profile_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -45,6 +45,8 @@ pub struct Project {
     /// Prose-level narration directive (migration V0005). `None` when unset.
     #[serde(default)]
     pub narrator_voice: Option<StoredNarratorVoice>,
+    #[serde(default)]
+    pub active_style_profile_id: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Project {
@@ -62,6 +64,7 @@ impl<'a> TryFrom<&Row<'a>> for Project {
             created_at: row::time(r, 7)?,
             updated_at: row::time(r, 8)?,
             narrator_voice: row::opt_json(r, 9)?,
+            active_style_profile_id: row::opt_text(r, 10)?,
         })
     }
 }

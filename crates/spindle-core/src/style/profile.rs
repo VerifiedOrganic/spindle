@@ -38,6 +38,10 @@ pub struct StyleProfileCard {
     pub guidance: StyleProfileGuidance,
     pub source_policy: StyleProfileSourcePolicy,
     pub model_receipt: Option<StyleProfileModelReceipt>,
+    #[serde(default)]
+    pub quality: StyleProfileQualityReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -108,6 +112,10 @@ pub struct StyleProfileSourcePolicy {
     pub source_text_persisted: bool,
     pub max_excerpt_words: usize,
     pub allowed_roots: Vec<String>,
+    #[serde(default)]
+    pub metrics_only: bool,
+    #[serde(default)]
+    pub source_sample_word_budget: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -125,6 +133,7 @@ pub struct CreateStyleProfileFromMarkdownInput {
     pub application_mode: Option<StyleProfileApplyMode>,
     pub source_sample_word_budget: Option<usize>,
     pub metrics_only: Option<bool>,
+    pub force_apply: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -269,14 +278,29 @@ pub struct CheckStyleAgainstProfileInput {
     pub profile_id: Option<String>,
     pub scene_id: Option<String>,
     pub raw_text: Option<String>,
+    pub chapter_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct StyleDriftFinding {
     pub severity: String,
     pub category: String,
     pub evidence_summary: String,
     pub suggested_correction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_delta: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleDriftSummaryScore {
+    Aligned,
+    MildDrift,
+    StrongDrift,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -284,4 +308,109 @@ pub struct CheckStyleAgainstProfileOutput {
     pub project_id: String,
     pub profile_id: String,
     pub findings: Vec<StyleDriftFinding>,
+    pub summary_score: StyleDriftSummaryScore,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleProfileQualityClassification {
+    Ready,
+    Thin,
+    Inconsistent,
+}
+
+impl Default for StyleProfileQualityClassification {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct StyleProfileQualityReport {
+    pub corpus_size_words: usize,
+    pub dialogue_coverage: f64,
+    pub pov_tense_confidence: f64,
+    pub chunk_consistency: f64,
+    pub file_count: usize,
+    pub warnings: Vec<String>,
+    pub confidence_score: f64,
+    pub classification: StyleProfileQualityClassification,
+}
+
+impl Default for StyleProfileQualityReport {
+    fn default() -> Self {
+        Self {
+            corpus_size_words: 0,
+            dialogue_coverage: 0.0,
+            pov_tense_confidence: 1.0,
+            chunk_consistency: 1.0,
+            file_count: 0,
+            warnings: Vec::new(),
+            confidence_score: 1.0,
+            classification: StyleProfileQualityClassification::Ready,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompareStyleProfilesInput {
+    pub project_id: String,
+    pub profile_id_a: String,
+    pub profile_id_b: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompareStyleProfilesOutput {
+    pub project_id: String,
+    pub profile_id_a: String,
+    pub profile_id_b: String,
+    pub metric_deltas: StyleCorpusMetricsDeltas,
+    pub guidance_differences: StyleProfileGuidanceDifferences,
+    pub likely_material_change: bool,
+    pub change_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleCorpusMetricsDeltas {
+    pub average_sentence_words_delta: f64,
+    pub median_sentence_words_delta: f64,
+    pub p90_sentence_words_delta: f64,
+    pub average_paragraph_words_delta: f64,
+    pub median_paragraph_words_delta: f64,
+    pub dialogue_line_ratio_delta: f64,
+    pub dialogue_word_ratio_delta: f64,
+    pub question_mark_rate_delta: f64,
+    pub exclamation_rate_delta: f64,
+    pub semicolon_rate_delta: f64,
+    pub em_dash_rate_delta: f64,
+    pub ellipsis_rate_delta: f64,
+    pub first_person_pronoun_rate_delta: f64,
+    pub third_person_pronoun_rate_delta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleProfileGuidanceDifferences {
+    pub summary_changed: bool,
+    pub pov_changed: bool,
+    pub tense_changed: bool,
+    pub narrator_distance_changed: bool,
+    pub voice_changed: bool,
+    pub do_rules_added: Vec<String>,
+    pub do_rules_removed: Vec<String>,
+    pub avoid_rules_added: Vec<String>,
+    pub avoid_rules_removed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveStyleProfileInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveStyleProfileOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub archived_at: String,
 }

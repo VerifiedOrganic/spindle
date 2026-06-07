@@ -229,6 +229,8 @@ impl ToolRouter {
                 "list_style_profile_applications",
                 "rollback_style_profile_application",
                 "check_style_against_profile",
+                "compare_style_profiles",
+                "archive_style_profile",
             ],
             "write" => &[
                 "create_project",
@@ -318,6 +320,8 @@ impl ToolRouter {
                 "list_style_profile_applications",
                 "rollback_style_profile_application",
                 "check_style_against_profile",
+                "compare_style_profiles",
+                "archive_style_profile",
             ],
             "minimal" => &[
                 "create_project",
@@ -421,6 +425,14 @@ impl ToolRouter {
             tool::<CheckStyleAgainstProfileInput, CheckStyleAgainstProfileOutput>(
                 "check_style_against_profile",
                 "Check a scene or raw text for style drift against a derived style profile.",
+            ),
+            tool::<CompareStyleProfilesInput, CompareStyleProfilesOutput>(
+                "compare_style_profiles",
+                "Compare two derived style profiles to report metric deltas, guidance differences, and whether applying the second profile would likely change the project style materially.",
+            ),
+            tool::<ArchiveStyleProfileInput, ArchiveStyleProfileOutput>(
+                "archive_style_profile",
+                "Safer profile deletion/archiving. archived profiles cannot be active or default, but preserve audit history.",
             ),
             tool::<MergeBranchInput, MergeBranchOutput>(
                 "merge_branch",
@@ -1235,6 +1247,16 @@ impl ToolRouter {
                     self.service.check_style_against_profile(input)
                 })
                 .await
+            }
+            "compare_style_profiles" => {
+                self.invoke(arguments, |input| {
+                    self.service.compare_style_profiles(input)
+                })
+                .await
+            }
+            "archive_style_profile" => {
+                self.invoke(arguments, |input| self.service.archive_style_profile(input))
+                    .await
             }
             "merge_branch" => {
                 self.invoke(arguments, |input| self.service.merge_branch(input))
@@ -5739,5 +5761,7 @@ mod tests {
         assert!(tool_names.contains(&"list_style_profile_applications"));
         assert!(tool_names.contains(&"rollback_style_profile_application"));
         assert!(tool_names.contains(&"check_style_against_profile"));
+        assert!(tool_names.contains(&"compare_style_profiles"));
+        assert!(tool_names.contains(&"archive_style_profile"));
     }
 }

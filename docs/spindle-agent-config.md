@@ -583,9 +583,16 @@ This implementation keeps the current architecture boundaries intact.
 - `spindle-adapters` owns TOML loading, validation, and the runtime router
 - `spindle-mcp` owns the config tools, config resources, and startup reload
 
-The current system does not persist agents or routing rules in SurrealDB. The
-active source of truth is the resolved `spindle.toml` file plus environment
-variables used for API key resolution.
+The active source of truth is the resolved `spindle.toml` file plus environment variables used for API key resolution.
+
+## Privacy & Routing Implications for style_analyze
+
+The `style_analyze` route handles processing of user-provided drafting corpora. Because these corpora may contain sensitive or copyrighted material, Spindle provides specific privacy controls:
+
+1. **`metrics_only` Mode**: When creating a style profile, if `metrics_only` is set to `true`, Spindle completely strips all raw prose chunks from the synthesis prompt. The prompt only includes deterministic statistics (average sentence length, dialogue ratios, punctuation rates) and high-level structure metadata. This prevents any source text from leaking to the model.
+2. **Local vs. External Routing**:
+   - **External routing** (e.g., routing `style_analyze` to an external API provider like OpenAI or Anthropic): Chunks of the source corpus (up to `source_sample_word_budget`) will be sent over the network.
+   - **Local routing**: To keep the corpus completely offline, route `style_analyze` to a locally running model provider (e.g., llama.cpp or Ollama on localhost) or use the local fallback.
 
 ## Next steps
 
