@@ -3802,6 +3802,13 @@ impl SqliteSpindleService {
                 .collect();
             return Ok(serde_json::to_value(summaries)?);
         }
+        if resource_path == "style-profile-applications" {
+            let apps = self
+                .repository
+                .list_style_profile_applications(&project_id)
+                .await?;
+            return Ok(serde_json::to_value(apps)?);
+        }
         if let Some(profile_id) = resource_path.strip_prefix("style-profiles/") {
             let profile = self
                 .repository

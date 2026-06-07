@@ -139,6 +139,26 @@ an explicit follow-up operation:
 }
 ```
 
+### Apply Modes (Merge vs ReplaceGeneratedStyleNotes)
+
+Applying a profile supports two modes:
+
+1. `merge`: Appends the new profile-generated notes to the project's `ReaderContract.style_notes`. It uses a case-insensitive check to avoid duplicate notes.
+2. `replace_generated_style_notes`: Filters out any previously generated style notes (which are tagged with the stable marker `(Style Profile: profile_id/profile_name)`) and replaces them with the new ones. Crucially, all user-authored style notes (which do not have the marker) are fully preserved.
+
+### Preview, Auditing, and Rollback
+
+- **Preview**: Users can run `preview_apply_style_profile` to view proposed changes (including narrator voice changes, added/removed style notes, world rule creation/updates, and validation cache invalidations) without mutating any project state.
+- **Auditing**: Every successful application is logged in the `style_profile_application` table. This audit log stores the pre- and post-application states of narrator voice, style notes, and the world rule changes.
+- **Rollback**: Users can revert any application via the `rollback_style_profile_application` tool. The rollback restores the original narrator voice and style notes, and conservatively reverts the style world rules (deleting the rule if created, or restoring the previous description if updated).
+
+### Privacy and Data Minimization
+
+- Creating a style profile sends capped chunks of source prose to the configured `style_analyze` model route.
+- `source_sample_word_budget` controls the maximum source-sample words sent to that route.
+- A `metrics_only` option is supported: when enabled, the analysis prompt excludes all raw prose chunks and relies entirely on deterministic statistics and local observations.
+- Spindle does not persist raw source prose in style profiles, application audit logs, or drift findings by default.
+
 ## Product Language
 
 Use neutral corpus/profile language in public fields and prompts.
@@ -769,4 +789,3 @@ Recommended MVP answers:
 10. Add route/config docs for `style_analyze`.
 11. Add tests and fixtures.
 12. Update public docs and examples.
-

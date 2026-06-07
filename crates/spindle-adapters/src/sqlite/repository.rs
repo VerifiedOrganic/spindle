@@ -12745,6 +12745,273 @@ impl Repository {
             .await?;
         Ok(profile_opt)
     }
+
+    pub async fn insert_style_profile_application(
+        &self,
+        app: &spindle_core::style::StyleProfileApplicationRecord,
+    ) -> Result<()> {
+        let app = app.clone();
+        self.inner.pool.write(move |conn| {
+            let before_voice = serde_json::to_string(&app.before_narrator_voice)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let after_voice = serde_json::to_string(&app.after_narrator_voice)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let before_notes = serde_json::to_string(&app.before_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let after_notes = serde_json::to_string(&app.after_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let added_notes = serde_json::to_string(&app.added_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let removed_notes = serde_json::to_string(&app.removed_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let mode_str = match app.apply_mode {
+                spindle_core::style::StyleProfileApplyMode::Merge => "merge",
+                spindle_core::style::StyleProfileApplyMode::ReplaceGeneratedStyleNotes => "replace_generated_style_notes",
+            };
+            let action_str = app.style_rule_action.clone();
+
+            conn.execute(
+                "INSERT INTO style_profile_application (id, project_id, profile_id, applied_at, apply_mode, \
+                 before_narrator_voice_json, after_narrator_voice_json, before_style_notes_json, after_style_notes_json, \
+                 added_style_notes_json, removed_style_notes_json, style_rule_id, style_rule_action, \
+                 style_rule_previous_description, invalidated_validator_count, rolled_back_at, rollback_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                rusqlite::params![
+                    &app.id,
+                    &app.project_id,
+                    &app.profile_id,
+                    &app.applied_at,
+                    mode_str,
+                    &before_voice,
+                    &after_voice,
+                    &before_notes,
+                    &after_notes,
+                    &added_notes,
+                    &removed_notes,
+                    &app.style_rule_id,
+                    &action_str,
+                    &app.style_rule_previous_description,
+                    &(app.invalidated_validator_count as i64),
+                    &app.rolled_back_at,
+                    &app.rollback_status,
+                ],
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn list_style_profile_applications(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::style::StyleProfileApplicationRecord>> {
+        let project_id = project_id.to_string();
+        let apps = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, apply_mode, before_narrator_voice_json, \
+                 after_narrator_voice_json, before_style_notes_json, after_style_notes_json, added_style_notes_json, \
+                 removed_style_notes_json, style_rule_id, style_rule_action, style_rule_previous_description, \
+                 invalidated_validator_count, rolled_back_at, rollback_status \
+                 FROM style_profile_application WHERE project_id = ?1 ORDER BY applied_at DESC",
+            )?;
+            let rows = stmt.query_map([&project_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let apply_mode_str: String = r.get(4)?;
+                let before_voice_json: String = r.get(5)?;
+                let after_voice_json: String = r.get(6)?;
+                let before_notes_json: String = r.get(7)?;
+                let after_notes_json: String = r.get(8)?;
+                let added_notes_json: String = r.get(9)?;
+                let removed_notes_json: String = r.get(10)?;
+                let style_rule_id: Option<String> = r.get(11)?;
+                let style_rule_action: String = r.get(12)?;
+                let style_rule_prev_desc: Option<String> = r.get(13)?;
+                let invalidated_count: i64 = r.get(14)?;
+                let rolled_back_at: Option<String> = r.get(15)?;
+                let rollback_status: String = r.get(16)?;
+
+                let apply_mode = match apply_mode_str.as_str() {
+                    "replace_generated_style_notes" => spindle_core::style::StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
+                    _ => spindle_core::style::StyleProfileApplyMode::Merge,
+                };
+                let before_narrator_voice = serde_json::from_str(&before_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_narrator_voice = serde_json::from_str(&after_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_style_notes = serde_json::from_str(&before_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_style_notes = serde_json::from_str(&after_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let added_style_notes = serde_json::from_str(&added_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let removed_style_notes = serde_json::from_str(&removed_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleProfileApplicationRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    apply_mode,
+                    before_narrator_voice,
+                    after_narrator_voice,
+                    before_style_notes,
+                    after_style_notes,
+                    added_style_notes,
+                    removed_style_notes,
+                    style_rule_id,
+                    style_rule_action,
+                    style_rule_previous_description: style_rule_prev_desc,
+                    invalidated_validator_count: invalidated_count as usize,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            })?;
+
+            let mut res = Vec::new();
+            for app_res in rows {
+                res.push(app_res?);
+            }
+            Ok(res)
+        }).await?;
+        Ok(apps)
+    }
+
+    pub async fn get_style_profile_application(
+        &self,
+        project_id: &str,
+        application_id: &str,
+    ) -> Result<Option<spindle_core::style::StyleProfileApplicationRecord>> {
+        let project_id = project_id.to_string();
+        let application_id = application_id.to_string();
+        let app_opt = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, apply_mode, before_narrator_voice_json, \
+                 after_narrator_voice_json, before_style_notes_json, after_style_notes_json, added_style_notes_json, \
+                 removed_style_notes_json, style_rule_id, style_rule_action, style_rule_previous_description, \
+                 invalidated_validator_count, rolled_back_at, rollback_status \
+                 FROM style_profile_application WHERE project_id = ?1 AND id = ?2",
+            )?;
+            stmt.query_row([&project_id, &application_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let apply_mode_str: String = r.get(4)?;
+                let before_voice_json: String = r.get(5)?;
+                let after_voice_json: String = r.get(6)?;
+                let before_notes_json: String = r.get(7)?;
+                let after_notes_json: String = r.get(8)?;
+                let added_notes_json: String = r.get(9)?;
+                let removed_notes_json: String = r.get(10)?;
+                let style_rule_id: Option<String> = r.get(11)?;
+                let style_rule_action: String = r.get(12)?;
+                let style_rule_prev_desc: Option<String> = r.get(13)?;
+                let invalidated_count: i64 = r.get(14)?;
+                let rolled_back_at: Option<String> = r.get(15)?;
+                let rollback_status: String = r.get(16)?;
+
+                let apply_mode = match apply_mode_str.as_str() {
+                    "replace_generated_style_notes" => spindle_core::style::StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
+                    _ => spindle_core::style::StyleProfileApplyMode::Merge,
+                };
+                let before_narrator_voice = serde_json::from_str(&before_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_narrator_voice = serde_json::from_str(&after_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_style_notes = serde_json::from_str(&before_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_style_notes = serde_json::from_str(&after_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let added_style_notes = serde_json::from_str(&added_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let removed_style_notes = serde_json::from_str(&removed_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleProfileApplicationRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    apply_mode,
+                    before_narrator_voice,
+                    after_narrator_voice,
+                    before_style_notes,
+                    after_style_notes,
+                    added_style_notes,
+                    removed_style_notes,
+                    style_rule_id,
+                    style_rule_action,
+                    style_rule_previous_description: style_rule_prev_desc,
+                    invalidated_validator_count: invalidated_count as usize,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            }).optional_inner()
+        }).await?;
+        Ok(app_opt)
+    }
+
+    pub async fn update_style_profile_application_rollback(
+        &self,
+        application_id: &str,
+        rolled_back_at: &str,
+        rollback_status: &str,
+    ) -> Result<()> {
+        let application_id = application_id.to_string();
+        let rolled_back_at = rolled_back_at.to_string();
+        let rollback_status = rollback_status.to_string();
+        self.inner.pool.write(move |conn| {
+            conn.execute(
+                "UPDATE style_profile_application SET rolled_back_at = ?1, rollback_status = ?2 WHERE id = ?3",
+                rusqlite::params![&rolled_back_at, &rollback_status, &application_id],
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn delete_world_rule(&self, project_id: &str, rule_id: &str) -> Result<bool> {
+        let project_id = project_id.to_string();
+        let project_id_for_delete = project_id.clone();
+        let id = rule_id.to_string();
+        let deleted = self
+            .inner
+            .pool
+            .write(move |conn| {
+                let affected = conn.execute(
+                    "DELETE FROM world_rule WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![&id, &project_id_for_delete],
+                )?;
+                Ok(affected > 0)
+            })
+            .await?;
+        if deleted {
+            let _ = self
+                .delete_search_embedding_for_entity(project_id.as_str(), rule_id)
+                .await;
+        }
+        Ok(deleted)
+    }
+
+    pub async fn get_most_recently_applied_profile_id(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<String>> {
+        let project_id = project_id.to_string();
+        let id_opt = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT profile_id FROM style_profile_application \
+                 WHERE project_id = ?1 AND (rollback_status IS NULL OR rollback_status != 'rolled_back') \
+                 ORDER BY applied_at DESC LIMIT 1",
+            )?;
+            stmt.query_row([&project_id], |r| r.get(0)).optional_inner()
+        }).await?;
+        Ok(id_opt)
+    }
 }
 
 #[cfg(test)]

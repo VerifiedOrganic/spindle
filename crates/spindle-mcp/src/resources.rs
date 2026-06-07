@@ -385,6 +385,18 @@ impl ResourceRouter {
 
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/style-profile-applications"),
+                    format!("project {project_id} applied style profile history"),
+                )
+                .with_description(
+                    "List the history of applied style profiles and their rollback status.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/imports"),
                     format!("project {project_id} import sessions"),
                 )

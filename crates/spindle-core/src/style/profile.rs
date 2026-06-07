@@ -123,6 +123,8 @@ pub struct CreateStyleProfileFromMarkdownInput {
     pub max_total_words: Option<usize>,
     pub apply: Option<bool>,
     pub application_mode: Option<StyleProfileApplyMode>,
+    pub source_sample_word_budget: Option<usize>,
+    pub metrics_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -176,4 +178,110 @@ pub struct StyleChunk {
     pub word_count: usize,
     pub label: Option<String>,
     pub source_display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum StyleWorldRuleAction {
+    Create {
+        rule_name: String,
+        description: String,
+    },
+    Update {
+        rule_id: String,
+        rule_name: String,
+        previous_description: String,
+        new_description: String,
+    },
+    NoOp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewApplyStyleProfileInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub mode: StyleProfileApplyMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewApplyStyleProfileOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub before_narrator_voice: crate::style::NarratorVoice,
+    pub after_narrator_voice: crate::style::NarratorVoice,
+    pub added_style_notes: Vec<String>,
+    pub removed_style_notes: Vec<String>,
+    pub style_rule_action: StyleWorldRuleAction,
+    pub invalidated_validator_cache_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListStyleProfileApplicationsInput {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleProfileApplicationRecord {
+    pub id: String,
+    pub project_id: String,
+    pub profile_id: String,
+    pub applied_at: String,
+    pub apply_mode: StyleProfileApplyMode,
+    pub before_narrator_voice: crate::style::NarratorVoice,
+    pub after_narrator_voice: crate::style::NarratorVoice,
+    pub before_style_notes: Vec<String>,
+    pub after_style_notes: Vec<String>,
+    pub added_style_notes: Vec<String>,
+    pub removed_style_notes: Vec<String>,
+    pub style_rule_id: Option<String>,
+    pub style_rule_action: String,
+    pub style_rule_previous_description: Option<String>,
+    pub invalidated_validator_count: usize,
+    pub rolled_back_at: Option<String>,
+    pub rollback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListStyleProfileApplicationsOutput {
+    pub applications: Vec<StyleProfileApplicationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RollbackStyleProfileApplicationInput {
+    pub project_id: String,
+    pub application_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RollbackStyleProfileApplicationOutput {
+    pub project_id: String,
+    pub application_id: String,
+    pub rolled_back_at: String,
+    pub narrator_voice: crate::style::NarratorVoice,
+    pub reader_contract_style_notes: Vec<String>,
+    pub style_rule_action: String, // "deleted", "restored", "no_op"
+    pub invalidated_validator_findings: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckStyleAgainstProfileInput {
+    pub project_id: String,
+    pub profile_id: Option<String>,
+    pub scene_id: Option<String>,
+    pub raw_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct StyleDriftFinding {
+    pub severity: String,
+    pub category: String,
+    pub evidence_summary: String,
+    pub suggested_correction: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckStyleAgainstProfileOutput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub findings: Vec<StyleDriftFinding>,
 }

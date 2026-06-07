@@ -225,6 +225,10 @@ impl ToolRouter {
                 "list_style_profiles",
                 "get_style_profile",
                 "apply_style_profile",
+                "preview_apply_style_profile",
+                "list_style_profile_applications",
+                "rollback_style_profile_application",
+                "check_style_against_profile",
             ],
             "write" => &[
                 "create_project",
@@ -310,6 +314,10 @@ impl ToolRouter {
                 "list_style_profiles",
                 "get_style_profile",
                 "apply_style_profile",
+                "preview_apply_style_profile",
+                "list_style_profile_applications",
+                "rollback_style_profile_application",
+                "check_style_against_profile",
             ],
             "minimal" => &[
                 "create_project",
@@ -397,6 +405,22 @@ impl ToolRouter {
             tool::<ApplyStyleProfileInput, ApplyStyleProfileOutput>(
                 "apply_style_profile",
                 "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows.",
+            ),
+            tool::<PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput>(
+                "preview_apply_style_profile",
+                "Preview applying a derived style profile's changes without mutating state.",
+            ),
+            tool::<ListStyleProfileApplicationsInput, ListStyleProfileApplicationsOutput>(
+                "list_style_profile_applications",
+                "List the history of applied style profiles and their rollback status.",
+            ),
+            tool::<RollbackStyleProfileApplicationInput, RollbackStyleProfileApplicationOutput>(
+                "rollback_style_profile_application",
+                "Rollback a previously applied style profile, reverting narrator voice, style notes, and conservatively reverting style world rules.",
+            ),
+            tool::<CheckStyleAgainstProfileInput, CheckStyleAgainstProfileOutput>(
+                "check_style_against_profile",
+                "Check a scene or raw text for style drift against a derived style profile.",
             ),
             tool::<MergeBranchInput, MergeBranchOutput>(
                 "merge_branch",
@@ -1187,6 +1211,30 @@ impl ToolRouter {
             "apply_style_profile" => {
                 self.invoke(arguments, |input| self.service.apply_style_profile(input))
                     .await
+            }
+            "preview_apply_style_profile" => {
+                self.invoke(arguments, |input| {
+                    self.service.preview_apply_style_profile(input)
+                })
+                .await
+            }
+            "list_style_profile_applications" => {
+                self.invoke(arguments, |input| {
+                    self.service.list_style_profile_applications(input)
+                })
+                .await
+            }
+            "rollback_style_profile_application" => {
+                self.invoke(arguments, |input| {
+                    self.service.rollback_style_profile_application(input)
+                })
+                .await
+            }
+            "check_style_against_profile" => {
+                self.invoke(arguments, |input| {
+                    self.service.check_style_against_profile(input)
+                })
+                .await
             }
             "merge_branch" => {
                 self.invoke(arguments, |input| self.service.merge_branch(input))
@@ -5687,5 +5735,9 @@ mod tests {
         assert!(tool_names.contains(&"list_style_profiles"));
         assert!(tool_names.contains(&"get_style_profile"));
         assert!(tool_names.contains(&"apply_style_profile"));
+        assert!(tool_names.contains(&"preview_apply_style_profile"));
+        assert!(tool_names.contains(&"list_style_profile_applications"));
+        assert!(tool_names.contains(&"rollback_style_profile_application"));
+        assert!(tool_names.contains(&"check_style_against_profile"));
     }
 }
