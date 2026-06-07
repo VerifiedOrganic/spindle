@@ -12649,8 +12649,9 @@ impl Repository {
 
             tx.execute(
                 "INSERT OR REPLACE INTO style_profile (id, project_id, name, status, card_json, \
-                 metrics_json, guidance_json, source_policy_json, model_receipt_json, created_at, updated_at, archived_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 metrics_json, guidance_json, source_policy_json, model_receipt_json, created_at, updated_at, archived_at, \
+                 parent_profile_id, refreshed_from_profile_id, version_number, refreshed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 rusqlite::params![
                     &profile.profile_id,
                     &profile.project_id,
@@ -12664,6 +12665,10 @@ impl Repository {
                     &profile.created_at,
                     &profile.updated_at,
                     &profile.archived_at,
+                    &profile.parent_profile_id,
+                    &profile.refreshed_from_profile_id,
+                    &profile.version_number,
+                    &profile.refreshed_at,
                 ],
             )?;
 
@@ -12674,8 +12679,9 @@ impl Repository {
                 let source_id = format!("{}:source:{}", profile.profile_id, i);
                 tx.execute(
                     "INSERT INTO style_profile_source (id, profile_id, display_name, canonical_path, \
-                     sha256, word_count, included, skip_reason, source_order, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                     sha256, word_count, included, skip_reason, source_order, created_at, \
+                     file_size, modified_at, glob_policy_metadata) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                     rusqlite::params![
                         &source_id,
                         &profile.profile_id,
@@ -12687,6 +12693,9 @@ impl Repository {
                         &source_ref.skip_reason,
                         &(i as i64),
                         &profile.created_at,
+                        &source_ref.file_size.map(|s| s as i64),
+                        &source_ref.modified_at,
+                        &source_ref.glob_policy_metadata,
                     ],
                 )?;
             }

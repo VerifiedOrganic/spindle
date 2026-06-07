@@ -301,6 +301,48 @@ To turn diagnostic style drift findings into actionable, previewable revision gu
 - **Comparison**: Use `compare_style_profiles` to compare two profiles in the same project, showing metric deltas and guidance differences.
 - **Archiving**: Profiles can be archived using `archive_style_profile` (setting `archived_at` timestamp). Archiving an active profile is blocked unless `force = true` is passed. Archived profiles are omitted from active/default selections, but their historical audit logs remain preserved.
 
+### Source Refresh and Versioning
+
+Spindle provides a workflow to detect changes in a style profile's local markdown source corpus, preview the style profile differences, and apply/promote the updated profile version.
+
+#### 1. Refresh Lifecycle
+The refresh workflow consists of three main stages:
+- **Staleness Check (`check_style_profile_sources`)**:
+  - Compares the current local files (using canonical paths, sizes, modified timestamps, and content hashes) against the saved metadata-only fingerprints of the source files in the style profile.
+  - Reports if the profile is stale (`stale: true`), what files were added, removed, or changed, and if a refresh is possible (`can_refresh`).
+  - By default, rejects archived profiles unless `include_archived` is explicitly set to true.
+- **Refresh Preview (`preview_refresh_style_profile`)**:
+  - Re-reads the current files matching the profile's original source policy in memory.
+  - Recomputes metrics and regenerates guidance (via the `style_analyze` model route, unless `metrics_only` is true) to construct a candidate profile.
+  - Compares the candidate profile against the current profile to report metric deltas, quality changes, and warnings without mutating any project state or persisting anything.
+- **Refresh Apply (`refresh_style_profile`)**:
+  - Re-reads, regenerates, and writes a new profile version.
+  - Automatically handles quality gating, active profile promotion, audit logging, and cache invalidation.
+
+#### 2. Versioning Behavior
+Instead of overwriting the existing profile, a refresh operation creates a brand new profile record to keep a clean history.
+- The new profile is linked to the previous version via:
+  - `parent_profile_id`: References the profile ID from which this version was refreshed.
+  - `version_number`: A 1-indexed counter incremented sequentially for each version.
+  - `refreshed_from_profile_id` / `refreshed_at`: Timestamps and linkages mapping the lineage of refreshes.
+- Parent profiles that are archived remain fully intact as valid historical references for audits and rollbacks.
+
+#### 3. Privacy Guarantees
+To maintain security and data ownership boundaries:
+- **Metadata-only Fingerprints**: Spindle stores canonical safe paths, file sizes, modified timestamps, content hashes, glob metadata, and captured timestamps in the `style_profile_source` table.
+- **No Persisted Prose**: The raw source prose is processed strictly in-memory during checks, previews, and refreshes. At no point is raw prose persisted in database columns, refresh records, audits, or MCP resource outputs.
+- **Path Traversal Protection**: Existing safe directory boundary checks are strictly enforced. Paths residing outside of the allowed workspace roots will cause the check or refresh to abort immediately.
+- **MCP Resource Constraints**: Resources such as `bible://projects/{project_id}/style-profiles/{profile_id}/sources` and `bible://projects/{project_id}/style-profiles/{profile_id}/refresh-preview` expose only metadata (e.g. file lists, metric deltas) and never any raw text content.
+
+#### 4. When to Refresh vs. Create a New Unrelated Profile
+- **Refresh**: Use when editing, adding, or deleting chapters within the same target manuscript/corpus to keep the profile updated with the project's current evolution. Refresh preserves the parent-child lineage.
+- **Create New Profile**: Use when targeting a completely different reference manuscript, exploring a distinct genre/tone, or establishing a new style line that should not share version history or automatically replace the currently active profile.
+
+#### 5. Active Profile Promotion
+- If `apply_after_refresh` is true and the parent profile was the project's currently active profile, the project's `active_style_profile_id` is automatically promoted/moved to the newly created profile version.
+- If `apply_after_refresh` is false, the active profile remains unchanged, but the new version is still stored and can be manually applied later.
+- If auto-applying, the profile must pass the standard quality gate (having a status of `Ready` in its quality report) unless bypassed with `force_apply: true`.
+
 ### Privacy and Data Minimization
 
 - Creating a style profile sends capped chunks of source prose to the configured `style_analyze` model route.

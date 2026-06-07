@@ -42,6 +42,14 @@ pub struct StyleProfileCard {
     pub quality: StyleProfileQualityReport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshed_from_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_number: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -64,6 +72,14 @@ pub struct StyleSourceRef {
     pub word_count: usize,
     pub included: bool,
     pub skip_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob_policy_metadata: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -116,6 +132,20 @@ pub struct StyleProfileSourcePolicy {
     pub metrics_only: bool,
     #[serde(default)]
     pub source_sample_word_budget: Option<usize>,
+    #[serde(default)]
+    pub source_paths: Vec<String>,
+    #[serde(default)]
+    pub recursive: Option<bool>,
+    #[serde(default)]
+    pub include_globs: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_globs: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_files: Option<usize>,
+    #[serde(default)]
+    pub max_bytes_per_file: Option<usize>,
+    #[serde(default)]
+    pub max_total_words: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -642,4 +672,56 @@ pub struct EvaluateStyleRevisionPatchOutput {
     pub aggregate_score: StyleRevisionPatchScore,
     pub status: StyleRevisionPatchStatus,
     pub risks: Vec<StyleRevisionPatchRisk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckStyleProfileSourcesInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub include_archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckStyleProfileSourcesOutput {
+    pub profile_id: String,
+    pub stale: bool,
+    pub added_files: Vec<String>,
+    pub removed_files: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub unchanged_count: usize,
+    pub missing_source_roots: Vec<String>,
+    pub can_refresh: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewRefreshStyleProfileInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub metrics_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewRefreshStyleProfileOutput {
+    pub old_profile_summary: StyleProfileCard,
+    pub candidate_profile_summary: StyleProfileCard,
+    pub quality_report: StyleProfileQualityReport,
+    pub metric_deltas: StyleCorpusMetricsDeltas,
+    pub material_change: bool,
+    pub apply_safety: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RefreshStyleProfileInput {
+    pub project_id: String,
+    pub profile_id: String,
+    pub apply_after_refresh: Option<bool>,
+    pub force_apply: Option<bool>,
+    pub metrics_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RefreshStyleProfileOutput {
+    pub new_profile: StyleProfileCard,
+    pub applied: bool,
+    pub application: Option<ApplyStyleProfileOutput>,
 }

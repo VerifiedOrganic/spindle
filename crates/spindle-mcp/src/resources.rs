@@ -486,6 +486,24 @@ impl ResourceRouter {
             .with_mime_type("application/json")
             .no_annotation(),
             RawResourceTemplate::new(
+                "bible://projects/{project_id}/style-profiles/{profile_id}/sources",
+                "derived style profile sources",
+            )
+            .with_description(
+                "Read the list of sources for a derived style profile including metadata fingerprints. Exposes metadata only, never raw prose.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/style-profiles/{profile_id}/refresh-preview",
+                "derived style profile refresh preview",
+            )
+            .with_description(
+                "Read a preview refresh output comparing the old profile to a newly built candidate. Exposes metadata only, never raw prose.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
                 "bible://projects/{project_id}/chapters/{book_number}/{chapter_number}/scenes",
                 "chapter scenes",
             )

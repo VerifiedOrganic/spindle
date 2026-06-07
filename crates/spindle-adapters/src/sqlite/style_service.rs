@@ -5,11 +5,13 @@ use anyhow::{Result, anyhow};
 use sha2::Digest;
 use spindle_core::models::{CreateWorldRuleInput, UpdateWorldRuleInput};
 use spindle_core::style::{
-    ApplyStyleProfileInput, ApplyStyleProfileOutput, CreateStyleProfileFromMarkdownInput,
+    ApplyStyleProfileInput, ApplyStyleProfileOutput, CheckStyleProfileSourcesInput,
+    CheckStyleProfileSourcesOutput, CreateStyleProfileFromMarkdownInput,
     CreateStyleProfileFromMarkdownOutput, GetStyleProfileInput, GetStyleProfileOutput,
-    ListStyleProfilesInput, ListStyleProfilesOutput, StyleCorpusSummary, StyleProfileApplyMode,
-    StyleProfileCard, StyleProfileGuidance, StyleProfileModelReceipt, StyleProfileSourcePolicy,
-    StyleProfileStatus, StyleSourceRef,
+    ListStyleProfilesInput, ListStyleProfilesOutput, PreviewRefreshStyleProfileInput,
+    PreviewRefreshStyleProfileOutput, RefreshStyleProfileInput, RefreshStyleProfileOutput,
+    StyleCorpusSummary, StyleProfileApplyMode, StyleProfileCard, StyleProfileGuidance,
+    StyleProfileModelReceipt, StyleProfileSourcePolicy, StyleProfileStatus, StyleSourceRef,
 };
 use std::fs;
 
@@ -45,12 +47,15 @@ fn trim_to_word_limit(text: &str, max_words: usize) -> String {
 }
 
 impl SqliteSpindleService {
-    pub async fn create_style_profile_from_markdown(
+    pub async fn generate_candidate_style_profile(
         &self,
-        input: CreateStyleProfileFromMarkdownInput,
-    ) -> Result<CreateStyleProfileFromMarkdownOutput> {
+        project_id: &str,
+        name: &str,
+        policy: &StyleProfileSourcePolicy,
+        override_metrics_only: Option<bool>,
+    ) -> Result<StyleProfileCard> {
         // 1. Validate project exists
-        let _project = self.repository().get_project(&input.project_id).await?;
+        let _project = self.repository().get_project(project_id).await?;
 
         // 2. Resolve allowed roots
         let data_dir = self.repository().data_dir().to_path_buf();
@@ -59,19 +64,59 @@ impl SqliteSpindleService {
             allowed_roots.push(parent.to_path_buf());
         }
 
-        // 3. Collect Markdown files
-        let max_files = input.max_files.unwrap_or(100);
-        let max_bytes = input.max_bytes_per_file.unwrap_or(10 * 1024 * 1024); // 10MB
-        let max_words = input.max_total_words.unwrap_or(200_000);
+        // 3. Resolve source paths
+        let source_paths = if policy.source_paths.is_empty() {
+            return Err(anyhow!("no source paths defined in policy"));
+        } else {
+            policy.source_paths.clone()
+        };
 
-        let md_files = style_helper::collect_markdown_files(
-            &input.source_paths,
-            input.recursive.unwrap_or(false),
-            &allowed_roots,
-            max_files,
-            input.include_globs.as_deref(),
-            input.exclude_globs.as_deref(),
-        )?;
+        // Collect Markdown files with safety boundary check
+        let max_files = policy.max_files.unwrap_or(100);
+        let max_bytes = policy.max_bytes_per_file.unwrap_or(10 * 1024 * 1024); // 10MB
+        let max_words = policy.max_total_words.unwrap_or(200_000);
+
+        let recursive = policy.recursive.unwrap_or(false);
+        let include_globs = policy.include_globs.as_deref();
+        let exclude_globs = policy.exclude_globs.as_deref();
+
+        let mut missing_source_roots = Vec::new();
+        let mut valid_source_paths = Vec::new();
+        for path_str in &source_paths {
+            let path = std::path::Path::new(path_str);
+            if !path.exists() {
+                missing_source_roots.push(format!("Source path '{}' does not exist", path_str));
+                continue;
+            }
+            match style_helper::resolve_and_verify_path(path_str, &allowed_roots) {
+                Ok(_) => {
+                    valid_source_paths.push(path_str.clone());
+                }
+                Err(e) => {
+                    if e.to_string().contains("outside allowed roots") {
+                        return Err(e);
+                    } else {
+                        missing_source_roots.push(format!(
+                            "Source path '{}' could not be verified: {}",
+                            path_str, e
+                        ));
+                    }
+                }
+            }
+        }
+
+        let md_files = if valid_source_paths.is_empty() {
+            return Err(anyhow!("no analyzable Markdown files found"));
+        } else {
+            style_helper::collect_markdown_files(
+                &valid_source_paths,
+                recursive,
+                &allowed_roots,
+                max_files,
+                include_globs,
+                exclude_globs,
+            )?
+        };
 
         if md_files.is_empty() {
             return Err(anyhow!("no analyzable Markdown files found"));
@@ -105,10 +150,20 @@ impl SqliteSpindleService {
                         word_count: 0,
                         included: false,
                         skip_reason: Some("failed to read metadata".to_string()),
+                        file_size: None,
+                        modified_at: None,
+                        glob_policy_metadata: None,
+                        captured_at: Some(chrono::Utc::now().to_rfc3339()),
                     });
                     continue;
                 }
             };
+
+            let file_size = metadata.len();
+            let modified_at = metadata.modified().ok().and_then(|t| {
+                let datetime: chrono::DateTime<chrono::Utc> = t.into();
+                Some(datetime.to_rfc3339())
+            });
 
             if !metadata.is_file() {
                 skipped_source_count += 1;
@@ -119,6 +174,10 @@ impl SqliteSpindleService {
                     word_count: 0,
                     included: false,
                     skip_reason: Some("not a regular file".to_string()),
+                    file_size: Some(file_size),
+                    modified_at,
+                    glob_policy_metadata: None,
+                    captured_at: Some(chrono::Utc::now().to_rfc3339()),
                 });
                 continue;
             }
@@ -132,6 +191,10 @@ impl SqliteSpindleService {
                     word_count: 0,
                     included: false,
                     skip_reason: Some("file size exceeds limit".to_string()),
+                    file_size: Some(file_size),
+                    modified_at,
+                    glob_policy_metadata: None,
+                    captured_at: Some(chrono::Utc::now().to_rfc3339()),
                 });
                 continue;
             }
@@ -147,6 +210,10 @@ impl SqliteSpindleService {
                         word_count: 0,
                         included: false,
                         skip_reason: Some("failed to read content".to_string()),
+                        file_size: Some(file_size),
+                        modified_at,
+                        glob_policy_metadata: None,
+                        captured_at: Some(chrono::Utc::now().to_rfc3339()),
                     });
                     continue;
                 }
@@ -164,6 +231,10 @@ impl SqliteSpindleService {
                         word_count: 0,
                         included: false,
                         skip_reason: Some("not valid UTF-8".to_string()),
+                        file_size: Some(file_size),
+                        modified_at,
+                        glob_policy_metadata: None,
+                        captured_at: Some(chrono::Utc::now().to_rfc3339()),
                     });
                     continue;
                 }
@@ -179,6 +250,10 @@ impl SqliteSpindleService {
                     word_count,
                     included: false,
                     skip_reason: Some("exceeds max_total_words limit".to_string()),
+                    file_size: Some(file_size),
+                    modified_at,
+                    glob_policy_metadata: None,
+                    captured_at: Some(chrono::Utc::now().to_rfc3339()),
                 });
                 continue;
             }
@@ -199,6 +274,17 @@ impl SqliteSpindleService {
                 word_count,
                 included: true,
                 skip_reason: None,
+                file_size: Some(file_size),
+                modified_at,
+                glob_policy_metadata: Some(
+                    serde_json::json!({
+                        "recursive": recursive,
+                        "include_globs": include_globs,
+                        "exclude_globs": exclude_globs,
+                    })
+                    .to_string(),
+                ),
+                captured_at: Some(chrono::Utc::now().to_rfc3339()),
             });
         }
 
@@ -236,14 +322,14 @@ impl SqliteSpindleService {
         };
 
         // 6. Run style synthesis via routed model
-        let metrics_only = input.metrics_only.unwrap_or(false);
-        let max_synthesis_words = input
+        let final_metrics_only = override_metrics_only.unwrap_or(policy.metrics_only);
+        let max_synthesis_words = policy
             .source_sample_word_budget
             .unwrap_or(MAX_STYLE_SYNTHESIS_SOURCE_WORDS);
 
         let mut prompt_chunks = Vec::new();
         let mut prompt_source_words = 0usize;
-        if !metrics_only {
+        if !final_metrics_only {
             for (i, c) in chunks.iter().enumerate() {
                 if prompt_source_words >= max_synthesis_words {
                     break;
@@ -261,7 +347,7 @@ impl SqliteSpindleService {
         }
         let chunks_str = prompt_chunks.join("\n\n");
 
-        let corpus_section = if metrics_only {
+        let corpus_section = if final_metrics_only {
             "[METRICS ONLY MODE]\n\
              This analysis is running in metrics-only/privacy-preserving mode. No raw source prose is provided. \
              Synthesize the style profile and do/avoid guidance using ONLY the deterministic statistics and metrics provided above."
@@ -321,7 +407,7 @@ impl SqliteSpindleService {
             prompt: prompt_text.clone(),
             rating: None,
             context: Some(crate::ai::RequestContext {
-                project_id: Some(input.project_id.clone()),
+                project_id: Some(project_id.to_string()),
                 book_id: None,
                 chapter_id: None,
                 scene_id: None,
@@ -362,7 +448,7 @@ impl SqliteSpindleService {
                     prompt: repair_prompt,
                     rating: None,
                     context: Some(crate::ai::RequestContext {
-                        project_id: Some(input.project_id.clone()),
+                        project_id: Some(project_id.to_string()),
                         book_id: None,
                         chapter_id: None,
                         scene_id: None,
@@ -478,7 +564,7 @@ impl SqliteSpindleService {
         let profile_id = format!("style_profile:{}", ulid::Ulid::new());
         let now_str = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
-        let source_policy = StyleProfileSourcePolicy {
+        let final_policy = StyleProfileSourcePolicy {
             local_user_provided: true,
             source_text_persisted: false,
             max_excerpt_words: 0,
@@ -486,25 +572,72 @@ impl SqliteSpindleService {
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect(),
-            metrics_only,
-            source_sample_word_budget: input.source_sample_word_budget,
+            metrics_only: final_metrics_only,
+            source_sample_word_budget: policy.source_sample_word_budget,
+            source_paths: source_paths,
+            recursive: Some(recursive),
+            include_globs: policy.include_globs.clone(),
+            exclude_globs: policy.exclude_globs.clone(),
+            max_files: Some(max_files),
+            max_bytes_per_file: Some(max_bytes),
+            max_total_words: Some(max_words),
         };
 
-        let profile = StyleProfileCard {
+        Ok(StyleProfileCard {
             profile_id,
-            project_id: input.project_id.clone(),
-            name: input.profile_name.clone(),
+            project_id: project_id.to_string(),
+            name: name.to_string(),
             status,
             created_at: now_str.clone(),
             updated_at: now_str,
             corpus: corpus_summary,
             metrics,
             guidance: final_guidance,
-            source_policy,
+            source_policy: final_policy,
             model_receipt: receipt,
             quality,
             archived_at: None,
+            parent_profile_id: None,
+            refreshed_from_profile_id: None,
+            version_number: None,
+            refreshed_at: None,
+        })
+    }
+
+    pub async fn create_style_profile_from_markdown(
+        &self,
+        input: CreateStyleProfileFromMarkdownInput,
+    ) -> Result<CreateStyleProfileFromMarkdownOutput> {
+        let _project = self.repository().get_project(&input.project_id).await?;
+
+        let data_dir = self.repository().data_dir().to_path_buf();
+        let mut allowed_roots = vec![data_dir.clone()];
+        if let Some(parent) = data_dir.parent() {
+            allowed_roots.push(parent.to_path_buf());
+        }
+
+        let policy = StyleProfileSourcePolicy {
+            local_user_provided: true,
+            source_text_persisted: false,
+            max_excerpt_words: 0,
+            allowed_roots: allowed_roots
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
+            metrics_only: input.metrics_only.unwrap_or(false),
+            source_sample_word_budget: input.source_sample_word_budget,
+            source_paths: input.source_paths.clone(),
+            recursive: input.recursive,
+            include_globs: input.include_globs.clone(),
+            exclude_globs: input.exclude_globs.clone(),
+            max_files: input.max_files,
+            max_bytes_per_file: input.max_bytes_per_file,
+            max_total_words: input.max_total_words,
         };
+
+        let profile = self
+            .generate_candidate_style_profile(&input.project_id, &input.profile_name, &policy, None)
+            .await?;
 
         let should_apply = input.apply.unwrap_or(false);
         if should_apply
@@ -518,10 +651,10 @@ impl SqliteSpindleService {
             ));
         }
 
-        // 7. Persist profile
+        // Persist profile
         self.repository().insert_style_profile(&profile).await?;
 
-        // 8. Optionally apply profile
+        // Optionally apply profile
         let mut applied = false;
         let mut application = None;
         if should_apply {
@@ -540,6 +673,357 @@ impl SqliteSpindleService {
 
         Ok(CreateStyleProfileFromMarkdownOutput {
             profile,
+            applied,
+            application,
+        })
+    }
+
+    pub async fn check_style_profile_sources(
+        &self,
+        input: CheckStyleProfileSourcesInput,
+    ) -> Result<CheckStyleProfileSourcesOutput> {
+        let profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found"))?;
+
+        if profile.archived_at.is_some() && !input.include_archived.unwrap_or(false) {
+            return Err(anyhow!(
+                "Cannot check archived style profile unless include_archived is true"
+            ));
+        }
+
+        let data_dir = self.repository().data_dir().to_path_buf();
+        let mut allowed_roots = vec![data_dir.clone()];
+        if let Some(parent) = data_dir.parent() {
+            allowed_roots.push(parent.to_path_buf());
+        }
+
+        let source_paths = if profile.source_policy.source_paths.is_empty() {
+            // Fallback to original source_refs paths
+            profile
+                .corpus
+                .source_refs
+                .iter()
+                .filter(|r| r.included)
+                .map(|r| r.canonical_path.clone())
+                .collect::<Vec<_>>()
+        } else {
+            profile.source_policy.source_paths.clone()
+        };
+
+        let recursive = profile.source_policy.recursive.unwrap_or(false);
+        let include_globs = profile.source_policy.include_globs.as_deref();
+        let exclude_globs = profile.source_policy.exclude_globs.as_deref();
+        let max_files = profile.source_policy.max_files.unwrap_or(100);
+
+        let mut missing_source_roots = Vec::new();
+        let mut valid_source_paths = Vec::new();
+        for path_str in &source_paths {
+            let path = std::path::Path::new(path_str);
+            if !path.exists() {
+                missing_source_roots.push(format!("Source path '{}' does not exist", path_str));
+                continue;
+            }
+            match style_helper::resolve_and_verify_path(path_str, &allowed_roots) {
+                Ok(_) => {
+                    valid_source_paths.push(path_str.clone());
+                }
+                Err(e) => {
+                    if e.to_string().contains("outside allowed roots") {
+                        return Err(e);
+                    } else {
+                        missing_source_roots.push(format!(
+                            "Source path '{}' could not be verified: {}",
+                            path_str, e
+                        ));
+                    }
+                }
+            }
+        }
+
+        let current_files = if valid_source_paths.is_empty() {
+            Vec::new()
+        } else {
+            style_helper::collect_markdown_files(
+                &valid_source_paths,
+                recursive,
+                &allowed_roots,
+                max_files,
+                include_globs,
+                exclude_globs,
+            )?
+        };
+
+        let mut current_refs = Vec::new();
+        for path in &current_files {
+            let display_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let canonical_path_str = path.to_string_lossy().to_string();
+            let metadata = match fs::metadata(path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let file_size = metadata.len();
+            let modified_at = metadata.modified().ok().and_then(|t| {
+                let datetime: chrono::DateTime<chrono::Utc> = t.into();
+                Some(datetime.to_rfc3339())
+            });
+            let bytes = match fs::read(path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let sha256_hash = format!("{:x}", sha2::Sha256::digest(&bytes));
+
+            let text = String::from_utf8_lossy(&bytes);
+            let word_count = text.split_whitespace().count();
+
+            current_refs.push(StyleSourceRef {
+                display_name,
+                canonical_path: canonical_path_str,
+                sha256: sha256_hash,
+                word_count,
+                included: true,
+                skip_reason: None,
+                file_size: Some(file_size),
+                modified_at,
+                glob_policy_metadata: Some(
+                    serde_json::json!({
+                        "recursive": recursive,
+                        "include_globs": include_globs,
+                        "exclude_globs": exclude_globs,
+                    })
+                    .to_string(),
+                ),
+                captured_at: Some(chrono::Utc::now().to_rfc3339()),
+            });
+        }
+
+        let mut added_files = Vec::new();
+        let mut removed_files = Vec::new();
+        let mut changed_files = Vec::new();
+        let mut unchanged_count = 0;
+
+        let original_map: std::collections::HashMap<String, StyleSourceRef> = profile
+            .corpus
+            .source_refs
+            .iter()
+            .map(|r| (r.canonical_path.clone(), r.clone()))
+            .collect();
+
+        let current_map: std::collections::HashMap<String, StyleSourceRef> = current_refs
+            .iter()
+            .map(|r| (r.canonical_path.clone(), r.clone()))
+            .collect();
+
+        for (path, _) in &current_map {
+            if !original_map.contains_key(path) {
+                added_files.push(path.clone());
+            }
+        }
+
+        for (path, ref_orig) in &original_map {
+            if ref_orig.included && !current_map.contains_key(path) {
+                removed_files.push(path.clone());
+            }
+        }
+
+        for (path, ref_curr) in &current_map {
+            if let Some(ref_orig) = original_map.get(path) {
+                if !ref_orig.included {
+                    changed_files.push(path.clone());
+                } else if ref_curr.sha256 != ref_orig.sha256 {
+                    changed_files.push(path.clone());
+                } else {
+                    unchanged_count += 1;
+                }
+            }
+        }
+
+        let stale =
+            !added_files.is_empty() || !removed_files.is_empty() || !changed_files.is_empty();
+        let can_refresh = !current_refs.is_empty();
+
+        Ok(CheckStyleProfileSourcesOutput {
+            profile_id: input.profile_id.clone(),
+            stale,
+            added_files,
+            removed_files,
+            changed_files,
+            unchanged_count,
+            missing_source_roots,
+            can_refresh,
+        })
+    }
+
+    pub async fn preview_refresh_style_profile(
+        &self,
+        input: PreviewRefreshStyleProfileInput,
+    ) -> Result<PreviewRefreshStyleProfileOutput> {
+        let old_profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found"))?;
+
+        if old_profile.archived_at.is_some() {
+            return Err(anyhow!("Cannot preview refresh an archived style profile"));
+        }
+
+        let candidate = self
+            .generate_candidate_style_profile(
+                &input.project_id,
+                &old_profile.name,
+                &old_profile.source_policy,
+                input.metrics_only,
+            )
+            .await?;
+
+        let metric_deltas = compute_metrics_deltas(&old_profile.metrics, &candidate.metrics);
+
+        let mut change_reasons = Vec::new();
+        if candidate.guidance.pov != old_profile.guidance.pov {
+            change_reasons.push(format!(
+                "POV changed from {:?} to {:?}",
+                old_profile.guidance.pov, candidate.guidance.pov
+            ));
+        }
+        if candidate.guidance.tense != old_profile.guidance.tense {
+            change_reasons.push(format!(
+                "Tense changed from {:?} to {:?}",
+                old_profile.guidance.tense, candidate.guidance.tense
+            ));
+        }
+        if metric_deltas.average_sentence_words_delta.abs() > 3.0 {
+            change_reasons.push(format!(
+                "Significant change in average sentence length: delta of {:.1} words",
+                metric_deltas.average_sentence_words_delta
+            ));
+        }
+        if metric_deltas.average_paragraph_words_delta.abs() > 10.0 {
+            change_reasons.push(format!(
+                "Significant change in average paragraph length: delta of {:.1} words",
+                metric_deltas.average_paragraph_words_delta
+            ));
+        }
+        if metric_deltas.dialogue_word_ratio_delta.abs() > 0.15 {
+            change_reasons.push(format!(
+                "Significant change in dialogue ratio: delta of {:.1}%",
+                metric_deltas.dialogue_word_ratio_delta * 100.0
+            ));
+        }
+        let material_change = !change_reasons.is_empty();
+
+        let mut apply_safety = Vec::new();
+        if candidate.quality.classification
+            != spindle_core::style::StyleProfileQualityClassification::Ready
+        {
+            apply_safety.push(format!(
+                "Candidate profile quality is {:?}. Auto-applying this profile will be BLOCKED unless force_apply=true is used.",
+                candidate.quality.classification
+            ));
+        }
+        if candidate.quality.confidence_score < 0.6 {
+            apply_safety.push(format!(
+                "Candidate confidence score is low ({:.2}). Rebuilt profile might be unstable.",
+                candidate.quality.confidence_score
+            ));
+        }
+        if candidate.guidance.pov != old_profile.guidance.pov {
+            apply_safety.push(format!(
+                "POV changes from {:?} to {:?}. Applying this profile will modify narrator rules and reader contract.",
+                old_profile.guidance.pov, candidate.guidance.pov
+            ));
+        }
+        if candidate.guidance.tense != old_profile.guidance.tense {
+            apply_safety.push(format!(
+                "Tense changes from {:?} to {:?}. Applying this profile will modify narrator rules and reader contract.",
+                old_profile.guidance.tense, candidate.guidance.tense
+            ));
+        }
+
+        Ok(PreviewRefreshStyleProfileOutput {
+            old_profile_summary: old_profile,
+            candidate_profile_summary: candidate.clone(),
+            quality_report: candidate.quality,
+            metric_deltas,
+            material_change,
+            apply_safety,
+        })
+    }
+
+    pub async fn refresh_style_profile(
+        &self,
+        input: RefreshStyleProfileInput,
+    ) -> Result<RefreshStyleProfileOutput> {
+        let old_profile = self
+            .repository()
+            .get_style_profile(&input.project_id, &input.profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("style profile not found"))?;
+
+        if old_profile.archived_at.is_some() {
+            return Err(anyhow!("Cannot refresh an archived style profile"));
+        }
+
+        let mut candidate = self
+            .generate_candidate_style_profile(
+                &input.project_id,
+                &old_profile.name,
+                &old_profile.source_policy,
+                input.metrics_only,
+            )
+            .await?;
+
+        let parent_id = old_profile
+            .parent_profile_id
+            .clone()
+            .unwrap_or_else(|| old_profile.profile_id.clone());
+        candidate.parent_profile_id = Some(parent_id);
+        candidate.refreshed_from_profile_id = Some(old_profile.profile_id.clone());
+        let old_version = old_profile.version_number.unwrap_or(1);
+        candidate.version_number = Some(old_version + 1);
+        let now_str = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        candidate.refreshed_at = Some(now_str);
+
+        let should_apply = input.apply_after_refresh.unwrap_or(false);
+        if should_apply
+            && candidate.quality.classification
+                != spindle_core::style::StyleProfileQualityClassification::Ready
+            && !input.force_apply.unwrap_or(false)
+        {
+            return Err(anyhow!(
+                "Style profile quality is too low to auto-apply (classification: {:?}). Use force_apply=true to override.",
+                candidate.quality.classification
+            ));
+        }
+
+        // Persist new profile
+        self.repository().insert_style_profile(&candidate).await?;
+
+        let mut applied = false;
+        let mut application = None;
+        if should_apply {
+            let app_out = self
+                .apply_style_profile(ApplyStyleProfileInput {
+                    project_id: input.project_id.clone(),
+                    profile_id: candidate.profile_id.clone(),
+                    mode: StyleProfileApplyMode::Merge,
+                })
+                .await?;
+            applied = true;
+            application = Some(app_out);
+        }
+
+        Ok(RefreshStyleProfileOutput {
+            new_profile: candidate,
             applied,
             application,
         })
@@ -2349,6 +2833,31 @@ impl SqliteSpindleService {
 
 fn is_generated_style_note(note: &str) -> bool {
     note.contains(" (Style Profile: style_profile:")
+}
+
+fn compute_metrics_deltas(
+    ma: &spindle_core::style::StyleCorpusMetrics,
+    mb: &spindle_core::style::StyleCorpusMetrics,
+) -> spindle_core::style::StyleCorpusMetricsDeltas {
+    spindle_core::style::StyleCorpusMetricsDeltas {
+        average_sentence_words_delta: mb.average_sentence_words - ma.average_sentence_words,
+        median_sentence_words_delta: mb.median_sentence_words - ma.median_sentence_words,
+        p90_sentence_words_delta: mb.p90_sentence_words - ma.p90_sentence_words,
+        average_paragraph_words_delta: mb.average_paragraph_words - ma.average_paragraph_words,
+        median_paragraph_words_delta: mb.median_paragraph_words - ma.median_paragraph_words,
+        dialogue_line_ratio_delta: mb.dialogue_line_ratio - ma.dialogue_line_ratio,
+        dialogue_word_ratio_delta: mb.dialogue_word_ratio - ma.dialogue_word_ratio,
+        question_mark_rate_delta: mb.question_mark_rate_per_1k_words
+            - ma.question_mark_rate_per_1k_words,
+        exclamation_rate_delta: mb.exclamation_rate_per_1k_words - ma.exclamation_rate_per_1k_words,
+        semicolon_rate_delta: mb.semicolon_rate_per_1k_words - ma.semicolon_rate_per_1k_words,
+        em_dash_rate_delta: mb.em_dash_rate_per_1k_words - ma.em_dash_rate_per_1k_words,
+        ellipsis_rate_delta: mb.ellipsis_rate_per_1k_words - ma.ellipsis_rate_per_1k_words,
+        first_person_pronoun_rate_delta: mb.first_person_pronoun_rate_per_1k_words
+            - ma.first_person_pronoun_rate_per_1k_words,
+        third_person_pronoun_rate_delta: mb.third_person_pronoun_rate_per_1k_words
+            - ma.third_person_pronoun_rate_per_1k_words,
+    }
 }
 
 fn ensure_style_profile_not_archived(profile: &StyleProfileCard) -> Result<()> {

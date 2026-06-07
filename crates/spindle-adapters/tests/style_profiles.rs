@@ -7,8 +7,9 @@ use spindle_core::models::{
 };
 use spindle_core::style::{
     ApplyStyleProfileInput, ApplyStyleRevisionPatchInput, ArchiveStyleProfileInput,
-    CompareStyleProfilesInput, CreateStyleProfileFromMarkdownInput, GetStyleProfileInput,
-    ListStyleProfilesInput, PreviewStyleRevisionPatchInput, StyleDriftSummaryScore,
+    CheckStyleProfileSourcesInput, CompareStyleProfilesInput, CreateStyleProfileFromMarkdownInput,
+    GetStyleProfileInput, ListStyleProfilesInput, PreviewRefreshStyleProfileInput,
+    PreviewStyleRevisionPatchInput, RefreshStyleProfileInput, StyleDriftSummaryScore,
     StyleProfileApplyMode,
 };
 use tempfile::TempDir;
@@ -3069,4 +3070,328 @@ async fn test_style_revision_patch_evaluation() {
         })
         .await;
     assert!(good_apply_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_style_profile_refresh_workflow() {
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Create project
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Style Refresh Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "An adventurous tale".to_string(),
+                style_notes: vec!["Existing note".to_string()],
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let project_id = project_out.project_id;
+
+    // 2. Prepare temp folder and source files
+    let src_dir = tmp.path().join("sources");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let src_dir_canonical = std::fs::canonicalize(&src_dir).unwrap();
+    let file_a = src_dir_canonical.join("file_a.md");
+    let content_a = "This is some test prose for file A. It should be long enough and contain some dialogue lines.\n\"Hello there!\" he said.";
+    std::fs::write(&file_a, content_a).unwrap();
+
+    // 3. Create style profile from Markdown (specifying the directory)
+    let create_input = CreateStyleProfileFromMarkdownInput {
+        project_id: project_id.clone(),
+        profile_name: "Refreshable Profile".to_string(),
+        source_paths: vec![src_dir_canonical.to_string_lossy().to_string()],
+        recursive: Some(false),
+        include_globs: None,
+        exclude_globs: None,
+        max_files: None,
+        max_bytes_per_file: None,
+        max_total_words: None,
+        apply: Some(true),
+        application_mode: None,
+        source_sample_word_budget: None,
+        metrics_only: None,
+        force_apply: Some(true),
+    };
+
+    let create_out = svc
+        .create_style_profile_from_markdown(create_input)
+        .await
+        .unwrap();
+    let profile = create_out.profile;
+
+    assert_eq!(profile.name, "Refreshable Profile");
+    assert!(profile.parent_profile_id.is_none());
+    assert!(profile.version_number.is_none());
+
+    // Verify active profile got set
+    let project_init = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(
+        project_init.active_style_profile_id,
+        Some(profile.profile_id.clone())
+    );
+
+    // 4. Staleness check: unchanged corpus reports stale=false
+    let check_out = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            include_archived: None,
+        })
+        .await
+        .unwrap();
+    assert!(!check_out.stale);
+    assert_eq!(check_out.added_files.len(), 0);
+    assert_eq!(check_out.removed_files.len(), 0);
+    assert_eq!(check_out.changed_files.len(), 0);
+
+    // 5. Staleness check: changed markdown file reports stale=true and changed_files
+    let content_a_mod = format!("{}\nThis is an added line to change the file.", content_a);
+    std::fs::write(&file_a, content_a_mod).unwrap();
+    let check_out2 = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            include_archived: None,
+        })
+        .await
+        .unwrap();
+    assert!(check_out2.stale);
+    assert!(
+        check_out2
+            .changed_files
+            .contains(&file_a.to_string_lossy().to_string())
+    );
+
+    // 6. Staleness check: added files are detected
+    std::fs::write(&file_a, content_a).unwrap(); // Revert File A
+    let file_b = src_dir_canonical.join("file_b.md");
+    std::fs::write(
+        &file_b,
+        "This is file B content. Snappy dialogue lines go here.",
+    )
+    .unwrap();
+    let check_out3 = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            include_archived: None,
+        })
+        .await
+        .unwrap();
+    assert!(check_out3.stale);
+    assert!(
+        check_out3
+            .added_files
+            .contains(&file_b.to_string_lossy().to_string())
+    );
+
+    // 7. Staleness check: removed files are detected
+    std::fs::remove_file(&file_b).unwrap(); // Remove File B
+    std::fs::remove_file(&file_a).unwrap(); // Remove File A
+    let check_out4 = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            include_archived: None,
+        })
+        .await
+        .unwrap();
+    assert!(check_out4.stale);
+    assert!(
+        check_out4
+            .removed_files
+            .contains(&file_a.to_string_lossy().to_string())
+    );
+
+    // Restore File A for subsequent testing
+    std::fs::write(&file_a, content_a).unwrap();
+
+    // 8. Test: preview refresh is non-mutating
+    let old_profiles_list = svc
+        .list_style_profiles(ListStyleProfilesInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    let old_count = old_profiles_list.profiles.len();
+
+    let preview_out = svc
+        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            metrics_only: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        preview_out.old_profile_summary.profile_id,
+        profile.profile_id
+    );
+    assert_eq!(preview_out.candidate_profile_summary.name, profile.name);
+
+    let new_profiles_list = svc
+        .list_style_profiles(ListStyleProfilesInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        new_profiles_list.profiles.len(),
+        old_count,
+        "preview refresh must not persist candidate"
+    );
+
+    // 9. Test: refresh creates a new linked profile version
+    let refresh_out = svc
+        .refresh_style_profile(RefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile.profile_id.clone(),
+            apply_after_refresh: Some(true),
+            force_apply: Some(true),
+            metrics_only: None,
+        })
+        .await
+        .unwrap();
+
+    let refreshed_profile = refresh_out.new_profile;
+    assert_eq!(
+        refreshed_profile.parent_profile_id,
+        Some(profile.profile_id.clone())
+    );
+    assert_eq!(
+        refreshed_profile.refreshed_from_profile_id,
+        Some(profile.profile_id.clone())
+    );
+    assert_eq!(refreshed_profile.version_number, Some(2));
+    assert!(refreshed_profile.refreshed_at.is_some());
+
+    // Verify refreshed profile is applied and becomes active
+    let project_refreshed = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(
+        project_refreshed.active_style_profile_id,
+        Some(refreshed_profile.profile_id.clone())
+    );
+
+    // 10. Test: archived profile refresh is rejected by default
+    svc.archive_style_profile(ArchiveStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id: refreshed_profile.profile_id.clone(),
+        force: Some(true),
+    })
+    .await
+    .unwrap();
+
+    let check_archived_res = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: refreshed_profile.profile_id.clone(),
+            include_archived: None,
+        })
+        .await;
+    assert!(
+        check_archived_res.is_err(),
+        "checking archived profile by default should fail"
+    );
+
+    let check_archived_ok = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: refreshed_profile.profile_id.clone(),
+            include_archived: Some(true),
+        })
+        .await;
+    assert!(
+        check_archived_ok.is_ok(),
+        "checking archived profile with include_archived=true should succeed"
+    );
+
+    let preview_archived_res = svc
+        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: refreshed_profile.profile_id.clone(),
+            metrics_only: None,
+        })
+        .await;
+    assert!(
+        preview_archived_res.is_err(),
+        "preview refresh of archived profile should fail"
+    );
+
+    let refresh_archived_res = svc
+        .refresh_style_profile(RefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: refreshed_profile.profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
+            metrics_only: None,
+        })
+        .await;
+    assert!(
+        refresh_archived_res.is_err(),
+        "refresh of archived profile should fail"
+    );
+
+    // 11. Test: path traversal/source boundary protections still hold
+    let mut modified_policy_profile = profile.clone();
+    modified_policy_profile.source_policy.source_paths = vec!["/etc/passwd".to_string()];
+    svc.repository()
+        .insert_style_profile(&modified_policy_profile)
+        .await
+        .unwrap();
+
+    let unsafe_check_res2 = svc
+        .check_style_profile_sources(CheckStyleProfileSourcesInput {
+            project_id: project_id.clone(),
+            profile_id: modified_policy_profile.profile_id.clone(),
+            include_archived: None,
+        })
+        .await;
+    assert!(
+        unsafe_check_res2.is_err(),
+        "unsafe path traversal must be rejected"
+    );
+    assert!(
+        unsafe_check_res2
+            .unwrap_err()
+            .to_string()
+            .contains("outside allowed roots")
+    );
+
+    // 12. Test: no source prose appears in profile rows, source rows, refresh records, or audits
+    let conn = Connection::open(tmp.path().join("svc.db")).unwrap();
+    let persisted_source_text_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM style_profile \
+             WHERE card_json LIKE '%test prose for file A%' \
+                OR guidance_json LIKE '%test prose for file A%' \
+                OR metrics_json LIKE '%test prose for file A%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted_source_text_count, 0,
+        "no source prose should be persisted in profile tables"
+    );
+
+    let persisted_source_row_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM style_profile_source \
+             WHERE display_name LIKE '%test prose for file A%' \
+                OR canonical_path LIKE '%test prose for file A%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted_source_row_count, 0,
+        "no source prose should be persisted in source rows"
+    );
 }

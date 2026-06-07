@@ -3819,13 +3819,33 @@ impl SqliteSpindleService {
                 .await?;
             return Ok(serde_json::to_value(audits)?);
         }
-        if let Some(profile_id) = resource_path.strip_prefix("style-profiles/") {
-            let profile = self
-                .repository
-                .get_style_profile(&project_id, profile_id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("style profile not found: {}", profile_id))?;
-            return Ok(serde_json::to_value(profile)?);
+        if let Some(rest) = resource_path.strip_prefix("style-profiles/") {
+            if let Some((profile_id, "sources")) = rest.split_once('/') {
+                let profile = self
+                    .repository
+                    .get_style_profile(&project_id, profile_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("style profile not found: {}", profile_id))?;
+                return Ok(serde_json::to_value(profile.corpus.source_refs)?);
+            } else if let Some((profile_id, "refresh-preview")) = rest.split_once('/') {
+                let out = self
+                    .preview_refresh_style_profile(
+                        spindle_core::style::PreviewRefreshStyleProfileInput {
+                            project_id: project_id.clone(),
+                            profile_id: profile_id.to_string(),
+                            metrics_only: None,
+                        },
+                    )
+                    .await?;
+                return Ok(serde_json::to_value(out)?);
+            } else {
+                let profile = self
+                    .repository
+                    .get_style_profile(&project_id, rest)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("style profile not found: {}", rest))?;
+                return Ok(serde_json::to_value(profile)?);
+            }
         }
         if resource_path == "continuity/health" {
             return self.continuity_health_resource(&project_id).await;

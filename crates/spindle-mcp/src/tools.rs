@@ -228,6 +228,9 @@ impl ToolRouter {
                 "preview_apply_style_profile",
                 "list_style_profile_applications",
                 "rollback_style_profile_application",
+                "check_style_profile_sources",
+                "preview_refresh_style_profile",
+                "refresh_style_profile",
                 "check_style_against_profile",
                 "plan_style_revision",
                 "compare_style_profiles",
@@ -324,6 +327,9 @@ impl ToolRouter {
                 "preview_apply_style_profile",
                 "list_style_profile_applications",
                 "rollback_style_profile_application",
+                "check_style_profile_sources",
+                "preview_refresh_style_profile",
+                "refresh_style_profile",
                 "check_style_against_profile",
                 "plan_style_revision",
                 "compare_style_profiles",
@@ -408,6 +414,18 @@ impl ToolRouter {
             tool::<CreateStyleProfileFromMarkdownInput, CreateStyleProfileFromMarkdownOutput>(
                 "create_style_profile_from_markdown",
                 "Derive a reusable project style profile from user-provided local Markdown files or folders. Persists metadata, hashes, metrics, and generated guidance, but no source text by default.",
+            ),
+            tool::<CheckStyleProfileSourcesInput, CheckStyleProfileSourcesOutput>(
+                "check_style_profile_sources",
+                "Check the staleness of source files for a derived style profile compared to disk. Exposes metadata only.",
+            ),
+            tool::<PreviewRefreshStyleProfileInput, PreviewRefreshStyleProfileOutput>(
+                "preview_refresh_style_profile",
+                "Preview rebuilding/refreshing a style profile from source files without persisting. Exposes metadata only.",
+            ),
+            tool::<RefreshStyleProfileInput, RefreshStyleProfileOutput>(
+                "refresh_style_profile",
+                "Refresh/rebuild a style profile from current local sources, saving a new version linked to the parent.",
             ),
             tool::<ListStyleProfilesInput, ListStyleProfilesOutput>(
                 "list_style_profiles",
@@ -1246,6 +1264,22 @@ impl ToolRouter {
                     self.service.create_style_profile_from_markdown(input)
                 })
                 .await
+            }
+            "check_style_profile_sources" => {
+                self.invoke(arguments, |input| {
+                    self.service.check_style_profile_sources(input)
+                })
+                .await
+            }
+            "preview_refresh_style_profile" => {
+                self.invoke(arguments, |input| {
+                    self.service.preview_refresh_style_profile(input)
+                })
+                .await
+            }
+            "refresh_style_profile" => {
+                self.invoke(arguments, |input| self.service.refresh_style_profile(input))
+                    .await
             }
             "list_style_profiles" => {
                 self.invoke(arguments, |input| self.service.list_style_profiles(input))
@@ -5829,6 +5863,9 @@ mod tests {
         assert!(tool_names.contains(&"preview_apply_style_profile"));
         assert!(tool_names.contains(&"list_style_profile_applications"));
         assert!(tool_names.contains(&"rollback_style_profile_application"));
+        assert!(tool_names.contains(&"check_style_profile_sources"));
+        assert!(tool_names.contains(&"preview_refresh_style_profile"));
+        assert!(tool_names.contains(&"refresh_style_profile"));
         assert!(tool_names.contains(&"check_style_against_profile"));
         assert!(tool_names.contains(&"compare_style_profiles"));
         assert!(tool_names.contains(&"archive_style_profile"));
