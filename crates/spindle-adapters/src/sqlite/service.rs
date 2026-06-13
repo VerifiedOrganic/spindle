@@ -1542,6 +1542,7 @@ impl SqliteSpindleService {
                 input.theme_ids,
                 input.conflict_ids,
                 beats,
+                input.intensity,
             )
             .await?;
         Ok(AnnotateSceneBeatsOutput {
@@ -7420,6 +7421,77 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "move the reveal, or record the character learning this earlier"
                                     .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // ── Pacing drift: a sustained sag in realized intensity ─────────
+        // For books with a planned pacing curve, flag when realized per-chapter
+        // intensity falls across several consecutive chapters. Transparent
+        // heuristic: a single dip is intentional, a sustained slide is drift.
+        if should_run_check(&requested_checks_set, "pacing_drift") {
+            let books_with_curves: BTreeSet<i32> = self
+                .repository
+                .list_pacing_curves_by_project(&project_id)
+                .await?
+                .into_iter()
+                .map(|curve| curve.book_number)
+                .collect();
+            if !books_with_curves.is_empty() {
+                let intensity_by_scene: BTreeMap<String, f64> = self
+                    .repository
+                    .list_scene_beat_annotations_by_project(&project_id)
+                    .await?
+                    .into_iter()
+                    .filter_map(|annotation| {
+                        annotation.intensity.map(|value| (annotation.scene_id, value))
+                    })
+                    .collect();
+                let mut chapter_intensities: BTreeMap<(i32, i32), Vec<f64>> = BTreeMap::new();
+                for scene in &scenes {
+                    if let Some(intensity) = intensity_by_scene.get(&scene.id) {
+                        chapter_intensities
+                            .entry((scene.book_number, scene.chapter_number))
+                            .or_default()
+                            .push(*intensity);
+                    }
+                }
+                let mut per_book: BTreeMap<i32, Vec<(i32, f64)>> = BTreeMap::new();
+                for ((book, chapter), values) in &chapter_intensities {
+                    if !books_with_curves.contains(book) {
+                        continue;
+                    }
+                    let mean = values.iter().sum::<f64>() / values.len() as f64;
+                    per_book.entry(*book).or_default().push((*chapter, mean));
+                }
+                for (book, mut chapters) in per_book {
+                    chapters.sort_by_key(|(chapter, _)| *chapter);
+                    if chapters.len() < 4 {
+                        continue;
+                    }
+                    let mut run = 1usize;
+                    let mut max_run = 1usize;
+                    for window in chapters.windows(2) {
+                        if window[1].1 < window[0].1 - 0.01 {
+                            run += 1;
+                            max_run = max_run.max(run);
+                        } else {
+                            run = 1;
+                        }
+                    }
+                    if max_run >= 3 {
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "pacing_drift".to_string(),
+                            message: format!(
+                                "realized intensity falls across {max_run} consecutive chapters in book {book} (a sustained sag)"
+                            ),
+                            entity_ids: Vec::new(),
+                            suggested_action: Some(
+                                "raise the stakes or add a turn; a sustained intensity drop reads as a sagging middle".to_string(),
                             ),
                         });
                     }
@@ -25667,6 +25739,99 @@ rating = "explicit"
             digests[0].synopsis.matches("duels the warden").count(),
             1,
             "chapter must appear exactly once after re-save"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_consistency_flags_pacing_drift_on_sustained_sag() {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+            CreateChapterInput, CreatePacingCurveInput, SaveSceneDraftInput,
+        };
+        use std::collections::BTreeMap;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "drift".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.create_pacing_curve(CreatePacingCurveInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            act_breakpoints: BTreeMap::new(),
+            scene_type_density: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+
+        // Four chapters with steadily falling realized intensity.
+        for (idx, intensity) in [0.9_f64, 0.7, 0.5, 0.3].iter().enumerate() {
+            let chapter = idx as i32 + 1;
+            svc.create_chapter(CreateChapterInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(chapter),
+                title: None,
+            })
+            .await
+            .unwrap();
+            let scene = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: proj.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: chapter,
+                    chapter_id: None,
+                    scene_order: 1,
+                    full_text: "x".into(),
+                    summary: "s".into(),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                beats: Vec::new(),
+                motif_ids: Vec::new(),
+                theme_ids: Vec::new(),
+                conflict_ids: Vec::new(),
+                intensity: Some(*intensity),
+            })
+            .await
+            .unwrap();
+        }
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["pacing_drift".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.issues.iter().any(|i| i.check_type == "pacing_drift"),
+            "pacing_drift should flag a sustained intensity sag: {:?}",
+            out.issues
         );
     }
 

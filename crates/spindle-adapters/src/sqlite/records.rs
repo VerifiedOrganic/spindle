@@ -1342,7 +1342,7 @@ impl<'a> TryFrom<&Row<'a>> for ChapterOutline {
 }
 
 pub const SCENE_BEAT_ANNOTATION_COLUMNS: &str = "id, project_id, branch_id, scene_id, beats, motif_ids, theme_ids, conflict_ids, \
-     created_at, updated_at";
+     created_at, updated_at, intensity";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneBeatAnnotation {
@@ -1356,6 +1356,8 @@ pub struct SceneBeatAnnotation {
     pub conflict_ids: Vec<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Author-recorded 0.0-1.0 realized scene intensity (V0019); None when unset.
+    pub intensity: Option<f64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for SceneBeatAnnotation {
@@ -1372,6 +1374,7 @@ impl<'a> TryFrom<&Row<'a>> for SceneBeatAnnotation {
             conflict_ids: row::json(r, 7)?,
             created_at: row::time(r, 8)?,
             updated_at: row::time(r, 9)?,
+            intensity: row::opt_real(r, 10)?,
         })
     }
 }

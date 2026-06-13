@@ -3040,6 +3040,10 @@ pub struct AnnotateSceneBeatsInput {
     pub theme_ids: Vec<String>,
     #[serde(default)]
     pub conflict_ids: Vec<String>,
+    /// Realized 0.0-1.0 scene intensity, for pacing-drift detection. When None
+    /// on a re-annotation, the previously recorded value is preserved.
+    #[serde(default)]
+    pub intensity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -370,6 +370,7 @@ async fn annotate_scene_beats(
                 motif_ids: Vec::new(),
                 theme_ids: Vec::new(),
                 conflict_ids: Vec::new(),
+                intensity: None,
             })
             .await
             .with_context(|| {

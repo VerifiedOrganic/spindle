@@ -6755,7 +6755,17 @@ impl Repository {
         theme_ids: Vec<String>,
         conflict_ids: Vec<String>,
         beats: Vec<AnnotatedBeat>,
+        intensity: Option<f64>,
     ) -> Result<SceneBeatAnnotation> {
+        // Preserve a previously recorded intensity when this re-annotation omits
+        // it (annotate is DELETE-then-INSERT, so a bare None would erase it).
+        let effective_intensity = match intensity {
+            Some(value) => Some(value),
+            None => self
+                .get_scene_beat_annotation(branch_id, scene_id)
+                .await?
+                .and_then(|annotation| annotation.intensity),
+        };
         let stored_beats: Vec<StoredAnnotatedBeat> = beats.into_iter().map(Into::into).collect();
         let beats_json = serde_json::to_string(&stored_beats)?;
         let motif_json = serde_json::to_string(&motif_ids)?;
@@ -6781,8 +6791,8 @@ impl Repository {
                     )?;
                     tx.execute(
                         "INSERT INTO scene_beat_annotation (id, project_id, branch_id, scene_id, \
-                         beats, motif_ids, theme_ids, conflict_ids, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                         beats, motif_ids, theme_ids, conflict_ids, created_at, updated_at, intensity) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
                         rusqlite::params![
                             &id,
                             &project_id_owned,
@@ -6793,6 +6803,7 @@ impl Repository {
                             &theme_json,
                             &conflict_json,
                             now,
+                            effective_intensity,
                         ],
                     )?;
                     tx.commit()?;
