@@ -6391,7 +6391,40 @@ impl SqliteSpindleService {
             })
             .chain(canonical_facts.iter().map(canonical_fact_hard_constraint))
             .collect();
-        let _ = &mut hard_constraints;
+
+        // Surface the current in-world time as a non-truncatable hard constraint
+        // so the drafting model keeps chronology, ages, and season consistent.
+        // No-op for projects that never declare a calendar / scene clocks.
+        if let Some(project_calendar) =
+            self.repository.get_project_calendar(&input.project_id).await?
+        {
+            let cursor_index =
+                story_index(input.book_number, input.chapter_number, input.scene_order);
+            if let Some(scene_clock) = self
+                .repository
+                .latest_scene_clock_at_or_before(&input.project_id, &active_branch.id, cursor_index)
+                .await?
+                && let Some(day) = scene_clock.clock.day_index
+            {
+                let epoch = project_calendar
+                    .calendar
+                    .epoch_label
+                    .as_deref()
+                    .map(|label| format!(" (epoch: {label})"))
+                    .unwrap_or_default();
+                hard_constraints.insert(
+                    0,
+                    HardConstraint {
+                        id: "[IN-WORLD TIME]".to_string(),
+                        statement: format!(
+                            "The story currently stands at day {day} on the project calendar{epoch}. \
+                             Keep chronology consistent: do not contradict elapsed time, character \
+                             ages, or the season implied by this date."
+                        ),
+                    },
+                );
+            }
+        }
 
         let non_truncatable_cost =
             non_truncatable_prefix_tokens_scene_context(format_fmt, &hard_constraints);
@@ -7029,6 +7062,64 @@ impl SqliteSpindleService {
                                 .to_string(),
                         ),
                     });
+                }
+            }
+        }
+
+        // ── Chronology: in-world time monotonicity ───────────────────
+        // When a project declares a calendar and scene clocks, flag any scene
+        // set earlier in story time than its predecessor on the same timeline
+        // thread that is not marked as a flashback. Deterministic; a no-op for
+        // projects that never declare story-time.
+        if should_run_check(&requested_checks_set, "chronology")
+            && let Some(calendar) = self.repository.get_project_calendar(&project_id).await?
+        {
+            let clocks = self
+                .repository
+                .list_scene_clocks_by_project_and_branch(&project_id, &active_branch.id)
+                .await?;
+            let clock_by_scene: BTreeMap<String, &crate::sqlite::records::StoredSceneClock> =
+                clocks
+                    .iter()
+                    .map(|clock| (clock.scene_id.clone(), clock))
+                    .collect();
+            let mut last_linear: BTreeMap<String, (i64, String)> = BTreeMap::new();
+            for scene in &scenes {
+                let Some(scene_clock) = clock_by_scene.get(&scene.id) else {
+                    continue;
+                };
+                let Some(index) = scene_clock.clock.total_index(&calendar.calendar) else {
+                    continue;
+                };
+                let thread = scene_clock
+                    .thread_key
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string());
+                let is_out_of_line = matches!(
+                    scene_clock.temporal_mode.as_deref(),
+                    Some("flashback") | Some("flashforward") | Some("concurrent")
+                );
+                if !is_out_of_line
+                    && let Some((prev_index, prev_scene_id)) = last_linear.get(&thread)
+                    && index < *prev_index
+                {
+                    issues.push(ConsistencyIssue {
+                        severity: "warning".to_string(),
+                        check_type: "chronology".to_string(),
+                        message: format!(
+                            "scene is set earlier in story time (day {}) than the previous scene on thread '{}' but is not marked as a flashback",
+                            scene_clock.clock.day_index.unwrap_or_default(),
+                            thread
+                        ),
+                        entity_ids: vec![prev_scene_id.clone(), scene.id.clone()],
+                        suggested_action: Some(
+                            "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
+                                .to_string(),
+                        ),
+                    });
+                }
+                if !is_out_of_line {
+                    last_linear.insert(thread, (index, scene.id.clone()));
                 }
             }
         }
@@ -24572,6 +24663,249 @@ rating = "explicit"
         assert_eq!(
             stored.clock.total_index(&calendar),
             Some(412 * 20 * 60 + 540)
+        );
+    }
+
+    #[tokio::test]
+    async fn chronology_check_flags_unmarked_backward_time_jump() {
+        use spindle_core::models::{
+            CalendarDef, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+            SaveSceneDraftInput, StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "chrono".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let scene1 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Day ten.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let scene2 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "Earlier that month.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let repo = svc.repository();
+        let branch_id = repo.get_scene(&scene1.scene_id).await.unwrap().branch_id;
+        let calendar = CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: None,
+        };
+        repo.upsert_project_calendar(&proj.project_id, &calendar)
+            .await
+            .unwrap();
+        repo.upsert_scene_clock(
+            &scene1.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(10),
+                ..Default::default()
+            },
+            None,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+        // scene2 is set earlier (day 5) without a flashback marker.
+        repo.upsert_scene_clock(
+            &scene2.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(5),
+                ..Default::default()
+            },
+            None,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+
+        let input = || CheckConsistencyInput {
+            project_id: proj.project_id.clone(),
+            scope: ConsistencyScopeInput::full(),
+            checks: vec!["chronology".to_string()],
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        };
+
+        let flagged = svc.check_consistency(input()).await.unwrap();
+        assert!(
+            flagged.issues.iter().any(|i| i.check_type == "chronology"),
+            "unmarked backward time jump should be flagged: {:?}",
+            flagged.issues
+        );
+
+        // Marking scene2 as a flashback clears the finding.
+        repo.upsert_scene_clock(
+            &scene2.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(5),
+                ..Default::default()
+            },
+            Some("flashback"),
+            Some("main"),
+        )
+        .await
+        .unwrap();
+        let cleared = svc.check_consistency(input()).await.unwrap();
+        assert!(
+            !cleared.issues.iter().any(|i| i.check_type == "chronology"),
+            "flashback-marked scene must not be flagged: {:?}",
+            cleared.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_surfaces_in_world_time_hard_constraint() {
+        use spindle_core::models::{
+            CalendarDef, ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+            StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "ctx-clock".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "The market opened.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let repo = svc.repository();
+        let branch_id = repo.get_scene(&scene.scene_id).await.unwrap().branch_id;
+        let calendar = CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: Some("Founding".into()),
+        };
+        repo.upsert_project_calendar(&proj.project_id, &calendar)
+            .await
+            .unwrap();
+        repo.upsert_scene_clock(
+            &scene.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(42),
+                ..Default::default()
+            },
+            None,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+
+        let location = svc
+            .create_location(spindle_core::models::CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Market".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A market square.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.hard_constraints
+                .iter()
+                .any(|c| c.statement.contains("IN-WORLD TIME") || c.id.contains("IN-WORLD TIME")),
+            "scene context should surface the in-world time hard constraint: {:?}",
+            ctx.hard_constraints
         );
     }
 

@@ -1175,6 +1175,67 @@ impl Repository {
             .await
     }
 
+    pub async fn list_scene_clocks_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredSceneClock>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM scene_clock WHERE project_id = ?1 AND branch_id = ?2",
+                    crate::sqlite::records::SCENE_CLOCK_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredSceneClock::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// The most recent dated scene clock at or before `cursor_index` (a packed
+    /// `format::story_index` value) on the branch. Used to surface the current
+    /// in-world time when assembling drafting context.
+    pub async fn latest_scene_clock_at_or_before(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        cursor_index: i64,
+    ) -> Result<Option<crate::sqlite::records::StoredSceneClock>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Same packing as `format::story_index` (book*1_000_000 + chapter*1_000 + scene_order).
+                let position =
+                    "(s.book_number * 1000000 + s.chapter_number * 1000 + s.scene_order)";
+                let sql = format!(
+                    "SELECT sc.scene_id, sc.project_id, sc.branch_id, sc.day_index, sc.time_of_day, \
+                            sc.duration_days, sc.precision, sc.temporal_mode, sc.thread_key, \
+                            sc.created_at, sc.updated_at \
+                     FROM scene_clock sc JOIN scene s ON s.id = sc.scene_id \
+                     WHERE sc.project_id = ?1 AND sc.branch_id = ?2 AND sc.day_index IS NOT NULL \
+                       AND {position} <= ?3 \
+                     ORDER BY {position} DESC LIMIT 1"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(
+                    rusqlite::params![&project_id, &branch_id, cursor_index],
+                    |r| crate::sqlite::records::StoredSceneClock::try_from(r),
+                )
+                .optional_inner()
+            })
+            .await
+    }
+
     pub async fn upsert_timeline_event_clock(
         &self,
         timeline_event_id: &str,
