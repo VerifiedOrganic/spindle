@@ -2949,6 +2949,37 @@ impl Repository {
         self.get_world_rule(&id_out).await
     }
 
+    /// Re-home the given world rules onto `target_branch_id` so branch-local
+    /// world-rule canon is not lost on merge. The world_rule table has a
+    /// project-wide `(project_id, rule_type, rule_name)` unique index, so a rule
+    /// cannot be duplicated across branches — the existing row is moved instead.
+    pub async fn merge_world_rules_to_branch(
+        &self,
+        target_branch_id: &str,
+        rule_ids: &[String],
+    ) -> Result<usize> {
+        if rule_ids.is_empty() {
+            return Ok(0);
+        }
+        let target_branch_id = target_branch_id.to_string();
+        let ids: Vec<String> = rule_ids.to_vec();
+        let count = ids.len();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                for id in &ids {
+                    conn.execute(
+                        "UPDATE world_rule SET branch_id = ?1, updated_at = ?2 WHERE id = ?3",
+                        rusqlite::params![&target_branch_id, now, id],
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(count)
+    }
+
     pub async fn get_world_rule(&self, id: &str) -> Result<WorldRule> {
         let id = id.to_string();
         self.inner

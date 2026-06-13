@@ -12067,6 +12067,20 @@ impl SqliteSpindleService {
             )
             .await?;
 
+        // Carry branch-local world-rule canon, which the snapshot above silently
+        // drops. Only rules created ON the source branch are re-homed to target.
+        let source_local_rule_ids: Vec<String> = self
+            .repository
+            .list_world_rules_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|rule| rule.branch_id == input.source_branch_id)
+            .map(|rule| rule.id)
+            .collect();
+        self.repository
+            .merge_world_rules_to_branch(&target_branch_id, &source_local_rule_ids)
+            .await?;
+
         Ok(MergeBranchOutput {
             source_branch_id: input.source_branch_id,
             target_branch_id,
@@ -25583,6 +25597,83 @@ rating = "explicit"
             digests[0].synopsis.matches("duels the warden").count(),
             1,
             "chapter must appear exactly once after re-save"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_branch_carries_world_rule_canon() {
+        use spindle_core::models::{
+            CreateBranchInput, CreateWorldRuleInput, MergeBranchInput, SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "merge".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let main_branch = svc
+            .repository()
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+        let feature = svc
+            .create_branch(CreateBranchInput {
+                project_id: proj.project_id.clone(),
+                name: "feature".into(),
+                branch_type: "experiment".into(),
+                description: None,
+                parent_branch_id: Some(main_branch.id.clone()),
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: proj.project_id.clone(),
+            branch_id: feature.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+        // A branch-local world rule that today is dropped on merge.
+        svc.create_world_rule(CreateWorldRuleInput {
+            project_id: proj.project_id.clone(),
+            rule_name: "Iron repels the fae".into(),
+            rule_type: "magic".into(),
+            description: "Cold iron burns fae flesh.".into(),
+            scan_pattern: None,
+            relevance_tags: Vec::new(),
+            established_in: None,
+        })
+        .await
+        .unwrap();
+
+        svc.merge_branch(MergeBranchInput {
+            project_id: proj.project_id.clone(),
+            source_branch_id: feature.branch_id.clone(),
+            target_branch_id: Some(main_branch.id.clone()),
+            merge_type: "squash".into(),
+        })
+        .await
+        .unwrap();
+
+        let main_rules = svc
+            .repository()
+            .list_world_rules_by_project_and_branch(&proj.project_id, &main_branch.id)
+            .await
+            .unwrap();
+        assert!(
+            main_rules
+                .iter()
+                .any(|r| r.rule_name == "Iron repels the fae"),
+            "branch-local world rule must survive merge into main: {:?}",
+            main_rules.iter().map(|r| &r.rule_name).collect::<Vec<_>>()
         );
     }
 
