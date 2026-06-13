@@ -7363,6 +7363,70 @@ impl SqliteSpindleService {
             }
         }
 
+        // ── Knowledge timing: prose referencing not-yet-learned facts ──
+        // A present character who references, in prose, a knowledge_fact they do
+        // not learn until a later story position. High-precision/low-recall, so
+        // an advisory warning. Mirrors the write-time premature-knowledge scan.
+        if should_run_check(&requested_checks_set, "knowledge_timing") {
+            let knowledge_facts = self
+                .repository
+                .list_knowledge_facts_by_project_and_branch(&project_id, &active_branch.id)
+                .await?;
+            if !knowledge_facts.is_empty() {
+                let characters = self
+                    .repository
+                    .list_characters_by_project_and_branch(&project_id, &active_branch.id)
+                    .await?;
+                let character_by_id: BTreeMap<String, &crate::sqlite::records::Character> =
+                    characters.iter().map(|c| (c.id.clone(), c)).collect();
+                for scene in &scenes {
+                    let scene_position =
+                        (scene.book_number, scene.chapter_number, scene.scene_order);
+                    for fact in &knowledge_facts {
+                        let Some(learned_at) = fact.learned_at.as_ref() else {
+                            continue;
+                        };
+                        let learned_position = (
+                            learned_at.book_number,
+                            learned_at.chapter_number,
+                            learned_at.scene_order.unwrap_or(0),
+                        );
+                        if !position_gt(learned_position, scene_position) {
+                            continue;
+                        }
+                        let Some(character) = character_by_id.get(&fact.character_id) else {
+                            continue;
+                        };
+                        if !contains_case_insensitive_word_boundary(
+                            &scene.full_text,
+                            &character.name,
+                        ) {
+                            continue;
+                        }
+                        if !contains_case_insensitive_phrase(
+                            &scene.full_text,
+                            &fact.normalized_fact,
+                        ) {
+                            continue;
+                        }
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "knowledge_timing".to_string(),
+                            message: format!(
+                                "scene has '{}' reference knowledge they do not learn until book {} chapter {}",
+                                character.name, learned_at.book_number, learned_at.chapter_number
+                            ),
+                            entity_ids: vec![scene.id.clone(), fact.character_id.clone()],
+                            suggested_action: Some(
+                                "move the reveal, or record the character learning this earlier"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
         if should_run_check(&requested_checks_set, "tone_consistency") {
             let allowed_boundaries = self
                 .repository
@@ -25603,6 +25667,113 @@ rating = "explicit"
             digests[0].synopsis.matches("duels the warden").count(),
             1,
             "chapter must appear exactly once after re-save"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_consistency_flags_premature_knowledge() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
+            ConsistencyScopeInput, ContentRating, CreateCharacterInput, RecordKnowledgeInput,
+            SaveSceneDraftInput, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "kt".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let mara = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Warden".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        svc.record_knowledge(RecordKnowledgeInput {
+            project_id: proj.project_id.clone(),
+            branch_id: None,
+            character_id: mara.character_id.clone(),
+            fact: "knows the vault password is raven".into(),
+            source_summary: "told later".into(),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 40,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: None,
+            tags: Vec::new(),
+            reader_visible: true,
+        })
+        .await
+        .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Mara knows the vault password is raven, somehow.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["knowledge_timing".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.issues
+                .iter()
+                .any(|i| i.check_type == "knowledge_timing"),
+            "check_consistency should flag premature knowledge: {:?}",
+            out.issues
         );
     }
 
