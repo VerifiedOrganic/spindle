@@ -2156,6 +2156,52 @@ impl SqliteSpindleService {
                 input.to_scene_order,
             )
             .await?;
+
+        // Moving a scene changes its placement, so placement-keyed validator
+        // findings (canonical_fact_prose_drift, retcon_reachability) for the
+        // moved scene and everything at/after the earlier of the source and
+        // destination positions are now stale. Resolve them so they recompute.
+        let from_index = crate::format::story_index(
+            input.from_book_number,
+            input.from_chapter_number,
+            input.from_scene_order,
+        );
+        let to_index = crate::format::story_index(
+            input.to_book_number,
+            input.to_chapter_number,
+            input.to_scene_order,
+        );
+        let (earliest_book, earliest_chapter, earliest_order) = if from_index <= to_index {
+            (
+                input.from_book_number,
+                input.from_chapter_number,
+                input.from_scene_order,
+            )
+        } else {
+            (
+                input.to_book_number,
+                input.to_chapter_number,
+                input.to_scene_order,
+            )
+        };
+        let mut affected_scene_ids = vec![moved.id.clone()];
+        affected_scene_ids.extend(
+            self.repository
+                .list_scenes_after_position(
+                    &input.project_id,
+                    &branch_id,
+                    earliest_book,
+                    earliest_chapter,
+                    earliest_order - 1,
+                )
+                .await?
+                .into_iter()
+                .map(|scene| scene.id),
+        );
+        self.repository
+            .resolve_validator_findings_for_scenes(&branch_id, &affected_scene_ids)
+            .await?;
+
         // Did the source position get a gap? Check whether a scene now
         // exists at from_scene_order + 1 in the source chapter.
         let later = self
@@ -25515,6 +25561,100 @@ rating = "explicit"
             digests[0].synopsis.matches("duels the warden").count(),
             1,
             "chapter must appear exactly once after re-save"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_scene_resolves_stale_validator_findings() {
+        use crate::sqlite::repository::UpsertValidatorFindingParams;
+        use spindle_core::models::{ContentRating, MoveSceneInput, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "mv".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let repo = svc.repository();
+        let branch = repo.get_active_branch(&proj.project_id).await.unwrap();
+
+        // Cache an open, placement-dependent finding on the scene.
+        repo.upsert_validator_finding(UpsertValidatorFindingParams {
+            project_id: proj.project_id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene.scene_id.clone(),
+            scene_text_hash: "hash1".into(),
+            context_hash: None,
+            validator_id: "canonical_fact_prose_drift".into(),
+            finding_id: "f1".into(),
+            severity: "error".into(),
+            message: "stale finding".into(),
+            byte_range: None,
+            details_json: None,
+        })
+        .await
+        .unwrap();
+        let before = repo
+            .list_validator_findings_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        assert!(
+            before
+                .iter()
+                .any(|f| f.scene_id == scene.scene_id && f.resolved_at.is_none()),
+            "precondition: an open finding exists for the scene"
+        );
+
+        // Moving the scene changes its placement, so the cached finding is stale.
+        svc.move_scene(MoveSceneInput {
+            project_id: proj.project_id.clone(),
+            from_book_number: 1,
+            from_chapter_number: 1,
+            from_scene_order: 1,
+            to_book_number: 1,
+            to_chapter_number: 2,
+            to_scene_order: 1,
+        })
+        .await
+        .unwrap();
+
+        let after = repo
+            .list_validator_findings_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        let scene_findings: Vec<_> = after
+            .iter()
+            .filter(|f| f.scene_id == scene.scene_id)
+            .collect();
+        assert!(!scene_findings.is_empty(), "finding still tracked");
+        assert!(
+            scene_findings.iter().all(|f| f.resolved_at.is_some()),
+            "moved scene's stale findings must be resolved: {scene_findings:?}"
         );
     }
 
