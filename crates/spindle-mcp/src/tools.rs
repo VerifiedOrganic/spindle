@@ -3113,6 +3113,10 @@ impl ToolRouter {
                     canonical_facts,
                     relationship_updates,
                     accept_world_rule_risks: true,
+                    // Autonomous supervisor commit: surface continuity findings on
+                    // the output without halting the run.
+                    accept_continuity_risks: false,
+                    continuity_gate: Some(spindle_core::models::CommitContinuityGate::WarnOnly),
                 })
                 .await
                 .with_context(|| {

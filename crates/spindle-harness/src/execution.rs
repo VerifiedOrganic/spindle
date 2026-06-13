@@ -286,6 +286,10 @@ async fn commit_scene_changes(
                 canonical_facts,
                 relationship_updates,
                 accept_world_rule_risks: true,
+                // Surface continuity findings on the commit output without halting
+                // the unattended batch; the supervisor inspects them at checkpoints.
+                accept_continuity_risks: false,
+                continuity_gate: Some(spindle_core::models::CommitContinuityGate::WarnOnly),
             })
             .await
             .with_context(|| {

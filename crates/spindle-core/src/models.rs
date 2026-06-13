@@ -1557,6 +1557,27 @@ pub struct CommitSceneChangesInput {
     pub relationship_updates: Vec<RelationshipUpdateEntry>,
     #[serde(default)]
     pub accept_world_rule_risks: bool,
+    /// When true, bypass the write-time continuity gate (canonical-fact
+    /// contradictions and prose retcons) even under `BlockErrors`.
+    #[serde(default)]
+    pub accept_continuity_risks: bool,
+    /// How the write-time continuity gate behaves. Defaults to `BlockErrors`
+    /// (block the commit on continuity errors unless `accept_continuity_risks`).
+    #[serde(default)]
+    pub continuity_gate: Option<CommitContinuityGate>,
+}
+
+/// Behavior of the write-time continuity gate on `commit_scene_changes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitContinuityGate {
+    /// Do not run the gate.
+    Off,
+    /// Run the gate and return findings, but never block the commit.
+    WarnOnly,
+    /// Block the commit when continuity errors are found (the default).
+    #[default]
+    BlockErrors,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1817,6 +1838,14 @@ pub struct CommitSceneChangesOutput {
     pub world_rule_hits: Vec<WorldRuleHit>,
     #[serde(default)]
     pub findings_summary: CommitSceneFindingsSummary,
+    /// Continuity findings (canonical-fact contradictions + retcons) detected by
+    /// the write-time gate. Error-severity entries are what would block the
+    /// commit under `BlockErrors`.
+    #[serde(default)]
+    pub blocking_continuity_findings: Vec<ConsistencyIssue>,
+    /// Structured retcon findings surfaced by the write-time gate.
+    #[serde(default)]
+    pub retcon_findings: Vec<RetconFinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]

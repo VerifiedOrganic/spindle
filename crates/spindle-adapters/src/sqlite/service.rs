@@ -7518,56 +7518,38 @@ impl SqliteSpindleService {
             }
         }
 
-        // ── Gate 2: canonical fact contradiction detection ───────────
+        // ── Gate 2: scope-aware canonical fact contradiction detection ──
+        // Two active facts conflict only when they share a subject+predicate key,
+        // carry different values, AND have overlapping validity windows. Facts
+        // with disjoint windows are legitimate evolving state, not contradictions.
         if should_run_check(&requested_checks_set, "canonical_fact_consistency") {
             let facts = self
                 .repository
                 .list_active_canonical_facts_by_project(&project_id)
                 .await?;
-            // Group active facts by canonical subject+predicate to find contradictions.
-            let mut facts_by_key: BTreeMap<String, Vec<&crate::sqlite::records::CanonicalFact>> =
-                BTreeMap::new();
-            for fact in &facts {
-                let subject_key = fact
-                    .subject_id
-                    .clone()
-                    .unwrap_or_else(|| "project".to_string());
-                facts_by_key
-                    .entry(format!(
-                        "{}:{}:{}",
-                        fact.subject_table, subject_key, fact.predicate
-                    ))
-                    .or_default()
-                    .push(fact);
-            }
-            for (composite_key, group) in &facts_by_key {
-                if group.len() > 1 {
-                    // Multiple active (non-superseded) facts with the same key — contradiction.
-                    let values: Vec<String> = group
-                        .iter()
-                        .map(|fact| canonical_fact_value_for_check(fact))
-                        .collect();
-                    let unique_values: BTreeSet<&str> = values.iter().map(String::as_str).collect();
-                    if unique_values.len() > 1 {
-                        issues.push(ConsistencyIssue {
-                            severity: "error".to_string(),
-                            check_type: "canonical_fact_consistency".to_string(),
-                            message: format!(
-                                "canonical fact '{}' has conflicting active values: {}",
-                                composite_key,
-                                unique_values
-                                    .iter()
-                                    .map(|v| format!("'{}'", v))
-                                    .collect::<Vec<_>>()
-                                    .join(" vs ")
-                            ),
-                            entity_ids: group.iter().map(|f| f.id.clone()).collect(),
-                            suggested_action: Some(
-                                "supersede the outdated fact using register_canonical_fact with supersedes_fact_id".to_string(),
-                            ),
-                        });
-                    }
-                }
+            let candidates: Vec<crate::format::ContradictionCandidate> = facts
+                .iter()
+                .map(crate::format::candidate_from_canonical_fact)
+                .collect();
+            for contradiction in crate::format::detect_fact_contradictions(&candidates) {
+                issues.push(ConsistencyIssue {
+                    severity: "error".to_string(),
+                    check_type: "canonical_fact_consistency".to_string(),
+                    message: format!(
+                        "canonical fact '{}' has conflicting active values: {}",
+                        contradiction.composite_key,
+                        contradiction
+                            .values
+                            .iter()
+                            .map(|value| format!("'{value}'"))
+                            .collect::<Vec<_>>()
+                            .join(" vs ")
+                    ),
+                    entity_ids: contradiction.conflicting_ids,
+                    suggested_action: Some(
+                        "supersede the outdated fact (register_canonical_fact with supersedes_fact_id) or set distinct validity windows".to_string(),
+                    ),
+                });
             }
         }
 
@@ -8881,6 +8863,82 @@ impl SqliteSpindleService {
             );
         }
 
+        // ── Write-time continuity gate ────────────────────────────────
+        // Detect canonical-fact contradictions (scope/validity-window aware,
+        // including the prospective facts in this commit) and prose retcons
+        // BEFORE any mutation, so unattended runs cannot silently bake in drift
+        // the validators already detect.
+        let continuity_gate = input
+            .continuity_gate
+            .unwrap_or(spindle_core::models::CommitContinuityGate::BlockErrors);
+        let (blocking_continuity_findings, retcon_findings) =
+            if continuity_gate == spindle_core::models::CommitContinuityGate::Off {
+                (Vec::new(), Vec::new())
+            } else {
+                let active_facts = self
+                    .repository
+                    .list_active_canonical_facts_by_project(&project_id)
+                    .await?;
+                let mut candidates: Vec<crate::format::ContradictionCandidate> = active_facts
+                    .iter()
+                    .map(crate::format::candidate_from_canonical_fact)
+                    .collect();
+                for (idx, entry) in input.canonical_facts.iter().enumerate() {
+                    if let Some(candidate) = crate::format::candidate_from_commit_entry(
+                        entry,
+                        format!("(pending fact {idx})"),
+                    ) {
+                        candidates.push(candidate);
+                    }
+                }
+                let mut findings: Vec<spindle_core::models::ConsistencyIssue> =
+                    crate::format::detect_fact_contradictions(&candidates)
+                        .into_iter()
+                        .map(|contradiction| spindle_core::models::ConsistencyIssue {
+                            severity: "error".to_string(),
+                            check_type: "canonical_fact_consistency".to_string(),
+                            message: format!(
+                                "committing this scene would leave canonical fact '{}' with conflicting active values: {}",
+                                contradiction.composite_key,
+                                contradiction
+                                    .values
+                                    .iter()
+                                    .map(|value| format!("'{value}'"))
+                                    .collect::<Vec<_>>()
+                                    .join(" vs ")
+                            ),
+                            entity_ids: contradiction.conflicting_ids,
+                            suggested_action: Some(
+                                "supersede the outdated fact (supersedes_fact_id) or set distinct validity windows".to_string(),
+                            ),
+                        })
+                        .collect();
+                let retcons = self.scan_retcon_findings(&project_id, &scene).await?;
+                findings.extend(retcons.iter().map(retcon_finding_to_consistency_issue));
+                (findings, retcons)
+            };
+
+        if continuity_gate == spindle_core::models::CommitContinuityGate::BlockErrors
+            && !input.accept_continuity_risks
+        {
+            let blocking: Vec<&spindle_core::models::ConsistencyIssue> = blocking_continuity_findings
+                .iter()
+                .filter(|issue| issue.severity == "error")
+                .collect();
+            if !blocking.is_empty() {
+                anyhow::bail!(
+                    "commit_scene_changes blocked by {} continuity error(s); \
+                     set accept_continuity_risks=true to override: {}",
+                    blocking.len(),
+                    blocking
+                        .iter()
+                        .map(|issue| issue.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+        }
+
         let mut character_states = Vec::with_capacity(input.character_states.len());
         for entry in input.character_states {
             let character_id = entry.character_id.clone();
@@ -9051,6 +9109,8 @@ impl SqliteSpindleService {
             relationship_updates,
             world_rule_hits,
             findings_summary,
+            blocking_continuity_findings,
+            retcon_findings,
         };
 
         // Best-effort session activity log: failure here doesn't fail the
@@ -18226,26 +18286,58 @@ fn heuristic_world_rule_violations(
 /// Render a canonical-fact value to its display string. Order of
 /// preference: text → number → json → "<unset>". Mirrors
 /// `canonical_fact_value_for_check` in 705b835^.
+/// Canonicalize a stored fact's value for consistency comparisons. Thin delegate
+/// to [`crate::format::canonical_fact_value`] so there is a single source of truth.
 fn canonical_fact_value_for_check(fact: &crate::sqlite::records::CanonicalFact) -> String {
-    if let Some(value) = fact.value_text.clone().filter(|value| !value.is_empty()) {
-        return value;
+    crate::format::canonical_fact_value(fact)
+}
+
+/// Map a structured [`spindle_core::models::RetconFinding`] to a
+/// [`spindle_core::models::ConsistencyIssue`] for the write-time continuity gate.
+/// All retcon classes surface as errors.
+fn retcon_finding_to_consistency_issue(
+    finding: &spindle_core::models::RetconFinding,
+) -> spindle_core::models::ConsistencyIssue {
+    use spindle_core::models::RetconFinding;
+    match finding {
+        RetconFinding::OutOfBandsKnowledge {
+            character_id,
+            message,
+            ..
+        } => spindle_core::models::ConsistencyIssue {
+            severity: "error".to_string(),
+            check_type: "retcon_reachability".to_string(),
+            message: message.clone(),
+            entity_ids: vec![character_id.clone()],
+            suggested_action: Some(
+                "anchor the knowledge with future_knowledge or move the reveal later".to_string(),
+            ),
+        },
+        RetconFinding::MissingFutureKnowledgeAnchor {
+            intervention_id,
+            message,
+            ..
+        } => spindle_core::models::ConsistencyIssue {
+            severity: "error".to_string(),
+            check_type: "retcon_reachability".to_string(),
+            message: message.clone(),
+            entity_ids: vec![intervention_id.clone()],
+            suggested_action: Some("add the missing future_knowledge anchor".to_string()),
+        },
+        RetconFinding::DeadCharacterAct {
+            character_id,
+            message,
+            ..
+        } => spindle_core::models::ConsistencyIssue {
+            severity: "error".to_string(),
+            check_type: "retcon_reachability".to_string(),
+            message: message.clone(),
+            entity_ids: vec![character_id.clone()],
+            suggested_action: Some(
+                "revise so the deceased character does not act, or update their status".to_string(),
+            ),
+        },
     }
-    if let Some(value) = fact
-        .value_number
-        .map(|value| value.to_string())
-        .filter(|value| !value.is_empty())
-    {
-        return value;
-    }
-    if let Some(value) = fact
-        .value_json
-        .as_ref()
-        .map(serde_json::Value::to_string)
-        .filter(|value| !value.is_empty())
-    {
-        return value;
-    }
-    "<unset>".to_string()
 }
 
 /// Render the `check_consistency` markdown report. Errors land under the
@@ -24383,6 +24475,121 @@ rating = "explicit"
     /// (Phase-4 fan-out is gated, so `findings_summary` is documented as
     /// empty).
     #[tokio::test]
+    async fn commit_scene_changes_blocks_contradicting_canonical_fact() {
+        use spindle_core::models::{
+            CanonicalFactEntry, CanonicalFactScope, CommitSceneChangesInput, ContentRating,
+            SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "gate".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Her eyes were blue.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let blue = CanonicalFactEntry {
+            fact_type: None,
+            key: None,
+            value: None,
+            subject_table: Some("character".into()),
+            subject_id: Some("character:mara".into()),
+            predicate: Some("eye_color".into()),
+            value_kind: Some("string".into()),
+            value_text: Some("blue".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: Some(CanonicalFactScope::Invariant),
+            valid_from: None,
+            valid_until: None,
+            context: None,
+            supersedes_fact_id: None,
+        };
+
+        // Establish eye_color = blue.
+        svc.commit_scene_changes(CommitSceneChangesInput {
+            project_id: proj.project_id.clone(),
+            scene_id: scene.scene_id.clone(),
+            character_states: Vec::new(),
+            canonical_facts: vec![blue.clone()],
+            relationship_updates: Vec::new(),
+            accept_world_rule_risks: false,
+            accept_continuity_risks: false,
+            continuity_gate: None,
+        })
+        .await
+        .unwrap();
+
+        // An unbounded, non-superseding eye_color = brown contradicts canon and
+        // must be blocked by the write-time continuity gate.
+        let mut brown = blue.clone();
+        brown.value_text = Some("brown".into());
+        let blocked = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: vec![brown.clone()],
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: None,
+            })
+            .await;
+        assert!(
+            blocked.is_err(),
+            "contradicting canonical fact should be blocked by the continuity gate"
+        );
+
+        // The same commit goes through once the caller accepts the risk.
+        let overridden = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: vec![brown],
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: true,
+                continuity_gate: None,
+            })
+            .await;
+        assert!(
+            overridden.is_ok(),
+            "accept_continuity_risks should allow the commit: {:?}",
+            overridden.err()
+        );
+    }
+
+    #[tokio::test]
     async fn commit_scene_changes_happy_path_state_and_fact() {
         use spindle_core::models::{
             CanonicalFactEntry, CanonicalFactScope, CharacterEmotionalProfileData,
@@ -24522,6 +24729,8 @@ rating = "explicit"
                     reason: "Mara accepts Tal's warning at the gate.".into(),
                 }],
                 accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: Some(spindle_core::models::CommitContinuityGate::Off),
             })
             .await
             .unwrap();
@@ -24685,6 +24894,8 @@ rating = "explicit"
             }],
             relationship_updates: Vec::new(),
             accept_world_rule_risks: false,
+            accept_continuity_risks: false,
+            continuity_gate: Some(spindle_core::models::CommitContinuityGate::Off),
         })
         .await
         .unwrap();
@@ -24727,6 +24938,8 @@ rating = "explicit"
                 canonical_facts: Vec::new(),
                 relationship_updates: Vec::new(),
                 accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: Some(spindle_core::models::CommitContinuityGate::Off),
             })
             .await
             .unwrap();

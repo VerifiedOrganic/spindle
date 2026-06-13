@@ -3098,6 +3098,210 @@ pub fn branch_summary(branch: &BibleBranch, active_branch_id: Option<&str>) -> B
     }
 }
 
+/// A canonical-fact assertion reduced to exactly what contradiction detection
+/// needs: its `subject_table:subject_id:predicate` key, its canonicalized value,
+/// its half-open validity window `[from, until)` as story indices (None =
+/// unbounded), and the id of a fact it explicitly supersedes (if any).
+#[derive(Debug, Clone)]
+pub struct ContradictionCandidate {
+    pub id: String,
+    pub key: String,
+    pub value: String,
+    pub from_index: Option<i64>,
+    pub until_index: Option<i64>,
+    pub supersedes: Option<String>,
+}
+
+/// A detected contradiction: two or more candidates sharing a key that carry
+/// different values over overlapping validity windows.
+#[derive(Debug, Clone)]
+pub struct FactContradiction {
+    pub composite_key: String,
+    pub conflicting_ids: Vec<String>,
+    pub values: Vec<String>,
+}
+
+/// Build the canonical `subject_table:subject_id:predicate` grouping key. A
+/// missing subject id collapses to the project-level `project` sentinel, matching
+/// how facts are grouped elsewhere.
+pub fn contradiction_subject_key(
+    subject_table: &str,
+    subject_id: Option<&str>,
+    predicate: &str,
+) -> String {
+    format!(
+        "{}:{}:{}",
+        subject_table,
+        subject_id.unwrap_or("project"),
+        predicate
+    )
+}
+
+/// Half-open `[from, until)` overlap test, treating `None` as unbounded. Adjacent
+/// windows (`a.until == b.from`) do NOT overlap, so consecutive evolving states
+/// are not flagged.
+fn validity_windows_overlap(a: &ContradictionCandidate, b: &ContradictionCandidate) -> bool {
+    let a_starts_before_b_ends = match (a.from_index, b.until_index) {
+        (Some(a_from), Some(b_until)) => a_from < b_until,
+        _ => true,
+    };
+    let b_starts_before_a_ends = match (b.from_index, a.until_index) {
+        (Some(b_from), Some(a_until)) => b_from < a_until,
+        _ => true,
+    };
+    a_starts_before_b_ends && b_starts_before_a_ends
+}
+
+/// Scope-aware canonical-fact contradiction detection. Two facts conflict only
+/// when they share a key, carry different values, have OVERLAPPING (or unbounded)
+/// validity windows, and neither explicitly supersedes the other. Facts whose
+/// windows are disjoint (legitimate evolving state across story time) are not
+/// reported — this replaces the previous behavior that treated any two differing
+/// active facts as a contradiction regardless of their validity windows.
+pub fn detect_fact_contradictions(candidates: &[ContradictionCandidate]) -> Vec<FactContradiction> {
+    let mut by_key: std::collections::BTreeMap<&str, Vec<&ContradictionCandidate>> =
+        std::collections::BTreeMap::new();
+    for candidate in candidates {
+        by_key
+            .entry(candidate.key.as_str())
+            .or_default()
+            .push(candidate);
+    }
+
+    let mut contradictions = Vec::new();
+    for (key, group) in by_key {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut conflicting_ids: BTreeSet<String> = BTreeSet::new();
+        let mut values: BTreeSet<String> = BTreeSet::new();
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                if a.value == b.value {
+                    continue;
+                }
+                if a.supersedes.as_deref() == Some(b.id.as_str())
+                    || b.supersedes.as_deref() == Some(a.id.as_str())
+                {
+                    continue;
+                }
+                if validity_windows_overlap(a, b) {
+                    conflicting_ids.insert(a.id.clone());
+                    conflicting_ids.insert(b.id.clone());
+                    values.insert(a.value.clone());
+                    values.insert(b.value.clone());
+                }
+            }
+        }
+        if values.len() >= 2 {
+            contradictions.push(FactContradiction {
+                composite_key: key.to_string(),
+                conflicting_ids: conflicting_ids.into_iter().collect(),
+                values: values.into_iter().collect(),
+            });
+        }
+    }
+    contradictions
+}
+
+/// Canonicalize a stored fact's value: prefer text, then number, then JSON, else
+/// the `<unset>` sentinel.
+pub fn canonical_fact_value(fact: &crate::sqlite::records::CanonicalFact) -> String {
+    if let Some(value) = fact.value_text.clone().filter(|value| !value.is_empty()) {
+        return value;
+    }
+    if let Some(value) = fact
+        .value_number
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = fact
+        .value_json
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    "<unset>".to_string()
+}
+
+/// Reduce a stored canonical fact to a [`ContradictionCandidate`]. Active facts
+/// carry no supersedes link (they are the survivors), so `supersedes` is None.
+pub fn candidate_from_canonical_fact(
+    fact: &crate::sqlite::records::CanonicalFact,
+) -> ContradictionCandidate {
+    ContradictionCandidate {
+        id: fact.id.clone(),
+        key: contradiction_subject_key(
+            &fact.subject_table,
+            fact.subject_id.as_deref(),
+            &fact.predicate,
+        ),
+        value: canonical_fact_value(fact),
+        from_index: fact.valid_from.as_ref().map(story_index_from_placement),
+        until_index: fact.valid_until.as_ref().map(story_index_from_placement),
+        supersedes: None,
+    }
+}
+
+/// Canonicalize an inbound commit fact entry's value (mirrors
+/// [`canonical_fact_value`], with the legacy `value` string as a final fallback).
+fn commit_entry_value(entry: &spindle_core::models::CanonicalFactEntry) -> String {
+    if let Some(value) = entry.value_text.clone().filter(|value| !value.is_empty()) {
+        return value;
+    }
+    if let Some(value) = entry
+        .value_number
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = entry
+        .value_json
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = entry.value.clone().filter(|value| !value.is_empty()) {
+        return value;
+    }
+    "<unset>".to_string()
+}
+
+/// Reduce a prospective commit fact entry to a [`ContradictionCandidate`]. Only
+/// typed entries (explicit `subject_table` plus `predicate`/`key`) can be keyed
+/// the same way stored facts are; untyped/legacy entries return None and are not
+/// checked for contradictions here.
+pub fn candidate_from_commit_entry(
+    entry: &spindle_core::models::CanonicalFactEntry,
+    pending_id: String,
+) -> Option<ContradictionCandidate> {
+    let subject_table = entry.subject_table.as_deref()?;
+    let predicate = entry.predicate.as_deref().or(entry.key.as_deref())?;
+    let placement_index = |placement: &spindle_core::models::StoryPlacement| {
+        story_index(
+            placement.book_number,
+            placement.chapter_number,
+            placement.scene_order.unwrap_or(0),
+        )
+    };
+    Some(ContradictionCandidate {
+        id: pending_id,
+        key: contradiction_subject_key(subject_table, entry.subject_id.as_deref(), predicate),
+        value: commit_entry_value(entry),
+        from_index: entry.valid_from.as_ref().map(placement_index),
+        until_index: entry.valid_until.as_ref().map(placement_index),
+        supersedes: entry.supersedes_fact_id.clone(),
+    })
+}
+
 #[cfg(test)]
 mod promise_timing_tests {
     use super::*;
@@ -3208,5 +3412,84 @@ mod promise_timing_tests {
             story_index(1, (CHAPTER_RADIX - 1) as i32, (SCENE_RADIX - 1) as i32)
                 < story_index(2, 0, 0)
         );
+    }
+}
+
+#[cfg(test)]
+mod contradiction_tests {
+    use super::*;
+
+    fn cand(
+        id: &str,
+        value: &str,
+        from: Option<i64>,
+        until: Option<i64>,
+        supersedes: Option<&str>,
+    ) -> ContradictionCandidate {
+        ContradictionCandidate {
+            id: id.to_string(),
+            key: "character:c1:eye_color".to_string(),
+            value: value.to_string(),
+            from_index: from,
+            until_index: until,
+            supersedes: supersedes.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn unbounded_facts_with_different_values_conflict() {
+        let candidates = vec![
+            cand("a", "blue", None, None, None),
+            cand("b", "brown", None, None, None),
+        ];
+        let found = detect_fact_contradictions(&candidates);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].values,
+            vec!["blue".to_string(), "brown".to_string()]
+        );
+    }
+
+    #[test]
+    fn disjoint_validity_windows_do_not_conflict() {
+        // A holds [day1, day10); B holds [day10, day20): adjacent, no overlap —
+        // legitimate evolving state, must NOT be flagged.
+        let candidates = vec![
+            cand("a", "captain", Some(1), Some(10), None),
+            cand("b", "major", Some(10), Some(20), None),
+        ];
+        assert!(detect_fact_contradictions(&candidates).is_empty());
+    }
+
+    #[test]
+    fn overlapping_validity_windows_conflict() {
+        let candidates = vec![
+            cand("a", "captain", Some(1), Some(20), None),
+            cand("b", "major", Some(10), Some(30), None),
+        ];
+        assert_eq!(detect_fact_contradictions(&candidates).len(), 1);
+    }
+
+    #[test]
+    fn superseding_fact_does_not_conflict() {
+        let candidates = vec![
+            cand("old", "blue", None, None, None),
+            cand("new", "brown", None, None, Some("old")),
+        ];
+        assert!(detect_fact_contradictions(&candidates).is_empty());
+    }
+
+    #[test]
+    fn identical_values_never_conflict() {
+        let candidates = vec![
+            cand("a", "blue", None, None, None),
+            cand("b", "blue", None, None, None),
+        ];
+        assert!(detect_fact_contradictions(&candidates).is_empty());
+    }
+
+    #[test]
+    fn single_fact_does_not_conflict() {
+        assert!(detect_fact_contradictions(&[cand("a", "blue", None, None, None)]).is_empty());
     }
 }
