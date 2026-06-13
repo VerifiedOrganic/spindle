@@ -2248,6 +2248,28 @@ impl SqliteSpindleService {
         let deleted_id = scene.id.clone();
         let scene_branch_id = scene.branch_id.clone();
         self.repository.delete_scene(&scene.id).await?;
+
+        // Deleting a scene shifts the relative order of everything after it, so
+        // placement-keyed validator findings for the deleted scene and the
+        // scenes at/after its position are now stale. Resolve them.
+        let mut affected_scene_ids = vec![scene.id.clone()];
+        affected_scene_ids.extend(
+            self.repository
+                .list_scenes_after_position(
+                    &input.project_id,
+                    &branch_id,
+                    input.book_number,
+                    input.chapter_number,
+                    input.scene_order,
+                )
+                .await?
+                .into_iter()
+                .map(|later_scene| later_scene.id),
+        );
+        self.repository
+            .resolve_validator_findings_for_scenes(&branch_id, &affected_scene_ids)
+            .await?;
+
         // Did deleting this scene leave a numeric gap? Check whether the next
         // higher scene_order still exists.
         let later = self
@@ -25561,6 +25583,103 @@ rating = "explicit"
             digests[0].synopsis.matches("duels the warden").count(),
             1,
             "chapter must appear exactly once after re-save"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_scene_resolves_downstream_validator_findings() {
+        use crate::sqlite::repository::UpsertValidatorFindingParams;
+        use spindle_core::models::{ContentRating, DeleteSceneInput, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "del".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "a".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let scene_b = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "b".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let repo = svc.repository();
+        let branch = repo.get_active_branch(&proj.project_id).await.unwrap();
+
+        // An open finding on the downstream scene B.
+        repo.upsert_validator_finding(UpsertValidatorFindingParams {
+            project_id: proj.project_id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_b.scene_id.clone(),
+            scene_text_hash: "hashb".into(),
+            context_hash: None,
+            validator_id: "canonical_fact_prose_drift".into(),
+            finding_id: "fb".into(),
+            severity: "error".into(),
+            message: "downstream finding".into(),
+            byte_range: None,
+            details_json: None,
+        })
+        .await
+        .unwrap();
+
+        // Deleting the scene before B shifts B's "scenes before" set.
+        svc.delete_scene(DeleteSceneInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+        })
+        .await
+        .unwrap();
+
+        let after = repo
+            .list_validator_findings_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        let b_findings: Vec<_> = after
+            .iter()
+            .filter(|f| f.scene_id == scene_b.scene_id)
+            .collect();
+        assert!(!b_findings.is_empty(), "downstream finding still tracked");
+        assert!(
+            b_findings.iter().all(|f| f.resolved_at.is_some()),
+            "downstream scene's stale findings must be resolved: {b_findings:?}"
         );
     }
 
