@@ -2460,6 +2460,14 @@ pub enum RetconFinding {
         status: String,
         message: String,
     },
+    /// A character references, in prose, a `knowledge_fact` they do not learn
+    /// until a later story position. High-precision/low-recall advisory.
+    PrematureKnowledge {
+        character_id: String,
+        fact: String,
+        learned_at: StoryPlacement,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
