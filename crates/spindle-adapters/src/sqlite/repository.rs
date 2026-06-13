@@ -7043,6 +7043,90 @@ impl Repository {
         self.get_pacing_tracker(&id_out).await
     }
 
+    pub async fn update_pacing_tracker_progress(
+        &self,
+        tracker_id: &str,
+        current_progress: f64,
+        budget_remaining: f64,
+        status: &str,
+    ) -> Result<()> {
+        let tracker_id = tracker_id.to_string();
+        let status = status.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE pacing_tracker SET current_progress = ?1, budget_remaining = ?2, \
+                     status = ?3, updated_at = ?4 WHERE id = ?5",
+                    rusqlite::params![
+                        current_progress,
+                        budget_remaining,
+                        &status,
+                        timestamp_to_micros(chrono::Utc::now()),
+                        &tracker_id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Recompute realized pacing for every arc tracker on the branch from the
+    /// number of chapter summaries in `book_number`. Each chapter advances the
+    /// arc by `max_progress_per_chapter`; when realized progress exceeds the
+    /// book's `per_book_budget` the tracker goes over budget (surfaced by
+    /// `pacing_budget_audit`). Deterministic and idempotent; trackers without a
+    /// budget for this book are left untouched.
+    pub async fn recompute_pacing_for_book(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+    ) -> Result<()> {
+        let chapter_count = {
+            let project_id = project_id.to_string();
+            let branch_id = branch_id.to_string();
+            self.inner
+                .pool
+                .read(move |conn| {
+                    let count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM chapter_summary \
+                         WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3",
+                        rusqlite::params![&project_id, &branch_id, book_number],
+                        |r| r.get(0),
+                    )?;
+                    Ok(count)
+                })
+                .await?
+        };
+        let trackers = self
+            .list_pacing_trackers_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let book_key = book_number.to_string();
+        for tracker in &trackers {
+            let Some(book_budget) = tracker.per_book_budget.get(&book_key).copied() else {
+                continue;
+            };
+            let rate = tracker.max_progress_per_chapter.unwrap_or(0.1);
+            let realized = chapter_count as f64 * rate;
+            let budget_remaining = book_budget - realized;
+            let current_progress = realized.min(1.5);
+            let status = if budget_remaining < 0.0 {
+                "ahead"
+            } else {
+                "on_track"
+            };
+            self.update_pacing_tracker_progress(
+                &tracker.id,
+                current_progress,
+                budget_remaining,
+                status,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn list_pacing_trackers_by_project_and_branch(
         &self,
         project_id: &str,

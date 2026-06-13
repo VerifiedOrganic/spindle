@@ -1014,6 +1014,12 @@ impl SqliteSpindleService {
     pub async fn save_summary(&self, input: SaveSummaryInput) -> Result<SaveSummaryOutput> {
         self.repository.get_project(&input.project_id).await?;
         let summary = self.repository.save_summary(&input).await?;
+        // Recompute realized arc pacing for the affected book so the previously
+        // inert pacing_budget_audit reflects actual chapter throughput.
+        let branch_id = self.repository.get_active_branch(&input.project_id).await?.id;
+        self.repository
+            .recompute_pacing_for_book(&input.project_id, &branch_id, input.book_number)
+            .await?;
         Ok(SaveSummaryOutput {
             chapter_summary_id: summary.id,
         })
@@ -25597,6 +25603,133 @@ rating = "explicit"
             digests[0].synopsis.matches("duels the warden").count(),
             1,
             "chapter must appear exactly once after re-save"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_summary_recomputes_pacing_over_budget() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
+            ConsistencyScopeInput, CreateCharacterArcInput, CreateCharacterInput,
+            CreatePacingConfigInput, SaveSummaryInput, SetArcPacingConstraintsInput,
+        };
+        use std::collections::BTreeMap;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "pace".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let mara = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Warden".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        svc.create_pacing_config(CreatePacingConfigInput {
+            project_id: proj.project_id.clone(),
+            total_planned_books: 1,
+            avg_chapters_per_book: 10,
+            avg_scenes_per_chapter: 3,
+            tension_model: "rising".into(),
+        })
+        .await
+        .unwrap();
+        let arc = svc
+            .create_character_arc(CreateCharacterArcInput {
+                project_id: proj.project_id.clone(),
+                character_id: mara.character_id.clone(),
+                arc_type: "growth".into(),
+                starting_state: "naive".into(),
+                ending_state: "wise".into(),
+                milestones: Vec::new(),
+                thematic_purpose: "coming of age".into(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.set_arc_pacing_constraints(SetArcPacingConstraintsInput {
+            project_id: proj.project_id.clone(),
+            character_arc_id: arc.character_arc_id.clone(),
+            per_book_budget: BTreeMap::from([("1".to_string(), 0.3)]),
+            max_progress_per_chapter: Some(0.1),
+            milestone_spacing: None,
+            sprint_allowance: None,
+            regression_budget: None,
+        })
+        .await
+        .unwrap();
+
+        // 4 chapters * 0.1 = 0.4 realized > 0.3 book budget -> over budget.
+        for chapter in 1..=4 {
+            svc.save_summary(SaveSummaryInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: chapter,
+                entity_type: None,
+                entity_id: None,
+                summary: format!("chapter {chapter}"),
+                key_events: Vec::new(),
+                character_changes: Vec::new(),
+                relationship_shifts: Vec::new(),
+                arc_advances: Vec::new(),
+                promise_events: Vec::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["pacing_budget_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.issues
+                .iter()
+                .any(|i| i.check_type == "pacing_budget_audit"
+                    && i.message.contains("over budget")),
+            "pacing audit should fire once the arc outpaces its budget: {:?}",
+            out.issues
         );
     }
 
