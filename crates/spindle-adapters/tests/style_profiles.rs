@@ -1649,7 +1649,7 @@ async fn test_plan_style_revision_suite() {
         raw_plan.drift_summary_score,
         spindle_core::style::StyleDriftSummaryScore::MildDrift
     );
-    assert_eq!(raw_plan.mutates_prose, false);
+    assert!(!raw_plan.mutates_prose);
     assert!(raw_plan.rewrite_examples.is_none());
 
     // Check findings and steps

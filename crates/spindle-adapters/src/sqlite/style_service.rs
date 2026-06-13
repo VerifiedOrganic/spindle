@@ -160,9 +160,9 @@ impl SqliteSpindleService {
             };
 
             let file_size = metadata.len();
-            let modified_at = metadata.modified().ok().and_then(|t| {
+            let modified_at = metadata.modified().ok().map(|t| {
                 let datetime: chrono::DateTime<chrono::Utc> = t.into();
-                Some(datetime.to_rfc3339())
+                datetime.to_rfc3339()
             });
 
             if !metadata.is_file() {
@@ -574,7 +574,7 @@ impl SqliteSpindleService {
                 .collect(),
             metrics_only: final_metrics_only,
             source_sample_word_budget: policy.source_sample_word_budget,
-            source_paths: source_paths,
+            source_paths,
             recursive: Some(recursive),
             include_globs: policy.include_globs.clone(),
             exclude_globs: policy.exclude_globs.clone(),
@@ -772,9 +772,9 @@ impl SqliteSpindleService {
                 continue;
             }
             let file_size = metadata.len();
-            let modified_at = metadata.modified().ok().and_then(|t| {
+            let modified_at = metadata.modified().ok().map(|t| {
                 let datetime: chrono::DateTime<chrono::Utc> = t.into();
-                Some(datetime.to_rfc3339())
+                datetime.to_rfc3339()
             });
             let bytes = match fs::read(path) {
                 Ok(b) => b,
@@ -823,7 +823,7 @@ impl SqliteSpindleService {
             .map(|r| (r.canonical_path.clone(), r.clone()))
             .collect();
 
-        for (path, _) in &current_map {
+        for path in current_map.keys() {
             if !original_map.contains_key(path) {
                 added_files.push(path.clone());
             }
@@ -837,9 +837,9 @@ impl SqliteSpindleService {
 
         for (path, ref_curr) in &current_map {
             if let Some(ref_orig) = original_map.get(path) {
-                if !ref_orig.included {
-                    changed_files.push(path.clone());
-                } else if ref_curr.sha256 != ref_orig.sha256 {
+                // A previously-excluded file that is now present, or one whose
+                // content hash changed, both count as a change.
+                if !ref_orig.included || ref_curr.sha256 != ref_orig.sha256 {
                     changed_files.push(path.clone());
                 } else {
                     unchanged_count += 1;
@@ -1397,18 +1397,15 @@ impl SqliteSpindleService {
                 .await?;
             let mut previous_active = None;
             for a in apps {
-                if a.id != app.id && a.rollback_status != "rolled_back" {
-                    if let Ok(Some(prof)) = self
+                if a.id != app.id && a.rollback_status != "rolled_back"
+                    && let Ok(Some(prof)) = self
                         .repository()
                         .get_style_profile(&input.project_id, &a.profile_id)
                         .await
-                    {
-                        if prof.archived_at.is_none() {
+                        && prof.archived_at.is_none() {
                             previous_active = Some(a.profile_id);
                             break;
                         }
-                    }
-                }
             }
             self.repository()
                 .set_active_style_profile_id(&input.project_id, previous_active)
@@ -1445,7 +1442,7 @@ impl SqliteSpindleService {
         {
             let ratio =
                 draft_metrics.average_sentence_words / profile.metrics.average_sentence_words;
-            if ratio > 1.3 || ratio < 0.7 {
+            if !(0.7..=1.3).contains(&ratio) {
                 let delta =
                     draft_metrics.average_sentence_words - profile.metrics.average_sentence_words;
                 findings.push(spindle_core::style::StyleDriftFinding {
@@ -1474,7 +1471,7 @@ impl SqliteSpindleService {
         {
             let ratio =
                 draft_metrics.average_paragraph_words / profile.metrics.average_paragraph_words;
-            if ratio > 1.5 || ratio < 0.6 {
+            if !(0.6..=1.5).contains(&ratio) {
                 let delta =
                     draft_metrics.average_paragraph_words - profile.metrics.average_paragraph_words;
                 findings.push(spindle_core::style::StyleDriftFinding {
@@ -2029,26 +2026,24 @@ impl SqliteSpindleService {
         input: spindle_core::style::ArchiveStyleProfileInput,
     ) -> Result<spindle_core::style::ArchiveStyleProfileOutput> {
         let project = self.repository().get_project(&input.project_id).await?;
-        if let Some(active_id) = &project.active_style_profile_id {
-            if active_id == &input.profile_id && !input.force.unwrap_or(false) {
+        if let Some(active_id) = &project.active_style_profile_id
+            && active_id == &input.profile_id && !input.force.unwrap_or(false) {
                 return Err(anyhow!(
                     "Cannot archive the active style profile unless force=true is provided"
                 ));
             }
-        }
 
         let archived_at = self
             .repository()
             .archive_style_profile(&input.project_id, &input.profile_id)
             .await?;
 
-        if let Some(active_id) = &project.active_style_profile_id {
-            if active_id == &input.profile_id {
+        if let Some(active_id) = &project.active_style_profile_id
+            && active_id == &input.profile_id {
                 self.repository()
                     .set_active_style_profile_id(&input.project_id, None)
                     .await?;
             }
-        }
 
         Ok(spindle_core::style::ArchiveStyleProfileOutput {
             project_id: input.project_id,
@@ -2406,7 +2401,7 @@ impl SqliteSpindleService {
                     .build_phase_four_validator_context(
                         &input.project_id,
                         &active_branch_id,
-                        &[existing_scene.clone()],
+                        std::slice::from_ref(&existing_scene),
                     )
                     .await?;
                 if let Some(snap) = preflight_context.scenes.iter_mut().next() {
@@ -2482,8 +2477,8 @@ impl SqliteSpindleService {
             spindle_core::style::StyleRevisionPatchStatus::Neutral
         };
 
-        if let Some(min_score) = input.minimum_improvement_score {
-            if total_improvement < min_score {
+        if let Some(min_score) = input.minimum_improvement_score
+            && total_improvement < min_score {
                 aggregate_risks.push(spindle_core::style::StyleRevisionPatchRisk {
                     risk_type: "minimum_improvement_score_failed".to_string(),
                     severity: "error".to_string(),
@@ -2493,7 +2488,6 @@ impl SqliteSpindleService {
                     ),
                 });
             }
-        }
 
         Ok(spindle_core::style::EvaluateStyleRevisionPatchOutput {
             project_id: input.project_id,
@@ -2536,15 +2530,14 @@ impl SqliteSpindleService {
             if eval_output.status == spindle_core::style::StyleRevisionPatchStatus::Regressed {
                 return Err(anyhow!("style revision patch evaluation regressed"));
             }
-            if let Some(min_score) = input.minimum_improvement_score {
-                if eval_output.aggregate_score.improvement_score < min_score {
+            if let Some(min_score) = input.minimum_improvement_score
+                && eval_output.aggregate_score.improvement_score < min_score {
                     return Err(anyhow!(
                         "style revision patch evaluation failed minimum threshold: score {:.2} < required {:.2}",
                         eval_output.aggregate_score.improvement_score,
                         min_score
                     ));
                 }
-            }
         }
 
         // 2. Validate all scene targets for project ownership and stale hashes
@@ -3112,13 +3105,10 @@ fn generate_diff_and_hunks(
     let mut idx = 0;
     while idx < path.len() {
         // Check if a change is nearby
-        let mut change_nearby = false;
-        for lookahead in idx..(idx + context_size * 2 + 1).min(path.len()) {
-            if path[lookahead].kind != EditKind::Unchanged {
-                change_nearby = true;
-                break;
-            }
-        }
+        let window_end = (idx + context_size * 2 + 1).min(path.len());
+        let change_nearby = path[idx..window_end]
+            .iter()
+            .any(|edit| edit.kind != EditKind::Unchanged);
 
         if change_nearby {
             current_hunk_edits.push(&path[idx]);

@@ -423,17 +423,14 @@ pub struct CheckStyleAgainstProfileOutput {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StyleProfileQualityClassification {
+    #[default]
     Ready,
     Thin,
     Inconsistent,
 }
 
-impl Default for StyleProfileQualityClassification {
-    fn default() -> Self {
-        Self::Ready
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct StyleProfileQualityReport {

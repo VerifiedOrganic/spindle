@@ -13220,7 +13220,7 @@ impl Repository {
             let source_policy_json = serde_json::to_string(&profile.source_policy)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             let model_receipt_json = profile.model_receipt.as_ref()
-                .map(|r| serde_json::to_string(r))
+                .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             let status_str = match profile.status {
@@ -13464,7 +13464,7 @@ impl Repository {
                 let receipt_json = audit
                     .model_receipt
                     .as_ref()
-                    .map(|r| serde_json::to_string(r))
+                    .map(serde_json::to_string)
                     .transpose()
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
@@ -13615,7 +13615,6 @@ impl Repository {
         rollback_status: &str,
     ) -> Result<()> {
         let audit_id = audit_id.to_string();
-        let rolled_back_at = rolled_back_at;
         let rollback_status = rollback_status.to_string();
         self.inner
             .pool

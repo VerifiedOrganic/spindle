@@ -22,14 +22,13 @@ pub fn normalize_markdown(input: &str) -> String {
     let mut s = input.strip_prefix("\u{feff}").unwrap_or(input).to_string();
 
     // 2. Strip YAML frontmatter delimited by `---` at the start of the file.
-    if s.starts_with("---") {
-        if let Some(next_idx) = s[3..].find("\n---") {
+    if s.starts_with("---")
+        && let Some(next_idx) = s[3..].find("\n---") {
             let after_frontmatter = &s[3 + next_idx..];
             if let Some(rest) = after_frontmatter.strip_prefix("\n---") {
                 s = rest.to_string();
             }
         }
-    }
 
     // 3. Strip HTML comments: `<!-- ... -->`
     while let Some(start_idx) = s.find("<!--") {
@@ -542,12 +541,11 @@ pub fn resolve_and_verify_path(path_str: &str, allowed_roots: &[PathBuf]) -> Res
     // Check allowed roots
     let mut allowed = false;
     for root in allowed_roots {
-        if let Ok(root_canonical) = fs::canonicalize(root) {
-            if canonical.starts_with(root_canonical) {
+        if let Ok(root_canonical) = fs::canonicalize(root)
+            && canonical.starts_with(root_canonical) {
                 allowed = true;
                 break;
             }
-        }
     }
 
     if !allowed {
@@ -607,14 +605,13 @@ pub fn collect_markdown_files(
                     if name.starts_with('.') {
                         continue;
                     }
-                    if recursive || entry_path.is_file() {
-                        if let Ok(c) = resolve_and_verify_path(
+                    if (recursive || entry_path.is_file())
+                        && let Ok(c) = resolve_and_verify_path(
                             entry_path.to_str().unwrap_or(""),
                             allowed_roots,
                         ) {
                             pending.push(c);
                         }
-                    }
                 }
             }
         }
@@ -763,7 +760,8 @@ mod tests {
             writeln!(f, "test").unwrap();
         }
 
-        let resolved = resolve_and_verify_path(&file_path.to_string_lossy(), &[root.clone()]);
+        let resolved =
+            resolve_and_verify_path(&file_path.to_string_lossy(), std::slice::from_ref(&root));
         assert!(resolved.is_ok());
 
         let outside_root = tempdir().unwrap();
@@ -773,7 +771,7 @@ mod tests {
             writeln!(f, "outside").unwrap();
         }
         let resolved_outside =
-            resolve_and_verify_path(&outside_file.to_string_lossy(), &[root.clone()]);
+            resolve_and_verify_path(&outside_file.to_string_lossy(), std::slice::from_ref(&root));
         assert!(resolved_outside.is_err());
     }
 
