@@ -5967,11 +5967,12 @@ impl SqliteSpindleService {
     /// `crate::format::*` to enforce `budget_tokens` (Markdown or JSON).
     ///
     /// Divergences from the reference:
-    ///   * No semantic search yet — the SQLite stack exposes `search_bible`
-    ///     for caller-visible search, but a service-internal semantic
-    ///     re-ranking that prefers project records is not yet ported. The
-    ///     `semantic_references` slice is therefore always empty; subjects
-    ///     are still gathered from POV + character_ids + location.
+    ///   * Semantic recall (`semantic_references`) is now ported: the present
+    ///     cast + location form a query that is embedded and kNN-searched over
+    ///     the project's embedding mirror (the same path as `search_bible`),
+    ///     excluding the present-scene entities already rendered in the scene
+    ///     layer. Subjects are still gathered from POV + character_ids +
+    ///     location.
     ///   * No explicit-draft hard constraint is appended (the SQLite service
     ///     does not own a `ModelRouter`); the reference appended one when
     ///     the `draft` route had an explicit-rating override.
@@ -6329,10 +6330,65 @@ impl SqliteSpindleService {
             empty_agency_check_summary()
         };
 
-        // Semantic-references slice is not yet ported — see method-level
-        // doc-comment for the divergence.
-        let semantic_references: Vec<spindle_core::models::SearchBibleResultItem> = Vec::new();
-        let _ = want_semantic_references;
+        // Semantic recall: surface canon that is *topically* related to the
+        // scene's present cast and setting but may be structurally distant
+        // (a different chapter or book), so relevance — not just adjacency —
+        // drives what resurfaces. Reuses the exact embed→kNN path as
+        // `search_bible`; the query is the present characters + location.
+        let semantic_references: Vec<spindle_core::models::SearchBibleResultItem> =
+            if want_semantic_references {
+                const SEMANTIC_REFERENCE_LIMIT: usize = 5;
+                let mut query_parts: Vec<&str> = Vec::new();
+                for character in &included_characters {
+                    query_parts.push(character.name.as_str());
+                    if !character.summary.is_empty() {
+                        query_parts.push(character.summary.as_str());
+                    }
+                }
+                query_parts.push(location.name.as_str());
+                if !location.summary.is_empty() {
+                    query_parts.push(location.summary.as_str());
+                }
+                let query = query_parts.join(". ");
+                if query.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    let embedding_session = self.repository.model_router().embedding_session();
+                    let query_embedding = embedding_session.embed_text(&query).await?;
+                    // Over-fetch so excluding present-scene entities (which are
+                    // already rendered in the scene layer) can't starve the slice.
+                    let k = SEMANTIC_REFERENCE_LIMIT + ids.len() + 1;
+                    let hits = self
+                        .repository
+                        .knn_search_embeddings(
+                            &input.project_id,
+                            Some(&active_branch.id),
+                            &query_embedding,
+                            k,
+                        )
+                        .await?;
+                    let present: std::collections::HashSet<&str> = ids
+                        .iter()
+                        .map(String::as_str)
+                        .chain(std::iter::once(input.location_id.as_str()))
+                        .collect();
+                    hits.into_iter()
+                        .filter(|(se, _)| !present.contains(se.entity_id.as_str()))
+                        .take(SEMANTIC_REFERENCE_LIMIT)
+                        .map(|(se, distance)| spindle_core::models::SearchBibleResultItem {
+                            entity_type: se.entity_table,
+                            entity_id: se.entity_id,
+                            title: se.title,
+                            excerpt: se.excerpt,
+                            // Lower distance = more similar; report as a [0, 1]
+                            // score where higher is better, mirroring search_bible.
+                            score: 1.0 / (1.0 + distance),
+                        })
+                        .collect()
+                }
+            } else {
+                Vec::new()
+            };
 
         let placement = StoryPlacement {
             book_number: input.book_number,
@@ -25735,6 +25791,163 @@ rating = "explicit"
             "scene context should surface the story-so-far digest: {:?}",
             ctx.hard_constraints
         );
+    }
+
+    #[tokio::test]
+    async fn scene_context_surfaces_semantic_references() {
+        use crate::ai::SearchDocument;
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, ContextFormat,
+            CreateCharacterInput, CreateLocationInput, GetSceneContextInput, WorldStateInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "semrefs".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "Oathbound wardens hold the line.".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let mara = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Oathbound warden who holds the Ash Gate against the dark.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let gate = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Ash Gate".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A blackened wall holding back the dark.".into(),
+                initial_state: WorldStateInput::default(),
+            })
+            .await
+            .unwrap();
+
+        let branch = svc
+            .repository()
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+
+        // Seed three embeddings on the active branch:
+        //  - Mara herself (must be EXCLUDED — she's a present-scene entity)
+        //  - a topically-overlapping faction (must SURFACE — distant but related)
+        //  - an unrelated scribe (allowed, but ranked far)
+        let faction_id = "world_rule:oath-wardens";
+        let scribe_id = "character:aldric-scribe";
+        for (id, doc) in [
+            (
+                mara.character_id.as_str(),
+                SearchDocument {
+                    entity_table: "character".into(),
+                    title: "Mara".into(),
+                    excerpt: "oath warden".into(),
+                    content: "Mara, oathbound warden, holds the Ash Gate against the dark.".into(),
+                },
+            ),
+            (
+                faction_id,
+                SearchDocument {
+                    entity_table: "world_rule".into(),
+                    title: "Oath Wardens".into(),
+                    excerpt: "the order that holds the gate".into(),
+                    content: "The Oath Wardens are oathbound to hold the Ash Gate against the dark."
+                        .into(),
+                },
+            ),
+            (
+                scribe_id,
+                SearchDocument {
+                    entity_table: "character".into(),
+                    title: "Aldric".into(),
+                    excerpt: "scribe".into(),
+                    content: "Aldric copies old maps by candlelight; ink stains his cuffs.".into(),
+                },
+            ),
+        ] {
+            svc.repository()
+                .upsert_search_embedding_document(&proj.project_id, &branch.id, id, &doc)
+                .await
+                .unwrap();
+        }
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![mara.character_id.clone()],
+                max_character_count: None,
+                location_id: gate.location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: Some(vec!["semantic_references".into()]),
+            })
+            .await
+            .unwrap();
+
+        let refs = &ctx.novel.semantic_references;
+        assert!(
+            refs.iter().any(|r| r.entity_id == faction_id),
+            "topically-related distant canon should surface: {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|r| r.entity_id == mara.character_id),
+            "a present-scene character must be excluded from recall: {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|r| r.entity_id == gate.location_id),
+            "the present location must be excluded from recall: {refs:?}"
+        );
+        // The overlapping faction must outrank the unrelated scribe.
+        let faction_score = refs
+            .iter()
+            .find(|r| r.entity_id == faction_id)
+            .map(|r| r.score)
+            .expect("faction must be present");
+        if let Some(scribe) = refs.iter().find(|r| r.entity_id == scribe_id) {
+            assert!(
+                faction_score > scribe.score,
+                "related canon must outrank unrelated canon: {refs:?}"
+            );
+        }
     }
 
     #[tokio::test]
