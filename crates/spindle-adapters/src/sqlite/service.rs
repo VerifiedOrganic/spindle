@@ -1154,6 +1154,14 @@ impl SqliteSpindleService {
                 existing.iter().map(|c| c.chapter_number).max().unwrap_or(0) + 1
             }
         };
+        // Keep chapter numbers below the ordering radix so story-position packing
+        // stays collision-free (see `format::CHAPTER_RADIX`).
+        if !(0..crate::format::CHAPTER_RADIX as i32).contains(&chapter_number) {
+            anyhow::bail!(
+                "chapter_number {chapter_number} is out of range 0..{}; split into another book or raise CHAPTER_RADIX",
+                crate::format::CHAPTER_RADIX
+            );
+        }
         let chapter = self
             .repository
             .ensure_chapter(&input.project_id, book.book_number, chapter_number)
@@ -6003,6 +6011,10 @@ impl SqliteSpindleService {
             Vec::new()
         };
 
+        // Story-position cursor for this scene; used to gate time-sensitive
+        // knowledge so the drafting model never sees facts a POV character has
+        // not reached yet.
+        let cursor = story_index(input.book_number, input.chapter_number, input.scene_order);
         let raw_future_knowledge =
             if (want_future_knowledge_briefing || want_knowledge_briefing) && !ids.is_empty() {
                 self.repository
@@ -6010,6 +6022,17 @@ impl SqliteSpindleService {
                     .await?
                     .into_iter()
                     .filter(|knowledge| ids.contains(&knowledge.character_id))
+                    // Position gate: only surface future knowledge the character has
+                    // actually reached (learned_at <= cursor) and that has not expired
+                    // (expires_at >= cursor), so the generator is not primed with
+                    // premature reveals across long arcs.
+                    .filter(|knowledge| {
+                        story_index_from_placement(&knowledge.learned_at) <= cursor
+                            && knowledge
+                                .expires_at
+                                .as_ref()
+                                .is_none_or(|expires| story_index_from_placement(expires) >= cursor)
+                    })
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -6062,7 +6085,6 @@ impl SqliteSpindleService {
         };
 
         let knowledge_briefing = if want_knowledge_briefing && !ids.is_empty() {
-            let cursor = story_index(input.book_number, input.chapter_number, input.scene_order);
             let mut briefing = self
                 .repository
                 .list_knowledge_facts_by_project_and_branch(&input.project_id, &active_branch.id)
@@ -6699,46 +6721,47 @@ impl SqliteSpindleService {
                     .await?,
                 &scope,
             );
-            for promise in promises {
-                let chapters_since_plant = end_scope_index(&scope, &scenes)
-                    .map(|end_index| {
-                        end_index.saturating_sub(story_index_from_placement(&promise.planted_at))
-                    })
-                    .unwrap_or(0);
-                let (severity, message, suggested_action) = match promise.status.as_str() {
-                    "planted" if chapters_since_plant >= 3 => (
-                        "warning",
-                        format!(
-                            "promise '{}' was planted {} chapter steps ago and is still unresolved",
-                            promise.description, chapters_since_plant
+            if let Some(current_index) = end_scope_index(&scope, &scenes) {
+                for promise in promises {
+                    let verdict = crate::format::promise_timing_verdict(&promise, current_index);
+                    let (severity, message, suggested_action) = match verdict.urgency {
+                        crate::format::PromiseUrgency::Overdue => (
+                            "warning",
+                            format!(
+                                "promise '{}' is {} chapter(s) past its planned payoff and still open",
+                                promise.description, verdict.overdue_by_chapters
+                            ),
+                            Some(
+                                "pay it off, reinforce it, or call update_promise_status".to_string(),
+                            ),
                         ),
-                        Some("reinforce the setup or call update_promise_status".to_string()),
-                    ),
-                    "planted" => (
-                        "info",
-                        format!(
-                            "promise '{}' is planted and awaiting payoff",
-                            promise.description
+                        crate::format::PromiseUrgency::Due => (
+                            "warning",
+                            format!(
+                                "promise '{}' has reached its planned payoff point but is still open",
+                                promise.description
+                            ),
+                            Some("pay it off now or move its planned_payoff".to_string()),
                         ),
-                        Some("track reinforcement so it does not go cold".to_string()),
-                    ),
-                    "reinforced" if chapters_since_plant >= 5 => (
-                        "warning",
-                        format!(
-                            "promise '{}' has been reinforced without payoff for {} chapter steps",
-                            promise.description, chapters_since_plant
+                        crate::format::PromiseUrgency::Soon => (
+                            "info",
+                            format!(
+                                "promise '{}' is approaching payoff ({} chapter(s) open)",
+                                promise.description, verdict.chapters_since_plant
+                            ),
+                            Some("begin landing this promise".to_string()),
                         ),
-                        Some("pay it off soon or consciously defer it".to_string()),
-                    ),
-                    _ => continue,
-                };
-                issues.push(ConsistencyIssue {
-                    severity: severity.to_string(),
-                    check_type: "narrative_promise_tracking".to_string(),
-                    message,
-                    entity_ids: vec![promise.id.clone()],
-                    suggested_action,
-                });
+                        crate::format::PromiseUrgency::Watch
+                        | crate::format::PromiseUrgency::Resolved => continue,
+                    };
+                    issues.push(ConsistencyIssue {
+                        severity: severity.to_string(),
+                        check_type: "narrative_promise_tracking".to_string(),
+                        message,
+                        entity_ids: vec![promise.id.clone()],
+                        suggested_action,
+                    });
+                }
             }
         }
 

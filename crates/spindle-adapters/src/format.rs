@@ -911,7 +911,7 @@ pub fn world_rule_established_before_scene(rule: &WorldRule, scene: &Scene) -> b
     let scene_index = story_index_from_scene(scene);
     rule.established_in
         .as_ref()
-        .map(|placement| placement.book_number * 10_000 + placement.chapter_number * 100)
+        .map(|placement| chapter_story_index(placement.book_number, placement.chapter_number))
         .is_none_or(|rule_index| rule_index <= scene_index)
 }
 
@@ -925,29 +925,46 @@ pub fn keyword_tokens(input: &str) -> BTreeSet<String> {
         .collect()
 }
 
-pub fn story_index_from_placement(placement: &StoredStoryPlacement) -> i32 {
-    placement.book_number * 10_000
-        + placement.chapter_number * 100
-        + placement.scene_order.unwrap_or(0)
+/// Radix for packing a `(book, chapter, scene)` placement into a single, stable,
+/// totally-ordered `i64` index. Each chapter gets `SCENE_RADIX` scene slots and
+/// each book gets `CHAPTER_RADIX` chapter slots. Placement components are
+/// validated at write time (`create_chapter` and scene persistence) to stay
+/// strictly below these radixes, so the packing stays collision-free even for
+/// books with hundreds of chapters or chapters with hundreds of scenes.
+pub const SCENE_RADIX: i64 = 1_000;
+pub const CHAPTER_RADIX: i64 = 1_000;
+pub const BOOK_RADIX: i64 = CHAPTER_RADIX * SCENE_RADIX;
+
+#[inline]
+fn pack_story_index(book_number: i32, chapter_number: i32, scene_order: i32) -> i64 {
+    book_number as i64 * BOOK_RADIX + chapter_number as i64 * SCENE_RADIX + scene_order as i64
 }
 
-pub fn end_scope_index(scope: &ConsistencyScope, scenes: &[Scene]) -> Option<i32> {
+pub fn story_index_from_placement(placement: &StoredStoryPlacement) -> i64 {
+    pack_story_index(
+        placement.book_number,
+        placement.chapter_number,
+        placement.scene_order.unwrap_or(0),
+    )
+}
+
+pub fn end_scope_index(scope: &ConsistencyScope, scenes: &[Scene]) -> Option<i64> {
     scenes
         .last()
         .map(story_index_from_scene)
         .or_else(|| match scope {
             ConsistencyScope::Full => None,
-            ConsistencyScope::Book { book_number } => Some(book_number * 10_000),
+            ConsistencyScope::Book { book_number } => Some((*book_number as i64) * BOOK_RADIX),
             ConsistencyScope::ChapterRange {
                 end_book_number,
                 end_chapter_number,
                 ..
-            } => Some(end_book_number * 10_000 + end_chapter_number * 100),
+            } => Some(pack_story_index(*end_book_number, *end_chapter_number, 0)),
         })
 }
 
-pub fn story_index_from_scene(scene: &Scene) -> i32 {
-    scene.book_number * 10_000 + scene.chapter_number * 100 + scene.scene_order
+pub fn story_index_from_scene(scene: &Scene) -> i64 {
+    pack_story_index(scene.book_number, scene.chapter_number, scene.scene_order)
 }
 
 // =============================================================================
@@ -1420,17 +1437,18 @@ pub fn canonical_fact_float_string(value: f64) -> String {
 // helpers.
 // =============================================================================
 
-/// Stable ordering key for "place X within the book/chapter/scene grid".
-/// Used to compare arbitrary placements (e.g., promise planted_at vs cursor
-/// position). Each book gets 10k slots, each chapter gets 100 — far more than
-/// any realistic chapter holds, so collisions are impossible.
-pub fn story_index(book_number: i32, chapter_number: i32, scene_order: i32) -> i32 {
-    book_number * 10_000 + chapter_number * 100 + scene_order
+/// Stable, totally-ordered key for "place X within the book/chapter/scene grid".
+/// Used to compare arbitrary placements (e.g., promise `planted_at` vs cursor
+/// position). See [`SCENE_RADIX`]/[`CHAPTER_RADIX`]: placement components are
+/// validated below their radixes at write time, so the packing is collision-free.
+pub fn story_index(book_number: i32, chapter_number: i32, scene_order: i32) -> i64 {
+    pack_story_index(book_number, chapter_number, scene_order)
 }
 
-/// Same as [`story_index`] but for chapter-level placements (no scene order).
-pub fn chapter_story_index(book_number: i32, chapter_number: i32) -> i32 {
-    book_number * 10_000 + chapter_number
+/// Same as [`story_index`] but for chapter-level placements (scene order 0), so
+/// it stays directly comparable with scene-level indices.
+pub fn chapter_story_index(book_number: i32, chapter_number: i32) -> i64 {
+    pack_story_index(book_number, chapter_number, 0)
 }
 
 /// Map the persisted intent string to a typed [`WriterIntent`]. Unknown
@@ -1818,6 +1836,126 @@ pub fn pacing_directives_for_characters(
         .collect()
 }
 
+/// How urgently an open narrative promise needs attention at a given story
+/// position. Ordered least-to-most pressing. `Resolved` is returned for
+/// promises that are already paid off or abandoned and must never be flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseUrgency {
+    Resolved,
+    Watch,
+    Soon,
+    Due,
+    Overdue,
+}
+
+impl PromiseUrgency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PromiseUrgency::Resolved => "resolved",
+            PromiseUrgency::Watch => "watch",
+            PromiseUrgency::Soon => "soon",
+            PromiseUrgency::Due => "due",
+            PromiseUrgency::Overdue => "overdue",
+        }
+    }
+}
+
+/// Verdict produced by [`promise_timing_verdict`]: the single source of truth
+/// for promise timing, shared by the scene-context "promises due" summary and
+/// the `narrative_promise_tracking` consistency check so the two surfaces never
+/// disagree about the same promise.
+#[derive(Debug, Clone, Copy)]
+pub struct PromiseTimingVerdict {
+    pub urgency: PromiseUrgency,
+    /// Whole in-world chapters elapsed since the promise was planted.
+    pub chapters_since_plant: i64,
+    /// Whole chapters past the declared `planned_payoff` (0 unless overdue).
+    pub overdue_by_chapters: i64,
+}
+
+/// Chapters of look-ahead within which an unpaid promise whose `planned_payoff`
+/// is approaching is flagged "soon".
+pub const PROMISE_DUE_SOON_CHAPTERS: i64 = 3;
+/// Chapters past a declared payoff before "due" escalates to "overdue".
+pub const PROMISE_OVERDUE_ESCALATE_CHAPTERS: i64 = 2;
+/// Fallback aging thresholds (whole chapters) for promises with NO declared
+/// `planned_payoff`. Chapter-scaled so deliberately long arcs are not flagged
+/// after a handful of scenes; `reinforced` promises get more slack than freshly
+/// `planted` ones, preserving the previous intent without the unit bug.
+pub const PROMISE_PLANTED_SOON_CHAPTERS: i64 = 8;
+pub const PROMISE_PLANTED_OVERDUE_CHAPTERS: i64 = 14;
+pub const PROMISE_REINFORCED_SOON_CHAPTERS: i64 = 12;
+pub const PROMISE_REINFORCED_OVERDUE_CHAPTERS: i64 = 20;
+
+/// Compute the timing verdict for `promise` at `current_index` (a [`story_index`]
+/// value). Honors the author's declared `planned_payoff` when present and falls
+/// back to chapter-scaled aging otherwise. Resolved/abandoned promises always
+/// return [`PromiseUrgency::Resolved`].
+pub fn promise_timing_verdict(promise: &NarrativePromise, current_index: i64) -> PromiseTimingVerdict {
+    let planted_index = story_index_from_placement(&promise.planted_at);
+    let chapters_since_plant = (current_index - planted_index).max(0) / SCENE_RADIX;
+
+    if promise.status == "paid_off" || promise.status == "abandoned" {
+        return PromiseTimingVerdict {
+            urgency: PromiseUrgency::Resolved,
+            chapters_since_plant,
+            overdue_by_chapters: 0,
+        };
+    }
+
+    if let Some(payoff) = promise.planned_payoff.as_ref() {
+        let payoff_index = story_index_from_placement(payoff);
+        if current_index >= payoff_index {
+            let overdue_by_chapters = (current_index - payoff_index) / SCENE_RADIX;
+            let urgency = if overdue_by_chapters >= PROMISE_OVERDUE_ESCALATE_CHAPTERS {
+                PromiseUrgency::Overdue
+            } else {
+                PromiseUrgency::Due
+            };
+            return PromiseTimingVerdict {
+                urgency,
+                chapters_since_plant,
+                overdue_by_chapters,
+            };
+        }
+        let chapters_until_payoff = (payoff_index - current_index) / SCENE_RADIX;
+        let urgency = if chapters_until_payoff <= PROMISE_DUE_SOON_CHAPTERS {
+            PromiseUrgency::Soon
+        } else {
+            PromiseUrgency::Watch
+        };
+        return PromiseTimingVerdict {
+            urgency,
+            chapters_since_plant,
+            overdue_by_chapters: 0,
+        };
+    }
+
+    let (soon, overdue) = if promise.status == "reinforced" {
+        (
+            PROMISE_REINFORCED_SOON_CHAPTERS,
+            PROMISE_REINFORCED_OVERDUE_CHAPTERS,
+        )
+    } else {
+        (
+            PROMISE_PLANTED_SOON_CHAPTERS,
+            PROMISE_PLANTED_OVERDUE_CHAPTERS,
+        )
+    };
+    let urgency = if chapters_since_plant >= overdue {
+        PromiseUrgency::Overdue
+    } else if chapters_since_plant >= soon {
+        PromiseUrgency::Soon
+    } else {
+        PromiseUrgency::Watch
+    };
+    PromiseTimingVerdict {
+        urgency,
+        chapters_since_plant,
+        overdue_by_chapters: 0,
+    }
+}
+
 pub fn narrative_promise_due_summary(
     promise: &NarrativePromise,
     book_number: i32,
@@ -1825,31 +1963,18 @@ pub fn narrative_promise_due_summary(
     scene_order: i32,
 ) -> NarrativePromiseDueSummary {
     let current_index = story_index(book_number, chapter_number, scene_order);
-    let planted_index = story_index_from_placement(&promise.planted_at);
-    let chapters_since_plant = ((current_index - planted_index).max(0)) / 100;
-
-    let urgency = if let Some(payoff) = promise.planned_payoff.as_ref() {
-        let payoff_index = story_index_from_placement(payoff);
-        if current_index >= payoff_index {
-            "due"
-        } else if payoff_index - current_index <= 100 {
-            "soon"
-        } else {
-            "watch"
-        }
-    } else if chapters_since_plant >= 5 {
-        "overdue"
-    } else if chapters_since_plant >= 3 {
-        "soon"
-    } else {
-        "watch"
-    };
+    let verdict = promise_timing_verdict(promise, current_index);
 
     let mut notes = promise.notes.clone();
-    if urgency == "overdue" {
-        notes.push("Promise has stayed open long enough to risk narrative drag.".to_string());
-    } else if urgency == "due" {
-        notes.push("Planned payoff point has arrived or passed.".to_string());
+    match verdict.urgency {
+        PromiseUrgency::Overdue => notes.push(format!(
+            "Promise is {} chapter(s) past its planned payoff and risks narrative drag.",
+            verdict.overdue_by_chapters
+        )),
+        PromiseUrgency::Due => {
+            notes.push("Planned payoff point has arrived or passed.".to_string())
+        }
+        _ => {}
     }
 
     NarrativePromiseDueSummary {
@@ -1862,8 +1987,8 @@ pub fn narrative_promise_due_summary(
             .planned_payoff
             .clone()
             .map(|placement| placement.into_core()),
-        urgency: urgency.to_string(),
-        chapters_since_plant,
+        urgency: verdict.urgency.as_str().to_string(),
+        chapters_since_plant: verdict.chapters_since_plant as i32,
         notes,
     }
 }
@@ -2970,5 +3095,118 @@ pub fn branch_summary(branch: &BibleBranch, active_branch_id: Option<&str>) -> B
         description: branch.description.clone(),
         parent_branch_id: branch.parent_branch_id.clone(),
         is_active: active_branch_id == Some(branch.id.as_str()),
+    }
+}
+
+#[cfg(test)]
+mod promise_timing_tests {
+    use super::*;
+
+    fn placement(book: i32, chapter: i32, scene: i32) -> StoredStoryPlacement {
+        StoredStoryPlacement {
+            book_number: book,
+            chapter_number: chapter,
+            scene_order: Some(scene),
+            note: None,
+        }
+    }
+
+    fn promise(
+        status: &str,
+        planted: StoredStoryPlacement,
+        payoff: Option<StoredStoryPlacement>,
+    ) -> NarrativePromise {
+        let now = chrono::Utc::now();
+        NarrativePromise {
+            id: "narrative_promise:test".to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            promise_type: "setup".to_string(),
+            description: "a test promise".to_string(),
+            status: status.to_string(),
+            planted_at: planted,
+            planned_payoff: payoff,
+            notes: Vec::new(),
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn planted_promise_does_not_flag_after_a_few_scene_steps() {
+        // Regression for the ~100x unit bug: planted b1/ch1, cursor b1/ch1/scene5
+        // must read as 0 chapters elapsed and stay on "watch".
+        let p = promise("planted", placement(1, 1, 0), None);
+        let verdict = promise_timing_verdict(&p, story_index(1, 1, 5));
+        assert_eq!(verdict.chapters_since_plant, 0);
+        assert_eq!(verdict.urgency, PromiseUrgency::Watch);
+    }
+
+    #[test]
+    fn long_arc_with_distant_payoff_progresses_watch_soon_due() {
+        let p = promise("planted", placement(1, 1, 0), Some(placement(1, 50, 0)));
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 5, 0)).urgency,
+            PromiseUrgency::Watch
+        );
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 49, 0)).urgency,
+            PromiseUrgency::Soon
+        );
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 50, 0)).urgency,
+            PromiseUrgency::Due
+        );
+    }
+
+    #[test]
+    fn promise_well_past_payoff_is_overdue_with_chapter_count() {
+        let p = promise("reinforced", placement(1, 1, 0), Some(placement(1, 10, 0)));
+        let verdict = promise_timing_verdict(&p, story_index(1, 14, 0));
+        assert_eq!(verdict.urgency, PromiseUrgency::Overdue);
+        assert_eq!(verdict.overdue_by_chapters, 4);
+    }
+
+    #[test]
+    fn resolved_promise_never_flags() {
+        let p = promise("paid_off", placement(1, 1, 0), Some(placement(1, 10, 0)));
+        let verdict = promise_timing_verdict(&p, story_index(5, 0, 0));
+        assert_eq!(verdict.urgency, PromiseUrgency::Resolved);
+    }
+
+    #[test]
+    fn unscheduled_promise_uses_chapter_scaled_fallback() {
+        // No declared payoff: stays "watch" through the early chapters and only
+        // ages into "soon"/"overdue" on a chapter scale, not a scene-step scale.
+        let p = promise("planted", placement(1, 1, 0), None);
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 4, 0)).urgency,
+            PromiseUrgency::Watch
+        );
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 1 + PROMISE_PLANTED_SOON_CHAPTERS as i32, 0))
+                .urgency,
+            PromiseUrgency::Soon
+        );
+        assert_eq!(
+            promise_timing_verdict(
+                &p,
+                story_index(1, 1 + PROMISE_PLANTED_OVERDUE_CHAPTERS as i32, 0)
+            )
+            .urgency,
+            PromiseUrgency::Overdue
+        );
+    }
+
+    #[test]
+    fn story_index_no_longer_collides_across_book_boundary_within_radix() {
+        // Old packing collided: story_index(1,100,0) == story_index(2,0,0).
+        assert_ne!(story_index(1, 100, 0), story_index(2, 0, 0));
+        // The whole in-radix range of book 1 stays strictly below book 2.
+        assert!(
+            story_index(1, (CHAPTER_RADIX - 1) as i32, (SCENE_RADIX - 1) as i32)
+                < story_index(2, 0, 0)
+        );
     }
 }

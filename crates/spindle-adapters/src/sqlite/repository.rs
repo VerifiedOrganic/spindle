@@ -1379,6 +1379,27 @@ impl Repository {
         input: &SaveSceneDraftInput,
         mark_reviews_stale_on_update: bool,
     ) -> Result<(Scene, bool)> {
+        // Bound the placement so it cannot collide in the packed story-position
+        // ordering (see `format::SCENE_RADIX` / `CHAPTER_RADIX`). Without this a
+        // chapter past the radix would silently transpose scenes across the next
+        // book boundary at exactly the hundreds-of-chapters scale we target.
+        if input.book_number < 0 {
+            anyhow::bail!("book_number must be non-negative (got {})", input.book_number);
+        }
+        if !(0..crate::format::CHAPTER_RADIX as i32).contains(&input.chapter_number) {
+            anyhow::bail!(
+                "chapter_number {} is out of range 0..{}; it would collide in story-position ordering",
+                input.chapter_number,
+                crate::format::CHAPTER_RADIX
+            );
+        }
+        if !(0..crate::format::SCENE_RADIX as i32).contains(&input.scene_order) {
+            anyhow::bail!(
+                "scene_order {} is out of range 0..{}; it would collide in story-position ordering",
+                input.scene_order,
+                crate::format::SCENE_RADIX
+            );
+        }
         let book = self
             .get_book_by_number(project_id, input.book_number)
             .await?;
