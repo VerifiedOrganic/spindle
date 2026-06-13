@@ -41,6 +41,40 @@ Use this workflow to keep world updates traceable and enforceable:
 9. If prose and canon diverge, hand off scene updates to scene-writer or
    revision-manager and re-run checks.
 
+When the story tracks in-world time (long durations, time-skips, flashbacks, or
+an invented calendar), declare the calendar early — see *Establishing in-world
+time* below.
+
+## Establishing in-world time (calendar, clocks, character ages)
+
+This is the foundation the chronology and knowledge-timing checks build on. It
+is **optional**: a project that never declares a calendar is unaffected and the
+timeline checks stay dormant. But for a story that spans hundreds of chapters,
+multiple books, or hinges on when things happen, anchoring it on the in-world
+clock is what makes timing enforceable rather than vibes.
+
+1. **Declare the calendar once** with `set_project_calendar`. Define
+   `days_per_week`, `hours_per_day` (24 for an Earth-like world; any value for
+   an invented calendar — the total-order index honors it so non-24h time still
+   sorts correctly), `days_per_year`, the `months` (each with a name + length),
+   optional `week_day_names`, and an `epoch_label`. The calendar is validated
+   for internal consistency on write, and it switches on the `chronology` check
+   and the in-world-time hard constraint that scene context surfaces to the
+   drafting model.
+2. **Anchor births** with `set_character_birth` — a `StoryClock` with a
+   `day_index` measured from the epoch. With a calendar in place, a character's
+   age is then derivable at any story moment, so age drift across a long
+   timeline becomes catchable instead of silent.
+3. **Orient out-of-manuscript events** with `set_timeline_event_clock`: the
+   in-world time an event *occurred* is distinct from where it is *narrated*, so
+   flashbacks and time-skips stay oriented by story time.
+
+A `StoryClock` is `{ day_index (from the epoch, monotonic, spans books),
+time_of_day (minutes from midnight), duration_days, precision:
+minute|hour|day|week|month|year }`. Scene-level clocks (`set_scene_clock`) are
+owned by **scene-writer**, stamped as each scene is drafted, but they read
+against the calendar you declare here.
+
 ## Sanderson's Laws of Magic (Applied to All Worldbuilding)
 
 These three laws apply to EVERY system in your world — not just magic. Technology, politics,

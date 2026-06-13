@@ -88,12 +88,33 @@ Follow this loop for every drafting pass on an active branch:
      match his persisted voice profile.
    - If a scene implies knowledge not yet learned, revise the scene to remove
      the leak or add an earlier discovery scene.
+
+   When the project declares a calendar or tracks `knowledge_fact` learning
+   positions, `check_consistency` also runs deterministic timing checks:
+   `chronology` (a scene set earlier in story time than its predecessor on the
+   same thread without a flashback marker) and `knowledge_timing` (a character
+   referencing, in prose, a fact they do not learn until later). Both are
+   advisory warnings; act on them the same way you act on a validator finding.
 7. Call `commit_scene_changes` to persist structured canon updates from the
-   accepted prose.
-8. Call `commit_character_state` only for targeted state corrections not
+   accepted prose. This runs a **write-time continuity gate**: by default
+   (`continuity_gate: "block_errors"`) it blocks the commit when it finds
+   continuity errors and returns `blocking_continuity_findings` and
+   `retcon_findings`. Read those, fix the prose or canon, then re-commit. Pass
+   `continuity_gate: "warn_only"` to record findings without blocking, or
+   `accept_continuity_risks: true` to consciously commit over a flagged risk
+   (an author override — record why with `record_note`). `"off"` skips the gate
+   entirely.
+8. When the project declares a calendar, stamp the scene on the in-world clock
+   with `set_scene_clock` ({ `day_index`, `time_of_day` (minutes from
+   midnight), `duration_days`, `precision` }). Mark `temporal_mode:
+   "flashback" | "flashforward" | "concurrent"` for any scene deliberately out
+   of linear order, and a `thread_key` for parallel timelines — this is exactly
+   what keeps the `chronology` check from flagging an intentional flashback as
+   drift.
+9. Call `commit_character_state` only for targeted state corrections not
    covered by the batch commit.
-9. Call `update_writer_position` whenever you need cursor state persisted for
-   handoff or pause/resume workflows.
+10. Call `update_writer_position` whenever you need cursor state persisted for
+    handoff or pause/resume workflows.
 
 ## Before You Write Anything
 
@@ -221,8 +242,13 @@ into this scene if narratively appropriate. Don't force it, but don't ignore it 
 Unfired guns accumulate as narrative debt that erodes reader trust.
 
 ### Semantic References (from `novel.semantic_references`)
-These are optional recall hits from the Bible search index. Use them as supporting canon,
-not as the primary source of truth. If the token budget is tight, this list may be empty.
+Canon that is topically related to this scene's present cast and location but may be
+structurally distant — established in a different chapter or book — surfaced by embedding
+the present characters + location and ranking the Bible's embedding index by relevance.
+The scene's own characters and location are excluded, so this is recall, not an echo of
+what you already see. Use them as supporting canon to stay consistent with distant
+material, not as the primary source of truth. The list is empty when nothing in the index
+is relevant (or nothing has been embedded yet).
 
 ---
 
@@ -725,7 +751,10 @@ For each change, call the appropriate tool:
 ## Step 7: Beat Annotation
 
 Call `annotate_scene_beats` to decompose the written scene into its structural beats.
-This feeds the pacing system and future context assembly.
+This feeds the pacing system and future context assembly. The per-beat `intensity`
+is what the `pacing_drift` check reads to detect a sagging middle (realized intensity
+falling across several consecutive chapters in a book with a planned pacing curve), so
+annotate it honestly rather than flattening every scene to the same level.
 
 For each beat, identify:
 - Beat type (goal, conflict, disaster, reaction, dilemma, decision, etc.)

@@ -54,12 +54,15 @@ Use this triage loop when diagnosing continuity concerns:
 
 Call `check_consistency` with `scope: ConsistencyScopeInput` (a struct with
 `scope_type: "full" | "book" | "chapter_range"` and the matching numeric
-range fields) and optionally specify which `checks` to run by name. The four
+range fields) and optionally specify which `checks` to run by name. The five
 Phase 4 validators (`canonical_fact_prose_drift`, `world_rule_semantic_drift`,
-`voice_drift`, `retcon_reachability`) run by default and are cached per
-`scene_text_hash` and validator-context hash. Relevant canon, style, voice,
-and timeline writes invalidate their validator cache rows; the context hash
-also prevents stale hits when metadata changes outside the normal service path.
+`voice_drift`, `retcon_reachability`, `style_compliance`) run by default and
+are cached per `scene_text_hash` and validator-context hash. Relevant canon,
+style, voice, and timeline writes invalidate their validator cache rows; the
+context hash also prevents stale hits when metadata changes outside the normal
+service path. The story-time checks below (`chronology`, `knowledge_timing`,
+`pacing_drift`) are deterministic — not cached Phase 4 validators — and are
+requested by name or run as part of a full audit.
 
 Here's what each check does and why it matters:
 
@@ -169,6 +172,40 @@ Reviews `conflict.stated_consequences` and world-rule evidence in scoped scenes:
 - Are world rules being shown, not just told?
 - Are consequences proportional to the established severity?
 
+### 12. In-world Chronology (`chronology`)
+Active only when the project declares a calendar (`set_project_calendar`) and
+scenes carry clocks (`set_scene_clock`). Flags any scene set earlier in story
+time than its predecessor on the same timeline `thread_key` that is **not**
+marked `flashback`/`flashforward`/`concurrent`. This is the multi-book timing
+guard — it catches a scene that silently rewinds the clock.
+
+**What to do when flagged**: if the rewind is intentional, set the scene's
+`temporal_mode` accordingly (or give it its own `thread_key`); if it's an
+error, correct the scene's `day_index`. A no-op for projects that never declare
+story-time.
+
+### 13. Knowledge Timing (`knowledge_timing`)
+Active when `knowledge_fact` records carry a `learned_at` position. Flags a
+scene whose prose names a present character alongside a fact they do not learn
+until a later book/chapter — a character acting on information they shouldn't
+have yet. High-precision/low-recall, so it is an advisory warning.
+
+**What to do when flagged**: move the reveal earlier, record the character
+learning the fact sooner, or revise the prose to remove the leak. This is the
+ordinary-knowledge complement to the time-travel `future_knowledge` checks in
+section 9.
+
+### 14. Pacing Drift (`pacing_drift`)
+Active for books with a planned pacing curve. Reads per-beat `intensity`
+annotations and flags when realized per-chapter intensity falls across three or
+more consecutive chapters — a sustained sag (a sagging middle). A single dip is
+intentional; a sustained slide is drift.
+
+**What to do when flagged**: raise the stakes or add a turn in the affected
+chapters — or, if the de-escalation is deliberate (a lull before a finale),
+accept it. Quality depends on honest beat-intensity annotation from
+scene-writer; flat annotations blind this check.
+
 ---
 
 ## Running a Full Audit
@@ -213,6 +250,11 @@ Use these shipped Phase 4 validator IDs as your live evidence package:
 - `world_rule_semantic_drift`
 - `voice_drift`
 - `retcon_reachability`
+- `style_compliance`
+
+The deterministic story-time checks (`chronology`, `knowledge_timing`,
+`pacing_drift`) are requested by name and reported via the `check_type` field on
+each issue rather than as Phase 4 validator rows.
 
 Example:
 - Canon says `cole.age = 20`.
@@ -233,6 +275,9 @@ use those alias names when calling live checks; use the concrete IDs above.
 | Agency deficit | → scene-writer (write active-choice scene) |
 | Tone deviation | → scene-writer (revise scene tone) |
 | Knowledge contradiction | → scene-writer (revise to remove forbidden knowledge) |
+| Chronology drift (`chronology`) | → scene-writer (set `temporal_mode`/`thread_key` or fix `day_index`) |
+| Knowledge timing (`knowledge_timing`) | → scene-writer (move the reveal) or → plot-architect (reschedule) |
+| Pacing drift (`pacing_drift`) | → plot-architect (rebalance) or → scene-writer (raise the stakes) |
 
 If a world rule has a legitimate exception, encode it as a separate
 `world_rule` (e.g. with `relevance_tags: ["exception"]` and a

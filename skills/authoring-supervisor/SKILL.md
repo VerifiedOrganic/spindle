@@ -43,6 +43,13 @@ first-class `location_id` and `content_rating` fields. Do not rely on parsing
 `location:` / `rating:` text from summaries, and do not try to set location on
 saved scene prose rows.
 
+If the book tracks in-world time — long spans, time-skips, flashbacks, or an
+invented calendar — make sure the project calendar is declared with
+`set_project_calendar` before the run (see the worldbuilder skill). It is what
+powers the `chronology` check and the in-world-time hard constraint the drafting
+step relies on. This is optional: projects that never declare a calendar simply
+skip the timing checks.
+
 ### 2. Initialize and Start the Run
 
 Once preparation returns `ready_to_draft: true`, start the run:
@@ -85,6 +92,13 @@ and `continuity_notes`. If the scene introduces no durable canon changes, add a
 `continuity_notes` entry saying that explicitly. Do not use generic
 `save_scene_draft` inside an active authoring run; it lacks the required
 continuity package.
+
+When the project declares a calendar, also stamp each drafted scene on the
+in-world clock with `set_scene_clock`, marking `temporal_mode` and/or a
+`thread_key` for any scene that is deliberately out of linear order. Give the
+`beats` honest per-beat `intensity` values rather than flattening them — the
+clock feeds the `chronology` check and the intensities feed `pacing_drift`, both
+of which the checkpoint audit runs.
 
 Explicit scenes may route through the configured explicit-capable backend. For
 batch tests or intentional full offload only, pass:
@@ -133,7 +147,10 @@ When `next_action` becomes `"await_checkpoint_review"`, the execution loop is bl
    pending, call `check_consistency` for the checkpoint chapter range with
    `deep_check: true`, then call `authoring_record_checkpoint_audit` with the
    returned structured payload. This is mandatory before closing the
-   checkpoint.
+   checkpoint. For a book that tracks in-world time, make sure the deep pass
+   includes the story-time checks (`chronology`, `knowledge_timing`,
+   `pacing_drift`) so timing drift is caught at the checkpoint rather than fifty
+   scenes later.
 3. If deep consistency returns fixable findings, fix them before proceeding.
    Treat them the same way as reviewer findings: local fixes are autonomous;
    only ask for plot/canon/content-boundary choices.
