@@ -6549,6 +6549,48 @@ impl SqliteSpindleService {
             }
         }
 
+        // Story-so-far: surface compressed digests of this and prior books so
+        // distant book-1/2 events survive into later-book drafting (scene context
+        // otherwise carries no chapter summaries). Capped to keep the prefix bounded.
+        let book_digests = self
+            .repository
+            .list_book_digests_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?;
+        let prior_digests: Vec<&crate::sqlite::records::StoredBookDigest> = book_digests
+            .iter()
+            .filter(|digest| digest.book_number <= input.book_number)
+            .collect();
+        if !prior_digests.is_empty() {
+            const PER_BOOK_INJECT_CAP: usize = 700;
+            const TOTAL_INJECT_CAP: usize = 2000;
+            let mut sections: Vec<String> = Vec::new();
+            let mut used = 0usize;
+            for digest in &prior_digests {
+                let head: String = digest.synopsis.chars().take(PER_BOOK_INJECT_CAP).collect();
+                let section = format!(
+                    "Book {} (through ch {}): {}",
+                    digest.book_number, digest.last_chapter_covered, head
+                );
+                if used + section.len() > TOTAL_INJECT_CAP {
+                    break;
+                }
+                used += section.len();
+                sections.push(section);
+            }
+            if !sections.is_empty() {
+                hard_constraints.insert(
+                    0,
+                    HardConstraint {
+                        id: "[STORY SO FAR]".to_string(),
+                        statement: format!(
+                            "STORY SO FAR (established events; do not contradict):\n{}",
+                            sections.join("\n")
+                        ),
+                    },
+                );
+            }
+        }
+
         let non_truncatable_cost =
             non_truncatable_prefix_tokens_scene_context(format_fmt, &hard_constraints);
         if non_truncatable_cost > budget_tokens {
@@ -25313,6 +25355,166 @@ rating = "explicit"
                 .any(|f| matches!(f, RetconFinding::PrematureKnowledge { .. })),
             "premature knowledge should be surfaced: {:?}",
             out.retcon_findings
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_surfaces_story_so_far_digest() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+            SaveSummaryInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "sofar".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        // A scene establishes chapter 1; a summary builds the book digest.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "x".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        svc.repository()
+            .save_summary(&SaveSummaryInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                entity_type: None,
+                entity_id: None,
+                summary: "The kingdom fell to the Ashlords".into(),
+                key_events: Vec::new(),
+                character_changes: Vec::new(),
+                relationship_shifts: Vec::new(),
+                arc_advances: Vec::new(),
+                promise_events: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let location = svc
+            .create_location(spindle_core::models::CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Keep".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A keep.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            ctx.hard_constraints
+                .iter()
+                .any(|c| c.statement.contains("STORY SO FAR") && c.statement.contains("Ashlords")),
+            "scene context should surface the story-so-far digest: {:?}",
+            ctx.hard_constraints
+        );
+    }
+
+    #[tokio::test]
+    async fn save_summary_maintains_book_digest_idempotently() {
+        use spindle_core::models::SaveSummaryInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "digest".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let repo = svc.repository();
+        let branch = repo.get_active_branch(&proj.project_id).await.unwrap();
+        let mk = |chapter: i32, summary: &str| SaveSummaryInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: chapter,
+            entity_type: None,
+            entity_id: None,
+            summary: summary.into(),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        };
+
+        repo.save_summary(&mk(1, "Mara reaches the Ash Gate"))
+            .await
+            .unwrap();
+        repo.save_summary(&mk(2, "Mara duels the warden"))
+            .await
+            .unwrap();
+
+        let digests = repo
+            .list_book_digests_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        assert_eq!(digests.len(), 1, "one digest per book");
+        assert_eq!(digests[0].book_number, 1);
+        assert_eq!(digests[0].last_chapter_covered, 2);
+        assert!(digests[0].synopsis.contains("Ash Gate"));
+        assert!(digests[0].synopsis.contains("duels the warden"));
+
+        // Re-saving a chapter must NOT double-count (idempotent re-derive).
+        repo.save_summary(&mk(2, "Mara duels the warden"))
+            .await
+            .unwrap();
+        let digests = repo
+            .list_book_digests_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        assert_eq!(digests.len(), 1);
+        assert_eq!(digests[0].last_chapter_covered, 2);
+        assert_eq!(
+            digests[0].synopsis.matches("duels the warden").count(),
+            1,
+            "chapter must appear exactly once after re-save"
         );
     }
 

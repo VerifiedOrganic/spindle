@@ -3302,6 +3302,40 @@ pub fn candidate_from_commit_entry(
     })
 }
 
+/// Deterministically build a per-book "story so far" synopsis from its ordered
+/// `(chapter_number, summary)` pairs, capped to `char_cap`. Under the cap it
+/// joins every chapter; over it, it keeps the most recent chapters that fit
+/// behind a condensation marker (a model compaction pass can replace this
+/// later). Returns `(synopsis, truncated)`.
+pub fn build_book_synopsis(parts: &[(i32, String)], char_cap: usize) -> (String, bool) {
+    let rendered: Vec<String> = parts
+        .iter()
+        .map(|(chapter, summary)| format!("Ch {chapter}: {summary}"))
+        .collect();
+    let full = rendered.join("\n");
+    if full.len() <= char_cap {
+        return (full, false);
+    }
+    const MARKER: &str = "[earlier chapters condensed]";
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = MARKER.len();
+    for line in rendered.iter().rev() {
+        let add = line.len() + 1; // newline
+        if used + add > char_cap {
+            break;
+        }
+        used += add;
+        kept.push(line.as_str());
+    }
+    kept.reverse();
+    let mut out = String::from(MARKER);
+    for line in kept {
+        out.push('\n');
+        out.push_str(line);
+    }
+    (out, true)
+}
+
 #[cfg(test)]
 mod promise_timing_tests {
     use super::*;
@@ -3491,5 +3525,32 @@ mod contradiction_tests {
     #[test]
     fn single_fact_does_not_conflict() {
         assert!(detect_fact_contradictions(&[cand("a", "blue", None, None, None)]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod book_digest_tests {
+    use super::*;
+
+    #[test]
+    fn synopsis_joins_all_chapters_under_cap() {
+        let parts = vec![(1, "setup".to_string()), (2, "rising".to_string())];
+        let (synopsis, truncated) = build_book_synopsis(&parts, 1000);
+        assert!(!truncated);
+        assert!(synopsis.contains("Ch 1: setup"));
+        assert!(synopsis.contains("Ch 2: rising"));
+    }
+
+    #[test]
+    fn synopsis_keeps_recent_chapters_over_cap() {
+        let parts: Vec<(i32, String)> = (1..=10)
+            .map(|n| (n, format!("event number {n} occurs here")))
+            .collect();
+        let (synopsis, truncated) = build_book_synopsis(&parts, 90);
+        assert!(truncated, "should report truncation");
+        assert!(synopsis.contains("condensed"), "should mark condensation");
+        assert!(synopsis.contains("Ch 10:"), "most recent chapter retained");
+        assert!(!synopsis.contains("Ch 1:"), "oldest chapter dropped under cap");
+        assert!(synopsis.len() <= 90, "synopsis stays within the char cap");
     }
 }

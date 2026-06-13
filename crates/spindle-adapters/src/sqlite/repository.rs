@@ -7184,6 +7184,7 @@ impl Repository {
         let arc_advances_json = serde_json::to_string(&input.arc_advances)?;
         let promise_events_json = serde_json::to_string(&input.promise_events)?;
         let id = mint_id("chapter_summary");
+        let digest_id = mint_id("book_digest");
         let now = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
@@ -7210,6 +7211,47 @@ impl Repository {
                             &arc_advances_json, &promise_events_json, now,
                         ],
                     )?;
+
+                    // Atomically re-derive this book's "story so far" digest from
+                    // all of its chapter summaries (idempotent; deterministic —
+                    // a model compaction pass can replace the cap later).
+                    const BOOK_DIGEST_CHAR_CAP: usize = 6000;
+                    let mut parts: Vec<(i32, String)> = Vec::new();
+                    {
+                        let mut stmt = tx.prepare(
+                            "SELECT chapter_number, summary FROM chapter_summary \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3 \
+                             ORDER BY chapter_number",
+                        )?;
+                        let mut rows = stmt
+                            .query(rusqlite::params![&project_id, &branch_id, book_number])?;
+                        while let Some(row) = rows.next()? {
+                            let chapter: i64 = row.get(0)?;
+                            let chapter_summary: String = row.get(1)?;
+                            parts.push((chapter as i32, chapter_summary));
+                        }
+                    }
+                    let last_chapter_covered =
+                        parts.iter().map(|(chapter, _)| *chapter).max().unwrap_or(0);
+                    let (synopsis, truncated) =
+                        crate::format::build_book_synopsis(&parts, BOOK_DIGEST_CHAR_CAP);
+                    let token_estimate = (synopsis.len() / 4) as i64;
+                    tx.execute(
+                        "INSERT INTO book_digest (id, project_id, branch_id, book_number, synopsis, \
+                         open_threads, last_chapter_covered, token_estimate, truncated, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?7, ?8, ?9, ?9) \
+                         ON CONFLICT(project_id, branch_id, book_number) DO UPDATE SET \
+                           synopsis = excluded.synopsis, \
+                           last_chapter_covered = excluded.last_chapter_covered, \
+                           token_estimate = excluded.token_estimate, \
+                           truncated = excluded.truncated, \
+                           updated_at = excluded.updated_at",
+                        rusqlite::params![
+                            &digest_id, &project_id, &branch_id, book_number, &synopsis,
+                            last_chapter_covered, token_estimate, truncated as i32, now,
+                        ],
+                    )?;
+
                     tx.commit()?;
                     Ok(())
                 }
@@ -7218,6 +7260,34 @@ impl Repository {
         self.get_chapter_summary(&project_id, &branch_id, book_number, chapter_number)
             .await?
             .ok_or_else(|| anyhow!("chapter_summary vanished after save"))
+    }
+
+    /// All per-book "story so far" digests on the branch, ordered by book.
+    pub async fn list_book_digests_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredBookDigest>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM book_digest \
+                     WHERE project_id = ?1 AND branch_id = ?2 \
+                     ORDER BY book_number",
+                    crate::sqlite::records::BOOK_DIGEST_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredBookDigest::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
     }
 
     pub async fn get_chapter_summary(

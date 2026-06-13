@@ -3055,3 +3055,42 @@ impl<'a> TryFrom<&Row<'a>> for StoredCharacterBirth {
         })
     }
 }
+
+// =============================================================================
+// Book digest (V0018): per-book "story so far" rollup.
+// =============================================================================
+
+pub const BOOK_DIGEST_COLUMNS: &str = "id, project_id, branch_id, book_number, synopsis, \
+     open_threads, last_chapter_covered, token_estimate, truncated, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredBookDigest {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub book_number: i32,
+    pub synopsis: String,
+    pub open_threads: Vec<String>,
+    pub last_chapter_covered: i32,
+    pub token_estimate: i64,
+    pub truncated: bool,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredBookDigest {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            book_number: row::int(r, 3)? as i32,
+            synopsis: row::text(r, 4)?,
+            open_threads: row::json(r, 5)?,
+            last_chapter_covered: row::int(r, 6)? as i32,
+            token_estimate: row::int(r, 7)?,
+            truncated: row::int(r, 8)? != 0,
+            updated_at: row::time(r, 10)?,
+        })
+    }
+}
