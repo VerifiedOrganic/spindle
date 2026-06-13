@@ -287,6 +287,62 @@ impl StoryClock {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectCalendarInput {
+    pub project_id: String,
+    pub calendar: CalendarDef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectCalendarOutput {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetSceneClockInput {
+    pub project_id: String,
+    pub scene_id: String,
+    #[serde(default)]
+    pub clock: StoryClock,
+    /// `linear | flashback | flashforward | concurrent` (default `linear`).
+    #[serde(default)]
+    pub temporal_mode: Option<String>,
+    /// Parallel-timeline key; scenes on different threads may overlap in time.
+    #[serde(default)]
+    pub thread_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetSceneClockOutput {
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetTimelineEventClockInput {
+    pub project_id: String,
+    pub timeline_event_id: String,
+    #[serde(default)]
+    pub clock: StoryClock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetTimelineEventClockOutput {
+    pub timeline_event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetCharacterBirthInput {
+    pub project_id: String,
+    pub character_id: String,
+    #[serde(default)]
+    pub clock: StoryClock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetCharacterBirthOutput {
+    pub character_id: String,
+}
+
 #[cfg(test)]
 mod story_clock_tests {
     use super::*;

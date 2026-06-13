@@ -399,6 +399,22 @@ impl ToolRouter {
                 "set_narrator_voice",
                 "Set or clear the project's narrator-voice directive — the prose-level narration style (comedy density, pacing feel, interiority ratio, emotional register, chapter-ending style) that governs the whole reading experience and is distinct from per-character dialogue voice profiles. Enforced across scene context, the save-draft gate, the style_compliance validator, and the review's Target Reader persona",
             ),
+            tool::<SetProjectCalendarInput, SetProjectCalendarOutput>(
+                "set_project_calendar",
+                "Define the project's in-world calendar (days per week, hours per day, months, days per year, epoch). Enables the chronology check and the in-world-time hard constraint; validated for internal consistency.",
+            ),
+            tool::<SetSceneClockInput, SetSceneClockOutput>(
+                "set_scene_clock",
+                "Place a scene on the in-world story clock (day_index, time_of_day, duration_days, precision), optionally marking temporal_mode (linear|flashback|flashforward|concurrent) and a parallel thread_key. Drives the chronology check and the in-world-time context constraint.",
+            ),
+            tool::<SetTimelineEventClockInput, SetTimelineEventClockOutput>(
+                "set_timeline_event_clock",
+                "Set the in-world time a timeline event occurs (distinct from its manuscript placement) so flashbacks and time-skips are oriented by story time.",
+            ),
+            tool::<SetCharacterBirthInput, SetCharacterBirthOutput>(
+                "set_character_birth",
+                "Anchor a character's birth on the story clock so their age can be derived at any story moment.",
+            ),
             tool::<CreateSavePointInput, CreateSavePointOutput>(
                 "create_save_point",
                 "Create a save point on the active branch",
@@ -1245,6 +1261,26 @@ impl ToolRouter {
             },
             "set_narrator_voice" => {
                 self.invoke(arguments, |input| self.service.set_narrator_voice(input))
+                    .await
+            }
+            "set_project_calendar" => {
+                self.invoke(arguments, |input| {
+                    self.service.set_project_calendar(input)
+                })
+                .await
+            }
+            "set_scene_clock" => {
+                self.invoke(arguments, |input| self.service.set_scene_clock(input))
+                    .await
+            }
+            "set_timeline_event_clock" => {
+                self.invoke(arguments, |input| {
+                    self.service.set_timeline_event_clock(input)
+                })
+                .await
+            }
+            "set_character_birth" => {
+                self.invoke(arguments, |input| self.service.set_character_birth(input))
                     .await
             }
             "create_save_point" => {

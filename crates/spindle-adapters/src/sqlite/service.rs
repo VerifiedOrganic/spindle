@@ -1134,6 +1134,129 @@ impl SqliteSpindleService {
         })
     }
 
+    pub async fn set_project_calendar(
+        &self,
+        input: spindle_core::models::SetProjectCalendarInput,
+    ) -> Result<spindle_core::models::SetProjectCalendarOutput> {
+        self.repository.get_project(&input.project_id).await?;
+        input
+            .calendar
+            .validate()
+            .map_err(|error| anyhow::anyhow!("invalid calendar: {error}"))?;
+        self.repository
+            .upsert_project_calendar(&input.project_id, &input.calendar)
+            .await?;
+        Ok(spindle_core::models::SetProjectCalendarOutput {
+            project_id: input.project_id,
+        })
+    }
+
+    pub async fn set_scene_clock(
+        &self,
+        input: spindle_core::models::SetSceneClockInput,
+    ) -> Result<spindle_core::models::SetSceneClockOutput> {
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        if scene.project_id != input.project_id {
+            anyhow::bail!("scene does not belong to the requested project");
+        }
+        let calendar = self.story_validation_calendar(&input.project_id).await?;
+        input
+            .clock
+            .validate(&calendar)
+            .map_err(|error| anyhow::anyhow!("invalid story clock: {error}"))?;
+        if let Some(mode) = input.temporal_mode.as_deref()
+            && !matches!(mode, "linear" | "flashback" | "flashforward" | "concurrent")
+        {
+            anyhow::bail!(
+                "invalid temporal_mode '{mode}' (expected linear|flashback|flashforward|concurrent)"
+            );
+        }
+        self.repository
+            .upsert_scene_clock(
+                &input.scene_id,
+                &input.project_id,
+                &scene.branch_id,
+                &input.clock,
+                input.temporal_mode.as_deref(),
+                input.thread_key.as_deref(),
+            )
+            .await?;
+        Ok(spindle_core::models::SetSceneClockOutput {
+            scene_id: input.scene_id,
+        })
+    }
+
+    pub async fn set_timeline_event_clock(
+        &self,
+        input: spindle_core::models::SetTimelineEventClockInput,
+    ) -> Result<spindle_core::models::SetTimelineEventClockOutput> {
+        let event = self
+            .repository
+            .get_timeline_event(&input.timeline_event_id)
+            .await?;
+        if event.project_id != input.project_id {
+            anyhow::bail!("timeline event does not belong to the requested project");
+        }
+        let calendar = self.story_validation_calendar(&input.project_id).await?;
+        input
+            .clock
+            .validate(&calendar)
+            .map_err(|error| anyhow::anyhow!("invalid story clock: {error}"))?;
+        self.repository
+            .upsert_timeline_event_clock(
+                &input.timeline_event_id,
+                &input.project_id,
+                &event.branch_id,
+                &input.clock,
+            )
+            .await?;
+        Ok(spindle_core::models::SetTimelineEventClockOutput {
+            timeline_event_id: input.timeline_event_id,
+        })
+    }
+
+    pub async fn set_character_birth(
+        &self,
+        input: spindle_core::models::SetCharacterBirthInput,
+    ) -> Result<spindle_core::models::SetCharacterBirthOutput> {
+        let character = self.repository.get_character(&input.character_id).await?;
+        if character.project_id != input.project_id {
+            anyhow::bail!("character does not belong to the requested project");
+        }
+        let calendar = self.story_validation_calendar(&input.project_id).await?;
+        input
+            .clock
+            .validate(&calendar)
+            .map_err(|error| anyhow::anyhow!("invalid story clock: {error}"))?;
+        self.repository
+            .upsert_character_birth(&input.character_id, &input.project_id, &input.clock)
+            .await?;
+        Ok(spindle_core::models::SetCharacterBirthOutput {
+            character_id: input.character_id,
+        })
+    }
+
+    /// The project's calendar if set, otherwise a default 24h Gregorian calendar
+    /// used purely to validate clock ranges (e.g. `time_of_day`).
+    async fn story_validation_calendar(
+        &self,
+        project_id: &str,
+    ) -> Result<spindle_core::models::CalendarDef> {
+        Ok(self
+            .repository
+            .get_project_calendar(project_id)
+            .await?
+            .map(|stored| stored.calendar)
+            .unwrap_or_else(|| spindle_core::models::CalendarDef {
+                days_per_week: 7,
+                hours_per_day: 24,
+                week_day_names: Vec::new(),
+                months: Vec::new(),
+                days_per_year: 365,
+                epoch_label: None,
+            }))
+    }
+
     pub async fn create_chapter(&self, input: CreateChapterInput) -> Result<CreateChapterOutput> {
         self.repository.get_project(&input.project_id).await?;
         // The book can come from (a) explicit book_id, (b) book_number, or
@@ -24907,6 +25030,122 @@ rating = "explicit"
             "scene context should surface the in-world time hard constraint: {:?}",
             ctx.hard_constraints
         );
+    }
+
+    #[tokio::test]
+    async fn set_clock_tools_validate_and_persist() {
+        use spindle_core::models::{
+            CalendarDef, CalendarMonth, ContentRating, SaveSceneDraftInput, SetProjectCalendarInput,
+            SetSceneClockInput, StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "set-clock".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Invalid calendar (months do not sum to the year) is rejected.
+        assert!(
+            svc.set_project_calendar(SetProjectCalendarInput {
+                project_id: proj.project_id.clone(),
+                calendar: CalendarDef {
+                    days_per_week: 7,
+                    hours_per_day: 24,
+                    week_day_names: Vec::new(),
+                    months: vec![CalendarMonth {
+                        name: "M".into(),
+                        days: 10,
+                    }],
+                    days_per_year: 365,
+                    epoch_label: None,
+                },
+            })
+            .await
+            .is_err()
+        );
+
+        // Valid calendar persists.
+        svc.set_project_calendar(SetProjectCalendarInput {
+            project_id: proj.project_id.clone(),
+            calendar: CalendarDef {
+                days_per_week: 7,
+                hours_per_day: 24,
+                week_day_names: Vec::new(),
+                months: Vec::new(),
+                days_per_year: 365,
+                epoch_label: None,
+            },
+        })
+        .await
+        .unwrap();
+
+        // Out-of-range time_of_day is rejected.
+        assert!(
+            svc.set_scene_clock(SetSceneClockInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                clock: StoryClock {
+                    day_index: Some(1),
+                    time_of_day: Some(2000),
+                    ..Default::default()
+                },
+                temporal_mode: None,
+                thread_key: None,
+            })
+            .await
+            .is_err()
+        );
+
+        // A valid clock persists and round-trips.
+        svc.set_scene_clock(SetSceneClockInput {
+            project_id: proj.project_id.clone(),
+            scene_id: scene.scene_id.clone(),
+            clock: StoryClock {
+                day_index: Some(7),
+                time_of_day: Some(600),
+                duration_days: Some(1.0),
+                precision: Some("day".into()),
+            },
+            temporal_mode: Some("flashback".into()),
+            thread_key: Some("b".into()),
+        })
+        .await
+        .unwrap();
+        let stored = svc
+            .repository()
+            .get_scene_clock(&scene.scene_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.clock.day_index, Some(7));
+        assert_eq!(stored.temporal_mode.as_deref(), Some("flashback"));
     }
 
     #[tokio::test]
