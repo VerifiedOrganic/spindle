@@ -2980,6 +2980,37 @@ impl Repository {
         Ok(count)
     }
 
+    /// Re-home rows of a branch-scoped canon table onto `target_branch_id` by
+    /// id (used by branch merges). `table` is a fixed internal constant, never
+    /// user input. Re-homing keeps each row's other FKs (e.g. a fact's scene_id)
+    /// valid because the referenced rows still exist; it just moves the row's
+    /// branch attribution, which is correct for a merge and avoids any
+    /// project-wide unique-index collisions that copying would hit.
+    pub async fn rehome_rows_to_branch(
+        &self,
+        table: &'static str,
+        target_branch_id: &str,
+        ids: &[String],
+    ) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let sql = format!("UPDATE {table} SET branch_id = ?1 WHERE id = ?2");
+        let target_branch_id = target_branch_id.to_string();
+        let ids = ids.to_vec();
+        let count = ids.len();
+        self.inner
+            .pool
+            .write(move |conn| {
+                for id in &ids {
+                    conn.execute(&sql, rusqlite::params![&target_branch_id, id])?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(count)
+    }
+
     pub async fn get_world_rule(&self, id: &str) -> Result<WorldRule> {
         let id = id.to_string();
         self.inner

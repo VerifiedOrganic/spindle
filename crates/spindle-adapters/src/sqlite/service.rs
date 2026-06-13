@@ -12223,6 +12223,69 @@ impl SqliteSpindleService {
             .merge_world_rules_to_branch(&target_branch_id, &source_local_rule_ids)
             .await?;
 
+        // Re-home the remaining branch-local canon (also dropped by the
+        // scene-only snapshot): canonical facts, promises, timeline events,
+        // knowledge facts, and character arcs created on the source branch.
+        let canonical_fact_ids: Vec<String> = self
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|f| f.branch_id == input.source_branch_id)
+            .map(|f| f.id)
+            .collect();
+        self.repository
+            .rehome_rows_to_branch("canonical_fact", &target_branch_id, &canonical_fact_ids)
+            .await?;
+
+        let promise_ids: Vec<String> = self
+            .repository
+            .list_narrative_promises_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|p| p.branch_id == input.source_branch_id)
+            .map(|p| p.id)
+            .collect();
+        self.repository
+            .rehome_rows_to_branch("narrative_promise", &target_branch_id, &promise_ids)
+            .await?;
+
+        let timeline_ids: Vec<String> = self
+            .repository
+            .list_timeline_events_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|e| e.branch_id == input.source_branch_id)
+            .map(|e| e.id)
+            .collect();
+        self.repository
+            .rehome_rows_to_branch("timeline_event", &target_branch_id, &timeline_ids)
+            .await?;
+
+        let knowledge_ids: Vec<String> = self
+            .repository
+            .list_knowledge_facts_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|k| k.branch_id == input.source_branch_id)
+            .map(|k| k.id)
+            .collect();
+        self.repository
+            .rehome_rows_to_branch("knowledge_fact", &target_branch_id, &knowledge_ids)
+            .await?;
+
+        let arc_ids: Vec<String> = self
+            .repository
+            .list_character_arcs_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|a| a.branch_id == input.source_branch_id)
+            .map(|a| a.id)
+            .collect();
+        self.repository
+            .rehome_rows_to_branch("character_arc", &target_branch_id, &arc_ids)
+            .await?;
+
         Ok(MergeBranchOutput {
             source_branch_id: input.source_branch_id,
             target_branch_id,
@@ -26066,6 +26129,114 @@ rating = "explicit"
                     && i.message.contains("over budget")),
             "pacing audit should fire once the arc outpaces its budget: {:?}",
             out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_branch_carries_canonical_fact_canon() {
+        use crate::sqlite::repository::CreateCanonicalFactParams;
+        use spindle_core::models::{
+            ContentRating, CreateBranchInput, MergeBranchInput, SaveSceneDraftInput,
+            SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "mergecf".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let main_branch = svc
+            .repository()
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+        let feature = svc
+            .create_branch(CreateBranchInput {
+                project_id: proj.project_id.clone(),
+                name: "feature".into(),
+                branch_type: "experiment".into(),
+                description: None,
+                parent_branch_id: Some(main_branch.id.clone()),
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: proj.project_id.clone(),
+            branch_id: feature.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // A branch-local canonical fact whose scene_id is a NOT NULL FK.
+        svc.repository()
+            .create_canonical_fact(CreateCanonicalFactParams {
+                project_id: proj.project_id.clone(),
+                branch_id: feature.branch_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                subject_table: "character".into(),
+                subject_id: Some("character:mara".into()),
+                predicate: "eye_color".into(),
+                value_kind: "string".into(),
+                value_text: Some("blue".into()),
+                value_number: None,
+                unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: "invariant".into(),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: false,
+            })
+            .await
+            .unwrap();
+
+        svc.merge_branch(MergeBranchInput {
+            project_id: proj.project_id.clone(),
+            source_branch_id: feature.branch_id.clone(),
+            target_branch_id: Some(main_branch.id.clone()),
+            merge_type: "squash".into(),
+        })
+        .await
+        .unwrap();
+
+        let main_facts = svc
+            .repository()
+            .list_active_canonical_facts_by_project_and_branch(&proj.project_id, &main_branch.id)
+            .await
+            .unwrap();
+        assert!(
+            main_facts.iter().any(
+                |f| f.predicate == "eye_color" && f.subject_id.as_deref() == Some("character:mara")
+            ),
+            "branch-local canonical fact must survive merge into main (count={})",
+            main_facts.len()
         );
     }
 
