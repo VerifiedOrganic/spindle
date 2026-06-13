@@ -1031,6 +1031,279 @@ impl Repository {
         Ok(scene)
     }
 
+    // ── Story-time side tables (V0017) ──────────────────────────────
+
+    pub async fn upsert_project_calendar(
+        &self,
+        project_id: &str,
+        calendar: &spindle_core::models::CalendarDef,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let week_day_names = serde_json::to_string(&calendar.week_day_names)?;
+        let months = serde_json::to_string(&calendar.months)?;
+        let days_per_week = calendar.days_per_week;
+        let hours_per_day = calendar.hours_per_day;
+        let days_per_year = calendar.days_per_year;
+        let epoch_label = calendar.epoch_label.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO project_calendar \
+                     (project_id, days_per_week, hours_per_day, week_day_names, months, \
+                      days_per_year, epoch_label, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                     ON CONFLICT(project_id) DO UPDATE SET \
+                       days_per_week = excluded.days_per_week, \
+                       hours_per_day = excluded.hours_per_day, \
+                       week_day_names = excluded.week_day_names, \
+                       months = excluded.months, \
+                       days_per_year = excluded.days_per_year, \
+                       epoch_label = excluded.epoch_label, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &project_id,
+                        days_per_week,
+                        hours_per_day,
+                        &week_day_names,
+                        &months,
+                        days_per_year,
+                        &epoch_label,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_project_calendar(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredProjectCalendar>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM project_calendar WHERE project_id = ?1",
+                    crate::sqlite::records::PROJECT_CALENDAR_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&project_id], |r| {
+                    crate::sqlite::records::StoredProjectCalendar::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn upsert_scene_clock(
+        &self,
+        scene_id: &str,
+        project_id: &str,
+        branch_id: &str,
+        clock: &spindle_core::models::StoryClock,
+        temporal_mode: Option<&str>,
+        thread_key: Option<&str>,
+    ) -> Result<()> {
+        let scene_id = scene_id.to_string();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let day_index = clock.day_index;
+        let time_of_day = clock.time_of_day;
+        let duration_days = clock.duration_days;
+        let precision = clock.precision.clone();
+        let temporal_mode = temporal_mode.map(str::to_string);
+        let thread_key = thread_key.map(str::to_string);
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO scene_clock \
+                     (scene_id, project_id, branch_id, day_index, time_of_day, duration_days, \
+                      precision, temporal_mode, thread_key, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10) \
+                     ON CONFLICT(scene_id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       branch_id = excluded.branch_id, \
+                       day_index = excluded.day_index, \
+                       time_of_day = excluded.time_of_day, \
+                       duration_days = excluded.duration_days, \
+                       precision = excluded.precision, \
+                       temporal_mode = excluded.temporal_mode, \
+                       thread_key = excluded.thread_key, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &scene_id,
+                        &project_id,
+                        &branch_id,
+                        day_index,
+                        time_of_day,
+                        duration_days,
+                        &precision,
+                        &temporal_mode,
+                        &thread_key,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_scene_clock(
+        &self,
+        scene_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredSceneClock>> {
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM scene_clock WHERE scene_id = ?1",
+                    crate::sqlite::records::SCENE_CLOCK_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&scene_id], |r| {
+                    crate::sqlite::records::StoredSceneClock::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn upsert_timeline_event_clock(
+        &self,
+        timeline_event_id: &str,
+        project_id: &str,
+        branch_id: &str,
+        clock: &spindle_core::models::StoryClock,
+    ) -> Result<()> {
+        let timeline_event_id = timeline_event_id.to_string();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let day_index = clock.day_index;
+        let time_of_day = clock.time_of_day;
+        let duration_days = clock.duration_days;
+        let precision = clock.precision.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO timeline_event_clock \
+                     (timeline_event_id, project_id, branch_id, day_index, time_of_day, \
+                      duration_days, precision, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                     ON CONFLICT(timeline_event_id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       branch_id = excluded.branch_id, \
+                       day_index = excluded.day_index, \
+                       time_of_day = excluded.time_of_day, \
+                       duration_days = excluded.duration_days, \
+                       precision = excluded.precision, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &timeline_event_id,
+                        &project_id,
+                        &branch_id,
+                        day_index,
+                        time_of_day,
+                        duration_days,
+                        &precision,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_timeline_event_clock(
+        &self,
+        timeline_event_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredTimelineEventClock>> {
+        let timeline_event_id = timeline_event_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM timeline_event_clock WHERE timeline_event_id = ?1",
+                    crate::sqlite::records::TIMELINE_EVENT_CLOCK_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&timeline_event_id], |r| {
+                    crate::sqlite::records::StoredTimelineEventClock::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn upsert_character_birth(
+        &self,
+        character_id: &str,
+        project_id: &str,
+        clock: &spindle_core::models::StoryClock,
+    ) -> Result<()> {
+        let character_id = character_id.to_string();
+        let project_id = project_id.to_string();
+        let day_index = clock.day_index;
+        let time_of_day = clock.time_of_day;
+        let precision = clock.precision.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO character_birth \
+                     (character_id, project_id, birth_day_index, time_of_day, precision, \
+                      created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) \
+                     ON CONFLICT(character_id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       birth_day_index = excluded.birth_day_index, \
+                       time_of_day = excluded.time_of_day, \
+                       precision = excluded.precision, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &character_id,
+                        &project_id,
+                        day_index,
+                        time_of_day,
+                        &precision,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_character_birth(
+        &self,
+        character_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredCharacterBirth>> {
+        let character_id = character_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM character_birth WHERE character_id = ?1",
+                    crate::sqlite::records::CHARACTER_BIRTH_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&character_id], |r| {
+                    crate::sqlite::records::StoredCharacterBirth::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
     pub async fn list_scenes_by_project_and_branch(
         &self,
         project_id: &str,

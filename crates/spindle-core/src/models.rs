@@ -152,6 +152,255 @@ pub struct StoryPlacement {
     pub note: Option<String>,
 }
 
+/// In-world placement of a scene or event on the project's story clock. Every
+/// field is optional: a project that never declares story-time leaves them unset
+/// and behaves exactly as before. Distinct from [`StoryPlacement`], which is the
+/// structural (manuscript) position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct StoryClock {
+    /// In-world day index from the project epoch (monotonic, spans books).
+    pub day_index: Option<i64>,
+    /// Minutes from midnight, in `0..(hours_per_day * 60)`.
+    pub time_of_day: Option<i32>,
+    /// In-world span of the scene/event, in days.
+    pub duration_days: Option<f64>,
+    /// Display/tolerance granularity: `minute|hour|day|week|month|year`.
+    pub precision: Option<String>,
+}
+
+/// One month in an invented calendar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CalendarMonth {
+    pub name: String,
+    pub days: i32,
+}
+
+/// Per-project calendar definition mapping the abstract day index to/from a
+/// human-facing date. Supports non-24h days and fully invented month/week
+/// schemes, so an invented fantasy calendar is handled identically to Gregorian.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CalendarDef {
+    pub days_per_week: i32,
+    /// Hours in an in-world day (typically 24); governs the `time_of_day` range
+    /// and the total-order index so non-24h calendars still order correctly.
+    pub hours_per_day: i32,
+    #[serde(default)]
+    pub week_day_names: Vec<String>,
+    #[serde(default)]
+    pub months: Vec<CalendarMonth>,
+    pub days_per_year: i32,
+    #[serde(default)]
+    pub epoch_label: Option<String>,
+}
+
+impl CalendarDef {
+    /// Minutes in one in-world day. Folds `(day_index, time_of_day)` into a single
+    /// total-order index.
+    pub fn minutes_per_day(&self) -> i64 {
+        self.hours_per_day.max(0) as i64 * 60
+    }
+
+    /// Validate the calendar's internal consistency.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.days_per_week < 1 {
+            return Err(format!(
+                "days_per_week must be >= 1 (got {})",
+                self.days_per_week
+            ));
+        }
+        if self.hours_per_day < 1 {
+            return Err(format!(
+                "hours_per_day must be >= 1 (got {})",
+                self.hours_per_day
+            ));
+        }
+        if self.days_per_year < 1 {
+            return Err(format!(
+                "days_per_year must be >= 1 (got {})",
+                self.days_per_year
+            ));
+        }
+        if !self.months.is_empty() {
+            for month in &self.months {
+                if month.days < 1 {
+                    return Err(format!("calendar month '{}' must have >= 1 day", month.name));
+                }
+            }
+            let total: i32 = self.months.iter().map(|month| month.days).sum();
+            if total != self.days_per_year {
+                return Err(format!(
+                    "calendar months sum to {total} days but days_per_year is {}",
+                    self.days_per_year
+                ));
+            }
+        }
+        if !self.week_day_names.is_empty()
+            && self.week_day_names.len() as i32 != self.days_per_week
+        {
+            return Err(format!(
+                "week_day_names has {} entries but days_per_week is {}",
+                self.week_day_names.len(),
+                self.days_per_week
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl StoryClock {
+    /// Fold this clock into a single total-order index (in-world minutes from the
+    /// epoch) under `calendar`. Returns None when no `day_index` is set.
+    pub fn total_index(&self, calendar: &CalendarDef) -> Option<i64> {
+        let day_index = self.day_index?;
+        Some(day_index * calendar.minutes_per_day() + self.time_of_day.unwrap_or(0) as i64)
+    }
+
+    /// Validate this clock against `calendar`.
+    pub fn validate(&self, calendar: &CalendarDef) -> Result<(), String> {
+        if let Some(day_index) = self.day_index
+            && day_index < 0
+        {
+            return Err(format!("day_index must be >= 0 (got {day_index})"));
+        }
+        if let Some(duration) = self.duration_days
+            && duration < 0.0
+        {
+            return Err(format!("duration_days must be >= 0 (got {duration})"));
+        }
+        if let Some(time_of_day) = self.time_of_day {
+            let minutes_per_day = calendar.minutes_per_day();
+            if time_of_day < 0 || time_of_day as i64 >= minutes_per_day {
+                return Err(format!(
+                    "time_of_day must be in 0..{minutes_per_day} (got {time_of_day})"
+                ));
+            }
+        }
+        if let Some(precision) = self.precision.as_deref()
+            && !matches!(
+                precision,
+                "minute" | "hour" | "day" | "week" | "month" | "year"
+            )
+        {
+            return Err(format!("unknown precision '{precision}'"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod story_clock_tests {
+    use super::*;
+
+    fn gregorian() -> CalendarDef {
+        CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: None,
+        }
+    }
+
+    #[test]
+    fn total_index_is_none_without_day_index() {
+        assert_eq!(StoryClock::default().total_index(&gregorian()), None);
+    }
+
+    #[test]
+    fn total_index_folds_day_and_time() {
+        let clock = StoryClock {
+            day_index: Some(3),
+            time_of_day: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(clock.total_index(&gregorian()), Some(3 * 1440 + 120));
+    }
+
+    #[test]
+    fn total_index_respects_non_24h_calendar() {
+        let mut cal = gregorian();
+        cal.hours_per_day = 10; // 600 minutes/day
+        let clock = StoryClock {
+            day_index: Some(2),
+            time_of_day: Some(30),
+            ..Default::default()
+        };
+        assert_eq!(clock.total_index(&cal), Some(2 * 600 + 30));
+    }
+
+    #[test]
+    fn invented_calendar_months_must_sum_to_year() {
+        let mut cal = gregorian();
+        cal.days_per_week = 5;
+        cal.months = vec![
+            CalendarMonth {
+                name: "Frost".into(),
+                days: 30,
+            },
+            CalendarMonth {
+                name: "Thaw".into(),
+                days: 40,
+            },
+        ];
+        assert!(cal.validate().is_err(), "70 != 365 must be rejected");
+        cal.days_per_year = 70;
+        assert!(cal.validate().is_ok());
+    }
+
+    #[test]
+    fn clock_rejects_out_of_range_time_of_day() {
+        let cal = gregorian();
+        assert!(
+            StoryClock {
+                day_index: Some(0),
+                time_of_day: Some(1440),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
+        );
+        assert!(
+            StoryClock {
+                day_index: Some(0),
+                time_of_day: Some(1439),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn clock_rejects_negative_day_index_and_unknown_precision() {
+        let cal = gregorian();
+        assert!(
+            StoryClock {
+                day_index: Some(-1),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
+        );
+        assert!(
+            StoryClock {
+                precision: Some("fortnight".into()),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
+        );
+        assert!(
+            StoryClock {
+                precision: Some("day".into()),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_ok()
+        );
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WriterPosition {
     pub project_id: String,

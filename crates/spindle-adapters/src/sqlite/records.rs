@@ -2931,3 +2931,127 @@ mod tests {
         assert!(voice.vocabulary.is_empty());
     }
 }
+
+// =============================================================================
+// Story-time side tables (V0017): project calendar + per-entity story clocks.
+// =============================================================================
+
+pub const PROJECT_CALENDAR_COLUMNS: &str = "project_id, days_per_week, hours_per_day, \
+     week_day_names, months, days_per_year, epoch_label, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredProjectCalendar {
+    pub project_id: String,
+    pub calendar: spindle_core::models::CalendarDef,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredProjectCalendar {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            project_id: row::text(r, 0)?,
+            calendar: spindle_core::models::CalendarDef {
+                days_per_week: row::int(r, 1)? as i32,
+                hours_per_day: row::int(r, 2)? as i32,
+                week_day_names: row::opt_json(r, 3)?.unwrap_or_default(),
+                months: row::opt_json(r, 4)?.unwrap_or_default(),
+                days_per_year: row::int(r, 5)? as i32,
+                epoch_label: row::opt_text(r, 6)?,
+            },
+            updated_at: row::time(r, 8)?,
+        })
+    }
+}
+
+pub const SCENE_CLOCK_COLUMNS: &str = "scene_id, project_id, branch_id, day_index, \
+     time_of_day, duration_days, precision, temporal_mode, thread_key, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredSceneClock {
+    pub scene_id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub clock: spindle_core::models::StoryClock,
+    pub temporal_mode: Option<String>,
+    pub thread_key: Option<String>,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredSceneClock {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            scene_id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            clock: spindle_core::models::StoryClock {
+                day_index: row::opt_int(r, 3)?,
+                time_of_day: row::opt_int(r, 4)?.map(|value| value as i32),
+                duration_days: row::opt_real(r, 5)?,
+                precision: row::opt_text(r, 6)?,
+            },
+            temporal_mode: row::opt_text(r, 7)?,
+            thread_key: row::opt_text(r, 8)?,
+            updated_at: row::time(r, 10)?,
+        })
+    }
+}
+
+pub const TIMELINE_EVENT_CLOCK_COLUMNS: &str = "timeline_event_id, project_id, branch_id, \
+     day_index, time_of_day, duration_days, precision, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredTimelineEventClock {
+    pub timeline_event_id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub clock: spindle_core::models::StoryClock,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredTimelineEventClock {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            timeline_event_id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            clock: spindle_core::models::StoryClock {
+                day_index: row::opt_int(r, 3)?,
+                time_of_day: row::opt_int(r, 4)?.map(|value| value as i32),
+                duration_days: row::opt_real(r, 5)?,
+                precision: row::opt_text(r, 6)?,
+            },
+            updated_at: row::time(r, 8)?,
+        })
+    }
+}
+
+pub const CHARACTER_BIRTH_COLUMNS: &str = "character_id, project_id, birth_day_index, \
+     time_of_day, precision, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredCharacterBirth {
+    pub character_id: String,
+    pub project_id: String,
+    pub clock: spindle_core::models::StoryClock,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredCharacterBirth {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            character_id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            clock: spindle_core::models::StoryClock {
+                day_index: row::opt_int(r, 2)?,
+                time_of_day: row::opt_int(r, 3)?.map(|value| value as i32),
+                duration_days: None,
+                precision: row::opt_text(r, 4)?,
+            },
+            updated_at: row::time(r, 6)?,
+        })
+    }
+}

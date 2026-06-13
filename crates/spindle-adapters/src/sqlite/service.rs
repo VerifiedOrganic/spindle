@@ -24475,6 +24475,107 @@ rating = "explicit"
     /// (Phase-4 fan-out is gated, so `findings_summary` is documented as
     /// empty).
     #[tokio::test]
+    async fn story_clock_round_trip_persists_calendar_and_scene_clock() {
+        use spindle_core::models::{
+            CalendarDef, CalendarMonth, ContentRating, SaveSceneDraftInput, StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "clock".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "The bells rang at dawn.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let repo = svc.repository();
+        let branch_id = repo.get_scene(&scene.scene_id).await.unwrap().branch_id;
+
+        // A non-24h invented calendar round-trips intact.
+        let calendar = CalendarDef {
+            days_per_week: 5,
+            hours_per_day: 20,
+            week_day_names: vec![
+                "Ash".into(),
+                "Ember".into(),
+                "Frost".into(),
+                "Gale".into(),
+                "Tide".into(),
+            ],
+            months: vec![CalendarMonth {
+                name: "Longdark".into(),
+                days: 300,
+            }],
+            days_per_year: 300,
+            epoch_label: Some("Founding".into()),
+        };
+        repo.upsert_project_calendar(&proj.project_id, &calendar)
+            .await
+            .unwrap();
+        let loaded = repo
+            .get_project_calendar(&proj.project_id)
+            .await
+            .unwrap()
+            .expect("calendar persisted");
+        assert_eq!(loaded.calendar, calendar);
+
+        let clock = StoryClock {
+            day_index: Some(412),
+            time_of_day: Some(540),
+            duration_days: Some(1.5),
+            precision: Some("day".into()),
+        };
+        repo.upsert_scene_clock(
+            &scene.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &clock,
+            Some("flashback"),
+            Some("main"),
+        )
+        .await
+        .unwrap();
+        let stored = repo
+            .get_scene_clock(&scene.scene_id)
+            .await
+            .unwrap()
+            .expect("scene clock persisted");
+        assert_eq!(stored.clock, clock);
+        assert_eq!(stored.temporal_mode.as_deref(), Some("flashback"));
+        assert_eq!(stored.thread_key.as_deref(), Some("main"));
+        // The clock folds into a total-order index under the (non-24h) calendar.
+        assert_eq!(
+            stored.clock.total_index(&calendar),
+            Some(412 * 20 * 60 + 540)
+        );
+    }
+
+    #[tokio::test]
     async fn commit_scene_changes_blocks_contradicting_canonical_fact() {
         use spindle_core::models::{
             CanonicalFactEntry, CanonicalFactScope, CommitSceneChangesInput, ContentRating,
