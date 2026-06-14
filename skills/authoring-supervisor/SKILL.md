@@ -148,9 +148,12 @@ When `next_action` becomes `"await_checkpoint_review"`, the execution loop is bl
    `deep_check: true`, then call `authoring_record_checkpoint_audit` with the
    returned structured payload. This is mandatory before closing the
    checkpoint. For a book that tracks in-world time, make sure the deep pass
-   includes the story-time checks (`chronology`, `knowledge_timing`,
-   `pacing_drift`) so timing drift is caught at the checkpoint rather than fifty
-   scenes later.
+   includes the story-time checks (`chronology`, `temporal_coherence`,
+   `knowledge_timing`, `pacing_drift`) so timing drift is caught at the
+   checkpoint rather than fifty scenes later. `deep_check: true` also runs the
+   Tier 2 model-backed `temporal_coherence` pass, which catches intra-scene
+   time jumps phrased idiomatically (implied light/meal cues, "three cigarettes
+   later") that the deterministic scan on each draft/commit cannot.
 3. If deep consistency returns fixable findings, fix them before proceeding.
    Treat them the same way as reviewer findings: local fixes are autonomous;
    only ask for plot/canon/content-boundary choices.

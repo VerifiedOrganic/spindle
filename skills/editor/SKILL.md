@@ -111,6 +111,15 @@ The Phase 4 validators (run by default, cached per `scene_text_hash`):
 - `voice_drift`
 - `retcon_reachability`
 
+Deterministic check arms also run by default (not Phase 4, not cached) and show
+up in `issues` by `check_type`: `chronology` (between-scene clock rewinds),
+`temporal_coherence` (within-scene time jumps — unsignaled morning→night skips,
+time-of-day drift, unrendered declared spans), `knowledge_timing`,
+`quantity_drift`, and others. Pass `deep_check: true` to add the model-backed
+semantic passes, including a Tier 2 `temporal_coherence` pass that catches the
+idiomatic time jumps a fixed lexicon misses — use it for a thorough editorial
+sweep.
+
 Treat these outputs as authoritative technical evidence. If editorial instinct
 conflicts with validator findings, inspect canon records and either revise prose
 or update canon explicitly.

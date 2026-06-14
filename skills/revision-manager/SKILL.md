@@ -175,9 +175,12 @@ The `revise_scene` tool returns a rich envelope:
 - **byte_offsets_changed** (`Vec<TextByteRange>`): Byte ranges that changed,
   useful for surgical re-validation.
 - **chars_added** / **chars_deleted**: Coarse diff metrics.
-- **world_rule_hits**, **voice_drift**, **retcon_findings**: Validator
-  findings on the revised scene, returned inline so you can decide whether
-  to commit or revise again before saving state.
+- **world_rule_hits**, **voice_drift**, **retcon_findings**,
+  **temporal_findings**: Validator findings on the revised scene, returned
+  inline so you can decide whether to commit or revise again before saving
+  state. `temporal_findings` are advisory intra-scene time-jump warnings
+  (unsignaled morning→night skips, time-of-day drift, unrendered declared
+  spans), recomputed on the revised prose.
 
 ### Step 3: Cascade Resolution
 
