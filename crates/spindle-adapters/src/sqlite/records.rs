@@ -182,7 +182,7 @@ impl<'a> TryFrom<&Row<'a>> for Chapter {
 // =============================================================================
 
 pub const SCENE_COLUMNS: &str = "id, project_id, branch_id, book_id, chapter_id, book_number, chapter_number, \
-     scene_order, full_text, summary, content_rating, tone, draft_origin, created_at, updated_at";
+     scene_order, full_text, summary, content_rating, tone, draft_origin, created_at, updated_at, location_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -201,6 +201,8 @@ pub struct Scene {
     pub draft_origin: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Location (record id) this scene is set in, when declared. See V0021.
+    pub location_id: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Scene {
@@ -223,6 +225,7 @@ impl<'a> TryFrom<&Row<'a>> for Scene {
             draft_origin: row::opt_text(r, 12)?,
             created_at: row::time(r, 13)?,
             updated_at: row::time(r, 14)?,
+            location_id: row::opt_text(r, 15)?,
         })
     }
 }

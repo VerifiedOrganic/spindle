@@ -5,6 +5,7 @@ pub mod provenance;
 pub mod style;
 pub mod subject;
 pub mod subject_snapshot;
+pub mod temporal;
 pub mod validators;
 pub mod voice;
 pub mod world_rules;

@@ -405,7 +405,7 @@ impl ToolRouter {
             ),
             tool::<SetSceneClockInput, SetSceneClockOutput>(
                 "set_scene_clock",
-                "Place a scene on the in-world story clock (day_index, time_of_day, duration_days, precision), optionally marking temporal_mode (linear|flashback|flashforward|concurrent) and a parallel thread_key. Drives the chronology check and the in-world-time context constraint.",
+                "Place a scene on the in-world story clock (day_index, time_of_day, duration_days, precision), optionally marking temporal_mode (linear|flashback|flashforward|concurrent) and a parallel thread_key. Drives the between-scene chronology check, the intra-scene temporal_coherence check (duration_days sets the expected span; temporal_mode/precision suppress it), and the in-world-time context constraint that feeds the prior scene's end clock forward.",
             ),
             tool::<SetTimelineEventClockInput, SetTimelineEventClockOutput>(
                 "set_timeline_event_clock",
@@ -3997,6 +3997,7 @@ fn authoring_save_scene_input(input: &AuthoringSaveSceneDraftInput) -> SaveScene
         tone: input.tone.clone(),
         generation_id: input.generation_id.clone(),
         source_path: input.source_path.clone(),
+        location_id: input.location_id.clone(),
         research_source_ids: input.research_source_ids.clone(),
         research_note_ids: input.research_note_ids.clone(),
         research_claim_ids: input.research_claim_ids.clone(),

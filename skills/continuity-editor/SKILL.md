@@ -234,6 +234,39 @@ fires when both a price mention and a tracked amount exist.
 **What to do when flagged**: confirm the character can afford it (a loan, savings
 off-page), or update their tracked amount via `commit_quantity_state`.
 
+### 18. In-Scene Temporal Coherence (`temporal_coherence`)
+The within-scene, forward-looking complement to §12 chronology (which is the
+*between-scene* guard). Scans each scene's prose for time-of-day markers and
+flags three things: **teleporting time** — a large forward time-of-day skip
+(e.g. morning → night) with no transition beat or scene break; **drifting time**
+— prose that contradicts its own established time of day (it is night, then the
+same scene refers to morning); and an **unrendered declared span** — a scene
+whose clock declares `duration_days` >= 1 but whose prose renders the span as
+one unbroken block with no transition. The time vocabulary includes parts of
+day, meal names, canonical hours (matins, vespers…), and explicit meridian clock
+times (`8 a.m.`, `11 p.m.`). Prose-only and **calendar-free**: it runs even when
+the project declares no calendar. High-precision/low-recall (a conservative
+band-jump threshold, word-boundary matching, greeting and recollection guards),
+so every finding is an advisory **warning**. Suppressed by a transition marker or
+scene break between the times, by an in-scene recollection ("she remembered"), by
+`temporal_mode` flashback/flashforward/concurrent, and at week-or-coarser
+`precision`.
+
+The same scan surfaces at **three enforcement points**, all advisory: on
+`save_scene_draft` and `revise_scene` (the `temporal_findings` field — immediate
+feedback while drafting), inside `commit_scene_changes` (a `temporal_findings`
+field that never blocks the commit under any `continuity_gate`), and across the
+whole branch via this `check_consistency` arm.
+
+**What to do when flagged**: add an explicit transition beat ("Hours later,") or
+a scene break (`***`) at the jump; split a multi-block scene into separately
+clocked scenes with `set_scene_clock`; reconcile the contradicting time-of-day
+references; or, for a deliberate rewind, stamp `temporal_mode: "flashback"`. The
+prevention side is the `[IN-WORLD TIME]` hard constraint surfaced in
+`get_scene_context` / `get_chapter_briefing`, which feeds the previous scene's
+end clock **and location** forward so the writer anchors where and when the new
+scene starts. Persist the setting by passing `location_id` to `save_scene_draft`.
+
 ---
 
 ## Running a Full Audit

@@ -176,6 +176,39 @@ rails — the `quantity_drift`, `currency_consistency`, and `affordability` arms
 band-jump advisory on `commit_quantity_state`, and branch-merge carrying. Full
 design and roadmap: `docs/continuity-quantity-design.md`.
 
+## Temporal coherence (in-scene)
+
+In-world *timing* is guarded on two axes. The **between-scene** axis is the
+`chronology` arm of `check_consistency` (a later scene rewinding the story
+clock). The **within-scene** axis is the `temporal_coherence` arm: a pure,
+deterministic prose scan (`spindle_core::temporal::scan_temporal_coherence`,
+infrastructure-free domain logic) that reads one scene's drafted prose and flags
+an unsignaled time-of-day jump (*teleporting time*), prose that contradicts its
+own established time of day (*drifting time*), or a scene whose clock declares a
+multi-day `duration_days` but whose prose renders the span as one unbroken block
+(*unrendered declared span*). It is prose-only and runs without a calendar; its
+time lexicon covers parts of day, meal names, canonical hours, and meridian clock
+times. High-precision/low-recall (conservative band-jump thresholds, word-boundary
+matching, greeting/recollection guards, suppression on `temporal_mode` and coarse
+`precision`), so findings are advisory `warning`s.
+
+The same deterministic scan (via the shared `scan_temporal_findings` adapter
+helper, mapping each hit to a `ConsistencyIssue`) surfaces at **three enforcement
+points**, all advisory: the immediate `temporal_findings` field on
+`save_scene_draft` / `revise_scene`; a `temporal_findings` field on
+`commit_scene_changes` that is held separate from `blocking_continuity_findings`
+and emitted at `warning` severity, so it can never block a commit under any
+`continuity_gate` (including `BlockErrors`); and the branch-wide
+`check_consistency` arm. The prevention half is the `[IN-WORLD TIME]` hard
+constraint built by `SqliteSpindleService::temporal_anchor_constraint` and
+surfaced in both `get_scene_context` and `get_chapter_briefing`: it feeds the
+previous scene's end clock **and location** forward as the expected start, so the
+drafting model anchors *where* and *when* a scene takes place — the temporal twin
+of the spatial "White Room" grounding rule. A scene's location is persisted via
+`scene.location_id` (migration V0021) from the `location_id` on
+`SaveSceneDraftInput`. The deferred-NL-parsing scope note that motivated this
+layer is in `docs/continuity-timing-design.md`.
+
 ## Voice drift and retcon checks
 
 Voice-drift and retcon/reachability checks are planned continuity domains.

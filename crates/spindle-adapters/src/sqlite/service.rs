@@ -5786,6 +5786,68 @@ impl SqliteSpindleService {
     /// only the per-call DB orchestration (continuity sheets, scene-context
     /// callback, branch lookup) lives here.
     ///
+    /// Build the pre-draft in-world-time hard constraint for a scene position:
+    /// the previous scene's end clock (the expected start for this scene), this
+    /// scene's own clock and elapsed gap when already stamped, and the grounding
+    /// instruction to signal elapsed time. `None` when the project declares no
+    /// calendar or no nearby clock carries a day. Shared by `get_scene_context`
+    /// and `get_chapter_briefing` so both drafting surfaces agree.
+    async fn temporal_anchor_constraint(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> Result<Option<spindle_core::models::HardConstraint>> {
+        use crate::format::story_index;
+        use spindle_core::models::HardConstraint;
+
+        let Some(project_calendar) = self.repository.get_project_calendar(project_id).await? else {
+            return Ok(None);
+        };
+        let cursor_index = story_index(book_number, chapter_number, scene_order);
+        let current_clock = self
+            .repository
+            .latest_scene_clock_at_or_before(project_id, branch_id, cursor_index)
+            .await?;
+        let prior_clock = if cursor_index > 0 {
+            self.repository
+                .latest_scene_clock_at_or_before(project_id, branch_id, cursor_index - 1)
+                .await?
+        } else {
+            None
+        };
+        // Resolve the previous scene's location name (the spatial half of the
+        // anchor). Best-effort: a missing scene/location degrades to a clock-only
+        // statement rather than failing context assembly.
+        let prior_location = match prior_clock.as_ref() {
+            Some(prior) => {
+                let location_id = self
+                    .repository
+                    .get_scene(&prior.scene_id)
+                    .await
+                    .ok()
+                    .and_then(|scene| scene.location_id);
+                match location_id {
+                    Some(id) => self.repository.get_location(&id).await.ok().map(|l| l.name),
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        Ok(temporal_anchor_statement(
+            &project_calendar.calendar,
+            prior_clock.as_ref(),
+            current_clock.as_ref(),
+            prior_location.as_deref(),
+        )
+        .map(|statement| HardConstraint {
+            id: "[IN-WORLD TIME]".to_string(),
+            statement,
+        }))
+    }
+
     /// Divergences from the reference:
     ///   * The bundled scene-context slice inherits the same
     ///     semantic-references / explicit-draft constraint gaps already
@@ -6110,6 +6172,28 @@ impl SqliteSpindleService {
                 (constraints, canonical_fact_models)
             }
         };
+
+        // Ensure the temporal anchor reaches the briefing even on the fallback
+        // path (no bundled scene context — e.g. no characters resolved), where
+        // hard_constraints are rebuilt from world rules + facts only and would
+        // otherwise drop it. The inherited path already carries it, so only add
+        // when absent.
+        let mut hard_constraints = hard_constraints;
+        if !hard_constraints
+            .iter()
+            .any(|constraint| constraint.id.contains("IN-WORLD TIME"))
+            && let Some(constraint) = self
+                .temporal_anchor_constraint(
+                    &input.project_id,
+                    &active_branch.id,
+                    input.book_number,
+                    input.chapter_number,
+                    resolved_scene_order.unwrap_or(1),
+                )
+                .await?
+        {
+            hard_constraints.insert(0, constraint);
+        }
 
         let (hard_constraints, hard_constraints_compacted) = fit_chapter_briefing_hard_constraints(
             format_fmt,
@@ -6926,38 +7010,24 @@ impl SqliteSpindleService {
             .chain(canonical_facts.iter().map(canonical_fact_hard_constraint))
             .collect();
 
-        // Surface the current in-world time as a non-truncatable hard constraint
-        // so the drafting model keeps chronology, ages, and season consistent.
-        // No-op for projects that never declare a calendar / scene clocks.
-        if let Some(project_calendar) =
-            self.repository.get_project_calendar(&input.project_id).await?
+        // Surface the in-world time as a non-truncatable hard constraint so the
+        // drafting model anchors WHEN this scene takes place relative to the
+        // previous one and signals any elapsed time. This is the temporal twin
+        // of the spatial grounding rule, and the prevention half of the
+        // temporal-coherence subsystem (the `temporal_coherence` check is the
+        // detection half). No-op for projects that never declare a calendar /
+        // scene clocks.
+        if let Some(constraint) = self
+            .temporal_anchor_constraint(
+                &input.project_id,
+                &active_branch.id,
+                input.book_number,
+                input.chapter_number,
+                input.scene_order,
+            )
+            .await?
         {
-            let cursor_index =
-                story_index(input.book_number, input.chapter_number, input.scene_order);
-            if let Some(scene_clock) = self
-                .repository
-                .latest_scene_clock_at_or_before(&input.project_id, &active_branch.id, cursor_index)
-                .await?
-                && let Some(day) = scene_clock.clock.day_index
-            {
-                let epoch = project_calendar
-                    .calendar
-                    .epoch_label
-                    .as_deref()
-                    .map(|label| format!(" (epoch: {label})"))
-                    .unwrap_or_default();
-                hard_constraints.insert(
-                    0,
-                    HardConstraint {
-                        id: "[IN-WORLD TIME]".to_string(),
-                        statement: format!(
-                            "The story currently stands at day {day} on the project calendar{epoch}. \
-                             Keep chronology consistent: do not contradict elapsed time, character \
-                             ages, or the season implied by this date."
-                        ),
-                    },
-                );
-            }
+            hard_constraints.insert(0, constraint);
         }
 
         // Quantity state: surface each scene character's current band/amount per
@@ -7778,6 +7848,33 @@ impl SqliteSpindleService {
                 if !is_out_of_line {
                     last_linear.insert(thread, (index, scene.id.clone()));
                 }
+            }
+        }
+
+        // ── Temporal coherence: intra-scene time jumps ─────────────────
+        // The within-scene, forward-looking analog of the chronology check:
+        // scan each scene's prose for an unsignaled time-of-day skip (morning →
+        // night with no transition), an internal time-of-day contradiction, or
+        // a declared multi-day span rendered as one unbroken block. Prose-only
+        // and calendar-free; a no-op for scenes with no detectable problem. The
+        // scene clock (when set) only suppresses: a flashback/coarse-precision
+        // scene, or the declared `duration_days`.
+        if should_run_check(&requested_checks_set, "temporal_coherence") {
+            let clocks = self
+                .repository
+                .list_scene_clocks_by_project_and_branch(&project_id, &active_branch.id)
+                .await?;
+            let clock_by_scene: BTreeMap<String, &crate::sqlite::records::StoredSceneClock> =
+                clocks
+                    .iter()
+                    .map(|clock| (clock.scene_id.clone(), clock))
+                    .collect();
+            for scene in &scenes {
+                issues.extend(scan_temporal_findings(
+                    &scene.id,
+                    &scene.full_text,
+                    clock_by_scene.get(&scene.id).copied(),
+                ));
             }
         }
 
@@ -10063,6 +10160,19 @@ impl SqliteSpindleService {
                 (findings, retcons)
             };
 
+        // Intra-scene temporal coherence — advisory only. Held in its own field
+        // (never `blocking_continuity_findings`) and always `severity: "warning"`,
+        // so a temporal finding can NEVER block a commit under any
+        // `continuity_gate`, including BlockErrors. Skipped on Off to match the
+        // retcon scan above.
+        let temporal_findings =
+            if continuity_gate == spindle_core::models::CommitContinuityGate::Off {
+                Vec::new()
+            } else {
+                let scene_clock = self.repository.get_scene_clock(&scene.id).await?;
+                scan_temporal_findings(&scene.id, &scene.full_text, scene_clock.as_ref())
+            };
+
         if continuity_gate == spindle_core::models::CommitContinuityGate::BlockErrors
             && !input.accept_continuity_risks
         {
@@ -10256,6 +10366,7 @@ impl SqliteSpindleService {
             findings_summary,
             blocking_continuity_findings,
             retcon_findings,
+            temporal_findings,
         };
 
         // Best-effort session activity log: failure here doesn't fail the
@@ -10495,6 +10606,14 @@ impl SqliteSpindleService {
         let retcon_findings_after_revision = self
             .scan_retcon_findings(&input.project_id, &revised_scene)
             .await?;
+        // Consult the scene clock so a deliberate flashback / coarse-precision
+        // scene is suppressed, matching the standing `temporal_coherence` audit.
+        let revised_clock = self.repository.get_scene_clock(&revised_scene.id).await?;
+        let temporal_findings_after_revision = scan_temporal_findings(
+            &revised_scene.id,
+            &revised_scene.full_text,
+            revised_clock.as_ref(),
+        );
 
         Ok(ReviseSceneOutput {
             scene_id: revised_scene.id.clone(),
@@ -10538,6 +10657,7 @@ impl SqliteSpindleService {
             world_rule_hits: world_rule_hits_after_revision,
             voice_drift: voice_drift_after_revision,
             retcon_findings: retcon_findings_after_revision,
+            temporal_findings: temporal_findings_after_revision,
         })
     }
 
@@ -15916,6 +16036,9 @@ impl SqliteSpindleService {
             world_rule_hits: Vec::new(),
             voice_drift: Vec::new(),
             retcon_findings: Vec::new(),
+            // A freshly saved scene is not yet clocked, so the scan is prose-only
+            // (no suppression to apply). Advisory `warning`s — never blocks a save.
+            temporal_findings: scan_temporal_findings(&scene.id, &scene.full_text, None),
         })
     }
 
@@ -19000,6 +19123,171 @@ type PriceFactGroups =
 
 fn should_run_check(requested_checks: &std::collections::BTreeSet<String>, check: &str) -> bool {
     requested_checks.is_empty() || requested_checks.contains(check)
+}
+
+/// Render the pre-draft in-world-time hard constraint: the previous scene's end
+/// clock (the expected start for this scene), this scene's own clock and the
+/// elapsed gap when it is already stamped, and the grounding instruction to
+/// signal any elapsed time. Returns `None` when neither clock carries a day.
+///
+/// `current` is the latest clock at-or-before the cursor (the prior scene when
+/// this one is not yet clocked); `prior` is the latest clock strictly before the
+/// cursor (always the previous scene's end). `current` is treated as this
+/// scene's own clock only when it is a distinct record from `prior`.
+fn temporal_anchor_statement(
+    calendar: &spindle_core::models::CalendarDef,
+    prior: Option<&crate::sqlite::records::StoredSceneClock>,
+    current: Option<&crate::sqlite::records::StoredSceneClock>,
+    prior_location: Option<&str>,
+) -> Option<String> {
+    let prior = prior.filter(|clock| clock.clock.day_index.is_some());
+    let this_clock = match (current, prior) {
+        (Some(current), Some(prior)) if current.scene_id != prior.scene_id => Some(current),
+        (Some(current), None) => Some(current),
+        _ => None,
+    }
+    .filter(|clock| clock.clock.day_index.is_some());
+
+    if prior.is_none() && this_clock.is_none() {
+        return None;
+    }
+
+    let epoch_suffix = calendar
+        .epoch_label
+        .as_deref()
+        .map(|label| format!(" (epoch: {label})"))
+        .unwrap_or_default();
+
+    let location_phrase = prior_location
+        .map(|location| format!(" in {location}"))
+        .unwrap_or_default();
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(prior) = prior {
+        match prior.clock.duration_days {
+            Some(duration) if duration >= 1.0 => parts.push(format!(
+                "The previous scene was set on {}{location_phrase}{epoch_suffix} and spanned about {} day(s).",
+                render_story_clock(&prior.clock),
+                format_day_count(duration),
+            )),
+            _ => parts.push(format!(
+                "The previous scene was set on {}{location_phrase}{epoch_suffix}.",
+                render_story_clock(&prior.clock),
+            )),
+        }
+    }
+    if let Some(this_clock) = this_clock {
+        let elapsed = prior.and_then(|prior| {
+            match (
+                prior.clock.total_index(calendar),
+                this_clock.clock.total_index(calendar),
+            ) {
+                (Some(prior_index), Some(this_index)) if this_index > prior_index => {
+                    Some(format_elapsed_minutes(this_index - prior_index, calendar))
+                }
+                _ => None,
+            }
+        });
+        match elapsed {
+            Some(elapsed) => parts.push(format!(
+                "This scene is stamped {} — about {elapsed} after the previous scene.",
+                render_story_clock(&this_clock.clock),
+            )),
+            None => parts.push(format!(
+                "This scene is stamped {}{epoch_suffix}.",
+                render_story_clock(&this_clock.clock),
+            )),
+        }
+    }
+
+    parts.push(
+        "Open this scene by establishing WHEN it takes place relative to the previous one. \
+         Signal any elapsed in-world time with an explicit transition beat or a scene break, and \
+         never skip the time of day inside the scene without one."
+            .to_string(),
+    );
+
+    Some(parts.join(" "))
+}
+
+/// Render a story clock as `day N` or `day N at HH:MM` (time of day is minutes
+/// from midnight, calendar-agnostic).
+fn render_story_clock(clock: &spindle_core::models::StoryClock) -> String {
+    let day = clock.day_index.unwrap_or_default();
+    match clock.time_of_day {
+        Some(minutes) if minutes >= 0 => {
+            format!("day {day} at {:02}:{:02}", minutes / 60, minutes % 60)
+        }
+        _ => format!("day {day}"),
+    }
+}
+
+/// Render a `duration_days` value without a trailing `.0` for whole spans.
+fn format_day_count(duration: f64) -> String {
+    if (duration.fract()).abs() < f64::EPSILON {
+        format!("{}", duration as i64)
+    } else {
+        format!("{duration:.1}")
+    }
+}
+
+/// Render an elapsed in-world span (in minutes) as days and/or hours.
+fn format_elapsed_minutes(minutes: i64, calendar: &spindle_core::models::CalendarDef) -> String {
+    let per_day = calendar.minutes_per_day().max(1);
+    let days = minutes / per_day;
+    let hours = (minutes % per_day) / 60;
+    match (days, hours) {
+        (0, 0) => "less than an hour".to_string(),
+        (0, hours) => format!("{hours} hour(s)"),
+        (days, 0) => format!("{days} day(s)"),
+        (days, hours) => format!("{days} day(s) {hours} hour(s)"),
+    }
+}
+
+/// Map the pure intra-scene temporal-coherence scan into advisory
+/// `ConsistencyIssue`s for one scene. Shared by the `temporal_coherence` audit
+/// check, the draft/revise validator surface, and the commit gate so all four
+/// surfaces agree on representation, message, and remedy. Every issue is
+/// advisory `severity: "warning"`; the scene clock, when provided, only ever
+/// suppresses a finding (it never creates one), so passing `None` is the
+/// correct prose-only path for a not-yet-clocked scene.
+fn scan_temporal_findings(
+    scene_id: &str,
+    prose: &str,
+    clock: Option<&crate::sqlite::records::StoredSceneClock>,
+) -> Vec<spindle_core::models::ConsistencyIssue> {
+    let input = spindle_core::temporal::TemporalSceneInput {
+        prose,
+        duration_days: clock.and_then(|clock| clock.clock.duration_days),
+        temporal_mode: clock.and_then(|clock| clock.temporal_mode.as_deref()),
+        precision: clock.and_then(|clock| clock.clock.precision.as_deref()),
+    };
+    spindle_core::temporal::scan_temporal_coherence(&input)
+        .into_iter()
+        .map(|hit| spindle_core::models::ConsistencyIssue {
+            severity: "warning".to_string(),
+            check_type: "temporal_coherence".to_string(),
+            message: hit.message,
+            entity_ids: vec![scene_id.to_string()],
+            suggested_action: Some(
+                match hit.kind {
+                    "temporal_teleport" => {
+                        "add a transition beat (e.g. \"Hours later,\"), a scene break (***), or \
+                         split the time blocks into separately clocked scenes"
+                    }
+                    "temporal_drift" => {
+                        "reconcile the contradicting time-of-day references, or mark an intended \
+                         rewind with temporal_mode \"flashback\""
+                    }
+                    _ => {
+                        "signal the elapsed span with a transition beat or scene break, or lower \
+                         duration_days if the scene is momentary"
+                    }
+                }
+                .to_string(),
+            ),
+        })
+        .collect()
 }
 
 // ── Phase-4 validator helpers ────────────────────────────────────────
@@ -26081,6 +26369,768 @@ rating = "explicit"
                 .any(|c| c.statement.contains("IN-WORLD TIME") || c.id.contains("IN-WORLD TIME")),
             "scene context should surface the in-world time hard constraint: {:?}",
             ctx.hard_constraints
+        );
+    }
+
+    /// An unmarked morning→night jump in one scene's prose must surface a
+    /// `temporal_coherence` warning — the intra-scene analog of the chronology
+    /// check. Works with no calendar and no clock (prose-only).
+    #[tokio::test]
+    async fn check_consistency_flags_temporal_teleport() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, ContentRating, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "temporal".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "He woke in the grey morning and ate his bread at the long table. \
+                        The midnight harbour lay black and still around him as he stood on \
+                        the quay."
+                .into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let input = |checks: Vec<String>| CheckConsistencyInput {
+            project_id: proj.project_id.clone(),
+            scope: ConsistencyScopeInput::full(),
+            checks,
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        };
+
+        let flagged = svc.check_consistency(input(Vec::new())).await.unwrap();
+        assert!(
+            flagged
+                .issues
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence" && i.severity == "warning"),
+            "an unmarked morning->night jump must surface a temporal_coherence warning: {:?}",
+            flagged.issues
+        );
+
+        // Narrowing to another check must not produce temporal_coherence issues.
+        let filtered = svc
+            .check_consistency(input(vec!["chronology".to_string()]))
+            .await
+            .unwrap();
+        assert!(
+            !filtered
+                .issues
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "temporal_coherence must respect the check filter: {:?}",
+            filtered.issues
+        );
+    }
+
+    /// A scene explicitly marked as a flashback may carry a hard time jump; the
+    /// temporal_coherence check must not flag it.
+    #[tokio::test]
+    async fn check_consistency_flashback_scene_not_flagged_for_temporal_coherence() {
+        use spindle_core::models::{
+            CalendarDef, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+            SaveSceneDraftInput, StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "temporal-fb".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "He woke in the grey morning and ate his bread. The midnight \
+                            harbour lay black and still around him."
+                    .into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let repo = svc.repository();
+        let branch_id = repo.get_scene(&scene.scene_id).await.unwrap().branch_id;
+        let calendar = CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: None,
+        };
+        repo.upsert_project_calendar(&proj.project_id, &calendar)
+            .await
+            .unwrap();
+        repo.upsert_scene_clock(
+            &scene.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(5),
+                ..Default::default()
+            },
+            Some("flashback"),
+            Some("main"),
+        )
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: Vec::new(),
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "a flashback-marked scene must not be flagged for temporal_coherence: {:?}",
+            out.issues
+        );
+    }
+
+    /// Drafting the next scene must surface the PREVIOUS scene's end clock plus
+    /// the grounding instruction to anchor when this scene takes place and to
+    /// signal any elapsed time — the pre-draft half of temporal grounding.
+    #[tokio::test]
+    async fn scene_context_surfaces_prior_scene_temporal_anchor() {
+        use spindle_core::models::{
+            CalendarDef, ContentRating, ContextFormat, GetChapterBriefingInput,
+            GetSceneContextInput, SaveSceneDraftInput, StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "anchor".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let draft = |order: i32| SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: order,
+            full_text: "Placeholder prose.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        };
+        let scene1 = svc.save_scene_draft(draft(1)).await.unwrap();
+        let _scene2 = svc.save_scene_draft(draft(2)).await.unwrap();
+
+        let repo = svc.repository();
+        let branch_id = repo.get_scene(&scene1.scene_id).await.unwrap().branch_id;
+        let calendar = CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: None,
+        };
+        repo.upsert_project_calendar(&proj.project_id, &calendar)
+            .await
+            .unwrap();
+        // Scene 1 ends on day 5, evening (18:00). Scene 2 is not yet clocked.
+        repo.upsert_scene_clock(
+            &scene1.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(5),
+                time_of_day: Some(18 * 60),
+                ..Default::default()
+            },
+            None,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+
+        let location = svc
+            .create_location(spindle_core::models::CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Quay".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A harbour quay.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: location.location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let anchor = ctx
+            .hard_constraints
+            .iter()
+            .find(|c| c.id.contains("IN-WORLD TIME"))
+            .expect("temporal anchor hard constraint must be present");
+        let lower = anchor.statement.to_lowercase();
+        assert!(
+            lower.contains("previous scene") && lower.contains("day 5"),
+            "anchor must name the previous scene's end clock: {}",
+            anchor.statement
+        );
+        assert!(
+            lower.contains("transition") || lower.contains("scene break"),
+            "anchor must instruct the writer to signal elapsed time: {}",
+            anchor.statement
+        );
+
+        // The same anchor must reach get_chapter_briefing (which the brief /
+        // Grok path pulls), inherited from the bundled scene context.
+        let briefing = svc
+            .get_chapter_briefing(GetChapterBriefingInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(2),
+                character_ids: Vec::new(),
+                location_id: Some(location.location_id),
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                recent_chapter_limit: None,
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            briefing
+                .hard_constraints
+                .iter()
+                .any(|c| c.id.contains("IN-WORLD TIME")
+                    && c.statement.to_lowercase().contains("previous scene")),
+            "chapter briefing must inherit the temporal anchor: {:?}",
+            briefing.hard_constraints
+        );
+    }
+
+    const TELEPORT_PROSE: &str = "He woke in the grey morning and ate his bread at the \
+         long table. The midnight harbour lay black and still around him as he stood on the quay.";
+
+    /// Draft-time surfacing: an unmarked morning→night jump appears in
+    /// `save_scene_draft` output as advisory temporal findings.
+    #[tokio::test]
+    async fn save_scene_draft_surfaces_temporal_findings() {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "draft-temporal".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let out = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: TELEPORT_PROSE.into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.temporal_findings
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "save_scene_draft must surface temporal findings on an unmarked jump: {:?}",
+            out.temporal_findings
+        );
+        assert!(
+            out.temporal_findings.iter().all(|i| i.severity == "warning"),
+            "temporal findings are advisory warnings only: {:?}",
+            out.temporal_findings
+        );
+    }
+
+    /// Draft-time precision: clean (bridged) prose produces no temporal findings.
+    #[tokio::test]
+    async fn save_scene_draft_clean_prose_has_no_temporal_findings() {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "draft-clean".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let out = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "He woke in the grey morning and ate his bread. Hours later, the \
+                            midnight harbour lay black and still around him."
+                    .into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.temporal_findings.is_empty(),
+            "bridged prose must produce no temporal findings: {:?}",
+            out.temporal_findings
+        );
+    }
+
+    /// Revise-time: revising clean prose INTO an unmarked jump recomputes the
+    /// temporal findings on the revised text.
+    #[tokio::test]
+    async fn revise_scene_recomputes_temporal_findings() {
+        use spindle_core::models::{
+            ContentRating, CreateBranchInput, ReviseSceneInput, SaveSceneDraftInput,
+            SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "revise-temporal".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "He sat at the long table in the grey morning and ate his bread."
+                    .into(),
+                summary: "clean".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // revise_scene requires a non-main active branch.
+        let branch = svc
+            .create_branch(CreateBranchInput {
+                project_id: proj.project_id.clone(),
+                parent_branch_id: None,
+                name: "revisions".into(),
+                branch_type: "draft".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: proj.project_id.clone(),
+            branch_id: branch.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .revise_scene(ReviseSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                full_text: TELEPORT_PROSE.into(),
+                summary: "now jumps".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.temporal_findings
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "revise_scene must recompute temporal findings on the revised prose: {:?}",
+            out.temporal_findings
+        );
+    }
+
+    /// The load-bearing guarantee: a temporal finding NEVER blocks a commit,
+    /// even under `BlockErrors` with `accept_continuity_risks = false`, and it
+    /// never leaks into `blocking_continuity_findings`.
+    #[tokio::test]
+    async fn commit_scene_changes_temporal_findings_never_block() {
+        use spindle_core::models::{
+            CommitContinuityGate, CommitSceneChangesInput, ContentRating, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "commit-temporal".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: TELEPORT_PROSE.into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let commit = |gate: CommitContinuityGate| CommitSceneChangesInput {
+            project_id: proj.project_id.clone(),
+            scene_id: scene.scene_id.clone(),
+            character_states: Vec::new(),
+            canonical_facts: Vec::new(),
+            relationship_updates: Vec::new(),
+            accept_world_rule_risks: false,
+            accept_continuity_risks: false,
+            continuity_gate: Some(gate),
+        };
+
+        // BlockErrors + no risk acceptance: a teleport must still NOT block.
+        let out = svc
+            .commit_scene_changes(commit(CommitContinuityGate::BlockErrors))
+            .await
+            .expect("a temporal finding must never block a commit");
+        assert!(
+            out.temporal_findings
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "commit must surface temporal findings: {:?}",
+            out.temporal_findings
+        );
+        assert!(
+            !out.blocking_continuity_findings
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "temporal findings must never appear in blocking_continuity_findings: {:?}",
+            out.blocking_continuity_findings
+        );
+
+        // Gate Off skips the scan entirely.
+        let off = svc
+            .commit_scene_changes(commit(CommitContinuityGate::Off))
+            .await
+            .unwrap();
+        assert!(
+            off.temporal_findings.is_empty(),
+            "continuity_gate Off must skip the temporal scan: {:?}",
+            off.temporal_findings
+        );
+    }
+
+    /// A scene's `location_id` round-trips through `save_scene_draft` →
+    /// `get_scene` (migration V0021 + record plumbing).
+    #[tokio::test]
+    async fn scene_location_persists_through_save() {
+        use spindle_core::models::{ContentRating, CreateLocationInput, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "loc-persist".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let loc = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Harbour Quay".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A quay.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Prose.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                location_id: Some(loc.location_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let stored = svc.repository().get_scene(&scene.scene_id).await.unwrap();
+        assert_eq!(
+            stored.location_id.as_deref(),
+            Some(loc.location_id.as_str()),
+            "scene location_id must round-trip through save"
+        );
+    }
+
+    /// The pre-draft anchor names the previous scene's LOCATION (where the last
+    /// scene ended) alongside its clock, when the prior scene was saved with one.
+    #[tokio::test]
+    async fn temporal_anchor_names_prior_scene_location() {
+        use spindle_core::models::{
+            CalendarDef, ContentRating, ContextFormat, CreateLocationInput, GetSceneContextInput,
+            SaveSceneDraftInput, StoryClock,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "loc-anchor".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let quay = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Harbour Quay".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A quay.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+        let scene1 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Prose one.".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                location_id: Some(quay.location_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 2,
+            full_text: "Prose two.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let repo = svc.repository();
+        let branch_id = repo.get_scene(&scene1.scene_id).await.unwrap().branch_id;
+        let calendar = CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: None,
+        };
+        repo.upsert_project_calendar(&proj.project_id, &calendar)
+            .await
+            .unwrap();
+        repo.upsert_scene_clock(
+            &scene1.scene_id,
+            &proj.project_id,
+            &branch_id,
+            &StoryClock {
+                day_index: Some(5),
+                time_of_day: Some(18 * 60),
+                ..Default::default()
+            },
+            None,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: quay.location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        let anchor = ctx
+            .hard_constraints
+            .iter()
+            .find(|c| c.id.contains("IN-WORLD TIME"))
+            .expect("temporal anchor must be present");
+        assert!(
+            anchor.statement.contains("Harbour Quay"),
+            "anchor must name the previous scene's location: {}",
+            anchor.statement
         );
     }
 

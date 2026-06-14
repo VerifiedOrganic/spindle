@@ -2626,6 +2626,7 @@ impl SqliteSpindleService {
                 tone: existing_scene.tone.clone(),
                 generation_id: None,
                 source_path: None,
+                location_id: existing_scene.location_id.clone(),
                 research_source_ids: Vec::new(),
                 research_note_ids: Vec::new(),
                 research_claim_ids: Vec::new(),

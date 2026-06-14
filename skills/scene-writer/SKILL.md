@@ -53,14 +53,19 @@ Follow this loop for every drafting pass on an active branch:
 3. Call `get_scene_context` for the target scene scope. Use
    `find_scenes_referencing` when you need to locate every scene that mentions
    a character, location, faction, or other entity before drafting or revising.
-4. Draft with `save_scene_draft`.
+4. Draft with `save_scene_draft`. Pass `location_id` for the scene's setting:
+   it is persisted on the scene so the NEXT scene's pre-draft `[IN-WORLD TIME]`
+   constraint can tell the writer where (and when) the previous scene ended.
 5. Review `save_scene_draft` output and iterate until it is acceptable:
    `pacing_warnings`, optional `agency_warning`, `tone_deviation`,
    `style_warnings` (genre-voice mismatches against the style contract),
    `content_rating_valid` / `content_rating_warnings`, text diff metadata
    (`diff`, `byte_offsets_changed`, `chars_added`, `chars_deleted`), and the
    immediate validator findings already returned on the draft response:
-   `world_rule_hits`, `voice_drift`, and `retcon_findings`. Then run the
+   `world_rule_hits`, `voice_drift`, `retcon_findings`, and `temporal_findings`
+   (intra-scene time jumps — an unsignaled morning→night skip, prose that
+   contradicts its own time of day, or a declared multi-day span rendered
+   unbroken; advisory `warning`s that never block the save). Then run the
    Step 5a genre/style self-check. For canonical-fact prose drift and broader
    cross-scene validation, run `check_consistency` before finalizing.
 6. Run the post-draft validator loop with `check_consistency` and explicitly
@@ -89,12 +94,18 @@ Follow this loop for every drafting pass on an active branch:
    - If a scene implies knowledge not yet learned, revise the scene to remove
      the leak or add an earlier discovery scene.
 
-   When the project declares a calendar or tracks `knowledge_fact` learning
-   positions, `check_consistency` also runs deterministic timing checks:
-   `chronology` (a scene set earlier in story time than its predecessor on the
-   same thread without a flashback marker) and `knowledge_timing` (a character
-   referencing, in prose, a fact they do not learn until later). Both are
-   advisory warnings; act on them the same way you act on a validator finding.
+   `check_consistency` also runs deterministic timing checks:
+   `temporal_coherence` (intra-scene — an unsignaled time-of-day jump
+   inside one scene, prose that contradicts its own time of day, or a declared
+   multi-day span rendered as one unbroken block; runs on prose alone, no
+   calendar required), and, when the project declares a calendar or tracks
+   `knowledge_fact` learning positions, `chronology` (between-scene — a scene
+   set earlier in story time than its predecessor on the same thread without a
+   flashback marker) and `knowledge_timing` (a character referencing, in prose,
+   a fact they do not learn until later). All are advisory warnings; act on them
+   the same way you act on a validator finding. `temporal_coherence` is the
+   within-scene, forward-looking complement to the between-scene `chronology`
+   check.
 7. Call `commit_scene_changes` to persist structured canon updates from the
    accepted prose. This runs a **write-time continuity gate**: by default
    (`continuity_gate: "block_errors"`) it blocks the commit when it finds
@@ -103,14 +114,23 @@ Follow this loop for every drafting pass on an active branch:
    `continuity_gate: "warn_only"` to record findings without blocking, or
    `accept_continuity_risks: true` to consciously commit over a flagged risk
    (an author override — record why with `record_note`). `"off"` skips the gate
-   entirely.
+   entirely. The commit also returns `temporal_findings` (the intra-scene
+   time-jump advisories) in their own field — these are always advisory and
+   **never** block the commit under any gate, but address them like any warning.
 8. When the project declares a calendar, stamp the scene on the in-world clock
    with `set_scene_clock` ({ `day_index`, `time_of_day` (minutes from
    midnight), `duration_days`, `precision` }). Mark `temporal_mode:
    "flashback" | "flashforward" | "concurrent"` for any scene deliberately out
    of linear order, and a `thread_key` for parallel timelines — this is exactly
    what keeps the `chronology` check from flagging an intentional flashback as
-   drift.
+   drift. Set `duration_days` to the scene's in-world span: a value >= 1 tells
+   the `temporal_coherence` check to expect the prose to render that passage
+   with transition beats or scene breaks. If a scene moves through the day
+   (morning into evening), either render each block with an explicit transition
+   beat or split it into separately clocked scenes — an unsignaled jump is
+   flagged as teleporting time. Stamping `temporal_mode: "flashback"` also
+   suppresses the intra-scene `temporal_coherence` finding for a deliberate
+   rewind.
 9. Call `commit_character_state` only for targeted state corrections not
    covered by the batch commit.
 10. Call `update_writer_position` whenever you need cursor state persisted for
@@ -814,6 +834,19 @@ each one. This prevents the Bible from slowly drifting out of sync with the pros
 ### "White Room Syndrome"
 Characters talk in a void with no grounding. Fix: open every scene with a grounding beat —
 one sensory detail that places the reader in the physical space.
+
+### "Teleporting Time"
+The narration jumps through the day with no signal — a character wakes and eats breakfast, and a
+sentence later it is night, with no transition and no scene break. This is the temporal twin of
+White Room Syndrome: just as you ground every scene in *where* it is, ground it in *when* it is.
+Fix: open each scene by anchoring when it takes place relative to the last — the `[IN-WORLD TIME]`
+hard constraint in your scene context gives you the previous scene's end clock as the expected
+start — and give every in-scene time jump beyond a few minutes an explicit transition beat ("Hours
+later,", "By nightfall,", "The next morning,") or a scene break. A scene that declares it spans real
+time (`duration_days` >= 1) must *render* that span with transitions, not read as one unbroken
+block. The related failure, **drifting time**, is prose that contradicts its own established
+time of day (it is night, then a paragraph later the morning sun). The `temporal_coherence` check
+in `check_consistency` flags both; mark a deliberate rewind with `temporal_mode: "flashback"`.
 
 ### "Talking Heads"
 Long stretches of dialogue with no action beats, physical business, or environmental

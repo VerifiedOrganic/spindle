@@ -2072,6 +2072,12 @@ pub struct SaveSceneDraftInput {
     /// When provided, Spindle tracks the file for divergence detection.
     #[serde(default)]
     pub source_path: Option<String>,
+    /// Optional location (record id returned by create_location) this scene is
+    /// set in. Persisted on the scene so the pre-draft temporal anchor can name
+    /// where the previous scene ended. Re-saving without it preserves the
+    /// existing value (it is never cleared by an omitted field).
+    #[serde(default)]
+    pub location_id: Option<String>,
     #[serde(default)]
     pub research_source_ids: Vec<String>,
     #[serde(default)]
@@ -2116,6 +2122,12 @@ pub struct SaveSceneDraftOutput {
     pub voice_drift: Vec<VoiceDriftFinding>,
     #[serde(default)]
     pub retcon_findings: Vec<RetconFinding>,
+    /// Intra-scene temporal-coherence advisories (deterministic prose scan):
+    /// unsignaled time-of-day teleports, internal time drift, and unrendered
+    /// declared spans. Advisory-only — every entry is `severity: "warning"` and
+    /// never blocks a save.
+    #[serde(default)]
+    pub temporal_findings: Vec<ConsistencyIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -2598,6 +2610,12 @@ pub struct CommitSceneChangesOutput {
     /// Structured retcon findings surfaced by the write-time gate.
     #[serde(default)]
     pub retcon_findings: Vec<RetconFinding>,
+    /// Intra-scene temporal-coherence advisories (deterministic prose scan).
+    /// Always advisory: every entry is `severity: "warning"`, kept in its own
+    /// field (never in `blocking_continuity_findings`), so a temporal finding
+    /// cannot block a commit under any `continuity_gate`.
+    #[serde(default)]
+    pub temporal_findings: Vec<ConsistencyIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -2885,6 +2903,11 @@ pub struct ReviseSceneOutput {
     pub voice_drift: Vec<VoiceDriftFinding>,
     #[serde(default)]
     pub retcon_findings: Vec<RetconFinding>,
+    /// Intra-scene temporal-coherence advisories (deterministic prose scan),
+    /// recomputed on the revised prose. Advisory-only — every entry is
+    /// `severity: "warning"` and never blocks a revision.
+    #[serde(default)]
+    pub temporal_findings: Vec<ConsistencyIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -6098,6 +6121,11 @@ pub struct AuthoringSaveSceneDraftInput {
     pub generation_id: Option<String>,
     #[serde(default)]
     pub source_path: Option<String>,
+    /// Optional location (create_location record id) this scene is set in.
+    /// Persisted so the next scene's pre-draft temporal anchor can name where
+    /// this scene ended.
+    #[serde(default)]
+    pub location_id: Option<String>,
     #[serde(default)]
     pub research_source_ids: Vec<String>,
     #[serde(default)]

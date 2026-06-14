@@ -204,6 +204,10 @@ async fn draft_scene(
                 content_rating: scene.content_rating,
                 tone: package.tone.clone().or(scene.tone.clone()),
                 source_path: scene.source_path.clone(),
+                // Persist the planned location so the next scene's pre-draft
+                // temporal anchor can name where this scene ended. Empty → None
+                // to avoid a dangling location reference.
+                location_id: Some(scene.location_id.clone()).filter(|id| !id.is_empty()),
                 generation_id: artifact.generation_id.clone(),
                 research_source_ids: artifact.research_source_ids.clone(),
                 research_note_ids: artifact.research_note_ids.clone(),

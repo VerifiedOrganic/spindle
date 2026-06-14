@@ -2070,6 +2070,7 @@ impl Repository {
         let book_number = input.book_number;
         let chapter_number = input.chapter_number;
         let scene_order = input.scene_order;
+        let location_id = input.location_id.clone();
 
         if let Some(existing) = existing {
             // UPDATE path: snapshot the previous prose into scene_version when
@@ -2123,13 +2124,17 @@ impl Repository {
                         )?;
                     }
                     tx.execute(
+                        // COALESCE preserves the existing location when this
+                        // re-save omits one, so a prose-only edit never clears it.
                         "UPDATE scene SET full_text = ?1, summary = ?2, content_rating = ?3, \
-                         tone = ?4, updated_at = ?5 WHERE id = ?6",
+                         tone = ?4, location_id = COALESCE(?5, location_id), updated_at = ?6 \
+                         WHERE id = ?7",
                         rusqlite::params![
                             &new_full_text,
                             &new_summary,
                             &new_content_rating,
                             &new_tone,
+                            &location_id,
                             now,
                             &existing_id,
                         ],
@@ -2166,8 +2171,8 @@ impl Repository {
                     conn.execute(
                         "INSERT INTO scene (id, project_id, branch_id, book_id, chapter_id, \
                          book_number, chapter_number, scene_order, full_text, summary, \
-                         content_rating, tone, draft_origin, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, ?13)",
+                         content_rating, tone, draft_origin, location_id, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, ?14, ?14)",
                         rusqlite::params![
                             &scene_id,
                             &project_id_owned,
@@ -2181,6 +2186,7 @@ impl Repository {
                             &summary,
                             &rating_owned,
                             &tone,
+                            &location_id,
                             now,
                         ],
                     )?;
@@ -10235,6 +10241,7 @@ impl Repository {
             summary: String,
             content_rating: String,
             tone: Option<String>,
+            location_id: Option<String>,
         }
         let scenes_owned: Vec<SceneRow> = source_scenes
             .iter()
@@ -10248,6 +10255,7 @@ impl Repository {
                 summary: s.summary.clone(),
                 content_rating: s.content_rating.clone(),
                 tone: s.tone.clone(),
+                location_id: s.location_id.clone(),
             })
             .collect();
 
@@ -10381,9 +10389,9 @@ impl Repository {
                             "INSERT INTO scene (id, project_id, branch_id, book_id, \
                              chapter_id, book_number, chapter_number, scene_order, \
                              full_text, summary, content_rating, tone, draft_origin, \
-                             created_at, updated_at) \
+                             location_id, created_at, updated_at) \
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
-                                     NULL, ?13, ?13)",
+                                     NULL, ?13, ?14, ?14)",
                             rusqlite::params![
                                 &new_id,
                                 &project_id,
@@ -10397,6 +10405,7 @@ impl Repository {
                                 &scene.summary,
                                 &scene.content_rating,
                                 &scene.tone,
+                                &scene.location_id,
                                 now,
                             ],
                         )?;
