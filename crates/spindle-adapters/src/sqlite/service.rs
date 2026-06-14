@@ -7876,6 +7876,14 @@ impl SqliteSpindleService {
                     clock_by_scene.get(&scene.id).copied(),
                 ));
             }
+            // Tier 2 (opt-in): a model-backed semantic pass that catches the
+            // idiomatic time jumps the deterministic lexicon cannot (meals,
+            // light, errands, "three cigarettes later"). Falls back to nothing
+            // when no review model is configured, so the deterministic scan
+            // above stands alone.
+            if deep_check {
+                issues.extend(self.deep_temporal_coherence_issues(&scenes).await?);
+            }
         }
 
         // ── Quantity drift: an unexplained multi-band jump ──────────────
@@ -9858,6 +9866,70 @@ impl SqliteSpindleService {
                     entity_ids: vec![scene.id.clone(), rule.id.clone()],
                     suggested_action: Some(
                         "revise the scene, explain the exception on page, or update the rule if canon changed"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Tier 2 of the temporal-coherence subsystem: a model-router-driven
+    /// semantic pass over each scene's prose that catches the in-world time
+    /// jumps the deterministic lexicon scan (Tier 1) cannot — idiomatic elapsed
+    /// time ("three cigarettes later"), implied light/meal/errand cues, and
+    /// drift the fixed vocabulary misses. Advisory `warning`s under the same
+    /// `temporal_coherence` check_type. When no review model is configured the
+    /// route returns no parseable findings, so this adds nothing and the
+    /// deterministic scan stands alone. Mirrors `deep_world_rule_compliance_issues`.
+    async fn deep_temporal_coherence_issues(
+        &self,
+        scenes: &[crate::sqlite::records::Scene],
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use crate::ai::ModelRequest;
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+        for scene in scenes {
+            if scene.full_text.trim().is_empty() {
+                continue;
+            }
+            let findings = match self
+                .repository
+                .model_router()
+                .complete(&ModelRequest {
+                    route: "review".to_string(),
+                    prompt: build_temporal_deep_check_prompt(scene),
+                    rating: None,
+                    context: None,
+                })
+                .await
+            {
+                // Parse regardless of adapter kind: a non-JSON local stub
+                // (the default `review` route) parses to nothing, so Tier 2 is
+                // a no-op unless a real review model returns structured findings.
+                Ok(response) => {
+                    parse_deep_temporal_check_output(&response.output).unwrap_or_default()
+                }
+                Err(_) => Vec::new(),
+            };
+
+            for finding in findings {
+                let mut message = format!("scene {}: {}", scene.id, finding.message.trim());
+                if let Some(evidence) = finding.evidence.as_ref()
+                    && !evidence.trim().is_empty()
+                {
+                    message.push_str(&format!(" Evidence: {}", evidence.trim()));
+                }
+                issues.push(ConsistencyIssue {
+                    severity: finding.severity.unwrap_or_else(|| "warning".to_string()),
+                    check_type: "temporal_coherence".to_string(),
+                    message,
+                    entity_ids: vec![scene.id.clone()],
+                    suggested_action: Some(
+                        "add a transition beat or scene break at the jump, split into separately \
+                         clocked scenes, or mark an intended rewind with temporal_mode \"flashback\""
                             .to_string(),
                     ),
                 });
@@ -19822,6 +19894,67 @@ fn heuristic_world_rule_violations(
         .collect()
 }
 
+/// Output shape returned by the model router for the intra-scene temporal
+/// coherence deep check (Tier 2).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeepTemporalCheckOutput {
+    #[serde(default)]
+    findings: Vec<DeepTemporalFinding>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeepTemporalFinding {
+    message: String,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    evidence: Option<String>,
+}
+
+/// Build the prompt for the model-backed intra-scene temporal-coherence audit.
+/// The "intra-scene temporal-coherence audit" header is also the marker the
+/// local stub keys on to return deterministic JSON in tests / local-only runs.
+fn build_temporal_deep_check_prompt(scene: &crate::sqlite::records::Scene) -> String {
+    format!(
+        "You are performing an intra-scene temporal-coherence audit for a single novel scene.\n\
+         Read ONLY this scene's prose and find places where in-world time is mishandled WITHIN the scene:\n\
+         - an unsignaled jump in the time of day or elapsed time (e.g. it is morning, then with no transition it is night);\n\
+         - prose that contradicts its own established time of day;\n\
+         - a long span of in-world time that passes with no transition beat or scene break to render it.\n\
+         Judge by what the prose IMPLIES — meals, changing light, errands, fatigue, idioms like \"three cigarettes later\" — not only explicit clock or part-of-day words.\n\
+         Do NOT flag a jump the prose already signals with a transition beat, a scene break, or a clearly-marked flashback or recollection.\n\
+         Return strict JSON only.\n\n\
+         Scene id: {}\n\
+         Scene tone: {}\n\
+         Scene text:\n{}\n\n\
+         Return this exact shape:\n\
+         {{\"findings\":[{{\"severity\":\"warning\",\"message\":\"...\",\"evidence\":\"...\"}}]}}\n\
+         Use severity \"warning\" for every finding. Return an empty findings array when the scene's time handling is coherent.",
+        scene.id,
+        scene.tone.as_deref().unwrap_or("unspecified"),
+        scene.full_text,
+    )
+}
+
+/// Parse the model router's temporal deep-check output. Tolerates code fences
+/// and surrounding prose via [`extract_json_object`]; an unparseable response
+/// (e.g. the default local stub) yields no findings.
+fn parse_deep_temporal_check_output(output: &str) -> anyhow::Result<Vec<DeepTemporalFinding>> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else if let Some(fenced) = extract_json_object(output) {
+        fenced
+    } else {
+        trimmed.to_string()
+    };
+    let parsed: DeepTemporalCheckOutput = serde_json::from_str(&candidate)?;
+    Ok(parsed.findings)
+}
+
 /// Render a canonical-fact value to its display string. Order of
 /// preference: text → number → json → "<unset>". Mirrors
 /// `canonical_fact_value_for_check` in 705b835^.
@@ -27131,6 +27264,185 @@ rating = "explicit"
             anchor.statement.contains("Harbour Quay"),
             "anchor must name the previous scene's location: {}",
             anchor.statement
+        );
+    }
+
+    /// Tier 2 (model-backed semantic recall): `deep_check` surfaces an
+    /// intra-scene time jump that the deterministic lexicon scan misses, and is
+    /// silent without `deep_check`. The faked `review` route returns a finding
+    /// only when the prose carries the test sentinel.
+    #[tokio::test]
+    async fn deep_check_surfaces_model_backed_temporal_finding() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, ContentRating, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "deep-temporal".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        // Prose with NO deterministic lexicon trigger (no part-of-day word, no
+        // clock time) so any temporal_coherence issue can only come from Tier 2.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "He sat at the long table and turned the matter over and over in his \
+                        mind, the figures refusing to balance. MOCK_TEMPORAL_JUMP. The lamps were \
+                        lit and the room had gone cold around him, the cup at his elbow holding \
+                        nothing but a skin of dregs."
+                .into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let input = |deep: bool| CheckConsistencyInput {
+            project_id: proj.project_id.clone(),
+            scope: ConsistencyScopeInput::full(),
+            checks: vec!["temporal_coherence".to_string()],
+            severity_filter: Vec::new(),
+            deep_check: Some(deep),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        };
+
+        // Tier 1 alone (no deep_check) finds nothing in this prose.
+        let shallow = svc.check_consistency(input(false)).await.unwrap();
+        assert!(
+            !shallow
+                .issues
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "the deterministic scan must not fire on this lexicon-free prose: {:?}",
+            shallow.issues
+        );
+
+        // Tier 2 (deep_check) surfaces the model-backed finding.
+        let deep = svc.check_consistency(input(true)).await.unwrap();
+        assert!(
+            deep.issues
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence" && i.severity == "warning"),
+            "deep_check must surface the model-backed temporal finding: {:?}",
+            deep.issues
+        );
+    }
+
+    /// Tier 2 precision: the model pass must not fabricate findings on coherent
+    /// prose (the faked route returns an empty findings array).
+    #[tokio::test]
+    async fn deep_check_clean_scene_has_no_temporal_finding() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, ContentRating, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "deep-clean".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "He sat at the long table and balanced the figures at last, and was \
+                        glad of it before he rose to go."
+                .into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["temporal_coherence".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(true),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "temporal_coherence"),
+            "the deep pass must not fabricate findings on coherent prose: {:?}",
+            out.issues
+        );
+    }
+
+    #[test]
+    fn temporal_deep_parse_extracts_findings() {
+        let out = r#"{"findings":[{"severity":"warning","message":"jumps to night","evidence":"e"}]}"#;
+        let findings = super::parse_deep_temporal_check_output(out).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].message, "jumps to night");
+        assert_eq!(findings[0].severity.as_deref(), Some("warning"));
+    }
+
+    #[test]
+    fn temporal_deep_parse_handles_code_fence_and_prose() {
+        // Models routinely wrap JSON in a ```json fence and add a preamble.
+        let out = "Here is the audit:\n```json\n{\"findings\":[{\"message\":\"drifts to morning\"}]}\n```";
+        let findings = super::parse_deep_temporal_check_output(out).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].message, "drifts to morning");
+    }
+
+    #[test]
+    fn temporal_deep_parse_empty_findings() {
+        let findings = super::parse_deep_temporal_check_output(r#"{"findings":[]}"#).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn temporal_deep_parse_rejects_non_json() {
+        // The default local `review` stub returns prose, not JSON; the caller
+        // turns this Err into an empty findings list (Tier 2 no-op).
+        assert!(
+            super::parse_deep_temporal_check_output(
+                "Literary critic and craft technician both reviewed: ..."
+            )
+            .is_err()
         );
     }
 

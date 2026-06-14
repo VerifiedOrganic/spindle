@@ -258,6 +258,15 @@ feedback while drafting), inside `commit_scene_changes` (a `temporal_findings`
 field that never blocks the commit under any `continuity_gate`), and across the
 whole branch via this `check_consistency` arm.
 
+That deterministic scan is **Tier 1** (high precision, fixed vocabulary). Pass
+`deep_check: true` to `check_consistency` to add **Tier 2**: a model-backed
+semantic pass that reads each scene's prose and catches the jumps a fixed
+lexicon cannot — idiomatic elapsed time ("three cigarettes later"), implied
+light/meal/errand cues, and drift phrased in prose. It reuses the `review` model
+route, is opt-in (one model call per scene), and degrades to nothing when no
+review model is configured, so Tier 1 always stands on its own. Its findings
+carry the same `temporal_coherence` check_type and `warning` severity.
+
 **What to do when flagged**: add an explicit transition beat ("Hours later,") or
 a scene break (`***`) at the jump; split a multi-block scene into separately
 clocked scenes with `set_scene_clock`; reconcile the contradicting time-of-day

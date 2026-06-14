@@ -85,7 +85,10 @@ Follow this loop for every drafting pass on an active branch:
    where a specific character appears), `format: "markdown"|"json"`, and
    `budget_tokens` for trimming the rendered report. The output also includes
    `report_sections` grouped by validator, and `markdown` when format is
-   markdown.
+   markdown. Pass `deep_check: true` to add the model-backed semantic passes
+   (one model call per scene) on top of the deterministic checks — including
+   the Tier 2 `temporal_coherence` pass that catches idiomatic time jumps the
+   fixed lexicon misses. Use it for a thorough sweep, not every draft.
    Example triage:
    - If prose says "Cole is 19" but canon has `cole.age = 20`, fix the prose
      or supersede canon through the canonical-fact workflow.

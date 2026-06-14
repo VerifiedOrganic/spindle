@@ -1520,7 +1520,24 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     match route.route_name.as_str() {
-        "review" => format!("Literary critic and craft technician both reviewed: {compact_prompt}"),
+        "review" => {
+            // The intra-scene temporal-coherence deep check (Tier 2) reuses the
+            // `review` route. Without a real review model configured, return
+            // deterministic structured JSON so the model-backed path is testable
+            // and a local-only deployment degrades to no extra findings rather
+            // than fabricating prose. A finding is emitted only when the scene
+            // carries the test sentinel; otherwise an empty findings array.
+            if prompt.contains("intra-scene temporal-coherence audit") {
+                if prompt.contains("MOCK_TEMPORAL_JUMP") {
+                    r#"{"findings":[{"severity":"warning","message":"the scene skips from afternoon over a long, unrendered span into deep night with no transition beat or scene break","evidence":"MOCK_TEMPORAL_JUMP"}]}"#
+                        .to_string()
+                } else {
+                    r#"{"findings":[]}"#.to_string()
+                }
+            } else {
+                format!("Literary critic and craft technician both reviewed: {compact_prompt}")
+            }
+        }
         "draft" => format!("Local drafting adapter synthesized: {compact_prompt}"),
         "research" => {
             if prompt.contains("MOCK_VAL") {

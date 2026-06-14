@@ -199,7 +199,16 @@ points**, all advisory: the immediate `temporal_findings` field on
 `commit_scene_changes` that is held separate from `blocking_continuity_findings`
 and emitted at `warning` severity, so it can never block a commit under any
 `continuity_gate` (including `BlockErrors`); and the branch-wide
-`check_consistency` arm. The prevention half is the `[IN-WORLD TIME]` hard
+`check_consistency` arm.
+
+That deterministic scan is **Tier 1**. `check_consistency` with `deep_check:
+true` adds **Tier 2** — `deep_temporal_coherence_issues`, a model-router-driven
+semantic pass (one `review`-route call per scene) that recovers the idiomatic /
+implied time jumps the fixed lexicon cannot, mirroring the existing
+`deep_world_rule_compliance_issues`. It parses structured findings (tolerant of
+code fences) and degrades to no extra findings when no review model is
+configured, so Tier 1 always stands alone. Both tiers emit the same
+`temporal_coherence` check_type at `warning` severity. The prevention half is the `[IN-WORLD TIME]` hard
 constraint built by `SqliteSpindleService::temporal_anchor_constraint` and
 surfaced in both `get_scene_context` and `get_chapter_briefing`: it feeds the
 previous scene's end clock **and location** forward as the expected start, so the
