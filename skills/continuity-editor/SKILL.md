@@ -206,6 +206,34 @@ chapters — or, if the de-escalation is deliberate (a lull before a finale),
 accept it. Quality depends on honest beat-intensity annotation from
 scene-writer; flat annotations blind this check.
 
+### 15. Quantity Drift (`quantity_drift`)
+Active when the project declares a quantity scheme (`set_project_quantity_scheme`,
+or `derive_quantity_scheme_from_system_overlay`). Flags when a subject's tracked
+band jumps more than the scheme's `max_band_jump` ordered tiers between
+consecutive stamps without a `change_reason` — the wealth/progression analogue of
+chronology drift.
+
+**What to do when flagged**: if the jump is legitimate (an inheritance, a
+cultivation breakthrough), re-commit the reading via `commit_quantity_state` with
+a `change_reason`; otherwise stage it across intermediate bands or fix the stamp.
+
+### 16. Currency Consistency (`currency_consistency`)
+Active when a scheme declares denominations. Converts numeric price facts to base
+units and flags two prices for the same good (same `subject`/`predicate`) that
+disagree once converted — e.g. "5 silver" and "100 copper" under a 10:1 scheme.
+
+**What to do when flagged**: reconcile the prices (supersede the wrong one via
+`register_canonical_fact` + `supersedes_fact_id`) or correct the denomination.
+
+### 17. Affordability (`affordability`)
+Advisory (INFO). When a scene names a price (the same `<number> <unit>` pattern
+`scan_scene_prices` detects) above a present character's tracked wealth — both
+reduced to base units — it raises a tripwire. High-precision/low-recall: it only
+fires when both a price mention and a tracked amount exist.
+
+**What to do when flagged**: confirm the character can afford it (a loan, savings
+off-page), or update their tracked amount via `commit_quantity_state`.
+
 ---
 
 ## Running a Full Audit
@@ -252,8 +280,9 @@ Use these shipped Phase 4 validator IDs as your live evidence package:
 - `retcon_reachability`
 - `style_compliance`
 
-The deterministic story-time checks (`chronology`, `knowledge_timing`,
-`pacing_drift`) are requested by name and reported via the `check_type` field on
+The deterministic story-time and quantity checks (`chronology`,
+`knowledge_timing`, `pacing_drift`, `quantity_drift`, `currency_consistency`,
+`affordability`) are requested by name and reported via the `check_type` field on
 each issue rather than as Phase 4 validator rows.
 
 Example:
@@ -278,6 +307,9 @@ use those alias names when calling live checks; use the concrete IDs above.
 | Chronology drift (`chronology`) | → scene-writer (set `temporal_mode`/`thread_key` or fix `day_index`) |
 | Knowledge timing (`knowledge_timing`) | → scene-writer (move the reveal) or → plot-architect (reschedule) |
 | Pacing drift (`pacing_drift`) | → plot-architect (rebalance) or → scene-writer (raise the stakes) |
+| Quantity drift (`quantity_drift`) | → scene-writer / worldbuilder (re-commit with a `change_reason`, or stage the change) |
+| Currency consistency (`currency_consistency`) | → worldbuilder (reconcile prices / fix the denomination) |
+| Affordability (`affordability`) | → scene-writer (confirm the purchase or update tracked wealth) |
 
 If a world rule has a legitimate exception, encode it as a separate
 `world_rule` (e.g. with `relevance_tags: ["exception"]` and a

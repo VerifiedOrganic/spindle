@@ -417,6 +417,44 @@ Then:
 - Create `world_rule` entries for economic constraints
   ("Only the guild can mine spiritstone" → `resource_scarcity`,
   scan_pattern: "spiritstone").
+- **Pin recurring prices as numeric canonical facts** — a named price is typed
+  data, not lore prose. Call `register_canonical_fact` with
+  `subject_table: "economy"`, `subject_id: <economy_id>`,
+  `predicate: "bread_price"`, `value_kind: "number"`, `value_number: 5`,
+  `value_unit: "silver"`, `aliases: ["loaf", "bread"]`, and a `valid_from`
+  placement. The economy and its active price facts now surface in scene
+  context (the "Economies in play" briefing plus a never-trimmed hard
+  constraint per price), so the drafting model can't silently contradict a
+  price established earlier, and `check_consistency` flags prose that does.
+- **Change a price by superseding, never editing.** When a price moves (famine,
+  a new tax), register the new fact with `supersedes_fact_id` pointing at the
+  old one and a `valid_from` at the change point, and set the old fact's
+  `valid_until` to just before it. The validity windows keep each price correct
+  for its own stretch of the book.
+
+### Tracked quantities (wealth, currency, progression)
+
+Prices are canon *facts*; *amounts that evolve* — a party's wealth, a cultivator's
+realm, a faction's treasury — are a **quantity scheme** plus stamped readings.
+
+- **Declare a scheme** with `set_project_quantity_scheme`: a `measure` (e.g.
+  `"wealth"`), ordered `denominations` (`gold` = 100, `silver` = 10, `copper` = 1
+  base), and ordered `bands` (`destitute < comfortable < wealthy`), plus an
+  optional `max_band_jump` (default 1). Fully opt-in — a project that declares no
+  scheme is unaffected.
+- **Reuse a system overlay** instead of hand-writing bands: call
+  `derive_quantity_scheme_from_system_overlay` and the overlay's
+  `advancement_tiers` become the scheme's bands (LitRPG levels, cultivation
+  realms). The same band-monotonicity check then guards progression.
+- **Record readings** with `commit_quantity_state` — `band` is the primary signal;
+  `amount`/`unit` are optional. A band not in the scheme is rejected; a jump beyond
+  `max_band_jump` without a `change_reason` comes back as a warning. The current
+  band/amount and the per-book trajectory surface in scene context as a
+  `[WEALTH/STATE]` hard constraint.
+- **Seed prices from prose** with `scan_scene_prices`, which returns
+  `<number> <unit>` mentions for review — register the real ones as price facts.
+- The continuity editor's `quantity_drift`, `currency_consistency`, and
+  `affordability` checks watch these for drift.
 
 ---
 

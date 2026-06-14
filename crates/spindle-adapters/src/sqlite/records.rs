@@ -3097,3 +3097,81 @@ impl<'a> TryFrom<&Row<'a>> for StoredBookDigest {
         })
     }
 }
+
+// =============================================================================
+// Quantity-continuity side tables (V0020): per-project quantity schemes +
+// stamped per-subject quantity state.
+// =============================================================================
+
+pub const PROJECT_QUANTITY_SCHEME_COLUMNS: &str = "project_id, branch_id, measure, \
+     denominations, bands, max_band_jump, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredQuantityScheme {
+    pub project_id: String,
+    pub branch_id: String,
+    pub scheme: spindle_core::models::QuantityScheme,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredQuantityScheme {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            project_id: row::text(r, 0)?,
+            branch_id: row::text(r, 1)?,
+            scheme: spindle_core::models::QuantityScheme {
+                measure: row::text(r, 2)?,
+                denominations: row::opt_json(r, 3)?.unwrap_or_default(),
+                bands: row::opt_json(r, 4)?.unwrap_or_default(),
+                max_band_jump: row::opt_int(r, 5)?.map(|value| value as i32),
+            },
+            updated_at: row::time(r, 7)?,
+        })
+    }
+}
+
+pub const QUANTITY_STATE_COLUMNS: &str = "id, project_id, branch_id, subject_table, \
+     subject_id, measure, amount, unit, band, change_reason, scene_id, book_number, \
+     chapter_number, scene_order, created_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredQuantityState {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub subject_table: String,
+    pub subject_id: String,
+    pub measure: String,
+    pub state: spindle_core::models::QuantityState,
+    pub scene_id: Option<String>,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredQuantityState {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            subject_table: row::text(r, 3)?,
+            subject_id: row::text(r, 4)?,
+            measure: row::text(r, 5)?,
+            state: spindle_core::models::QuantityState {
+                amount: row::opt_real(r, 6)?,
+                unit: row::opt_text(r, 7)?,
+                band: row::opt_text(r, 8)?,
+                change_reason: row::opt_text(r, 9)?,
+            },
+            scene_id: row::opt_text(r, 10)?,
+            book_number: row::int(r, 11)? as i32,
+            chapter_number: row::int(r, 12)? as i32,
+            scene_order: row::int(r, 13)? as i32,
+            created_at: row::time(r, 14)?,
+        })
+    }
+}

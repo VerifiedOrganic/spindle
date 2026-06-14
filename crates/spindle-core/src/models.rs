@@ -287,6 +287,431 @@ impl StoryClock {
     }
 }
 
+// =============================================================================
+// Quantity-continuity layer (V0020): per-project quantity schemes + stamped
+// per-subject quantity state. Money is the first vertical; the primitive is
+// generic (LitRPG/cultivation stats, reputation reuse it). Additive and
+// optional — a project that declares no scheme behaves exactly as before.
+// =============================================================================
+
+/// A denomination within a measure's currency (e.g. a gold piece is worth 100
+/// of the base unit). Keeps multi-denomination currencies internally consistent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuantityDenomination {
+    pub name: String,
+    /// How many base (smallest) units one of this denomination is worth.
+    pub per_base: i64,
+}
+
+/// An ordered band/tier within a measure (destitute < comfortable < wealthy, or
+/// Bronze < Silver < Gold). Order is the band's position in
+/// [`QuantityScheme::bands`]; an optional `lower_bound` ties bands to amounts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuantityBand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower_bound: Option<i64>,
+}
+
+/// Per-project, per-measure quantity scheme: the denominations and ordered bands
+/// a measure's values validate against. Band-primary by design; amounts are an
+/// optional refinement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct QuantityScheme {
+    pub measure: String,
+    #[serde(default)]
+    pub denominations: Vec<QuantityDenomination>,
+    #[serde(default)]
+    pub bands: Vec<QuantityBand>,
+    /// How many ordered bands one stamp may cross without an explicit
+    /// `change_reason` (defaults to 1 when unset). Consumed by the future
+    /// `QuantityDrift` validator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_band_jump: Option<i32>,
+}
+
+impl QuantityScheme {
+    /// 0-based ordinal of `band` within this scheme's ordered bands, if declared.
+    pub fn band_ordinal(&self, band: &str) -> Option<usize> {
+        self.bands.iter().position(|b| b.name == band)
+    }
+
+    /// Number of ordered bands one stamp may cross without an explicit
+    /// `change_reason` (1 when unset).
+    pub fn max_band_jump_or_default(&self) -> i32 {
+        self.max_band_jump.unwrap_or(1)
+    }
+
+    /// Unsigned number of ordered tiers between two declared band names. `None`
+    /// when either band is not declared in this scheme.
+    pub fn band_jump(&self, from: &str, to: &str) -> Option<i32> {
+        let from = self.band_ordinal(from)? as i32;
+        let to = self.band_ordinal(to)? as i32;
+        Some((from - to).abs())
+    }
+
+    /// Convert `amount` of `denomination` into base (smallest-unit) value, if the
+    /// denomination is declared in this scheme. Enables cross-denomination price
+    /// consistency and affordability checks.
+    pub fn amount_in_base(&self, amount: f64, denomination: &str) -> Option<f64> {
+        self.denominations
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(denomination))
+            .map(|d| amount * d.per_base as f64)
+    }
+
+    /// Validate the scheme's internal consistency.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.measure.trim().is_empty() {
+            return Err("measure must not be empty".to_string());
+        }
+        for denom in &self.denominations {
+            if denom.name.trim().is_empty() {
+                return Err("denomination name must not be empty".to_string());
+            }
+            if denom.per_base < 1 {
+                return Err(format!(
+                    "denomination '{}' per_base must be >= 1 (got {})",
+                    denom.name, denom.per_base
+                ));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut last_bound: Option<i64> = None;
+        for band in &self.bands {
+            if band.name.trim().is_empty() {
+                return Err("band name must not be empty".to_string());
+            }
+            if !seen.insert(band.name.as_str()) {
+                return Err(format!("duplicate band name '{}'", band.name));
+            }
+            if let Some(bound) = band.lower_bound {
+                if let Some(prev) = last_bound
+                    && bound <= prev
+                {
+                    return Err(format!(
+                        "band '{}' lower_bound {bound} must exceed the previous band's {prev}",
+                        band.name
+                    ));
+                }
+                last_bound = Some(bound);
+            }
+        }
+        if let Some(jump) = self.max_band_jump
+            && jump < 1
+        {
+            return Err(format!("max_band_jump must be >= 1 (got {jump})"));
+        }
+        Ok(())
+    }
+}
+
+/// A stamped quantity reading for a subject's measure at a story position.
+/// Append-only; `band` is the primary signal and `amount`/`unit` an optional
+/// refinement. A `change_reason` marks a deliberate large jump as legitimate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct QuantityState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_reason: Option<String>,
+}
+
+impl QuantityState {
+    /// Validate this reading against its scheme when one is declared. A declared
+    /// band must be one the scheme lists; a negative amount is always rejected.
+    pub fn validate(&self, scheme: Option<&QuantityScheme>) -> Result<(), String> {
+        if let Some(amount) = self.amount
+            && amount < 0.0
+        {
+            return Err(format!("amount must be >= 0 (got {amount})"));
+        }
+        if let (Some(band), Some(scheme)) = (self.band.as_ref(), scheme)
+            && !scheme.bands.is_empty()
+            && scheme.band_ordinal(band).is_none()
+        {
+            return Err(format!(
+                "band '{band}' is not declared in the '{}' scheme",
+                scheme.measure
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectQuantitySchemeInput {
+    pub project_id: String,
+    pub scheme: QuantityScheme,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectQuantitySchemeOutput {
+    pub project_id: String,
+    pub measure: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitQuantityStateInput {
+    pub project_id: String,
+    /// Subject table the quantity belongs to (e.g. "character", "faction").
+    pub subject_table: String,
+    pub subject_id: String,
+    /// Measure name; validated against a declared scheme for the same measure.
+    pub measure: String,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    pub state: QuantityState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitQuantityStateOutput {
+    pub quantity_state_id: String,
+    /// Advisory warnings (e.g. an unexplained band jump). Empty on a clean
+    /// commit; band jumps are surfaced, not blocked (design §9.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeriveQuantitySchemeFromOverlayInput {
+    pub project_id: String,
+    pub system_overlay_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeriveQuantitySchemeFromOverlayOutput {
+    /// The scheme measure (the overlay's progression_currency, else its name).
+    pub measure: String,
+    pub band_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScanScenePricesInput {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScanScenePricesOutput {
+    pub mentions: Vec<PriceMention>,
+}
+
+/// A detected price mention in prose: a number immediately followed by a known
+/// currency unit (e.g. "5 silver"). Review-gated extraction, not auto-registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PriceMention {
+    pub amount: f64,
+    pub unit: String,
+    /// The matched "<amount> <unit>" text.
+    pub matched: String,
+}
+
+/// Scan `text` for "<number> <unit>" price mentions, where `unit` is one of
+/// `units` (case-insensitive, a trailing plural 's' tolerated). Pure and
+/// dependency-free: a token-window scan, deliberately high-precision/low-recall.
+pub fn extract_price_mentions(text: &str, units: &[String]) -> Vec<PriceMention> {
+    let unit_set: std::collections::BTreeSet<String> =
+        units.iter().map(|u| u.to_ascii_lowercase()).collect();
+    if unit_set.is_empty() {
+        return Vec::new();
+    }
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    for window in tokens.windows(2) {
+        let raw_amount = window[0].trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+        let Ok(amount) = raw_amount.parse::<f64>() else {
+            continue;
+        };
+        let raw_unit = window[1]
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            .to_ascii_lowercase();
+        let singular = raw_unit.strip_suffix('s').unwrap_or(raw_unit.as_str());
+        let unit = if unit_set.contains(&raw_unit) {
+            Some(raw_unit.clone())
+        } else if unit_set.contains(singular) {
+            Some(singular.to_string())
+        } else {
+            None
+        };
+        if let Some(unit) = unit {
+            out.push(PriceMention {
+                amount,
+                unit,
+                matched: format!("{} {}", window[0], window[1]),
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod quantity_tests {
+    use super::*;
+
+    fn coin_scheme() -> QuantityScheme {
+        QuantityScheme {
+            measure: "wealth".into(),
+            denominations: vec![
+                QuantityDenomination {
+                    name: "gold".into(),
+                    per_base: 100,
+                },
+                QuantityDenomination {
+                    name: "silver".into(),
+                    per_base: 10,
+                },
+                QuantityDenomination {
+                    name: "copper".into(),
+                    per_base: 1,
+                },
+            ],
+            bands: vec![
+                QuantityBand {
+                    name: "destitute".into(),
+                    lower_bound: Some(0),
+                },
+                QuantityBand {
+                    name: "comfortable".into(),
+                    lower_bound: Some(100),
+                },
+                QuantityBand {
+                    name: "wealthy".into(),
+                    lower_bound: Some(10_000),
+                },
+            ],
+            max_band_jump: Some(1),
+        }
+    }
+
+    #[test]
+    fn valid_scheme_passes() {
+        assert!(coin_scheme().validate().is_ok());
+    }
+
+    #[test]
+    fn band_ordinal_reflects_order() {
+        let s = coin_scheme();
+        assert_eq!(s.band_ordinal("destitute"), Some(0));
+        assert_eq!(s.band_ordinal("wealthy"), Some(2));
+        assert_eq!(s.band_ordinal("mythic"), None);
+    }
+
+    #[test]
+    fn band_jump_counts_tiers() {
+        let s = coin_scheme();
+        assert_eq!(s.band_jump("destitute", "comfortable"), Some(1));
+        assert_eq!(s.band_jump("destitute", "wealthy"), Some(2));
+        assert_eq!(s.band_jump("wealthy", "destitute"), Some(2));
+        assert_eq!(s.band_jump("destitute", "mythic"), None);
+    }
+
+    #[test]
+    fn max_band_jump_defaults_to_one() {
+        let mut s = coin_scheme();
+        s.max_band_jump = None;
+        assert_eq!(s.max_band_jump_or_default(), 1);
+        s.max_band_jump = Some(2);
+        assert_eq!(s.max_band_jump_or_default(), 2);
+    }
+
+    #[test]
+    fn amount_in_base_uses_denomination_rate() {
+        let s = coin_scheme(); // gold=100, silver=10, copper=1
+        assert_eq!(s.amount_in_base(5.0, "silver"), Some(50.0));
+        assert_eq!(s.amount_in_base(2.0, "gold"), Some(200.0));
+        assert_eq!(s.amount_in_base(7.0, "copper"), Some(7.0));
+        assert_eq!(s.amount_in_base(1.0, "Silver"), Some(10.0)); // case-insensitive
+        assert_eq!(s.amount_in_base(1.0, "mithril"), None);
+    }
+
+    #[test]
+    fn extract_price_mentions_finds_amount_unit_pairs() {
+        let units = vec!["silver".to_string(), "gold".to_string()];
+        let m = extract_price_mentions("A loaf costs 5 silver and a sword 3 gold.", &units);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].amount, m[0].unit.as_str()), (5.0, "silver"));
+        assert_eq!((m[1].amount, m[1].unit.as_str()), (3.0, "gold"));
+        // trailing plural + punctuation tolerated
+        let plural = extract_price_mentions("He paid 12 silvers.", &units);
+        assert_eq!(plural.len(), 1);
+        assert_eq!((plural[0].amount, plural[0].unit.as_str()), (12.0, "silver"));
+        // unknown unit and empty vocabulary yield nothing
+        assert!(extract_price_mentions("10 apples", &units).is_empty());
+        assert!(extract_price_mentions("5 silver", &[]).is_empty());
+    }
+
+    #[test]
+    fn duplicate_band_rejected() {
+        let mut s = coin_scheme();
+        s.bands.push(QuantityBand {
+            name: "wealthy".into(),
+            lower_bound: Some(20_000),
+        });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn non_increasing_band_bounds_rejected() {
+        let mut s = coin_scheme();
+        s.bands[2].lower_bound = Some(50); // below comfortable's 100
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn zero_per_base_denomination_rejected() {
+        let mut s = coin_scheme();
+        s.denominations[0].per_base = 0;
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn empty_measure_rejected() {
+        let mut s = coin_scheme();
+        s.measure = "  ".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn negative_amount_rejected() {
+        let st = QuantityState {
+            amount: Some(-1.0),
+            ..Default::default()
+        };
+        assert!(st.validate(Some(&coin_scheme())).is_err());
+    }
+
+    #[test]
+    fn band_must_be_declared_in_scheme() {
+        let bad = QuantityState {
+            band: Some("mythic".into()),
+            ..Default::default()
+        };
+        assert!(bad.validate(Some(&coin_scheme())).is_err());
+        let good = QuantityState {
+            band: Some("wealthy".into()),
+            ..Default::default()
+        };
+        assert!(good.validate(Some(&coin_scheme())).is_ok());
+    }
+
+    #[test]
+    fn band_unchecked_without_scheme() {
+        let st = QuantityState {
+            band: Some("anything".into()),
+            ..Default::default()
+        };
+        assert!(st.validate(None).is_ok());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetProjectCalendarInput {
     pub project_id: String,
@@ -807,6 +1232,11 @@ pub struct SceneContextNovelLayer {
     pub knowledge_briefing: Vec<KnowledgeBriefingItem>,
     #[serde(default)]
     pub semantic_references: Vec<SearchBibleResultItem>,
+    /// Economy entities in play (static worldbuilding lore: currency, scarce
+    /// resources, trade goods). Reference material so the drafting model knows
+    /// what trade system is in force; price *values* ride canonical facts.
+    #[serde(default)]
+    pub economy_briefing: Vec<EconomySummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -832,6 +1262,23 @@ pub struct TimelineEventSummary {
     pub event_type: String,
     pub placement: StoryPlacement,
     pub summary: String,
+}
+
+/// An economy in play, projected for scene-context briefing. Static lore
+/// (currency, scarce resources, trade goods) — quantitative price *values*
+/// are carried separately as numeric canonical facts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EconomySummary {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scarce_resources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trade_goods: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

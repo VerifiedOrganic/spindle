@@ -16,7 +16,7 @@ use spindle_core::context_bundle::{estimate_json_tokens, estimate_text_tokens};
 use spindle_core::models::{
     AgencyCheckSummary, BookOutline, BranchSummary, CanonicalFactReadModel,
     ChapterBriefingSceneSeed, ChapterOutline, ChapterPlanBriefing, ChapterSummaryBriefing,
-    CharacterStateSummary, ConsistencyScope, ContextFormat, FutureKnowledgeSummary,
+    CharacterStateSummary, ConsistencyScope, ContextFormat, EconomySummary, FutureKnowledgeSummary,
     GetSceneDeleteImpactOutput, GetSceneMoveImpactOutput, HardConstraint, KnowledgeBriefingItem,
     LocationSummary, NarrativePromiseDueSummary, PacingDirectiveSummary, ReaderContract,
     RecentSceneSummary, RelationshipSummary, SceneContextNovelLayer, SceneContextOutput,
@@ -27,7 +27,7 @@ use spindle_core::subject_snapshot::{RenderDepth, SubjectSnapshot as SnapshotSub
 
 use crate::sqlite::json_records::StoredStoryPlacement;
 use crate::sqlite::records::{
-    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, FutureKnowledge,
+    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, Economy, FutureKnowledge,
     KnowledgeFact, Location, NarrativePromise, PacingTracker, Scene, SystemOverlay, TimelineEvent,
     WorldRule,
 };
@@ -1191,6 +1191,29 @@ pub fn format_scene_context_timeline_markdown(items: &[TimelineEventSummary]) ->
                 event.placement.scene_order.unwrap_or_default()
             ));
             lines.push(format!("  {}", event.summary));
+        }
+    }
+    lines.join("\n")
+}
+
+pub fn format_scene_context_economy_markdown(items: &[EconomySummary]) -> String {
+    let mut lines = vec!["\n## Economies in play".to_string()];
+    if items.is_empty() {
+        lines.push("- None.".to_string());
+    } else {
+        for economy in items {
+            lines.push(format!(
+                "- {} (currency: {})",
+                economy.name,
+                economy.currency.as_deref().unwrap_or("unspecified")
+            ));
+            lines.push(format!("  {}", economy.summary));
+            if !economy.scarce_resources.is_empty() {
+                lines.push(format!("  Scarce: {}", economy.scarce_resources.join(", ")));
+            }
+            if !economy.trade_goods.is_empty() {
+                lines.push(format!("  Trade goods: {}", economy.trade_goods.join(", ")));
+            }
         }
     }
     lines.join("\n")
@@ -2569,6 +2592,14 @@ pub fn build_scene_context_bundle(
         json!({ "novel": { "future_knowledge_briefing": novel.future_knowledge_briefing } }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "economy_briefing",
+        SectionKind::Supplementary(2),
+        format_scene_context_economy_markdown(&novel.economy_briefing)
+            .trim_start_matches('\n')
+            .to_string(),
+        json!({ "novel": { "economy_briefing": novel.economy_briefing } }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
         "timeline_briefing",
         SectionKind::Supplementary(2),
         format_scene_context_timeline_markdown(&novel.timeline_briefing)
@@ -2606,6 +2637,7 @@ pub fn apply_scene_context_bundle_trims(
             "reader_contract" => novel.reader_contract = empty_reader_contract(),
             "system_overlays" => novel.system_overlays.clear(),
             "timeline_briefing" => novel.timeline_briefing.clear(),
+            "economy_briefing" => novel.economy_briefing.clear(),
             "future_knowledge_briefing" => novel.future_knowledge_briefing.clear(),
             "pacing_directives" => novel.pacing_directives.clear(),
             "narrative_promises_due" => novel.narrative_promises_due.clear(),
@@ -3040,6 +3072,18 @@ pub fn system_overlay_summary(overlay: SystemOverlay) -> SystemOverlaySummary {
         visibility: overlay.visibility,
         rules: overlay.rules,
         stats: overlay.stats,
+    }
+}
+
+/// Project a SQLite [`Economy`] record into the public [`EconomySummary`].
+pub fn economy_summary(economy: Economy) -> EconomySummary {
+    EconomySummary {
+        name: economy.name,
+        realm: economy.realm,
+        currency: economy.currency,
+        summary: economy.summary,
+        scarce_resources: economy.scarce_resources,
+        trade_goods: economy.trade_goods,
     }
 }
 

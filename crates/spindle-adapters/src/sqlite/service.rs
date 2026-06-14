@@ -1242,6 +1242,205 @@ impl SqliteSpindleService {
         })
     }
 
+    pub async fn set_project_quantity_scheme(
+        &self,
+        input: spindle_core::models::SetProjectQuantitySchemeInput,
+    ) -> Result<spindle_core::models::SetProjectQuantitySchemeOutput> {
+        self.repository.get_project(&input.project_id).await?;
+        input
+            .scheme
+            .validate()
+            .map_err(|error| anyhow::anyhow!("invalid quantity scheme: {error}"))?;
+        let branch = self.repository.get_active_branch(&input.project_id).await?;
+        let measure = input.scheme.measure.clone();
+        self.repository
+            .upsert_project_quantity_scheme(&input.project_id, &branch.id, &input.scheme)
+            .await?;
+        Ok(spindle_core::models::SetProjectQuantitySchemeOutput {
+            project_id: input.project_id,
+            measure,
+        })
+    }
+
+    pub async fn commit_quantity_state(
+        &self,
+        input: spindle_core::models::CommitQuantityStateInput,
+    ) -> Result<spindle_core::models::CommitQuantityStateOutput> {
+        self.repository.get_project(&input.project_id).await?;
+        let branch = self.repository.get_active_branch(&input.project_id).await?;
+        // Validate the reading against the declared scheme for this measure, if
+        // one exists (band must be declared, amount non-negative).
+        let scheme = self
+            .repository
+            .get_project_quantity_scheme(&input.project_id, &branch.id, &input.measure)
+            .await?
+            .map(|stored| stored.scheme);
+        input
+            .state
+            .validate(scheme.as_ref())
+            .map_err(|error| anyhow::anyhow!("invalid quantity state: {error}"))?;
+
+        // Band-jump advisory (WarnOnly per design §9.5): a large unexplained tier
+        // jump relative to the latest prior stamp is surfaced, not blocked.
+        let mut warnings = Vec::new();
+        if let Some(scheme) = scheme.as_ref()
+            && let Some(new_band) = input.state.band.as_deref()
+            && input.state.change_reason.is_none()
+        {
+            let cursor = input.book_number as i64 * 1_000_000
+                + input.chapter_number as i64 * 1_000
+                + input.scene_order as i64;
+            if let Some(prior) = self
+                .repository
+                .latest_quantity_state_at_or_before(
+                    &input.project_id,
+                    &branch.id,
+                    &input.subject_table,
+                    &input.subject_id,
+                    &input.measure,
+                    cursor,
+                )
+                .await?
+                && let Some(prior_band) = prior.state.band.as_deref()
+                && let Some(jump) = scheme.band_jump(prior_band, new_band)
+                && jump > scheme.max_band_jump_or_default()
+            {
+                warnings.push(format!(
+                    "{} jumped {jump} tiers ({prior_band} → {new_band}) without a change_reason",
+                    input.measure
+                ));
+            }
+        }
+
+        let stored = self
+            .repository
+            .append_quantity_state(crate::sqlite::repository::AppendQuantityStateParams {
+                project_id: input.project_id,
+                branch_id: branch.id,
+                subject_table: input.subject_table,
+                subject_id: input.subject_id,
+                measure: input.measure,
+                state: input.state,
+                scene_id: input.scene_id,
+                book_number: input.book_number,
+                chapter_number: input.chapter_number,
+                scene_order: input.scene_order,
+            })
+            .await?;
+        Ok(spindle_core::models::CommitQuantityStateOutput {
+            quantity_state_id: stored.id,
+            warnings,
+        })
+    }
+
+    /// Derive a quantity scheme from a system overlay so LitRPG / cultivation
+    /// progression reuses the band-monotonicity machinery — the overlay's
+    /// `advancement_tiers` become the scheme's ordered bands.
+    pub async fn derive_quantity_scheme_from_system_overlay(
+        &self,
+        input: spindle_core::models::DeriveQuantitySchemeFromOverlayInput,
+    ) -> Result<spindle_core::models::DeriveQuantitySchemeFromOverlayOutput> {
+        use spindle_core::models::{QuantityBand, QuantityScheme};
+
+        let overlay = self
+            .repository
+            .get_system_overlay(&input.system_overlay_id)
+            .await?;
+        if overlay.project_id != input.project_id {
+            anyhow::bail!("system overlay does not belong to the requested project");
+        }
+        if overlay.advancement_tiers.is_empty() {
+            anyhow::bail!(
+                "system overlay '{}' has no advancement_tiers to derive bands from",
+                overlay.system_name
+            );
+        }
+        let measure = overlay
+            .progression_currency
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| overlay.system_name.clone());
+        let scheme = QuantityScheme {
+            measure: measure.clone(),
+            denominations: Vec::new(),
+            bands: overlay
+                .advancement_tiers
+                .iter()
+                .map(|tier| QuantityBand {
+                    name: tier.clone(),
+                    lower_bound: None,
+                })
+                .collect(),
+            max_band_jump: Some(1),
+        };
+        scheme
+            .validate()
+            .map_err(|error| anyhow::anyhow!("derived quantity scheme invalid: {error}"))?;
+        let branch = self.repository.get_active_branch(&input.project_id).await?;
+        let band_count = scheme.bands.len();
+        self.repository
+            .upsert_project_quantity_scheme(&input.project_id, &branch.id, &scheme)
+            .await?;
+        Ok(
+            spindle_core::models::DeriveQuantitySchemeFromOverlayOutput {
+                measure,
+                band_count,
+            },
+        )
+    }
+
+    /// Currency-unit vocabulary for prose price scanning: declared scheme
+    /// denominations + economy currency names + a small default coinage set.
+    async fn project_currency_units(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<String>> {
+        let mut units: std::collections::BTreeSet<String> = [
+            "gold", "silver", "copper", "coin", "crown", "mark", "piece", "shilling", "penny",
+        ]
+        .iter()
+        .map(|unit| unit.to_string())
+        .collect();
+        for stored in self
+            .repository
+            .list_project_quantity_schemes(project_id, branch_id)
+            .await?
+        {
+            for denom in stored.scheme.denominations {
+                units.insert(denom.name.to_ascii_lowercase());
+            }
+        }
+        for economy in self
+            .repository
+            .list_economies_by_project_and_branch(project_id, branch_id)
+            .await?
+        {
+            if let Some(currency) = economy.currency {
+                units.insert(currency.to_ascii_lowercase());
+            }
+        }
+        Ok(units.into_iter().collect())
+    }
+
+    /// Scan a scene's prose for "<number> <unit>" price mentions (review-gated;
+    /// nothing is auto-registered). Powers price-canon seeding and affordability.
+    pub async fn scan_scene_prices(
+        &self,
+        input: spindle_core::models::ScanScenePricesInput,
+    ) -> Result<spindle_core::models::ScanScenePricesOutput> {
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        if scene.project_id != input.project_id {
+            anyhow::bail!("scene does not belong to the requested project");
+        }
+        let branch = self.repository.get_active_branch(&input.project_id).await?;
+        let units = self
+            .project_currency_units(&input.project_id, &branch.id)
+            .await?;
+        let mentions = spindle_core::models::extract_price_mentions(&scene.full_text, &units);
+        Ok(spindle_core::models::ScanScenePricesOutput { mentions })
+    }
+
     /// The project's calendar if set, otherwise a default 24h Gregorian calendar
     /// used purely to validate clock ranges (e.g. `time_of_day`).
     async fn story_validation_calendar(
@@ -5141,13 +5340,60 @@ impl SqliteSpindleService {
                 .list_world_rules_by_project_and_branch(&project.id, &main_branch_id)
                 .await?;
         }
-        let hard_constraints = world_rules
+        let mut hard_constraints = world_rules
             .into_iter()
             .map(|rule| HardConstraint {
                 id: rule.rule_name,
                 statement: rule.description,
             })
             .collect::<Vec<_>>();
+
+        // Economy price facts: surface current named prices in the re-anchor
+        // packet so the writer (and the authoring loop) stay consistent with the
+        // economy. No-op for projects with no economies / no price facts.
+        {
+            use spindle_core::models::StoryPlacement;
+            use spindle_core::subject::{Subject, SubjectTable};
+
+            let economy_placement = cursor_scene
+                .as_ref()
+                .map(|scene| StoryPlacement {
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: Some(scene.scene_order),
+                    note: None,
+                })
+                .unwrap_or(StoryPlacement {
+                    book_number: i32::MAX,
+                    chapter_number: i32::MAX,
+                    scene_order: Some(i32::MAX),
+                    note: None,
+                });
+            let economy_subjects: Vec<Subject> = self
+                .repository
+                .list_economies_by_project_and_branch(&project.id, &branch_id)
+                .await?
+                .into_iter()
+                .filter(|economy| economy.archived_at.is_none())
+                .filter_map(|economy| Subject::new(SubjectTable::Economy, economy.id).ok())
+                .collect();
+            if !economy_subjects.is_empty() {
+                let economy_facts = self
+                    .repository
+                    .list_canonical_facts_for_subjects(
+                        &project.id,
+                        &branch_id,
+                        &economy_subjects,
+                        &economy_placement,
+                    )
+                    .await?;
+                hard_constraints.extend(
+                    economy_facts
+                        .iter()
+                        .map(format::canonical_fact_hard_constraint),
+                );
+            }
+        }
 
         let mut character_branch_id = branch_id.clone();
         let mut characters = self
@@ -5984,7 +6230,8 @@ impl SqliteSpindleService {
             DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS, SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS,
             WorldRuleContextCharacter, agency_check_from_scene_history,
             apply_scene_context_bundle_trims, build_scene_context_bundle,
-            canonical_fact_hard_constraint, canonical_fact_read_model, empty_agency_check_summary,
+            canonical_fact_hard_constraint, canonical_fact_read_model, economy_summary,
+            empty_agency_check_summary,
             empty_location_summary, empty_reader_contract, empty_world_state_summary,
             estimate_scene_context_tokens, filter_relevant_world_rules,
             future_knowledge_briefing_item, future_knowledge_summary, knowledge_fact_briefing_item,
@@ -6016,6 +6263,7 @@ impl SqliteSpindleService {
         let want_narrative_promises_due = input.wants_novel_section("narrative_promises_due");
         let want_knowledge_briefing = input.wants_novel_section("knowledge_briefing");
         let want_semantic_references = input.wants_novel_section("semantic_references");
+        let want_economy_briefing = input.wants_novel_section("economy_briefing");
         let want_subjects = input.wants_novel_section("subjects");
 
         let want_location = input.wants_scene_section("location");
@@ -6093,6 +6341,27 @@ impl SqliteSpindleService {
                         input.scene_order,
                     )
                 })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        // Economies in play: surfaced as a briefing section (lore) and, more
+        // importantly, added to the canonical-fact subject set below so any
+        // economy-scoped price facts ride the never-trimmed hard-constraint path.
+        let economies = self
+            .repository
+            .list_economies_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?
+            .into_iter()
+            .filter(|economy| economy.archived_at.is_none())
+            .collect::<Vec<_>>();
+
+        let economy_briefing = if want_economy_briefing {
+            economies
+                .iter()
+                .cloned()
+                .map(economy_summary)
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -6433,6 +6702,16 @@ impl SqliteSpindleService {
                     .map_err(|err| anyhow::anyhow!(err.to_string()))?,
             );
         }
+        // Economy subjects so economy-scoped canonical facts (e.g. named prices)
+        // are loaded and rendered as hard constraints alongside character facts.
+        for economy in &economies {
+            if seen_subjects.insert(format!("economy:{}", economy.id)) {
+                canonical_subjects.push(
+                    Subject::new(SubjectTable::Economy, economy.id.clone())
+                        .map_err(|err| anyhow::anyhow!(err.to_string()))?,
+                );
+            }
+        }
 
         let mut canonical_facts = self
             .repository
@@ -6578,6 +6857,7 @@ impl SqliteSpindleService {
             narrative_promises_due,
             knowledge_briefing,
             semantic_references,
+            economy_briefing,
         };
 
         let mut scene_layer = SceneContextSceneLayer {
@@ -6674,6 +6954,87 @@ impl SqliteSpindleService {
                             "The story currently stands at day {day} on the project calendar{epoch}. \
                              Keep chronology consistent: do not contradict elapsed time, character \
                              ages, or the season implied by this date."
+                        ),
+                    },
+                );
+            }
+        }
+
+        // Quantity state: surface each scene character's current band/amount per
+        // declared measure as a hard constraint, so drafting stays consistent with
+        // established wealth/progression. No-op when the project declares no scheme.
+        let quantity_schemes = self
+            .repository
+            .list_project_quantity_schemes(&input.project_id, &active_branch.id)
+            .await?;
+        if !quantity_schemes.is_empty() {
+            let cursor_index =
+                story_index(input.book_number, input.chapter_number, input.scene_order);
+            let mut lines: Vec<String> = Vec::new();
+            for character_id in &input.character_ids {
+                for stored_scheme in &quantity_schemes {
+                    let measure = stored_scheme.scheme.measure.as_str();
+                    let Some(state) = self
+                        .repository
+                        .latest_quantity_state_at_or_before(
+                            &input.project_id,
+                            &active_branch.id,
+                            "character",
+                            character_id,
+                            measure,
+                            cursor_index,
+                        )
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(band) = state.state.band.as_deref() {
+                        parts.push(band.to_string());
+                    }
+                    if let Some(amount) = state.state.amount {
+                        match state.state.unit.as_deref() {
+                            Some(unit) => parts.push(format!("{amount} {unit}")),
+                            None => parts.push(format!("{amount}")),
+                        }
+                    }
+                    if !parts.is_empty() {
+                        let mut line = format!("- {character_id} {measure}: {}", parts.join(", "));
+                        // Per-book trajectory: note where this measure started the
+                        // book so the model keeps the arc consistent, not just the
+                        // current value (a pure read; no digest table).
+                        if let Some(current_band) = state.state.band.as_deref()
+                            && let Some(first) = self
+                                .repository
+                                .earliest_quantity_state_in_book(
+                                    &input.project_id,
+                                    &active_branch.id,
+                                    "character",
+                                    character_id,
+                                    measure,
+                                    cursor_index,
+                                )
+                                .await?
+                            && let Some(first_band) = first.state.band.as_deref()
+                            && first_band != current_band
+                        {
+                            line.push_str(&format!(
+                                " (book {} so far: {first_band} → {current_band})",
+                                input.book_number
+                            ));
+                        }
+                        lines.push(line);
+                    }
+                }
+            }
+            if !lines.is_empty() {
+                hard_constraints.insert(
+                    0,
+                    HardConstraint {
+                        id: "[WEALTH/STATE]".to_string(),
+                        statement: format!(
+                            "Current tracked quantities (do not contradict these amounts or this scale):\n{}",
+                            lines.join("\n")
                         ),
                     },
                 );
@@ -7416,6 +7777,228 @@ impl SqliteSpindleService {
                 }
                 if !is_out_of_line {
                     last_linear.insert(thread, (index, scene.id.clone()));
+                }
+            }
+        }
+
+        // ── Quantity drift: an unexplained multi-band jump ──────────────
+        // For subjects with a declared scheme, flag when a measure's band moves
+        // more than `max_band_jump` ordered tiers between consecutive stamps with
+        // no `change_reason`. No scheme / no bands → no-op (fully additive).
+        if should_run_check(&requested_checks_set, "quantity_drift") {
+            let schemes = self
+                .repository
+                .list_project_quantity_schemes(&project_id, &active_branch.id)
+                .await?;
+            if !schemes.is_empty() {
+                let scheme_by_measure: BTreeMap<String, &spindle_core::models::QuantityScheme> =
+                    schemes
+                        .iter()
+                        .map(|stored| (stored.scheme.measure.clone(), &stored.scheme))
+                        .collect();
+                // Rows arrive grouped by (subject_table, subject_id, measure) in
+                // position order, so the previous row in the same group is the
+                // prior stamp for that subject's measure.
+                let states = self
+                    .repository
+                    .list_quantity_states_by_project_and_branch(&project_id, &active_branch.id)
+                    .await?;
+                let mut prev: Option<&crate::sqlite::records::StoredQuantityState> = None;
+                for state in &states {
+                    if let Some(previous) = prev
+                        && previous.subject_table == state.subject_table
+                        && previous.subject_id == state.subject_id
+                        && previous.measure == state.measure
+                        && state.state.change_reason.is_none()
+                        && let Some(scheme) = scheme_by_measure.get(state.measure.as_str())
+                        && let (Some(from), Some(to)) =
+                            (previous.state.band.as_deref(), state.state.band.as_deref())
+                        && let Some(jump) = scheme.band_jump(from, to)
+                        && jump > scheme.max_band_jump_or_default()
+                    {
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "quantity_drift".to_string(),
+                            message: format!(
+                                "{} for '{}' jumped {jump} tiers ({from} → {to}) without a change_reason",
+                                state.measure, state.subject_id
+                            ),
+                            entity_ids: vec![state.subject_id.clone()],
+                            suggested_action: Some(
+                                "record a change_reason for the jump or stage it across intermediate bands"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    prev = Some(state);
+                }
+            }
+        }
+
+        // ── Currency consistency: price facts that disagree once converted ──
+        // Two numeric price facts for the same good in different denominations
+        // must reduce to the same base value under the scheme. Deterministic.
+        if should_run_check(&requested_checks_set, "currency_consistency") {
+            let mut unit_base: BTreeMap<String, f64> = BTreeMap::new();
+            for stored in &self
+                .repository
+                .list_project_quantity_schemes(&project_id, &active_branch.id)
+                .await?
+            {
+                for denom in &stored.scheme.denominations {
+                    unit_base.insert(denom.name.to_ascii_lowercase(), denom.per_base as f64);
+                }
+            }
+            if !unit_base.is_empty() {
+                let facts = self
+                    .repository
+                    .list_active_canonical_facts_by_project_and_branch(
+                        &project_id,
+                        &active_branch.id,
+                    )
+                    .await?;
+                let mut groups: PriceFactGroups = BTreeMap::new();
+                for fact in &facts {
+                    if fact.value_kind != "number" {
+                        continue;
+                    }
+                    let (Some(number), Some(unit)) = (fact.value_number, fact.unit.as_deref())
+                    else {
+                        continue;
+                    };
+                    let Some(per_base) = unit_base.get(&unit.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    let key = (
+                        fact.subject_table.clone(),
+                        fact.subject_id.clone().unwrap_or_default(),
+                        fact.predicate.clone(),
+                    );
+                    groups.entry(key).or_default().push((
+                        number * per_base,
+                        unit.to_string(),
+                        fact.id.clone(),
+                    ));
+                }
+                for ((_table, _id, predicate), entries) in &groups {
+                    if entries.len() < 2 {
+                        continue;
+                    }
+                    let first = entries[0].0;
+                    if entries
+                        .iter()
+                        .any(|(base, _, _)| (base - first).abs() > f64::EPSILON)
+                    {
+                        let detail = entries
+                            .iter()
+                            .map(|(base, unit, _)| format!("{base} base (as {unit})"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "currency_consistency".to_string(),
+                            message: format!(
+                                "'{predicate}' has prices that disagree once converted to base units: {detail}"
+                            ),
+                            entity_ids: entries.iter().map(|(_, _, id)| id.clone()).collect(),
+                            suggested_action: Some(
+                                "reconcile the prices or correct the denomination used".to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // ── Affordability: a priced purchase a present character can't cover ──
+        // Advisory (Info, high-precision/low-recall): if a scene names a price
+        // above a present character's tracked wealth (converted to base), flag.
+        if should_run_check(&requested_checks_set, "affordability") {
+            let schemes = self
+                .repository
+                .list_project_quantity_schemes(&project_id, &active_branch.id)
+                .await?;
+            let mut unit_base: BTreeMap<String, f64> = BTreeMap::new();
+            for stored in &schemes {
+                for denom in &stored.scheme.denominations {
+                    unit_base.insert(denom.name.to_ascii_lowercase(), denom.per_base as f64);
+                }
+            }
+            if !unit_base.is_empty() {
+                let units: Vec<String> = unit_base.keys().cloned().collect();
+                let characters = self
+                    .repository
+                    .list_characters_by_project_and_branch(&project_id, &active_branch.id)
+                    .await?;
+                for scene in &scenes {
+                    let mentions =
+                        spindle_core::models::extract_price_mentions(&scene.full_text, &units);
+                    let Some(max_price_base) = mentions
+                        .iter()
+                        .filter_map(|m| {
+                            unit_base
+                                .get(&m.unit.to_ascii_lowercase())
+                                .map(|per_base| m.amount * per_base)
+                        })
+                        .fold(None, |acc: Option<f64>, value| {
+                            Some(acc.map_or(value, |a| a.max(value)))
+                        })
+                    else {
+                        continue;
+                    };
+                    let cursor = scene.book_number as i64 * 1_000_000
+                        + scene.chapter_number as i64 * 1_000
+                        + scene.scene_order as i64;
+                    for character in &characters {
+                        if !contains_case_insensitive_word_boundary(
+                            &scene.full_text,
+                            &character.name,
+                        ) {
+                            continue;
+                        }
+                        for stored in &schemes {
+                            let measure = stored.scheme.measure.as_str();
+                            let Some(state) = self
+                                .repository
+                                .latest_quantity_state_at_or_before(
+                                    &project_id,
+                                    &active_branch.id,
+                                    "character",
+                                    &character.id,
+                                    measure,
+                                    cursor,
+                                )
+                                .await?
+                            else {
+                                continue;
+                            };
+                            let (Some(amount), Some(unit)) =
+                                (state.state.amount, state.state.unit.as_deref())
+                            else {
+                                continue;
+                            };
+                            let Some(per_base) = unit_base.get(&unit.to_ascii_lowercase()) else {
+                                continue;
+                            };
+                            let wealth_base = amount * per_base;
+                            if max_price_base > wealth_base {
+                                issues.push(ConsistencyIssue {
+                                    severity: "info".to_string(),
+                                    check_type: "affordability".to_string(),
+                                    message: format!(
+                                        "scene names a price of {max_price_base} base units, above {}'s tracked {measure} of {wealth_base} base units",
+                                        character.name
+                                    ),
+                                    entity_ids: vec![scene.id.clone(), character.id.clone()],
+                                    suggested_action: Some(
+                                        "confirm the character can afford this, or update their tracked amount"
+                                            .to_string(),
+                                    ),
+                                });
+                                break; // one advisory per character per scene
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -12340,6 +12923,30 @@ impl SqliteSpindleService {
             .collect();
         self.repository
             .rehome_rows_to_branch("character_arc", &target_branch_id, &arc_ids)
+            .await?;
+
+        // Carry branch-local quantity schemes + stamped quantity state, also
+        // dropped by the scene-only snapshot. Schemes upsert by (project,
+        // measure) into the target; state rows re-home by id.
+        for stored in self
+            .repository
+            .list_project_quantity_schemes(&project.id, &input.source_branch_id)
+            .await?
+        {
+            self.repository
+                .upsert_project_quantity_scheme(&project.id, &target_branch_id, &stored.scheme)
+                .await?;
+        }
+        let quantity_state_ids: Vec<String> = self
+            .repository
+            .list_quantity_states_by_project_and_branch(&project.id, &input.source_branch_id)
+            .await?
+            .into_iter()
+            .filter(|state| state.branch_id == input.source_branch_id)
+            .map(|state| state.id)
+            .collect();
+        self.repository
+            .rehome_rows_to_branch("quantity_state", &target_branch_id, &quantity_state_ids)
             .await?;
 
         Ok(MergeBranchOutput {
@@ -18386,6 +18993,11 @@ fn requested_severities(
 
 /// Returns true when the given check should run: either no checks were
 /// requested (run all) or the check is explicitly listed.
+/// Price facts grouped by `(subject_table, subject_id, predicate)`, each value a
+/// list of `(base_value, unit, fact_id)` — drives the currency-consistency check.
+type PriceFactGroups =
+    std::collections::BTreeMap<(String, String, String), Vec<(f64, String, String)>>;
+
 fn should_run_check(requested_checks: &std::collections::BTreeSet<String>, check: &str) -> bool {
     requested_checks.is_empty() || requested_checks.contains(check)
 }
@@ -25472,6 +26084,1033 @@ rating = "explicit"
         );
     }
 
+    /// Helper: project + opening scene + an Economy + a named price fact scoped
+    /// to that economy, plus a location to draft against. Returns the ids needed
+    /// to call `get_scene_context`.
+    async fn project_with_economy_price_fact(
+        svc: &SqliteSpindleService,
+        name: &str,
+    ) -> (String, String) {
+        use spindle_core::models::{
+            CanonicalFactScope, ContentRating, CreateEconomyInput, CreateLocationInput,
+            RegisterCanonicalFactInput, SaveSceneDraftInput,
+        };
+
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: name.into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "economies stay consistent".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Merchants haggled over bread.".into(),
+                summary: "market".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let economy = svc
+            .create_economy(CreateEconomyInput {
+                project_id: proj.project_id.clone(),
+                name: "River Mark".into(),
+                realm: None,
+                summary: "Grain-based barter with iron scarcity.".into(),
+                scarce_resources: vec!["iron".into()],
+                trade_goods: vec!["grain".into()],
+                currency: Some("silver marks".into()),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        // A recurring named price, registered as a typed numeric canonical fact
+        // scoped to the economy subject (the "activate price facts" recipe).
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: proj.project_id.clone(),
+            scene_id: scene.scene_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("typed_fact".into()),
+            key: Some("economy.bread_price".into()),
+            value: Some("5 silver".into()),
+            context: None,
+            subject_table: Some("economy".into()),
+            subject_id: Some(economy.economy_id.clone()),
+            predicate: Some("bread_price".into()),
+            value_kind: Some("number".into()),
+            value_text: None,
+            value_number: Some(5.0),
+            value_unit: Some("silver".into()),
+            value_json: None,
+            aliases: vec!["loaf".into(), "bread".into()],
+            scope: Some(CanonicalFactScope::Evolving),
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: Some(false),
+            supersedes_fact_id: None,
+        })
+        .await
+        .unwrap();
+        let location = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Market".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A market square.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+        (proj.project_id, location.location_id)
+    }
+
+    #[tokio::test]
+    async fn scene_context_surfaces_economy_price_fact() {
+        use spindle_core::models::{ContextFormat, GetSceneContextInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, location_id) =
+            project_with_economy_price_fact(&svc, "ctx-economy-price").await;
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        // The economy-scoped price fact must ride the never-trimmed hard-constraint
+        // path, so the drafting model can't contradict the price it set last chapter.
+        assert!(
+            ctx.hard_constraints
+                .iter()
+                .any(|c| c.id == "bread_price" && c.statement.contains("silver")),
+            "scene context should surface the economy price fact as a hard constraint: {:?}",
+            ctx.hard_constraints
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_surfaces_economy_lore() {
+        use spindle_core::models::{ContextFormat, GetSceneContextInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, location_id) =
+            project_with_economy_price_fact(&svc, "ctx-economy-lore").await;
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        // The Economy entity (static lore) is surfaced so the drafting model knows
+        // what trade system / currency is in play.
+        assert!(
+            ctx.novel
+                .economy_briefing
+                .iter()
+                .any(|e| e.name == "River Mark" && e.currency.as_deref() == Some("silver marks")),
+            "scene context should surface the economy lore in economy_briefing: {:?}",
+            ctx.novel.economy_briefing
+        );
+    }
+
+    #[tokio::test]
+    async fn writer_state_surfaces_economy_price_fact() {
+        use spindle_core::models::GetWriterStateInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, _location_id) =
+            project_with_economy_price_fact(&svc, "ws-economy-price").await;
+
+        let ws = svc
+            .get_writer_state(GetWriterStateInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                at_scene_id: None,
+                format: None,
+                budget_tokens: None,
+                include_subjects: None,
+                include_recent_activity: None,
+                recent_activity_limit: None,
+            })
+            .await
+            .unwrap();
+
+        // The re-anchor packet should surface current named prices so the writer
+        // (and the authoring loop) stay consistent with the economy.
+        assert!(
+            ws.hard_constraints
+                .iter()
+                .any(|c| c.id == "bread_price" && c.statement.contains("silver")),
+            "writer state should surface the economy price fact as a hard constraint: {:?}",
+            ws.hard_constraints
+        );
+    }
+
+    #[tokio::test]
+    async fn quantity_scheme_and_state_round_trip() {
+        use crate::sqlite::repository::AppendQuantityStateParams;
+        use spindle_core::models::{
+            QuantityBand, QuantityDenomination, QuantityScheme, QuantityState,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "qty-roundtrip".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let repo = svc.repository();
+        let branch_id = repo.get_active_branch(&proj.project_id).await.unwrap().id;
+
+        // Additivity: a project with no scheme reads back None.
+        assert!(
+            repo.get_project_quantity_scheme(&proj.project_id, &branch_id, "wealth")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let scheme = QuantityScheme {
+            measure: "wealth".into(),
+            denominations: vec![
+                QuantityDenomination {
+                    name: "gold".into(),
+                    per_base: 100,
+                },
+                QuantityDenomination {
+                    name: "copper".into(),
+                    per_base: 1,
+                },
+            ],
+            bands: vec![
+                QuantityBand {
+                    name: "destitute".into(),
+                    lower_bound: Some(0),
+                },
+                QuantityBand {
+                    name: "comfortable".into(),
+                    lower_bound: Some(100),
+                },
+                QuantityBand {
+                    name: "wealthy".into(),
+                    lower_bound: Some(10_000),
+                },
+            ],
+            max_band_jump: Some(1),
+        };
+        repo.upsert_project_quantity_scheme(&proj.project_id, &branch_id, &scheme)
+            .await
+            .unwrap();
+        let loaded = repo
+            .get_project_quantity_scheme(&proj.project_id, &branch_id, "wealth")
+            .await
+            .unwrap()
+            .expect("scheme present after upsert");
+        assert_eq!(loaded.scheme, scheme, "scheme round-trips losslessly");
+
+        let pos = |book: i32, chapter: i32, scene_order: i32| -> i64 {
+            book as i64 * 1_000_000 + chapter as i64 * 1_000 + scene_order as i64
+        };
+        let mk = |chapter: i32, band: &str| AppendQuantityStateParams {
+            project_id: proj.project_id.clone(),
+            branch_id: branch_id.clone(),
+            subject_table: "character".into(),
+            subject_id: "character:hero".into(),
+            measure: "wealth".into(),
+            state: QuantityState {
+                band: Some(band.into()),
+                ..Default::default()
+            },
+            scene_id: None,
+            book_number: 1,
+            chapter_number: chapter,
+            scene_order: 1,
+        };
+        repo.append_quantity_state(mk(1, "destitute")).await.unwrap();
+        repo.append_quantity_state(mk(5, "comfortable"))
+            .await
+            .unwrap();
+
+        // At ch3 the latest stamp is the ch1 'destitute' reading.
+        let at_ch3 = repo
+            .latest_quantity_state_at_or_before(
+                &proj.project_id,
+                &branch_id,
+                "character",
+                "character:hero",
+                "wealth",
+                pos(1, 3, 0),
+            )
+            .await
+            .unwrap()
+            .expect("state at or before ch3");
+        assert_eq!(at_ch3.state.band.as_deref(), Some("destitute"));
+
+        // At ch10 the latest stamp is the ch5 'comfortable' reading.
+        let at_ch10 = repo
+            .latest_quantity_state_at_or_before(
+                &proj.project_id,
+                &branch_id,
+                "character",
+                "character:hero",
+                "wealth",
+                pos(1, 10, 0),
+            )
+            .await
+            .unwrap()
+            .expect("state at or before ch10");
+        assert_eq!(at_ch10.state.band.as_deref(), Some("comfortable"));
+    }
+
+    #[tokio::test]
+    async fn quantity_tools_validate_and_persist() {
+        use spindle_core::models::{
+            CommitQuantityStateInput, QuantityBand, QuantityScheme, QuantityState,
+            SetProjectQuantitySchemeInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "qty-tools".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // An invalid scheme (empty measure) is rejected.
+        assert!(
+            svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+                project_id: proj.project_id.clone(),
+                scheme: QuantityScheme {
+                    measure: String::new(),
+                    ..Default::default()
+                },
+            })
+            .await
+            .is_err(),
+            "empty-measure scheme must be rejected"
+        );
+
+        let set = svc
+            .set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+                project_id: proj.project_id.clone(),
+                scheme: QuantityScheme {
+                    measure: "wealth".into(),
+                    denominations: Vec::new(),
+                    bands: vec![
+                        QuantityBand {
+                            name: "destitute".into(),
+                            lower_bound: None,
+                        },
+                        QuantityBand {
+                            name: "wealthy".into(),
+                            lower_bound: None,
+                        },
+                    ],
+                    max_band_jump: Some(1),
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(set.measure, "wealth");
+
+        let commit = |band: &str| CommitQuantityStateInput {
+            project_id: proj.project_id.clone(),
+            subject_table: "character".into(),
+            subject_id: "character:hero".into(),
+            measure: "wealth".into(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            scene_id: None,
+            state: QuantityState {
+                band: Some(band.into()),
+                ..Default::default()
+            },
+        };
+
+        // A reading whose band is not in the scheme is rejected.
+        assert!(
+            svc.commit_quantity_state(commit("mythic")).await.is_err(),
+            "undeclared band must be rejected against the scheme"
+        );
+
+        // A valid reading persists and returns a stamped id.
+        let ok = svc.commit_quantity_state(commit("destitute")).await.unwrap();
+        assert!(ok.quantity_state_id.starts_with("quantity_state:"));
+    }
+
+    /// Helper: project + scene + a wealth scheme (destitute<comfortable<wealthy,
+    /// max_band_jump 1). Returns the project id.
+    async fn project_with_wealth_scheme(svc: &SqliteSpindleService, name: &str) -> String {
+        use spindle_core::models::{QuantityBand, QuantityScheme, SetProjectQuantitySchemeInput};
+
+        let (project, _scene_id, _text) = project_with_scene(svc, name).await;
+        svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+            project_id: project.project_id.clone(),
+            scheme: QuantityScheme {
+                measure: "wealth".into(),
+                denominations: Vec::new(),
+                bands: vec![
+                    QuantityBand {
+                        name: "destitute".into(),
+                        lower_bound: None,
+                    },
+                    QuantityBand {
+                        name: "comfortable".into(),
+                        lower_bound: None,
+                    },
+                    QuantityBand {
+                        name: "wealthy".into(),
+                        lower_bound: None,
+                    },
+                ],
+                max_band_jump: Some(1),
+            },
+        })
+        .await
+        .unwrap();
+        project.project_id
+    }
+
+    fn wealth_commit(
+        project_id: &str,
+        chapter: i32,
+        band: &str,
+        reason: Option<&str>,
+    ) -> spindle_core::models::CommitQuantityStateInput {
+        spindle_core::models::CommitQuantityStateInput {
+            project_id: project_id.to_string(),
+            subject_table: "character".into(),
+            subject_id: "character:hero".into(),
+            measure: "wealth".into(),
+            book_number: 1,
+            chapter_number: chapter,
+            scene_order: 1,
+            scene_id: None,
+            state: spindle_core::models::QuantityState {
+                band: Some(band.to_string()),
+                change_reason: reason.map(str::to_string),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn quantity_drift_input(project_id: &str) -> spindle_core::models::CheckConsistencyInput {
+        spindle_core::models::CheckConsistencyInput {
+            project_id: project_id.to_string(),
+            scope: spindle_core::models::ConsistencyScopeInput::full(),
+            checks: vec!["quantity_drift".into()],
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        }
+    }
+
+    async fn seed_character(svc: &SqliteSpindleService, project_id: &str, name: &str) -> String {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CreateCharacterInput,
+        };
+        svc.create_character(CreateCharacterInput {
+            project_id: project_id.to_string(),
+            name: name.into(),
+            summary: format!("{name} summary"),
+            role: "supporting".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: None,
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: std::collections::BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap()
+        .character_id
+    }
+
+    #[tokio::test]
+    async fn quantity_drift_flags_unexplained_band_jump() {
+        let (_tmp, svc) = fresh_service().await;
+        let project_id = project_with_wealth_scheme(&svc, "qty-drift").await;
+
+        svc.commit_quantity_state(wealth_commit(&project_id, 1, "destitute", None))
+            .await
+            .unwrap();
+        // destitute -> wealthy is a 2-tier jump with no reason: warned at commit.
+        let jumped = svc
+            .commit_quantity_state(wealth_commit(&project_id, 2, "wealthy", None))
+            .await
+            .unwrap();
+        assert!(
+            !jumped.warnings.is_empty(),
+            "unexplained band jump should warn at commit"
+        );
+
+        let out = svc.check_consistency(quantity_drift_input(&project_id)).await.unwrap();
+        assert!(
+            out.issues.iter().any(|i| i.check_type == "quantity_drift"),
+            "check_consistency should flag the unexplained band jump: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn quantity_band_jump_with_reason_is_clean() {
+        let (_tmp, svc) = fresh_service().await;
+        let project_id = project_with_wealth_scheme(&svc, "qty-reason").await;
+
+        svc.commit_quantity_state(wealth_commit(&project_id, 1, "destitute", None))
+            .await
+            .unwrap();
+        // Same 2-tier jump, but with a change_reason: no warning, no drift.
+        let ok = svc
+            .commit_quantity_state(wealth_commit(
+                &project_id,
+                2,
+                "wealthy",
+                Some("inherited a fortune"),
+            ))
+            .await
+            .unwrap();
+        assert!(ok.warnings.is_empty(), "an explained jump must not warn");
+
+        let out = svc.check_consistency(quantity_drift_input(&project_id)).await.unwrap();
+        assert!(
+            !out.issues.iter().any(|i| i.check_type == "quantity_drift"),
+            "an explained jump must not be flagged: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_surfaces_quantity_state_hard_constraint() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CommitQuantityStateInput,
+            ContextFormat, CreateCharacterInput, CreateLocationInput, GetSceneContextInput,
+            QuantityState,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project_id = project_with_wealth_scheme(&svc, "qty-ctx").await;
+
+        let character = svc
+            .create_character(CreateCharacterInput {
+                project_id: project_id.clone(),
+                name: "Hero".into(),
+                summary: "the hero".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        svc.commit_quantity_state(CommitQuantityStateInput {
+            project_id: project_id.clone(),
+            subject_table: "character".into(),
+            subject_id: character.character_id.clone(),
+            measure: "wealth".into(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            scene_id: None,
+            state: QuantityState {
+                band: Some("comfortable".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+        let location = svc
+            .create_location(CreateLocationInput {
+                project_id: project_id.clone(),
+                name: "Market".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A market square.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character.character_id.clone()],
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.hard_constraints
+                .iter()
+                .any(|c| c.id == "[WEALTH/STATE]" && c.statement.contains("comfortable")),
+            "scene context should surface the quantity-state hard constraint: {:?}",
+            ctx.hard_constraints
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_quantity_constraint_shows_book_trajectory() {
+        use spindle_core::models::{
+            CommitQuantityStateInput, ContextFormat, CreateLocationInput, GetSceneContextInput,
+            QuantityState,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project_id = project_with_wealth_scheme(&svc, "qty-trajectory").await;
+        let hero = seed_character(&svc, &project_id, "Hero").await;
+
+        let commit = |chapter: i32, band: &str| CommitQuantityStateInput {
+            project_id: project_id.clone(),
+            subject_table: "character".into(),
+            subject_id: hero.clone(),
+            measure: "wealth".into(),
+            book_number: 1,
+            chapter_number: chapter,
+            scene_order: 1,
+            scene_id: None,
+            state: QuantityState {
+                band: Some(band.into()),
+                ..Default::default()
+            },
+        };
+        // Climbs one tier (destitute -> comfortable): a clean arc, no drift.
+        svc.commit_quantity_state(commit(1, "destitute")).await.unwrap();
+        svc.commit_quantity_state(commit(3, "comfortable")).await.unwrap();
+
+        let location = svc
+            .create_location(CreateLocationInput {
+                project_id: project_id.clone(),
+                name: "Market".into(),
+                kind: "city".into(),
+                realm: None,
+                summary: "A market.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 5,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![hero.clone()],
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let wealth = ctx
+            .hard_constraints
+            .iter()
+            .find(|c| c.id == "[WEALTH/STATE]")
+            .expect("wealth/state hard constraint present");
+        assert!(
+            wealth.statement.contains("destitute → comfortable"),
+            "constraint should show the per-book trajectory: {}",
+            wealth.statement
+        );
+    }
+
+    #[tokio::test]
+    async fn derive_quantity_scheme_from_overlay_creates_band_scheme() {
+        use spindle_core::models::{
+            CommitQuantityStateInput, CreateSystemOverlayInput,
+            DeriveQuantitySchemeFromOverlayInput, QuantityState,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project, _scene_id, _text) = project_with_scene(&svc, "overlay-scheme").await;
+        let overlay = svc
+            .create_system_overlay(CreateSystemOverlayInput {
+                project_id: project.project_id.clone(),
+                system_name: "Cultivation".into(),
+                system_type: "cultivation".into(),
+                rules: "advance by breakthroughs".into(),
+                visibility: "explicit".into(),
+                progression_currency: None,
+                stats: vec!["qi".into()],
+                advancement_tiers: vec!["Mortal".into(), "Foundation".into(), "Core".into()],
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .derive_quantity_scheme_from_system_overlay(DeriveQuantitySchemeFromOverlayInput {
+                project_id: project.project_id.clone(),
+                system_overlay_id: overlay.system_overlay_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.measure, "Cultivation");
+        assert_eq!(out.band_count, 3);
+
+        let commit = |chapter: i32, band: &str| CommitQuantityStateInput {
+            project_id: project.project_id.clone(),
+            subject_table: "character".into(),
+            subject_id: "character:hero".into(),
+            measure: "Cultivation".into(),
+            book_number: 1,
+            chapter_number: chapter,
+            scene_order: 1,
+            scene_id: None,
+            state: QuantityState {
+                band: Some(band.into()),
+                ..Default::default()
+            },
+        };
+        svc.commit_quantity_state(commit(1, "Mortal")).await.unwrap();
+        // Mortal -> Core skips Foundation (a 2-tier jump): warned by the derived scheme.
+        let jumped = svc.commit_quantity_state(commit(2, "Core")).await.unwrap();
+        assert!(!jumped.warnings.is_empty(), "skipping a tier should warn");
+        // A tier the overlay never declared is hard-rejected.
+        assert!(svc.commit_quantity_state(commit(3, "Immortal")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn scan_scene_prices_detects_mentions() {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput, ScanScenePricesInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "scan-prices".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "The merchant wanted 5 silver for bread and 2 gold for the blade."
+                    .into(),
+                summary: "market".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // No scheme declared: the default coinage vocabulary still finds prices.
+        let out = svc
+            .scan_scene_prices(ScanScenePricesInput {
+                project_id: proj.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.mentions.len(), 2, "mentions: {:?}", out.mentions);
+        assert!(out.mentions.iter().any(|m| m.amount == 5.0 && m.unit == "silver"));
+        assert!(out.mentions.iter().any(|m| m.amount == 2.0 && m.unit == "gold"));
+    }
+
+    #[tokio::test]
+    async fn currency_consistency_flags_denomination_mismatch() {
+        use crate::sqlite::repository::CreateCanonicalFactParams;
+        use spindle_core::models::{
+            QuantityDenomination, QuantityScheme, SetProjectQuantitySchemeInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project, scene_id, _text) = project_with_scene(&svc, "currency-consistency").await;
+
+        svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+            project_id: project.project_id.clone(),
+            scheme: QuantityScheme {
+                measure: "wealth".into(),
+                denominations: vec![
+                    QuantityDenomination {
+                        name: "silver".into(),
+                        per_base: 10,
+                    },
+                    QuantityDenomination {
+                        name: "copper".into(),
+                        per_base: 1,
+                    },
+                ],
+                bands: Vec::new(),
+                max_band_jump: None,
+            },
+        })
+        .await
+        .unwrap();
+
+        let branch = svc
+            .repository()
+            .get_active_branch(&project.project_id)
+            .await
+            .unwrap();
+        // bread = 5 silver (50 base) AND bread = 100 copper (100 base): a contradiction.
+        for (number, unit) in [(5.0_f64, "silver"), (100.0_f64, "copper")] {
+            svc.repository()
+                .create_canonical_fact(CreateCanonicalFactParams {
+                    project_id: project.project_id.clone(),
+                    branch_id: branch.id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    subject_table: "economy".into(),
+                    subject_id: Some("economy:river".into()),
+                    predicate: "bread_price".into(),
+                    value_kind: "number".into(),
+                    value_text: None,
+                    value_number: Some(number),
+                    unit: Some(unit.into()),
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: "evolving".into(),
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: false,
+                })
+                .await
+                .unwrap();
+        }
+
+        let out = svc
+            .check_consistency(spindle_core::models::CheckConsistencyInput {
+                project_id: project.project_id.clone(),
+                scope: spindle_core::models::ConsistencyScopeInput::full(),
+                checks: vec!["currency_consistency".into()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.issues
+                .iter()
+                .any(|i| i.check_type == "currency_consistency"),
+            "mismatched denominations must be flagged: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn affordability_flags_unaffordable_named_price() {
+        use spindle_core::models::{
+            CommitQuantityStateInput, ContentRating, QuantityDenomination, QuantityScheme,
+            QuantityState, SaveSceneDraftInput, SetProjectQuantitySchemeInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "affordability".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+            project_id: proj.project_id.clone(),
+            scheme: QuantityScheme {
+                measure: "wealth".into(),
+                denominations: vec![
+                    QuantityDenomination {
+                        name: "silver".into(),
+                        per_base: 10,
+                    },
+                    QuantityDenomination {
+                        name: "copper".into(),
+                        per_base: 1,
+                    },
+                ],
+                bands: Vec::new(),
+                max_band_jump: None,
+            },
+        })
+        .await
+        .unwrap();
+        let mara = seed_character(&svc, &proj.project_id, "Mara").await;
+
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Mara eyed the 100 silver blade she could not begin to afford.".into(),
+            summary: "market".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        // Mara holds 5 silver (= 50 base); the blade is 100 silver (= 1000 base).
+        svc.commit_quantity_state(CommitQuantityStateInput {
+            project_id: proj.project_id.clone(),
+            subject_table: "character".into(),
+            subject_id: mara.clone(),
+            measure: "wealth".into(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            scene_id: None,
+            state: QuantityState {
+                amount: Some(5.0),
+                unit: Some("silver".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(spindle_core::models::CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: spindle_core::models::ConsistencyScopeInput::full(),
+                checks: vec!["affordability".into()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            out.issues.iter().any(|i| i.check_type == "affordability"),
+            "an unaffordable named price should raise an advisory: {:?}",
+            out.issues
+        );
+    }
+
     #[tokio::test]
     async fn set_clock_tools_validate_and_persist() {
         use spindle_core::models::{
@@ -26450,6 +28089,112 @@ rating = "explicit"
             ),
             "branch-local canonical fact must survive merge into main (count={})",
             main_facts.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_branch_carries_quantity_canon() {
+        use spindle_core::models::{
+            CommitQuantityStateInput, CreateBranchInput, MergeBranchInput, QuantityBand,
+            QuantityScheme, QuantityState, SetProjectQuantitySchemeInput, SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "mergeqty".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let main_branch = svc
+            .repository()
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+        let feature = svc
+            .create_branch(CreateBranchInput {
+                project_id: proj.project_id.clone(),
+                name: "feature".into(),
+                branch_type: "experiment".into(),
+                description: None,
+                parent_branch_id: Some(main_branch.id.clone()),
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: proj.project_id.clone(),
+            branch_id: feature.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        // Declare a scheme and a stamped reading on the feature branch.
+        svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+            project_id: proj.project_id.clone(),
+            scheme: QuantityScheme {
+                measure: "wealth".into(),
+                denominations: Vec::new(),
+                bands: vec![QuantityBand {
+                    name: "destitute".into(),
+                    lower_bound: None,
+                }],
+                max_band_jump: Some(1),
+            },
+        })
+        .await
+        .unwrap();
+        svc.commit_quantity_state(CommitQuantityStateInput {
+            project_id: proj.project_id.clone(),
+            subject_table: "character".into(),
+            subject_id: "character:mara".into(),
+            measure: "wealth".into(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            scene_id: None,
+            state: QuantityState {
+                band: Some("destitute".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+        svc.merge_branch(MergeBranchInput {
+            project_id: proj.project_id.clone(),
+            source_branch_id: feature.branch_id.clone(),
+            target_branch_id: Some(main_branch.id.clone()),
+            merge_type: "squash".into(),
+        })
+        .await
+        .unwrap();
+
+        // Both the scheme and the stamped state must now exist on main.
+        assert!(
+            svc.repository()
+                .get_project_quantity_scheme(&proj.project_id, &main_branch.id, "wealth")
+                .await
+                .unwrap()
+                .is_some(),
+            "branch-local quantity scheme must survive merge into main"
+        );
+        let main_states = svc
+            .repository()
+            .list_quantity_states_by_project_and_branch(&proj.project_id, &main_branch.id)
+            .await
+            .unwrap();
+        assert!(
+            main_states.iter().any(|s| s.subject_id == "character:mara"
+                && s.state.band.as_deref() == Some("destitute")),
+            "branch-local quantity state must survive merge into main (count={})",
+            main_states.len()
         );
     }
 

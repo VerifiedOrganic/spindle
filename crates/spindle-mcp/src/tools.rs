@@ -415,6 +415,22 @@ impl ToolRouter {
                 "set_character_birth",
                 "Anchor a character's birth on the story clock so their age can be derived at any story moment.",
             ),
+            tool::<SetProjectQuantitySchemeInput, SetProjectQuantitySchemeOutput>(
+                "set_project_quantity_scheme",
+                "Declare a per-project quantity scheme for a measure (e.g. wealth, mana, a cultivation ladder): ordered currency denominations and ordered bands/tiers, plus an optional max_band_jump. Validated for internal consistency; fully opt-in. Money and progression systems reuse the same primitive.",
+            ),
+            tool::<CommitQuantityStateInput, CommitQuantityStateOutput>(
+                "commit_quantity_state",
+                "Record a stamped quantity reading for a subject's measure at a story position (band is the primary signal; amount/unit are optional). A change_reason marks a deliberate large jump as legitimate. Validated against the declared scheme when one exists.",
+            ),
+            tool::<DeriveQuantitySchemeFromOverlayInput, DeriveQuantitySchemeFromOverlayOutput>(
+                "derive_quantity_scheme_from_system_overlay",
+                "Derive a quantity scheme from a system overlay so LitRPG / cultivation progression reuses band-monotonicity: the overlay's advancement_tiers become the scheme's ordered bands (measure = its progression_currency, else its name).",
+            ),
+            tool::<ScanScenePricesInput, ScanScenePricesOutput>(
+                "scan_scene_prices",
+                "Scan a scene's prose for '<number> <unit>' price mentions using the project's declared denominations + economy currencies (review-gated; nothing is auto-registered). Use the results to seed price-canon facts.",
+            ),
             tool::<CreateSavePointInput, CreateSavePointOutput>(
                 "create_save_point",
                 "Create a save point on the active branch",
@@ -1281,6 +1297,29 @@ impl ToolRouter {
             }
             "set_character_birth" => {
                 self.invoke(arguments, |input| self.service.set_character_birth(input))
+                    .await
+            }
+            "set_project_quantity_scheme" => {
+                self.invoke(arguments, |input| {
+                    self.service.set_project_quantity_scheme(input)
+                })
+                .await
+            }
+            "commit_quantity_state" => {
+                self.invoke(arguments, |input| {
+                    self.service.commit_quantity_state(input)
+                })
+                .await
+            }
+            "derive_quantity_scheme_from_system_overlay" => {
+                self.invoke(arguments, |input| {
+                    self.service
+                        .derive_quantity_scheme_from_system_overlay(input)
+                })
+                .await
+            }
+            "scan_scene_prices" => {
+                self.invoke(arguments, |input| self.service.scan_scene_prices(input))
                     .await
             }
             "create_save_point" => {

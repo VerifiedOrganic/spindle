@@ -163,6 +163,19 @@ validator flow as transitional rather than final.
 - Any schema/tool change that affects facts must update docs and tests in the
   same change.
 
+## Quantity & economy continuity
+
+Money, named prices, and progression systems (LitRPG/cultivation) are tracked as
+typed canon, not free-text lore. Economies and their *price facts* (numeric
+canonical facts with a unit) surface in scene context; a per-project **quantity
+scheme** (`project_quantity_scheme`, migration V0020) plus append-only,
+position-stamped **quantity state** (`quantity_state`) track wealth/progression as
+ordered *bands* (band-primary; amount optional). Enforcement rides the existing
+rails — the `quantity_drift`, `currency_consistency`, and `affordability` arms of
+`check_consistency`, a `[WEALTH/STATE]` scene-context hard constraint, a WarnOnly
+band-jump advisory on `commit_quantity_state`, and branch-merge carrying. Full
+design and roadmap: `docs/continuity-quantity-design.md`.
+
 ## Voice drift and retcon checks
 
 Voice-drift and retcon/reachability checks are planned continuity domains.
