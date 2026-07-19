@@ -4050,6 +4050,7 @@ fn authoring_save_scene_input(input: &AuthoringSaveSceneDraftInput) -> SaveScene
         research_claim_ids: input.research_claim_ids.clone(),
         research_query_pack_input: input.research_query_pack_input.clone(),
         research_context_hash: input.research_context_hash.clone(),
+        knowledge_learned: input.knowledge_learned.clone(),
     }
 }
 
@@ -4059,6 +4060,7 @@ fn authoring_structured_update_count(input: &AuthoringSaveSceneDraftInput) -> us
         + input.relationship_updates.len()
         + input.beats.len()
         + input.continuity_notes.len()
+        + input.knowledge_learned.len()
 }
 
 fn authoring_status_after_checkpoint_review(state: &HarnessState) -> &'static str {
@@ -5061,6 +5063,62 @@ mod tests {
     fn structured_json(result: CallToolResult) -> Value {
         assert_eq!(result.is_error, Some(false));
         result.structured_content.expect("structured content")
+    }
+
+    /// A knowledge_learned reveal on its own SATISFIES the mandatory continuity
+    /// package (design §2.3 path 2): a scene whose only durable change is an
+    /// on-page reveal must not be rejected for an "empty" package.
+    #[test]
+    fn knowledge_learned_counts_toward_package_satisfaction() {
+        use spindle_core::models::{
+            AuthoringSaveSceneDraftInput, ContentRating, KnowledgeLearnedEntry,
+        };
+        let base = AuthoringSaveSceneDraftInput {
+            project_id: "project:x".into(),
+            run_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "prose".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            location_id: None,
+            research_source_ids: Vec::new(),
+            research_note_ids: Vec::new(),
+            research_claim_ids: Vec::new(),
+            research_query_pack_input: None,
+            research_context_hash: None,
+            character_states: Vec::new(),
+            canonical_facts: Vec::new(),
+            relationship_updates: Vec::new(),
+            beats: Vec::new(),
+            continuity_notes: Vec::new(),
+            knowledge_learned: Vec::new(),
+        };
+        assert_eq!(
+            super::authoring_structured_update_count(&base),
+            0,
+            "an empty package is empty"
+        );
+        let with_reveal = AuthoringSaveSceneDraftInput {
+            knowledge_learned: vec![KnowledgeLearnedEntry {
+                character_id: "character:bran".into(),
+                fact: "Mara is reincarnated.".into(),
+                source_summary: None,
+                secret_of_fact_id: Some("canonical_fact:reinc".into()),
+                reader_visible: Some(true),
+            }],
+            ..base
+        };
+        assert_eq!(
+            super::authoring_structured_update_count(&with_reveal),
+            1,
+            "a knowledge_learned reveal satisfies the mandatory package"
+        );
     }
 
     async fn router() -> ToolRouter {

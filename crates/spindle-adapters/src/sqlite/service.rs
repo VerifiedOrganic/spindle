@@ -9932,6 +9932,151 @@ impl SqliteSpindleService {
             }
         }
 
+        // secret_leak DEEP tier (design §2.4, Item 5): model-backed behavioral
+        // leak detection. Complements the deterministic (dialogue-lexeme) tier by
+        // catching an out-of-circle character who ACTS ON, implies knowledge of,
+        // or conspicuously avoids a secret. Runs ONLY when deep_check is set AND
+        // the check is requested, one model call per (scene, secret-set), capped
+        // and rating-gated. Silent for projects with no secret facts.
+        if deep_check && should_run_check(&requested_checks_set, "secret_leak") {
+            use spindle_core::voice::{VoiceDriftCharacter, character_present_in_scene};
+
+            let secret_facts = self
+                .repository
+                .list_active_canonical_facts_by_project_and_branch(&project_id, &active_branch.id)
+                .await?
+                .into_iter()
+                .filter(|fact| fact.secret)
+                .collect::<Vec<_>>();
+
+            if !secret_facts.is_empty() {
+                let characters = self
+                    .repository
+                    .list_characters_by_project(&project_id)
+                    .await?;
+                let name_of: BTreeMap<&str, &str> = characters
+                    .iter()
+                    .map(|c| (c.id.as_str(), c.name.as_str()))
+                    .collect();
+
+                // Cache raw circle rows per fact to avoid repeated DB reads.
+                let mut circle_cache: BTreeMap<String, Vec<(String, Option<i64>)>> =
+                    BTreeMap::new();
+                let mut ordered_facts = secret_facts;
+                ordered_facts.sort_by(|a, b| a.id.cmp(&b.id));
+
+                // Scenes are already in story order; build one scan unit per scene
+                // that has at least one in-play secret (an out-of-circle present
+                // character), preserving that order for the cap ranking.
+                let mut units: Vec<SecretLeakScanUnit> = Vec::new();
+                for scene in &scenes {
+                    let cursor = crate::format::story_index(
+                        scene.book_number,
+                        scene.chapter_number,
+                        scene.scene_order,
+                    );
+                    // Present cast for this scene (deterministic by id).
+                    let present: Vec<&crate::sqlite::records::Character> = characters
+                        .iter()
+                        .filter(|character| {
+                            character_present_in_scene(
+                                &scene.full_text,
+                                &VoiceDriftCharacter {
+                                    id: character.id.clone(),
+                                    name: character.name.clone(),
+                                },
+                            )
+                        })
+                        .collect();
+                    if present.is_empty() {
+                        continue;
+                    }
+
+                    let mut secrets_in_play: Vec<SecretInPlay> = Vec::new();
+                    let mut unaware_present: BTreeMap<String, String> = BTreeMap::new();
+                    for fact in &ordered_facts {
+                        let value = crate::format::canonical_fact_value(fact);
+                        if value.trim().is_empty() || value == "<unset>" {
+                            continue;
+                        }
+                        let rows = if let Some(rows) = circle_cache.get(&fact.id) {
+                            rows.clone()
+                        } else {
+                            let rows = self
+                                .repository
+                                .secret_circle_members(&project_id, &active_branch.id, &fact.id)
+                                .await?
+                                .into_iter()
+                                .map(|(character_id, learned_at)| {
+                                    let idx = learned_at
+                                        .as_ref()
+                                        .map(crate::format::story_index_from_placement);
+                                    (character_id, idx)
+                                })
+                                .collect::<Vec<_>>();
+                            circle_cache.insert(fact.id.clone(), rows.clone());
+                            rows
+                        };
+                        let circle_at_cursor: BTreeSet<&str> = rows
+                            .iter()
+                            .filter(|(_, idx)| idx.is_none_or(|i| i <= cursor))
+                            .map(|(id, _)| id.as_str())
+                            .collect();
+
+                        let known: Vec<String> = present
+                            .iter()
+                            .filter(|c| circle_at_cursor.contains(c.id.as_str()))
+                            .map(|c| c.id.clone())
+                            .collect();
+                        let unaware: Vec<String> = present
+                            .iter()
+                            .filter(|c| !circle_at_cursor.contains(c.id.as_str()))
+                            .map(|c| c.id.clone())
+                            .collect();
+
+                        // "In play" = the circle does NOT cover the whole present
+                        // cast (at least one out-of-circle present character).
+                        if unaware.is_empty() {
+                            continue;
+                        }
+                        for id in &unaware {
+                            unaware_present.insert(
+                                id.clone(),
+                                name_of.get(id.as_str()).unwrap_or(&id.as_str()).to_string(),
+                            );
+                        }
+                        secrets_in_play.push(SecretInPlay {
+                            fact_value: value,
+                            known_present: known,
+                            unaware_present: unaware,
+                        });
+                    }
+
+                    if secrets_in_play.is_empty() {
+                        continue;
+                    }
+                    units.push(SecretLeakScanUnit {
+                        scene_id: scene.id.clone(),
+                        scene_ref: format!(
+                            "book {}, chapter {} scene {}",
+                            scene.book_number, scene.chapter_number, scene.scene_order
+                        ),
+                        scene_rating: scene.content_rating.clone(),
+                        scene_text: scene.full_text.clone(),
+                        secrets: secrets_in_play,
+                        unaware_present,
+                    });
+                }
+
+                let unscanned = units.len().saturating_sub(SECRET_LEAK_DEEP_SCAN_CAP);
+                units.truncate(SECRET_LEAK_DEEP_SCAN_CAP);
+                issues.extend(
+                    self.deep_secret_behavioral_leak_issues(&units, unscanned)
+                        .await?,
+                );
+            }
+        }
+
         if let Some(requested_severities) = requested_severities_set.as_ref() {
             issues.retain(|issue| requested_severities.contains(issue.severity.as_str()));
         }
@@ -11142,6 +11287,115 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "confirm the payoff and call update_promise_status(\"paid_off\"), or \
                          reinforce the thread if it is not actually landed"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-backed behavioral secret-leak audit (design §2.4 deep tier, Item 5).
+    ///
+    /// `units` arrives ranked by scene story order and already capped to the
+    /// first [`SECRET_LEAK_DEEP_SCAN_CAP`] (scene, secret-set) calls; `unscanned`
+    /// is the overflow surfaced as one summary info finding so a silent cap never
+    /// hides an unaudited scene. One model call per unit carries that scene's
+    /// prose + its in-play secrets, stamped with the scene's rating so the router
+    /// applies the `(review, rating)` override (design §5: an explicit-rated
+    /// scene's audit never reaches an uncleared model).
+    ///
+    /// Findings add to the SAME `secret_leak` check_type as the deterministic
+    /// tier, suffixed "(model-detected behavioral leak)". A finding whose
+    /// `character_id` is not a present out-of-circle character for that scene is
+    /// DISCARDED — the model does not get to invent violations. A route failure
+    /// emits one honest-skip info finding (never reads as clean) and stops.
+    async fn deep_secret_behavioral_leak_issues(
+        &self,
+        units: &[SecretLeakScanUnit],
+        unscanned: usize,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+
+        if unscanned > 0 {
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "secret_leak".to_string(),
+                message: format!(
+                    "{unscanned} additional (scene, secret-set) pair(s) were not scanned for \
+                     behavioral secret leaks (only the {SECRET_LEAK_DEEP_SCAN_CAP} earliest scenes \
+                     in scope are audited per run)"
+                ),
+                entity_ids: Vec::new(),
+                suggested_action: Some(
+                    "narrow the scope to the scenes you want audited, then re-run".to_string(),
+                ),
+            });
+        }
+
+        for unit in units {
+            let prompt = build_secret_behavioral_leak_prompt(&unit.scene_text, &unit.secrets);
+            let request = build_secret_behavioral_leak_request(&unit.scene_rating, prompt);
+            let findings = match self.repository.model_router().complete(&request).await {
+                // A non-JSON local stub (the default `review` route) parses to
+                // nothing, so a local-only deployment adds no behavioral findings.
+                Ok(response) => parse_deep_secret_leak_output(&response.output).unwrap_or_default(),
+                // Honest skip: the review route is unreachable/missing. Emit one
+                // info finding that reads as SKIPPED rather than clean, then stop
+                // (every unit would hit the same dead route).
+                Err(_) => {
+                    issues.push(ConsistencyIssue {
+                        severity: "info".to_string(),
+                        check_type: "secret_leak".to_string(),
+                        message: "behavioral secret-leak detection was SKIPPED: no usable review \
+                                  route (the model call failed). Scenes were NOT audited for \
+                                  behavioral leaks."
+                            .to_string(),
+                        entity_ids: Vec::new(),
+                        suggested_action: Some(
+                            "configure a review model route, then re-run this check".to_string(),
+                        ),
+                    });
+                    return Ok(issues);
+                }
+            };
+
+            for finding in findings {
+                // Discard: the model may only name a present out-of-circle
+                // character for this scene. Anything else (a knower, an invented
+                // id, an absent character) is dropped.
+                let Some(name) = unit.unaware_present.get(finding.character_id.as_str()) else {
+                    continue;
+                };
+                let mut message = format!(
+                    "scene {}: {} ({}) betrays knowledge of a secret they were never told",
+                    unit.scene_ref, name, finding.character_id,
+                );
+                if let Some(evidence) = finding
+                    .evidence
+                    .as_deref()
+                    .or(finding.description.as_deref())
+                {
+                    let cleaned = evidence.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !cleaned.is_empty() {
+                        message.push_str(&format!(
+                            " Evidence: {}",
+                            crate::format::truncate_at_chars(&cleaned, 200)
+                        ));
+                    }
+                }
+                message.push_str(" (model-detected behavioral leak)");
+                issues.push(ConsistencyIssue {
+                    severity: "warning".to_string(),
+                    check_type: "secret_leak".to_string(),
+                    message,
+                    entity_ids: vec![finding.character_id.clone(), unit.scene_id.clone()],
+                    suggested_action: Some(
+                        "record the reveal (record_knowledge with secret_of_fact_id) if intended, \
+                         or revise the scene so the out-of-circle character does not act on the secret"
                             .to_string(),
                     ),
                 });
@@ -17416,10 +17670,72 @@ impl SqliteSpindleService {
             .repository
             .active_branch_id_public(&save_input.project_id)
             .await?;
+
+        // Knowledge-learned package (design §2.3 path 2): validate every secret
+        // link BEFORE any write so an invalid link fails the save atomically —
+        // no scene row, no knowledge rows. `save_scene_draft` and
+        // `upsert_knowledge_fact` are separate transactions, so this pre-flight
+        // is what makes the package processing all-or-nothing. The validation is
+        // identical to `record_knowledge`'s boundary check: the id must reference
+        // an existing canonical fact that is actually marked secret.
+        for entry in &save_input.knowledge_learned {
+            // Character must exist and belong to this project (record_knowledge
+            // enforces the same, but validating up front keeps the package
+            // all-or-nothing).
+            let character = self.repository.get_character(&entry.character_id).await?;
+            if character.project_id != save_input.project_id {
+                anyhow::bail!(
+                    "knowledge_learned entry names character '{}', which does not belong to the requested project",
+                    entry.character_id
+                );
+            }
+            if let Some(fact_id) = entry.secret_of_fact_id.as_deref() {
+                let linked = self
+                    .repository
+                    .get_canonical_fact(fact_id)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "secret_of_fact_id '{fact_id}' does not reference an existing canonical fact"
+                        )
+                    })?;
+                if !linked.secret {
+                    anyhow::bail!(
+                        "secret_of_fact_id '{fact_id}' references a canonical fact that is not marked secret"
+                    );
+                }
+            }
+        }
+
         let (mut scene, created) = self
             .repository
             .save_scene_draft(&save_input.project_id, &branch_id, &save_input)
             .await?;
+
+        // Record the knowledge_learned package (design §2.3 path 2). Each entry
+        // is written through the SAME service path record_knowledge uses, stamped
+        // with THIS scene's placement so the reveal cursor is the scene's own
+        // position (flashback-safe). Secret links are already validated above.
+        for entry in &save_input.knowledge_learned {
+            self.record_knowledge(RecordKnowledgeInput {
+                project_id: save_input.project_id.clone(),
+                branch_id: Some(branch_id.clone()),
+                character_id: entry.character_id.clone(),
+                fact: entry.fact.clone(),
+                source_summary: entry.source_summary.clone().unwrap_or_default(),
+                learned_at: Some(spindle_core::models::StoryPlacement {
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: Some(scene.scene_order),
+                    note: None,
+                }),
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: entry.reader_visible.unwrap_or(true),
+                secret_of_fact_id: entry.secret_of_fact_id.clone(),
+            })
+            .await?;
+        }
 
         if !save_input.research_source_ids.is_empty()
             || !save_input.research_note_ids.is_empty()
@@ -21455,6 +21771,140 @@ fn parse_deep_promise_payoff_output(output: &str) -> anyhow::Result<Vec<DeepProm
     };
     let parsed: DeepPromisePayoffOutput = serde_json::from_str(&candidate)?;
     Ok(parsed.matches)
+}
+
+/// Distinctive header line for the model-backed behavioral secret-leak audit
+/// (design §2.4 deep tier). Doubles as the marker the local `review` stub keys
+/// on to return deterministic JSON in tests / local-only runs, exactly like the
+/// temporal and promise-payoff headers.
+const SECRET_LEAK_AUDIT_HEADER: &str = "secret knowledge leak audit";
+
+/// One secret fact "in play" for the behavioral audit: the fact statement plus
+/// the present rosters (who present knows it, who present does not). The
+/// unaware-present ids are the only characters the model may name as leakers.
+struct SecretInPlay {
+    fact_value: String,
+    known_present: Vec<String>,
+    unaware_present: Vec<String>,
+}
+
+/// At most this many (scene, secret-set) model calls per behavioral secret-leak
+/// run, ranked by scene story order; the remainder is reported as one summary
+/// info finding. Mirrors `PROMISE_PAYOFF_SCAN_CAP`.
+const SECRET_LEAK_DEEP_SCAN_CAP: usize = 10;
+
+/// One scene's worth of work for the behavioral secret-leak audit: the scene
+/// ref/id/rating, its prose, the secrets in play, and the id→name map of the
+/// present out-of-circle characters that a model finding is validated against
+/// (any character_id outside this map is discarded).
+struct SecretLeakScanUnit {
+    scene_id: String,
+    scene_ref: String,
+    scene_rating: String,
+    scene_text: String,
+    secrets: Vec<SecretInPlay>,
+    unaware_present: std::collections::BTreeMap<String, String>,
+}
+
+/// Strict-parse output contract for the behavioral secret-leak audit. A
+/// non-JSON local stub (the default `review` route) parses to nothing, so a
+/// local-only deployment never fabricates a leak.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeepSecretLeakOutput {
+    #[serde(default)]
+    findings: Vec<DeepSecretLeakFinding>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeepSecretLeakFinding {
+    #[serde(default)]
+    character_id: String,
+    // The model reports `severity` per the contract, but every emitted
+    // behavioral leak is a `warning` (same tier as the deterministic finding),
+    // so the value is not read — serde ignores the extra field.
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    evidence: Option<String>,
+}
+
+/// Build the model-backed behavioral secret-leak prompt for one (scene,
+/// secret-set). Carries the scene prose and, per secret in play, the fact and
+/// its present rosters. The `[SECRET-LEAK-AUDIT ...]` header is also the marker
+/// the local stub keys on.
+///
+/// Prose budgeting mirrors [`build_temporal_deep_check_prompt`]: the whole
+/// `scene_text` ships with no character cap, one model call per scene.
+fn build_secret_behavioral_leak_prompt(scene_text: &str, secrets: &[SecretInPlay]) -> String {
+    let secret_block = secrets
+        .iter()
+        .enumerate()
+        .map(|(idx, secret)| {
+            format!(
+                "Secret {}: {}\n  Present and IN the know: {}\n  Present and NOT in the know (only these may be flagged): {}",
+                idx + 1,
+                secret.fact_value,
+                if secret.known_present.is_empty() {
+                    "(none present)".to_string()
+                } else {
+                    secret.known_present.join(", ")
+                },
+                secret.unaware_present.join(", "),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "You are performing a {SECRET_LEAK_AUDIT_HEADER} for a single novel scene.\n\
+         Some facts are held in confidence by a circle of trust. Read the scene prose and decide whether any character who is NOT in a secret's circle betrays knowledge of it — by referencing it, implying they know it, acting upon it, or conspicuously AVOIDING something only a knower would avoid (e.g. shunning a place they have no stated reason to shun).\n\
+         Judge by what the prose renders, not by what the reader knows. Only flag a character listed as \"NOT in the know\" for that secret. Do NOT invent leaks or flag characters who are in the know.\n\
+         Return strict JSON only.\n\n\
+         Secrets in play:\n{secret_block}\n\n\
+         Scene prose:\n{scene_text}\n\n\
+         Return this exact shape:\n\
+         {{\"findings\":[{{\"character_id\":\"<one of the NOT-in-the-know ids>\",\"severity\":\"warning\",\"description\":\"<how they leaked it>\",\"evidence\":\"<short quote>\"}}]}}\n\
+         Return an empty findings array when no out-of-circle character betrays the secret.",
+    )
+}
+
+/// Construct the outgoing [`ModelRequest`] for the behavioral secret-leak audit.
+///
+/// Rating discipline (design §2.4, evolution §4): this pass carries scene prose,
+/// so it MUST stamp the scene's content rating (lowercased) on the request. The
+/// router's `resolve_route` then applies any `(route, rating)` override — an
+/// explicit-rated scene resolves through the `("review","explicit")` cleared
+/// route rather than the base review agent. Pure so the rating carriage is
+/// unit-testable without a live router.
+fn build_secret_behavioral_leak_request(
+    scene_rating: &str,
+    prompt: String,
+) -> crate::ai::ModelRequest {
+    crate::ai::ModelRequest {
+        route: "review".to_string(),
+        prompt,
+        rating: Some(scene_rating.to_ascii_lowercase()),
+        context: None,
+    }
+}
+
+/// Parse the behavioral secret-leak audit output. Tolerates code fences and
+/// surrounding prose via [`extract_json_object`]; an unparseable response is an
+/// error the caller treats as no findings rather than a guess.
+fn parse_deep_secret_leak_output(output: &str) -> anyhow::Result<Vec<DeepSecretLeakFinding>> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else if let Some(fenced) = extract_json_object(output) {
+        fenced
+    } else {
+        trimmed.to_string()
+    };
+    let parsed: DeepSecretLeakOutput = serde_json::from_str(&candidate)?;
+    Ok(parsed.findings)
 }
 
 /// Render a canonical-fact value to its display string. Order of
@@ -36994,6 +37444,468 @@ rating = "explicit"
         }
     }
 
+    // ── Item 5: secret_leak DEEP tier (model-backed behavioral leak) ───────
+    // Design §2.4 deep tier: a model pass asks the audience question directly —
+    // does an out-of-circle present character reference, imply, or act upon a
+    // secret? Findings add to the same `secret_leak` check_type, suffixed
+    // "(model-detected behavioral leak)". Gated to `deep_check == true`, rating-
+    // aware dispatch, honest-skip on route failure, non-present discard, cap 10.
+    mod secret_leak_deep {
+        use super::*;
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
+            ConsistencyScopeInput, ContentRating, CreateCharacterInput, RegisterCanonicalFactInput,
+            SaveSceneDraftInput, SecrecyScope,
+        };
+
+        async fn make_character(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            name: &str,
+        ) -> String {
+            svc.create_character(CreateCharacterInput {
+                project_id: project_id.to_string(),
+                name: name.to_string(),
+                summary: format!("{name} in play."),
+                role: "supporting".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap()
+            .character_id
+        }
+
+        /// Project + Mara (holder) + Bran (outsider) + a secret fact "reincarnated"
+        /// whose circle is {Mara}. Returns (tmp, svc, project_id, mara, bran, fact_id).
+        async fn fixture() -> (
+            tempfile::TempDir,
+            SqliteSpindleService,
+            String,
+            String,
+            String,
+            String,
+        ) {
+            let (tmp, svc) = fresh_service_local().await;
+            let proj = svc
+                .create_project(CreateProjectInput {
+                    name: "LeakDeep".into(),
+                    project_type: "novel".into(),
+                    genre: "fantasy".into(),
+                    reader_contract: ReaderContract {
+                        promise: "Secrets stay secret.".into(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            let project_id = proj.project_id;
+            let mara = make_character(&svc, &project_id, "Mara").await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+
+            let seed = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order: 1,
+                    full_text: "Mara kept her counsel.".into(),
+                    summary: "seed".into(),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+
+            let fact = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: seed.scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(mara.clone()),
+                    predicate: Some("reincarnation".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("reincarnated".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: Some(SecrecyScope {
+                        holder_ids: vec![mara.clone()],
+                        concealment_note: None,
+                    }),
+                })
+                .await
+                .unwrap();
+
+            (tmp, svc, project_id, mara, bran, fact.canonical_fact_id)
+        }
+
+        /// Save a later scene where both Mara and Bran are present (so a secret is
+        /// "in play" — an out-of-circle present character exists) with a chosen
+        /// content rating; return its scene id.
+        async fn save_leak_scene(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            chapter: i32,
+            text: &str,
+            rating: ContentRating,
+        ) -> String {
+            if chapter > 1 {
+                let _ = svc
+                    .create_chapter(spindle_core::models::CreateChapterInput {
+                        project_id: project_id.to_string(),
+                        book_id: None,
+                        book_number: Some(1),
+                        chapter_number: Some(chapter),
+                        title: None,
+                    })
+                    .await;
+            }
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: text.to_string(),
+                summary: "behavioral".into(),
+                content_rating: rating,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .scene_id
+        }
+
+        async fn run(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            deep: bool,
+        ) -> Vec<spindle_core::models::ConsistencyIssue> {
+            svc.check_consistency(CheckConsistencyInput {
+                project_id: project_id.to_string(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["secret_leak".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(deep),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap()
+            .issues
+            .into_iter()
+            .filter(|i| i.check_type == "secret_leak")
+            .collect()
+        }
+
+        /// Firing: the scene prose carries the behavioral-leak sentinel echoing
+        /// Bran's id → one warning suffixed "(model-detected behavioral leak)".
+        #[tokio::test]
+        async fn behavioral_leak_sentinel_warns() {
+            let (_tmp, svc, project_id, _mara, bran, _fact) = fixture().await;
+            // Both present; Bran acts oddly. The sentinel embeds his id so the
+            // local review stub echoes it as the leaking character.
+            let text = format!(
+                "Mara and Bran walked the ward. Bran refused to pass the graveyard, \
+                 though he had no reason to fear it. MOCK_SECRET_BEHAVIORAL_LEAK[character:{bran}]"
+            );
+            save_leak_scene(&svc, &project_id, 2, &text, ContentRating::General).await;
+
+            let deep = run(&svc, &project_id, true).await;
+            let behavioral: Vec<_> = deep
+                .iter()
+                .filter(|i| i.message.contains("(model-detected behavioral leak)"))
+                .collect();
+            assert_eq!(
+                behavioral.len(),
+                1,
+                "exactly one behavioral leak finding expected: {deep:?}"
+            );
+            let f = behavioral[0];
+            assert_eq!(f.severity, "warning");
+            assert!(
+                f.entity_ids.contains(&bran),
+                "the leaking character id is named: {:?}",
+                f.entity_ids
+            );
+        }
+
+        /// Clean: no sentinel → the deep tier adds nothing, and the deterministic
+        /// tier stays untouched (Bran does not speak the value here).
+        #[tokio::test]
+        async fn no_sentinel_no_deep_finding() {
+            let (_tmp, svc, project_id, _mara, _bran, _fact) = fixture().await;
+            save_leak_scene(
+                &svc,
+                &project_id,
+                2,
+                "Mara and Bran shared a quiet supper and spoke of the weather.",
+                ContentRating::General,
+            )
+            .await;
+
+            let deep = run(&svc, &project_id, true).await;
+            assert!(
+                !deep
+                    .iter()
+                    .any(|i| i.message.contains("(model-detected behavioral leak)")),
+                "no sentinel → no behavioral finding: {deep:?}"
+            );
+        }
+
+        /// Shallow-silent: with `deep_check == false` the deep tier never runs,
+        /// even when the sentinel is present.
+        #[tokio::test]
+        async fn shallow_has_no_deep_finding() {
+            let (_tmp, svc, project_id, _mara, bran, _fact) = fixture().await;
+            let text = format!("Mara and Bran. MOCK_SECRET_BEHAVIORAL_LEAK[character:{bran}]");
+            save_leak_scene(&svc, &project_id, 2, &text, ContentRating::General).await;
+
+            let shallow = run(&svc, &project_id, false).await;
+            assert!(
+                !shallow
+                    .iter()
+                    .any(|i| i.message.contains("(model-detected behavioral leak)")),
+                "the deep tier must be silent without deep_check: {shallow:?}"
+            );
+        }
+
+        /// Non-present discard: the sentinel echoes an id that is NOT a present
+        /// out-of-circle character → the model's finding is discarded.
+        #[tokio::test]
+        async fn non_present_character_finding_discarded() {
+            let (_tmp, svc, project_id, _mara, _bran, _fact) = fixture().await;
+            let text =
+                "Mara and Bran walked. MOCK_SECRET_BEHAVIORAL_LEAK[character:character:ghost999]";
+            save_leak_scene(&svc, &project_id, 2, text, ContentRating::General).await;
+
+            let deep = run(&svc, &project_id, true).await;
+            assert!(
+                !deep
+                    .iter()
+                    .any(|i| i.message.contains("(model-detected behavioral leak)")),
+                "a finding for a non-present character must be discarded: {deep:?}"
+            );
+        }
+
+        /// Honest-skip: an unroutable review route yields exactly one info finding
+        /// that reads as SKIPPED (the deep behavioral tier), not clean.
+        #[tokio::test]
+        async fn honest_skip_when_review_route_unreachable() {
+            use spindle_core::models::ConfigureAgentsInput;
+            let (tmp, svc, project_id, _mara, bran, _fact) = fixture().await;
+            let config_path = tmp.path().join("unreachable-review.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-http"
+name = "Review HTTP"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:1/v1"
+model = "unreachable"
+
+[[routing]]
+route = "review"
+agent = "review-http"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+
+            let text = format!("Mara and Bran. MOCK_SECRET_BEHAVIORAL_LEAK[character:{bran}]");
+            save_leak_scene(&svc, &project_id, 2, &text, ContentRating::General).await;
+
+            let deep = run(&svc, &project_id, true).await;
+            let skips: Vec<_> = deep
+                .iter()
+                .filter(|i| i.severity == "info" && i.message.to_lowercase().contains("skipped"))
+                .collect();
+            assert_eq!(
+                skips.len(),
+                1,
+                "an unreachable review route must yield exactly one skip finding: {deep:?}"
+            );
+            assert!(
+                skips[0].message.to_lowercase().contains("behavioral"),
+                "the skip finding must name the behavioral tier: {}",
+                skips[0].message
+            );
+        }
+
+        /// Rating-carriage: the request-construction helper stamps the scene's
+        /// content rating (lowercase) so `resolve_route`'s (route, rating)
+        /// override chain applies — an explicit-rated scene resolves through the
+        /// ("review","explicit") override rather than the base review agent.
+        #[test]
+        fn deep_request_carries_scene_rating_lowercased() {
+            let prompt = super::build_secret_behavioral_leak_prompt(
+                "the prose body",
+                &[super::SecretInPlay {
+                    fact_value: "reincarnated".into(),
+                    known_present: vec!["character:mara".into()],
+                    unaware_present: vec!["character:bran".into()],
+                }],
+            );
+            let req = super::build_secret_behavioral_leak_request("explicit", prompt);
+            assert_eq!(req.route, "review");
+            assert_eq!(
+                req.rating.as_deref(),
+                Some("explicit"),
+                "the outgoing request must carry the scene's lowercase rating"
+            );
+            assert!(req.prompt.contains("the prose body"));
+            assert!(
+                req.prompt.contains("secret knowledge leak audit"),
+                "the distinctive header must be present so the fake router keys on it"
+            );
+
+            // Mixed-case DB rating strings normalize to the lowercase override key.
+            let mixed = super::build_secret_behavioral_leak_request("Explicit", "x".to_string());
+            assert_eq!(mixed.rating.as_deref(), Some("explicit"));
+        }
+
+        /// Rating-carriage (runtime seam): an EXPLICIT-rated scene routed with a
+        /// configured ("review","explicit") override still fires. The finding can
+        /// only appear if the request's rating reached `resolve_route` and the
+        /// explicit override served it (both the default and the override are
+        /// local `review` routes, so the fake stub responds identically — the
+        /// point is that the rating-carrying request routed at all).
+        #[tokio::test]
+        async fn explicit_scene_routes_through_rating_override() {
+            use spindle_core::models::ConfigureAgentsInput;
+            let (tmp, svc, project_id, _mara, bran, _fact) = fixture().await;
+            let config_path = tmp.path().join("review-explicit.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-default"
+name = "Review Default"
+provider = "local"
+endpoint = "local"
+model = "review-default"
+
+[[agents]]
+id = "review-explicit"
+name = "Review Explicit"
+provider = "local"
+endpoint = "local"
+model = "review-explicit"
+ratings = ["explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-default"
+
+[[routing]]
+route = "review"
+agent = "review-explicit"
+rating = "explicit"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+
+            let text = format!("Mara and Bran. MOCK_SECRET_BEHAVIORAL_LEAK[character:{bran}]");
+            save_leak_scene(&svc, &project_id, 2, &text, ContentRating::Explicit).await;
+
+            let deep = run(&svc, &project_id, true).await;
+            let behavioral: Vec<_> = deep
+                .iter()
+                .filter(|i| i.message.contains("(model-detected behavioral leak)"))
+                .collect();
+            assert_eq!(
+                behavioral.len(),
+                1,
+                "the explicit-rated audit must route through the override and fire: {deep:?}"
+            );
+            assert!(behavioral[0].entity_ids.contains(&bran));
+        }
+
+        #[test]
+        fn deep_secret_leak_parse_extracts_findings() {
+            let out = r#"{"findings":[{"character_id":"character:abc","severity":"warning","description":"avoids the graveyard","evidence":"Bran refused to pass"}]}"#;
+            let findings = super::parse_deep_secret_leak_output(out).unwrap();
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].character_id, "character:abc");
+        }
+
+        #[test]
+        fn deep_secret_leak_parse_handles_code_fence() {
+            let out = "audit:\n```json\n{\"findings\":[{\"character_id\":\"c\"}]}\n```";
+            let findings = super::parse_deep_secret_leak_output(out).unwrap();
+            assert_eq!(findings.len(), 1);
+        }
+
+        #[test]
+        fn deep_secret_leak_parse_empty() {
+            let findings = super::parse_deep_secret_leak_output(r#"{"findings":[]}"#).unwrap();
+            assert!(findings.is_empty());
+        }
+
+        #[test]
+        fn deep_secret_leak_parse_rejects_non_json() {
+            assert!(
+                super::parse_deep_secret_leak_output(
+                    "Literary critic and craft technician both reviewed: ..."
+                )
+                .is_err()
+            );
+        }
+    }
+
     // ── T-106: promise-payoff deep-check candidate detection ──────────────
     // Model-backed Tier-2 check. Proposes (never writes) that an unresolved
     // promise the prose already paid off should be confirmed via
@@ -38416,6 +39328,322 @@ agent = "review-http"
                 !markdown.contains("Known ONLY to: Bran")
                     && !markdown.contains("Known ONLY to: Mara, Bran"),
                 "Bran must not be listed as an insider before the reveal cursor: {markdown}"
+            );
+        }
+
+        // ── Item 6: reveal linking in the save_scene_draft continuity package ──
+        // The design's path 2 of §2.3: a draft-time on-page reveal flagged in the
+        // save's `knowledge_learned` package becomes a knowledge_fact row linked
+        // to the secret via `secret_of_fact_id`, learned_at = this scene's
+        // placement — expanding the circle from that scene forward.
+        use spindle_core::models::KnowledgeLearnedEntry;
+
+        /// Save a scene at (chapter, scene_order) carrying a knowledge_learned
+        /// package. Returns the SaveSceneDraftOutput result.
+        async fn save_with_knowledge(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            chapter: i32,
+            scene_order: i32,
+            knowledge_learned: Vec<KnowledgeLearnedEntry>,
+        ) -> anyhow::Result<spindle_core::models::SaveSceneDraftOutput> {
+            if chapter > 1 {
+                let _ = svc
+                    .create_chapter(spindle_core::models::CreateChapterInput {
+                        project_id: project_id.to_string(),
+                        book_id: None,
+                        book_number: Some(1),
+                        chapter_number: Some(chapter),
+                        title: None,
+                    })
+                    .await;
+            }
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order,
+                full_text: "Mara finally told Bran the truth.".into(),
+                summary: "the reveal".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                knowledge_learned,
+                ..Default::default()
+            })
+            .await
+        }
+
+        async fn context_at(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            location_id: &str,
+            chapter: i32,
+            scene_order: i32,
+            character_ids: Vec<String>,
+        ) -> spindle_core::models::SceneContextEnvelope {
+            svc.get_scene_context_envelope(GetSceneContextInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order,
+                character_ids,
+                max_character_count: None,
+                location_id: location_id.to_string(),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap()
+        }
+
+        /// A reveal flagged in the save package expands the circle: at a later
+        /// cursor with the revealed-to character present, the envelope lists them
+        /// among the insiders (Known ONLY to), not the unaware.
+        #[tokio::test]
+        async fn reveal_via_package_expands_circle() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            let fact_id =
+                declare_reincarnation_secret(&svc, &project_id, &scene_id, &mara, &mara, None)
+                    .await;
+
+            // Reveal to Bran on-page at chapter 5.
+            save_with_knowledge(
+                &svc,
+                &project_id,
+                5,
+                1,
+                vec![KnowledgeLearnedEntry {
+                    character_id: bran.clone(),
+                    fact: "Mara is a reincarnated warden.".into(),
+                    source_summary: Some("she finally told him".into()),
+                    secret_of_fact_id: Some(fact_id.clone()),
+                    reader_visible: Some(true),
+                }],
+            )
+            .await
+            .unwrap();
+
+            // Later cursor (ch 6): Bran is now inside the circle.
+            let envelope = context_at(
+                &svc,
+                &project_id,
+                &location_id,
+                6,
+                1,
+                vec![mara.clone(), bran.clone()],
+            )
+            .await;
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+            assert!(
+                markdown.contains("[SECRETS IN PLAY]"),
+                "the holder is present → the envelope renders: {markdown}"
+            );
+            assert!(
+                markdown.contains("Known ONLY to: Bran, Mara")
+                    || markdown.contains("Known ONLY to: Mara, Bran"),
+                "the package reveal put Bran inside the circle at a later cursor: {markdown}"
+            );
+            assert!(
+                !markdown.contains("Present and NOT in the know: Bran"),
+                "Bran must no longer be listed as unaware after the reveal: {markdown}"
+            );
+        }
+
+        /// Flashback-safety: learned_at is stamped with the reveal scene's
+        /// placement, so a context at an EARLIER cursor still withholds Bran.
+        #[tokio::test]
+        async fn package_reveal_is_placement_stamped_no_backward_leak() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            let fact_id =
+                declare_reincarnation_secret(&svc, &project_id, &scene_id, &mara, &mara, None)
+                    .await;
+
+            save_with_knowledge(
+                &svc,
+                &project_id,
+                5,
+                1,
+                vec![KnowledgeLearnedEntry {
+                    character_id: bran.clone(),
+                    fact: "Mara is a reincarnated warden.".into(),
+                    source_summary: Some("she finally told him".into()),
+                    secret_of_fact_id: Some(fact_id.clone()),
+                    reader_visible: Some(true),
+                }],
+            )
+            .await
+            .unwrap();
+
+            // Earlier cursor (ch 2): Bran is NOT yet in the circle.
+            let envelope = context_at(
+                &svc,
+                &project_id,
+                &location_id,
+                2,
+                1,
+                vec![mara.clone(), bran.clone()],
+            )
+            .await;
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+            assert!(
+                markdown.contains("Present and NOT in the know: Bran"),
+                "a ch-5 reveal must not leak backward into a ch-2 context: {markdown}"
+            );
+            assert!(
+                !markdown.contains("Known ONLY to: Bran")
+                    && !markdown.contains("Known ONLY to: Mara, Bran")
+                    && !markdown.contains("Known ONLY to: Bran, Mara"),
+                "Bran must not be an insider before the reveal cursor: {markdown}"
+            );
+        }
+
+        /// An invalid secret link (pointing at a NON-secret fact) fails the save
+        /// with a domain error atomically: no scene row, no knowledge rows.
+        #[tokio::test]
+        async fn invalid_secret_link_fails_save_atomically() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, _location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+
+            // Register a PLAIN (non-secret) fact.
+            let plain = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(mara.clone()),
+                    predicate: Some("hair_color".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("black".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: None,
+                })
+                .await
+                .unwrap()
+                .canonical_fact_id;
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project_id)
+                .await
+                .unwrap();
+            let scenes_before = svc
+                .repository()
+                .list_scenes_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap()
+                .len();
+            let knowledge_before = svc
+                .repository()
+                .list_knowledge_facts_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.character_id == bran)
+                .count();
+
+            let result = save_with_knowledge(
+                &svc,
+                &project_id,
+                5,
+                1,
+                vec![KnowledgeLearnedEntry {
+                    character_id: bran.clone(),
+                    fact: "Mara is a reincarnated warden.".into(),
+                    source_summary: Some("bogus".into()),
+                    secret_of_fact_id: Some(plain.clone()),
+                    reader_visible: Some(true),
+                }],
+            )
+            .await;
+            assert!(result.is_err(), "an invalid secret link must fail the save");
+
+            let scenes_after = svc
+                .repository()
+                .list_scenes_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap()
+                .len();
+            let knowledge_after = svc
+                .repository()
+                .list_knowledge_facts_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.character_id == bran)
+                .count();
+            assert_eq!(
+                scenes_after, scenes_before,
+                "no scene row may be written when the package validation fails"
+            );
+            assert_eq!(
+                knowledge_after, knowledge_before,
+                "no knowledge row may be written when the package validation fails"
+            );
+        }
+
+        /// A plain knowledge_learned entry with no secret link works as ordinary
+        /// per-character knowledge (writes a knowledge_fact row, no circle math).
+        #[tokio::test]
+        async fn plain_knowledge_learned_entry_records_ordinary_knowledge() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, _mara, _scene_id, _location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+
+            save_with_knowledge(
+                &svc,
+                &project_id,
+                3,
+                1,
+                vec![KnowledgeLearnedEntry {
+                    character_id: bran.clone(),
+                    fact: "The bridge is out past the mill.".into(),
+                    source_summary: Some("he saw it".into()),
+                    secret_of_fact_id: None,
+                    reader_visible: Some(true),
+                }],
+            )
+            .await
+            .unwrap();
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project_id)
+                .await
+                .unwrap();
+            let rows = svc
+                .repository()
+                .list_knowledge_facts_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap();
+            assert!(
+                rows.iter()
+                    .any(|r| r.character_id == bran && r.fact.contains("bridge is out")),
+                "an ordinary knowledge_learned entry writes a knowledge_fact row: {rows:?}"
             );
         }
     }

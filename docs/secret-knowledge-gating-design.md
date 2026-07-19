@@ -114,8 +114,10 @@ A reveal is not a new mechanism — it is `record_knowledge` with `secret_of_fac
 
 1. **Manual:** the author calls `record_knowledge` (works today, minus the link column).
 2. **Draft-time:** the scene-writer skill instructs the drafter to flag an on-page reveal in the
-   continuity package (`knowledge_learned` entries already exist in `save_scene_draft`'s package);
-   the save path sets the link when the entry names a secret fact.
+   continuity package via `knowledge_learned` entries on `save_scene_draft` (added by the NEXT
+   wave — the original draft of this doc wrongly assumed the field pre-existed; `save_scene_draft`
+   carried no package at all). The save path pre-flight-validates secret links before any write
+   and records entries through the same path as `record_knowledge`.
 3. **Mined (P1):** the canon-mining pass detects a reveal in committed prose and stages a
    `knowledge_learned` delta carrying `secret_of_fact_id`; ratification expands the circle. The
    `canon_delta` class list in `spindle-evolution-design.md` §3.1 already includes

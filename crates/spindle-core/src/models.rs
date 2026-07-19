@@ -2163,6 +2163,12 @@ pub struct SaveSceneDraftInput {
     pub research_query_pack_input: Option<String>,
     #[serde(default)]
     pub research_context_hash: Option<String>,
+    /// On-page knowledge acquisitions to record with this scene (design §2.3
+    /// path 2). Each entry becomes a knowledge_fact row stamped at this scene's
+    /// placement; a `secret_of_fact_id` link expands that secret's circle of
+    /// trust. Additive — an empty vector behaves exactly as before.
+    #[serde(default)]
+    pub knowledge_learned: Vec<KnowledgeLearnedEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2470,6 +2476,32 @@ pub struct RelationshipUpdateEntry {
     pub trust_delta: i32,
     pub tension_delta: i32,
     pub reason: String,
+}
+
+/// One on-page knowledge acquisition flagged in a scene's continuity package
+/// (design §2.3 path 2, the draft-time reveal). Each entry becomes a
+/// `knowledge_fact` row for `character_id`, learned_at = the saving scene's
+/// placement. When `secret_of_fact_id` names a secret canonical fact, the row
+/// links to it and expands that secret's circle of trust from this scene
+/// forward — the reveal mechanism. `None` there records ordinary knowledge.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KnowledgeLearnedEntry {
+    /// The character who learns the fact (a create_character record id).
+    pub character_id: String,
+    /// The fact learned, as a short natural-language statement.
+    pub fact: String,
+    /// Optional note on how/where it was learned (rendered into the row).
+    #[serde(default)]
+    pub source_summary: Option<String>,
+    /// When set, links this knowledge to a secret canonical fact (its circle of
+    /// trust expands to include `character_id`). The id must reference an
+    /// existing canonical fact marked `secret = 1`, or the save is rejected.
+    #[serde(default)]
+    pub secret_of_fact_id: Option<String>,
+    /// Whether the reader is meant to know this (dramatic-irony control). When
+    /// omitted, defaults to visible.
+    #[serde(default)]
+    pub reader_visible: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for CharacterStatePatchEntry {
@@ -6297,6 +6329,10 @@ pub struct AuthoringSaveSceneDraftInput {
     pub beats: Vec<AnnotatedBeatInput>,
     #[serde(default)]
     pub continuity_notes: Vec<String>,
+    /// On-page knowledge acquisitions to record with this scene (design §2.3
+    /// path 2, the reveal mechanism). Passed through to the underlying save.
+    #[serde(default)]
+    pub knowledge_learned: Vec<KnowledgeLearnedEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -290,14 +290,19 @@ withholds it from every carrier (hard constraints, snapshots, the knowledge
 briefing, semantic recall) whenever no circle member is present. What you cannot
 see, you cannot leak. Do not invent it.
 
-**Flagging an on-page reveal.** If this scene is where the secret is finally
-told — the circle expands from this point on — flag the reveal in your continuity
-package so canon records it. The underlying mechanism is a `knowledge_fact` row
-linked to the secret via `secret_of_fact_id` (an author or the mining pass calls
-`record_knowledge` with `secret_of_fact_id` set and `learned_at` = this scene's
-placement). From that scene forward the new holder is inside the circle and may
-act on the secret; an unrecorded on-page reveal will trip the `secret_leak`
-continuity check.
+**Flagging an on-page reveal (package-first).** If this scene is where the secret
+is finally told — the circle expands from this point on — flag the reveal in the
+save's continuity package: add a `knowledge_learned` entry naming the
+`character_id` who learns it, the `fact`, and `secret_of_fact_id` set to the
+secret's canonical-fact id. On save, Spindle writes the linked `knowledge_fact`
+row stamped with THIS scene's placement, so from this scene forward the new holder
+is inside the circle and may act on the secret (an earlier-cursor context still
+withholds — the reveal never leaks backward). A `secret_of_fact_id` that does not
+point at a secret fact fails the save. An unflagged on-page reveal will trip the
+`secret_leak` continuity check (deterministic dialogue scan, plus a model-backed
+behavioral pass under `deep_check`).
+Manual fallback: an author or the mining pass may instead call `record_knowledge`
+with `secret_of_fact_id` and `learned_at` set directly.
 
 ### Narrative Promises Due (from `novel.narrative_promises_due`)
 If any Chekhov's guns, foreshadowing, or setups are overdue for payoff, weave the payoff

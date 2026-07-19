@@ -1652,6 +1652,25 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
     .collect()
 }
 
+/// Parse the leaking character id out of the behavioral secret-leak test
+/// sentinel `MOCK_SECRET_BEHAVIORAL_LEAK[character:<id>]` embedded in the prompt.
+/// The id may itself contain a colon (record ids like `character:abc`), so the
+/// scan takes everything between the first `[character:` and its closing `]`.
+/// Returns `None` when the plain sentinel or no sentinel is present, so the stub
+/// falls through to an empty findings array.
+fn extract_mock_behavioral_leak_character(prompt: &str) -> Option<String> {
+    const OPEN: &str = "MOCK_SECRET_BEHAVIORAL_LEAK[character:";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    let id = rest[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 fn local_completion(route: &ModelRoute, prompt: &str) -> String {
     let compact_prompt = prompt
         .split_whitespace()
@@ -1683,6 +1702,20 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
                         .to_string()
                 } else {
                     r#"{"matches":[]}"#.to_string()
+                }
+            } else if prompt.contains("secret knowledge leak audit") {
+                // The behavioral secret-leak deep check (design §2.4, Item 5)
+                // also rides the `review` route. Emit a single finding only when
+                // the prose carries the sentinel; the sentinel EMBEDS the leaking
+                // character id (MOCK_SECRET_BEHAVIORAL_LEAK[character:<id>]) so
+                // the stub echoes a real present id back — the caller then
+                // discards any id that is not a present out-of-circle character.
+                if let Some(id) = extract_mock_behavioral_leak_character(prompt) {
+                    format!(
+                        r#"{{"findings":[{{"character_id":"{id}","severity":"warning","description":"conspicuously avoids a place only a knower would avoid","evidence":"MOCK_SECRET_BEHAVIORAL_LEAK"}}]}}"#
+                    )
+                } else {
+                    r#"{"findings":[]}"#.to_string()
                 }
             } else {
                 format!("Literary critic and craft technician both reviewed: {compact_prompt}")
@@ -1839,6 +1872,27 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    #[test]
+    fn behavioral_leak_sentinel_extracts_record_id_with_colon() {
+        // Record ids carry a colon; the whole span before `]` is the id.
+        assert_eq!(
+            extract_mock_behavioral_leak_character(
+                "prose MOCK_SECRET_BEHAVIORAL_LEAK[character:character:bran99] more"
+            )
+            .as_deref(),
+            Some("character:bran99")
+        );
+        // Plain sentinel (no embedded id) and absent sentinel both yield None.
+        assert_eq!(
+            extract_mock_behavioral_leak_character("MOCK_SECRET_BEHAVIORAL_LEAK[character:]"),
+            None
+        );
+        assert_eq!(
+            extract_mock_behavioral_leak_character("no sentinel here"),
+            None
+        );
+    }
 
     fn health_env_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();

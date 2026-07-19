@@ -2639,6 +2639,7 @@ impl SqliteSpindleService {
                 research_claim_ids: Vec::new(),
                 research_query_pack_input: None,
                 research_context_hash: None,
+                knowledge_learned: Vec::new(),
             };
 
             self.save_scene_draft(save_input).await?;

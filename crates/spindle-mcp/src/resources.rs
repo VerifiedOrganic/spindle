@@ -788,6 +788,7 @@ mod tests {
                 research_claim_ids: Vec::new(),
                 research_query_pack_input: None,
                 research_context_hash: None,
+                knowledge_learned: Vec::new(),
             })
             .await
             .unwrap();

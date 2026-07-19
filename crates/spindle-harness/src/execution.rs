@@ -214,6 +214,9 @@ async fn draft_scene(
                 research_claim_ids: artifact.research_claim_ids.clone(),
                 research_query_pack_input: artifact.research_query_pack_input.clone(),
                 research_context_hash: artifact.research_context_hash.clone(),
+                // Automated drafting does not flag on-page reveals; the reveal
+                // package is a host/interactive (authoring_save_scene_draft) flow.
+                knowledge_learned: Vec::new(),
             })
             .await
             .with_context(|| {
