@@ -15977,6 +15977,355 @@ impl SqliteSpindleService {
         })
     }
 
+    // ── Canon miner (mine_scene_canon — evolution §3.1, ADR 0001) ────────────
+
+    /// Gather the secret-gated current-state digest for a scene and assemble the
+    /// full mining prompt. Split out from [`Self::mine_scene_canon`] so the
+    /// secret-withholding contract can be asserted against the assembled prompt
+    /// in a test without a model call.
+    ///
+    /// Scene cast is derived from the prose (present-in-scene name match), the
+    /// same way the deterministic secret-leak scan derives it — a committed
+    /// scene has no stored cast list. The secret gate is resolved with an empty
+    /// circle-of-trust check against that present cast, so a secret fact whose
+    /// circle excludes everyone present is stripped from the fact-keys digest.
+    async fn build_mine_prompt_for_scene(
+        &self,
+        project_id: &str,
+        scene_id: &str,
+    ) -> Result<String> {
+        use spindle_core::voice::{VoiceDriftCharacter, character_present_in_scene};
+
+        let scene = self.repository.get_scene(scene_id).await?;
+        let active_branch = self.repository.get_active_branch(project_id).await?;
+        let cursor =
+            crate::format::story_index(scene.book_number, scene.chapter_number, scene.scene_order);
+
+        // Present cast (deterministic by id). Every project character whose name
+        // appears in the prose.
+        let all_characters = self
+            .repository
+            .list_characters_by_project(project_id)
+            .await?;
+        let mut present: Vec<&crate::sqlite::records::Character> = all_characters
+            .iter()
+            .filter(|character| {
+                character_present_in_scene(
+                    &scene.full_text,
+                    &VoiceDriftCharacter {
+                        id: character.id.clone(),
+                        name: character.name.clone(),
+                    },
+                )
+            })
+            .collect();
+        present.sort_by(|a, b| a.id.cmp(&b.id));
+        let present_ids: Vec<String> = present.iter().map(|c| c.id.clone()).collect();
+
+        let mut digest = MineDigest {
+            cast: present
+                .iter()
+                .take(CANON_MINE_DIGEST_CAP)
+                .map(|c| (c.id.clone(), c.name.clone()))
+                .collect(),
+            ..MineDigest::default()
+        };
+
+        // Open promises (any non-paid_off), capped, deterministic by id.
+        let mut promises = self
+            .repository
+            .list_narrative_promises_by_project_and_branch(project_id, &active_branch.id)
+            .await?;
+        promises.retain(|p| p.status != "paid_off" && p.archived_at.is_none());
+        promises.sort_by(|a, b| a.id.cmp(&b.id));
+        digest.open_promises = promises
+            .iter()
+            .take(CANON_MINE_DIGEST_CAP)
+            .map(|p| {
+                (
+                    p.id.clone(),
+                    crate::format::truncate_at_chars(&p.description, CANON_MINE_PROMISE_DESC_CAP),
+                    p.status.clone(),
+                )
+            })
+            .collect();
+
+        // Active conflicts (unarchived), with undelivered-consequence and
+        // undemonstrated-escalation indexes so the model can propose closures.
+        let mut conflicts = self
+            .repository
+            .list_conflicts_by_project_and_branch(project_id, &active_branch.id)
+            .await?;
+        conflicts.retain(|c| c.archived_at.is_none() && c.resolution_summary.is_none());
+        conflicts.sort_by(|a, b| a.id.cmp(&b.id));
+        digest.active_conflicts = conflicts
+            .iter()
+            .take(CANON_MINE_DIGEST_CAP)
+            .map(|c| {
+                let undelivered: Vec<usize> = c
+                    .stated_consequences
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cons)| !cons.delivered)
+                    .map(|(i, _)| i)
+                    .collect();
+                let undemonstrated: Vec<usize> = (0..c.escalation_stages.len())
+                    .filter(|i| {
+                        c.escalation_demonstrated
+                            .get(*i)
+                            .and_then(|d| d.as_ref())
+                            .is_none()
+                    })
+                    .collect();
+                (c.id.clone(), c.name.clone(), undelivered, undemonstrated)
+            })
+            .collect();
+
+        // Arcs for cast (unreached milestone labels).
+        let mut arcs = self
+            .repository
+            .list_character_arcs_by_project_and_branch(project_id, &active_branch.id)
+            .await?;
+        arcs.retain(|a| present_ids.contains(&a.character_id) && a.archived_at.is_none());
+        arcs.sort_by(|a, b| a.id.cmp(&b.id));
+        digest.arcs = arcs
+            .iter()
+            .take(CANON_MINE_DIGEST_CAP)
+            .filter_map(|arc| {
+                let labels: Vec<String> = arc
+                    .milestones
+                    .iter()
+                    .filter(|m| m.reached_at.is_none())
+                    .map(|m| m.label.clone())
+                    .collect();
+                (!labels.is_empty()).then(|| (arc.id.clone(), labels))
+            })
+            .collect();
+
+        // Fact keys per cast subject — secret-gated. A secret fact whose circle
+        // excludes the present cast is stripped before it can reach the digest.
+        let name_of: std::collections::BTreeMap<String, String> = all_characters
+            .iter()
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        let pov_character_id = self
+            .repository
+            .list_chapter_plans_by_project(project_id)
+            .await?
+            .into_iter()
+            .find(|plan| {
+                plan.book_number == scene.book_number && plan.chapter_number == scene.chapter_number
+            })
+            .and_then(|plan| plan.pov_character_id);
+
+        for character in &present {
+            let facts = self
+                .repository
+                .list_canonical_facts_by_subject(
+                    project_id,
+                    &active_branch.id,
+                    "character",
+                    Some(&character.id),
+                )
+                .await?;
+            if facts.is_empty() {
+                continue;
+            }
+            // Resolve the secret gate for this subject's facts against the
+            // present cast; withheld facts drop out of the key list.
+            let secret_facts: Vec<crate::sqlite::records::CanonicalFact> =
+                facts.iter().filter(|f| f.secret).cloned().collect();
+            let gate = if secret_facts.is_empty() {
+                SceneSecretGate::default()
+            } else {
+                self.resolve_scene_secret_gate(
+                    project_id,
+                    &active_branch.id,
+                    &secret_facts,
+                    &SceneSecretGateParams {
+                        scene_cast: &present_ids,
+                        pov: pov_character_id.as_deref(),
+                        cursor,
+                        name_of: &name_of,
+                    },
+                )
+                .await?
+            };
+            let mut keys: Vec<String> = facts
+                .iter()
+                .filter(|f| !gate.gated_fact_ids.contains(&f.id))
+                .map(|f| f.predicate.clone())
+                .collect();
+            keys.sort();
+            keys.dedup();
+            keys.truncate(CANON_MINE_DIGEST_CAP);
+            if !keys.is_empty() {
+                digest.fact_keys.push((character.name.clone(), keys));
+            }
+        }
+
+        // Quantity-scheme name (first scheme's measure), if any is set.
+        let quantity_scheme_name = self
+            .repository
+            .list_project_quantity_schemes(project_id, &active_branch.id)
+            .await?
+            .first()
+            .map(|s| s.scheme.measure.clone());
+
+        Ok(build_mine_prompt(
+            &scene.full_text,
+            &build_mine_digest(&digest),
+            quantity_scheme_name.as_deref(),
+        ))
+    }
+
+    /// Mine one committed scene into proposed canon deltas (evolution §3.1, ADR
+    /// 0001). One rating-gated model call assembles staged rows the operator
+    /// later ratifies; nothing writes to the bible here (invariant I4).
+    ///
+    /// Dispatch follows the design §2.3 fallback ladder: try the `mine` route,
+    /// then `review` on NoRoute, both at the scene's content rating. A
+    /// RatingNotCovered (or exhausted ladder) is an honest skip — the
+    /// rating-gated chokepoint inside `complete()` guarantees no prose-bearing
+    /// request ever reaches an uncleared agent. Malformed model output rejects
+    /// the whole batch (`model_output_rejected`) rather than guessing.
+    pub async fn mine_scene_canon(
+        &self,
+        input: spindle_core::models::MineSceneCanonInput,
+    ) -> Result<spindle_core::models::MineSceneCanonOutput> {
+        use crate::ai::{ModelRequest, RouteClearanceError};
+        use spindle_core::models::MineSceneCanonOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        if scene.project_id != input.project_id {
+            anyhow::bail!(
+                "scene {} does not belong to project {}",
+                input.scene_id,
+                input.project_id
+            );
+        }
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+
+        // Empty prose → skip before any model call (I8 honest skip).
+        if scene.full_text.trim().is_empty() {
+            return Ok(MineSceneCanonOutput {
+                staged: Vec::new(),
+                discarded_count: 0,
+                superseded_count: 0,
+                status: "skipped".to_string(),
+                skip_reason: Some("empty scene".to_string()),
+            });
+        }
+
+        let prompt = self
+            .build_mine_prompt_for_scene(&input.project_id, &input.scene_id)
+            .await?;
+        let rating = Some(scene.content_rating.trim().to_ascii_lowercase());
+
+        // Fallback ladder (§2.3): mine → review (on NoRoute) → skip. The
+        // chokepoint inside complete() gates the rating for the uncleared case,
+        // so no prose leaves for an uncleared agent.
+        let response = match self
+            .repository
+            .model_router()
+            .complete(&ModelRequest {
+                route: "mine".to_string(),
+                prompt: prompt.clone(),
+                rating: rating.clone(),
+                context: None,
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let is_no_route = matches!(
+                    err.downcast_ref::<RouteClearanceError>(),
+                    Some(RouteClearanceError::NoRoute { .. })
+                );
+                if is_no_route {
+                    // Retry via the review route (same rating).
+                    match self
+                        .repository
+                        .model_router()
+                        .complete(&ModelRequest {
+                            route: "review".to_string(),
+                            prompt: prompt.clone(),
+                            rating: rating.clone(),
+                            context: None,
+                        })
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(review_err) => {
+                            return Ok(mine_skip_output(&review_err, "review"));
+                        }
+                    }
+                } else {
+                    return Ok(mine_skip_output(&err, "mine"));
+                }
+            }
+        };
+
+        // Strict parse; malformed → reject the whole batch, stage nothing.
+        let raw_deltas = match parse_canon_mine_output(&response.output) {
+            Ok(deltas) => deltas,
+            Err(_) => {
+                return Ok(MineSceneCanonOutput {
+                    staged: Vec::new(),
+                    discarded_count: 0,
+                    superseded_count: 0,
+                    status: "model_output_rejected".to_string(),
+                    skip_reason: None,
+                });
+            }
+        };
+
+        // Validate each delta (ADR lifecycle M3). Survivors keep prompt order.
+        use crate::sqlite::repository::StageCanonDeltaParams;
+        let mut valid: Vec<StageCanonDeltaParams> = Vec::new();
+        let mut discarded_count = 0usize;
+        for raw in raw_deltas {
+            match validate_canon_delta(&raw, &scene.full_text) {
+                Some((delta_class, target_id, confidence, evidence, payload)) => {
+                    valid.push(StageCanonDeltaParams {
+                        project_id: input.project_id.clone(),
+                        branch_id: active_branch.id.clone(),
+                        scene_id: input.scene_id.clone(),
+                        authoring_run_id: None,
+                        delta_class,
+                        target_id,
+                        payload,
+                        evidence,
+                        confidence,
+                    });
+                }
+                None => discarded_count += 1,
+            }
+        }
+
+        // Supersede prior staged rows for this scene, then stage survivors in
+        // prompt order (ADR D3).
+        let superseded_count = self
+            .repository
+            .supersede_scene_deltas(&input.scene_id)
+            .await? as usize;
+
+        let mut staged = Vec::with_capacity(valid.len());
+        for params in valid {
+            let stored = self.repository.stage_canon_delta(params).await?;
+            staged.push(stored.into_core());
+        }
+
+        Ok(MineSceneCanonOutput {
+            staged,
+            discarded_count,
+            superseded_count,
+            status: "staged".to_string(),
+            skip_reason: None,
+        })
+    }
+
     // Import pipeline.
     //
     // The 10 stubs that follow implement the import passes against the
@@ -21538,6 +21887,273 @@ fn parse_deep_world_rule_check_output(output: &str) -> anyhow::Result<Vec<DeepWo
 
     let parsed: DeepWorldRuleCheckOutput = serde_json::from_str(&candidate)?;
     Ok(parsed.violations)
+}
+
+// ── Canon miner (mine_scene_canon — evolution §3.1, ADR 0001) ────────────────
+
+/// The distinctive header line the mining prompt leads with. Doubles as the
+/// fake-router marker (`ai.rs::local_completion`) so a local-only deployment
+/// returns deterministic staged deltas.
+const CANON_MINE_AUDIT_HEADER: &str = "canon mining audit";
+
+/// Maximum characters an evidence quote may occupy in a staged row (ADR 0001
+/// D2). The verbatim substring check runs on the UNtruncated quote; truncation
+/// is applied only for storage.
+const CANON_MINE_EVIDENCE_MAX_CHARS: usize = 300;
+
+/// Per-section caps keeping the current-state digest bounded and deterministic.
+const CANON_MINE_DIGEST_CAP: usize = 30;
+const CANON_MINE_PROMISE_DESC_CAP: usize = 80;
+
+/// One raw delta as emitted by the model, before validation. Fields mirror the
+/// output contract spelled into the prompt; unknown extras are ignored.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawCanonDelta {
+    delta_class: String,
+    #[serde(default)]
+    target_id: Option<String>,
+    #[serde(default)]
+    confidence: Option<String>,
+    #[serde(default)]
+    evidence: Option<String>,
+    #[serde(default)]
+    payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawCanonMineOutput {
+    #[serde(default)]
+    deltas: Vec<RawCanonDelta>,
+}
+
+/// Parse the miner's strict-JSON output. Tolerates code fences / surrounding
+/// prose via [`extract_json_object`]; a genuinely malformed payload is an error
+/// the caller maps to `model_output_rejected` (never a guess).
+fn parse_canon_mine_output(output: &str) -> anyhow::Result<Vec<RawCanonDelta>> {
+    let trimmed = output.trim();
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else if let Some(fenced) = extract_json_object(output) {
+        fenced
+    } else {
+        trimmed.to_string()
+    };
+    let parsed: RawCanonMineOutput = serde_json::from_str(&candidate)
+        .context("parsing canon-mine model output as strict JSON")?;
+    Ok(parsed.deltas)
+}
+
+/// Validate one raw delta against the ADR lifecycle (M3). Returns the staged
+/// tuple `(delta_class, target_id, confidence, evidence, payload)` on success,
+/// or `None` when the delta is discarded:
+///   * `delta_class ∉ CANON_DELTA_CLASSES` (unknown → discard);
+///   * evidence empty, or NOT a verbatim substring of the scene prose (the
+///     model does not get to fabricate evidence). The substring check runs on
+///     the UNtruncated quote; the stored evidence is then truncated char-safe
+///     to ≤300;
+///   * `entity_candidate` payload missing a `kind ∈ {character, location, term}`.
+///
+/// `confidence` normalizes to `high|medium|low`, defaulting to `low` when the
+/// model omits/garbles it (a low-confidence proposal is still stageable).
+fn validate_canon_delta(
+    raw: &RawCanonDelta,
+    scene_prose: &str,
+) -> Option<(String, Option<String>, String, String, serde_json::Value)> {
+    if !spindle_core::models::is_canon_delta_class(&raw.delta_class) {
+        return None;
+    }
+    let evidence = raw.evidence.as_deref().unwrap_or("").trim();
+    if evidence.is_empty() || !scene_prose.contains(evidence) {
+        return None;
+    }
+    if raw.delta_class == "entity_candidate" {
+        let kind = raw
+            .payload
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|k| k.trim().to_ascii_lowercase());
+        if !matches!(kind.as_deref(), Some("character" | "location" | "term")) {
+            return None;
+        }
+    }
+    let confidence = match raw
+        .confidence
+        .as_deref()
+        .map(|c| c.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("high") => "high",
+        Some("medium") => "medium",
+        _ => "low",
+    }
+    .to_string();
+    let stored_evidence = crate::format::truncate_at_chars(evidence, CANON_MINE_EVIDENCE_MAX_CHARS);
+    Some((
+        raw.delta_class.clone(),
+        raw.target_id.clone().filter(|s| !s.trim().is_empty()),
+        confidence,
+        stored_evidence,
+        raw.payload.clone(),
+    ))
+}
+
+/// Build the honest-skip `MineSceneCanonOutput` for a route failure. A
+/// RatingNotCovered names route+rating (ids only, never prose); any other error
+/// reads as a dead-route skip naming the attempted route.
+fn mine_skip_output(
+    err: &anyhow::Error,
+    attempted_route: &str,
+) -> spindle_core::models::MineSceneCanonOutput {
+    let skip_reason = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "canon mining SKIPPED: the `{route}` route is not cleared for rating `{rating}`"
+        ),
+        _ => format!(
+            "canon mining SKIPPED: no usable `{attempted_route}` route (the model call failed)"
+        ),
+    };
+    spindle_core::models::MineSceneCanonOutput {
+        staged: Vec::new(),
+        discarded_count: 0,
+        superseded_count: 0,
+        status: "skipped".to_string(),
+        skip_reason: Some(skip_reason),
+    }
+}
+
+/// The compact current-state digest fed to the miner so it proposes UPDATES
+/// against real ids instead of duplicating canon. Populated by the service AFTER
+/// secret-gating (so a withheld fact key never reaches [`build_mine_digest`]),
+/// then rendered by that pure builder — keeping the render deterministic and
+/// unit-testable in isolation.
+#[derive(Debug, Clone, Default)]
+struct MineDigest {
+    /// Scene cast: (character id, name).
+    cast: Vec<(String, String)>,
+    /// Open promises: (id, description ≤cap, status).
+    open_promises: Vec<(String, String, String)>,
+    /// Active conflicts: (id, name, undelivered consequence indexes,
+    /// undemonstrated escalation-stage indexes).
+    active_conflicts: Vec<(String, String, Vec<usize>, Vec<usize>)>,
+    /// Arcs for cast: (id, unreached milestone labels).
+    arcs: Vec<(String, Vec<String>)>,
+    /// Existing canonical-fact keys per cast subject: (subject name, keys). Only
+    /// visible (non-withheld) keys ever appear here.
+    fact_keys: Vec<(String, Vec<String>)>,
+}
+
+/// Render the current-state digest deterministically. Sections are emitted in a
+/// fixed order; each is capped by the caller; empty sections are omitted so the
+/// prompt stays lean. Pure — no I/O, unit-tested directly.
+fn build_mine_digest(digest: &MineDigest) -> String {
+    let mut out = String::new();
+    out.push_str("CURRENT STATE (propose UPDATES against these real ids; do not duplicate):\n");
+
+    if !digest.cast.is_empty() {
+        out.push_str("Cast:\n");
+        for (id, name) in &digest.cast {
+            out.push_str(&format!("  - {name} [{id}]\n"));
+        }
+    }
+    if !digest.open_promises.is_empty() {
+        out.push_str("Open promises (payoff/reinforce must reference a real id):\n");
+        for (id, desc, status) in &digest.open_promises {
+            out.push_str(&format!("  - {id} ({status}): {desc}\n"));
+        }
+    }
+    if !digest.active_conflicts.is_empty() {
+        out.push_str("Active conflicts:\n");
+        for (id, name, undelivered, undemonstrated) in &digest.active_conflicts {
+            out.push_str(&format!("  - {id} ({name})"));
+            if !undelivered.is_empty() {
+                out.push_str(&format!(
+                    "; undelivered consequence indexes: {}",
+                    undelivered
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            if !undemonstrated.is_empty() {
+                out.push_str(&format!(
+                    "; undemonstrated escalation stage indexes: {}",
+                    undemonstrated
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            out.push('\n');
+        }
+    }
+    if !digest.arcs.is_empty() {
+        out.push_str("Arcs (unreached milestones):\n");
+        for (id, labels) in &digest.arcs {
+            out.push_str(&format!("  - {id}: {}\n", labels.join("; ")));
+        }
+    }
+    if !digest.fact_keys.is_empty() {
+        out.push_str("Existing canonical-fact keys (values withheld):\n");
+        for (subject, keys) in &digest.fact_keys {
+            out.push_str(&format!("  - {subject}: {}\n", keys.join(", ")));
+        }
+    }
+    out
+}
+
+/// The static output-contract block: the exact JSON envelope plus the per-class
+/// payload field lists (ADR 0001 D1). Spelled out so the model never has to
+/// guess a payload shape.
+fn canon_mine_output_contract() -> &'static str {
+    "OUTPUT CONTRACT — return STRICT JSON only, no prose, this exact envelope:\n\
+     {\"deltas\":[{\"delta_class\":\"...\",\"target_id\":null|\"<id>\",\"confidence\":\"high|medium|low\",\"evidence\":\"<verbatim quote>\",\"payload\":{...}}]}\n\
+     Every item MUST carry a short VERBATIM evidence quote copied from the prose above.\n\
+     Per-class payload fields (use EXACTLY these keys):\n\
+     - canonical_fact: subject_table, subject_id?, predicate, value_text|value_number, unit?, scope?\n\
+     - promise_planted: promise_type, description, planted_at, planned_payoff?\n\
+     - promise_payoff_candidate: narrative_promise_id, proposed_status=\"paid_off\", payoff_scene_ref?\n\
+     - promise_reinforced: narrative_promise_id, proposed_status=\"reinforced\"\n\
+     - relationship_shift: relationship_id, trust_delta?, tension_delta?, dynamics_note?\n\
+     - character_state: character_id, state fields, position stamp\n\
+     - knowledge_learned: character_id, fact, learned_at, secret_of_fact_id?\n\
+     - beat_annotation: motif_ids?, theme_ids?, conflict_ids?, intensity?\n\
+     - try_fail_cycle: conflict_id, cycle description\n\
+     - consequence_delivered: conflict_id, consequence_index, delivered=true\n\
+     - escalation_demonstrated: conflict_id, stage_index, demonstrated_at\n\
+     - arc_milestone_reached: character_arc_id, milestone_label, reached_at\n\
+     - quantity_change: character_id, measure, amount|band, change_reason\n\
+     - entity_candidate: kind (character|location|term) + the create tool's input"
+}
+
+/// Assemble the full mining prompt from the header/instructions, the scene
+/// prose, the current-state digest, the optional quantity-scheme guidance, and
+/// the output contract. Pure — the service builds `digest`/`scheme_name`.
+fn build_mine_prompt(scene_text: &str, digest: &str, quantity_scheme_name: Option<&str>) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(CANON_MINE_AUDIT_HEADER);
+    prompt.push('\n');
+    prompt.push_str(
+        "You are mining ONE committed scene into proposed canon deltas for operator review.\n\
+         Extract ONLY what the prose on the page ESTABLISHES — never infer, never invent.\n\
+         Every item MUST carry a short verbatim evidence quote copied from the prose.\n\
+         Prefer UPDATES against the real ids in the current-state digest over new proposals.\n\n",
+    );
+    prompt.push_str("SCENE PROSE:\n");
+    prompt.push_str(scene_text);
+    prompt.push_str("\n\n");
+    if !digest.trim().is_empty() {
+        prompt.push_str(digest);
+        prompt.push('\n');
+    }
+    if let Some(name) = quantity_scheme_name {
+        prompt.push_str(&format!(
+            "Quantity scheme in play: `{name}` — use quantity_change deltas for measured amounts of this scheme.\n\n"
+        ));
+    }
+    prompt.push_str(canon_mine_output_contract());
+    prompt
 }
 
 fn extract_json_object(output: &str) -> Option<String> {
@@ -39951,5 +40567,445 @@ agent = "review-safe"
                 "an ordinary knowledge_learned entry writes a knowledge_fact row: {rows:?}"
             );
         }
+    }
+
+    // ── Canon miner (mine_scene_canon — evolution §3.1, ADR 0001) ────────────
+
+    /// Overwrite a saved scene's prose in place (via the upserting draft path,
+    /// which keys on book/chapter/scene_order) so a test can seed a specific
+    /// mining prompt without threading a full draft flow.
+    async fn set_scene_prose(svc: &SqliteSpindleService, scene_id: &str, prose: &str) {
+        let scene = svc.repository().get_scene(scene_id).await.unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: scene.project_id.clone(),
+            book_number: scene.book_number,
+            chapter_number: scene.chapter_number,
+            chapter_id: None,
+            scene_order: scene.scene_order,
+            full_text: prose.to_string(),
+            summary: scene.summary.clone(),
+            content_rating: match scene.content_rating.as_str() {
+                "teen" => spindle_core::models::ContentRating::Teen,
+                "mature" => spindle_core::models::ContentRating::Mature,
+                "explicit" => spindle_core::models::ContentRating::Explicit,
+                _ => spindle_core::models::ContentRating::General,
+            },
+            tone: scene.tone.clone(),
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_stages_fact_and_payoff_candidate() {
+        use spindle_core::models::{
+            CreateNarrativePromiseInput, MineSceneCanonInput, StoryPlacement,
+        };
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Mine Happy").await;
+
+        // An open promise so the payoff candidate can target a real id.
+        let promise = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: project.project_id.clone(),
+                promise_type: "mystery".to_string(),
+                description: "The locked door will be opened".to_string(),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(1),
+                    note: None,
+                },
+                planned_payoff: None,
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        // Prose carrying the sentinel + the promise-id marker so the local stub
+        // returns a fact delta and a payoff candidate targeting the real promise.
+        let prose = format!(
+            "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE \
+             MOCK_CANON_MINE_PROMISE[{}] as the door swung wide.",
+            promise.narrative_promise_id
+        );
+        set_scene_prose(&svc, &scene_id, &prose).await;
+
+        let out = svc
+            .mine_scene_canon(MineSceneCanonInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene_id.clone(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.status, "staged");
+        assert_eq!(out.superseded_count, 0);
+        assert_eq!(out.discarded_count, 0);
+        assert_eq!(out.staged.len(), 2);
+        let fact = out
+            .staged
+            .iter()
+            .find(|d| d.delta_class == "canonical_fact")
+            .expect("canonical_fact staged");
+        assert_eq!(fact.evidence, "MOCK_CANON_MINE");
+        let payoff = out
+            .staged
+            .iter()
+            .find(|d| d.delta_class == "promise_payoff_candidate")
+            .expect("payoff candidate staged");
+        assert_eq!(
+            payoff.target_id.as_deref(),
+            Some(promise.narrative_promise_id.as_str())
+        );
+
+        // Rows are persisted on the active branch.
+        let branch = svc
+            .repository()
+            .get_active_branch(&project.project_id)
+            .await
+            .unwrap();
+        let rows = svc
+            .repository()
+            .list_canon_deltas(
+                &project.project_id,
+                &branch.id,
+                Some("staged"),
+                Some(&scene_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_remine_supersedes_but_spares_decided_rows() {
+        use crate::sqlite::repository::CanonDeltaDecision;
+        use spindle_core::models::MineSceneCanonInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Mine Remine").await;
+        set_scene_prose(
+            &svc,
+            &scene_id,
+            "A grey stone tower. MOCK_CANON_MINE stands.",
+        )
+        .await;
+
+        let first = svc
+            .mine_scene_canon(MineSceneCanonInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.status, "staged");
+        assert_eq!(first.staged.len(), 1);
+
+        // Operator applies the first batch's row — it must survive the remine.
+        let applied = svc
+            .repository()
+            .decide_canon_delta(&first.staged[0].id, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        assert_eq!(applied.status, "applied");
+
+        let second = svc
+            .mine_scene_canon(MineSceneCanonInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        // Remine supersedes only prior STAGED rows — the applied one is history.
+        assert_eq!(second.status, "staged");
+        assert_eq!(second.superseded_count, 0);
+        assert_eq!(second.staged.len(), 1);
+
+        let branch = svc
+            .repository()
+            .get_active_branch(&project.project_id)
+            .await
+            .unwrap();
+        let applied_rows = svc
+            .repository()
+            .list_canon_deltas(
+                &project.project_id,
+                &branch.id,
+                Some("applied"),
+                Some(&scene_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(applied_rows.len(), 1, "the applied row is never superseded");
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_discards_unknown_class_and_fabricated_evidence() {
+        // The router returns an unknown class, a fabricated-evidence delta (quote
+        // not in prose), and one valid sibling. Only the sibling stages.
+        use spindle_core::models::MineSceneCanonInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Mine Discard").await;
+        // The sentinel keeps the fabricated-evidence discard test focused: the
+        // stub's canonical_fact carries evidence "MOCK_CANON_MINE" — present in
+        // prose — so it stages, while the injected bad deltas are discarded.
+        set_scene_prose(&svc, &scene_id, "MOCK_CANON_MINE_DISCARD marker here.").await;
+
+        let out = svc
+            .mine_scene_canon(MineSceneCanonInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "staged");
+        assert_eq!(
+            out.discarded_count, 2,
+            "unknown class + fabricated evidence"
+        );
+        assert_eq!(out.staged.len(), 1);
+        assert_eq!(out.staged[0].delta_class, "canonical_fact");
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_skips_when_rating_uncovered() {
+        use spindle_core::models::{ConfigureAgentsInput, ContentRating, MineSceneCanonInput};
+        let (tmp, svc) = fresh_service_local().await;
+        // Config: review agent covers only non-explicit ratings.
+        let config_path = tmp.path().join("mine-routes.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-safe"
+name = "Review Safe"
+provider = "local"
+endpoint = "local"
+model = "review-safe"
+ratings = ["safe", "teen", "mature"]
+
+[[routing]]
+route = "review"
+agent = "review-safe"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let (project, scene_id, _) = project_with_scene(&svc, "Mine Explicit").await;
+        // Re-save the scene as explicit prose carrying the sentinel.
+        let scene = svc.repository().get_scene(&scene_id).await.unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: scene.book_number,
+            chapter_number: scene.chapter_number,
+            chapter_id: None,
+            scene_order: scene.scene_order,
+            full_text: "MOCK_CANON_MINE explicit prose here.".to_string(),
+            summary: "explicit".to_string(),
+            content_rating: ContentRating::Explicit,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .mine_scene_canon(MineSceneCanonInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "skipped");
+        assert!(out.staged.is_empty());
+        let reason = out.skip_reason.expect("skip reason present");
+        assert!(reason.contains("explicit"), "reason names rating: {reason}");
+
+        let branch = svc
+            .repository()
+            .get_active_branch(&project.project_id)
+            .await
+            .unwrap();
+        let rows = svc
+            .repository()
+            .list_canon_deltas(&project.project_id, &branch.id, None, Some(&scene_id))
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "no rows staged on rating skip");
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_skips_empty_prose_without_model_call() {
+        use spindle_core::models::MineSceneCanonInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Mine Empty").await;
+        set_scene_prose(&svc, &scene_id, "   \n  ").await;
+
+        let out = svc
+            .mine_scene_canon(MineSceneCanonInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "skipped");
+        assert_eq!(out.skip_reason.as_deref(), Some("empty scene"));
+        assert!(out.staged.is_empty());
+    }
+
+    #[test]
+    fn mine_digest_withholds_secret_fact_keys() {
+        // The pure digest builder must never surface a secret fact key when the
+        // secret gate has stripped it. Non-secret keys remain.
+        let digest = MineDigest {
+            cast: vec![("character:sara".to_string(), "Sara".to_string())],
+            open_promises: Vec::new(),
+            active_conflicts: Vec::new(),
+            arcs: Vec::new(),
+            fact_keys: vec![(
+                "Sara".to_string(),
+                vec!["hair_color".to_string(), "hometown".to_string()],
+            )],
+        };
+        let rendered = build_mine_digest(&digest);
+        assert!(rendered.contains("hair_color"));
+        assert!(rendered.contains("hometown"));
+        // A key that was gated out never appears (the service excludes it before
+        // building the digest, so the builder simply never receives it).
+        assert!(!rendered.contains("true_parentage"));
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_digest_excludes_out_of_circle_secret_key() {
+        // Integration: a secret fact whose circle excludes the scene cast must
+        // NOT appear in the mining prompt's fact-keys digest; a non-secret key
+        // for the same present subject does.
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, ContentRating,
+            RegisterCanonicalFactInput, StoryPlacement,
+        };
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Mine Secret").await;
+
+        // Two characters: Sara is present in the scene; Mara is the sole secret
+        // knower and is NOT present.
+        let sara = svc
+            .create_character(CreateCharacterInput {
+                project_id: project.project_id.clone(),
+                name: "Sara".to_string(),
+                summary: "the protagonist".to_string(),
+                role: "protagonist".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        set_scene_prose(&svc, &scene_id, "Sara walked alone through the empty hall.").await;
+
+        let _ = StoryPlacement {
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: Some(1),
+            note: None,
+        };
+        let public_fact = RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: scene_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".to_string()),
+            subject_id: Some(sara.character_id.clone()),
+            predicate: Some("hair_color".to_string()),
+            value_kind: Some("string".to_string()),
+            value_text: Some("auburn".to_string()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        };
+        svc.register_canonical_fact(public_fact).await.unwrap();
+        // Secret fact about Sara whose circle excludes the present cast (empty
+        // holder set → no present cast member knows → withheld).
+        let secret_fact = RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: scene_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".to_string()),
+            subject_id: Some(sara.character_id.clone()),
+            predicate: Some("true_parentage".to_string()),
+            value_kind: Some("string".to_string()),
+            value_text: Some("royal blood".to_string()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(spindle_core::models::SecrecyScope {
+                holder_ids: Vec::new(),
+                concealment_note: None,
+            }),
+        };
+        svc.register_canonical_fact(secret_fact).await.unwrap();
+
+        let prompt = svc
+            .build_mine_prompt_for_scene(&project.project_id, &scene_id)
+            .await
+            .unwrap();
+        assert!(prompt.contains("hair_color"), "public key present");
+        assert!(
+            !prompt.contains("true_parentage"),
+            "out-of-circle secret key withheld from digest"
+        );
+        // Content rating unaffected (guards the plumbing).
+        let _ = ContentRating::General;
     }
 }

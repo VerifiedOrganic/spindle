@@ -6530,6 +6530,38 @@ pub struct CanonDelta {
     pub updated_at: String,
 }
 
+/// Input for `mine_scene_canon` (evolution §3.1): mine one committed scene's
+/// prose into proposed canon deltas awaiting operator ratification. Branch
+/// resolution is implicit — the service mines the project's active branch,
+/// matching the other scene-scoped read passes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MineSceneCanonInput {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+/// Output of `mine_scene_canon`. `status` is one of `staged` (deltas persisted),
+/// `skipped` (no cleared route / empty prose — `skip_reason` names why), or
+/// `model_output_rejected` (the model's JSON was malformed; nothing staged). A
+/// skip or rejection never reads as a clean mine (evolution I8).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MineSceneCanonOutput {
+    /// The surviving deltas staged this pass, in prompt order.
+    #[serde(default)]
+    pub staged: Vec<CanonDelta>,
+    /// Deltas the model proposed but that failed validation (unknown class,
+    /// evidence not verbatim in prose, missing entity kind).
+    pub discarded_count: usize,
+    /// Prior `staged` deltas for this scene flipped to `superseded` on remine.
+    pub superseded_count: usize,
+    /// `staged` | `skipped` | `model_output_rejected`.
+    pub status: String,
+    /// Present only when `status == "skipped"`; names the route+rating that was
+    /// uncleared, or "empty scene". Never carries prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

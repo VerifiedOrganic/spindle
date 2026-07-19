@@ -271,6 +271,7 @@ impl ToolRouter {
                 "create_system_overlay",
                 "preflight_book_export",
                 "compile_manuscript",
+                "mine_scene_canon",
                 "get_writer_state",
                 "get_scene_context",
                 "get_entity",
@@ -788,6 +789,10 @@ impl ToolRouter {
             tool::<CompileManuscriptInput, CompileManuscriptOutput>(
                 "compile_manuscript",
                 "Assemble the committed prose of a book (or an inclusive chapter range within it) on the active branch into one Markdown read-so-far document, with per-chapter and per-scene headings; planned-but-undrafted scenes render an explicit placeholder and are reported in missing_scenes. Optionally writes the Markdown to the project's workspace artifacts directory.",
+            ),
+            tool::<MineSceneCanonInput, MineSceneCanonOutput>(
+                "mine_scene_canon",
+                "Mine one committed scene's prose into proposed canon deltas (staged for operator ratification, never auto-applied). One rating-gated model call; malformed model output is rejected and evidence must appear verbatim in the prose. Re-mining a scene supersedes its prior staged deltas. Returns the staged deltas, discard/supersede counts, and a status of staged, skipped (no cleared route or empty scene), or model_output_rejected.",
             ),
             tool::<ExportBibleInput, ExportBibleOutput>(
                 "export_bible",
@@ -1805,6 +1810,10 @@ impl ToolRouter {
             }
             "compile_manuscript" => {
                 self.invoke(arguments, |input| self.service.compile_manuscript(input))
+                    .await
+            }
+            "mine_scene_canon" => {
+                self.invoke(arguments, |input| self.service.mine_scene_canon(input))
                     .await
             }
             "export_bible" => {
@@ -6160,5 +6169,76 @@ mod tests {
         assert!(out.markdown.contains("The tool assembles this prose."));
         assert!(out.markdown.contains("> [scene 2.1 not yet drafted]"));
         assert_eq!(out.missing_scenes, vec!["2.1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn mine_scene_canon_tool_stages_deltas_end_to_end() {
+        let router = router().await;
+
+        let create_project_args = serde_json::to_value(CreateProjectInput {
+            name: "Mine MCP".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "mined canon".to_string(),
+                style_notes: vec![],
+                boundaries: vec![],
+            },
+        })
+        .expect("create project args");
+        let create_project_args = create_project_args
+            .as_object()
+            .cloned()
+            .expect("create project object");
+        let project: CreateProjectOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("create_project", Some(&create_project_args))
+                .await
+                .expect("create project"),
+        ))
+        .expect("project output");
+
+        // One committed scene carrying the mining sentinel.
+        let save_args = serde_json::to_value(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "A grey tower loomed. MOCK_CANON_MINE stood at its gate.".to_string(),
+            summary: "s".to_string(),
+            content_rating: ContentRating::General,
+            tone: None,
+            source_path: None,
+            generation_id: None,
+            ..Default::default()
+        })
+        .expect("save args");
+        let save_args = save_args.as_object().cloned().expect("save args object");
+        let saved: SaveSceneDraftOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("save_scene_draft", Some(&save_args))
+                .await
+                .expect("save scene draft"),
+        ))
+        .expect("save output");
+
+        let mine_args = serde_json::to_value(MineSceneCanonInput {
+            project_id: project.project_id.clone(),
+            scene_id: saved.scene_id.clone(),
+        })
+        .expect("mine args");
+        let mine_args = mine_args.as_object().cloned().expect("mine args object");
+        let out: MineSceneCanonOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("mine_scene_canon", Some(&mine_args))
+                .await
+                .expect("mine scene canon"),
+        ))
+        .expect("mine output");
+
+        assert_eq!(out.status, "staged");
+        assert_eq!(out.staged.len(), 1);
+        assert_eq!(out.staged[0].delta_class, "canonical_fact");
     }
 }

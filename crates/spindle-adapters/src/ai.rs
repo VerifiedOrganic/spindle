@@ -1796,6 +1796,25 @@ fn extract_mock_behavioral_leak_character(prompt: &str) -> Option<String> {
     }
 }
 
+/// Parse the promise id out of the canon-mining test marker
+/// `MOCK_CANON_MINE_PROMISE[<id>]` embedded in the prompt. The id itself carries
+/// a colon (record ids like `narrative_promise:abc`), so the scan takes
+/// everything between the first `[` after the marker and its closing `]`.
+/// Returns `None` when the marker is absent or the id is empty, so the stub
+/// omits the payoff delta.
+fn extract_mock_canon_mine_promise(prompt: &str) -> Option<String> {
+    const OPEN: &str = "MOCK_CANON_MINE_PROMISE[";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    let id = rest[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 fn local_completion(route: &ModelRoute, prompt: &str) -> String {
     let compact_prompt = prompt
         .split_whitespace()
@@ -1810,7 +1829,36 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
             // and a local-only deployment degrades to no extra findings rather
             // than fabricating prose. A finding is emitted only when the scene
             // carries the test sentinel; otherwise an empty findings array.
-            if prompt.contains("intra-scene temporal-coherence audit") {
+            if prompt.contains("canon mining audit") {
+                // The canon miner (evolution §3.1) rides the `review` route in
+                // local-only deployments (no `mine` route in default_routes).
+                // Without a real mine model, return deterministic staged deltas
+                // only when the prose carries the test sentinel; otherwise an
+                // empty deltas array, so a local-only run degrades to no
+                // proposals rather than fabricating canon.
+                if prompt.contains("MOCK_CANON_MINE_DISCARD") {
+                    // Discard fixture: one valid canonical_fact (evidence in
+                    // prose), one unknown class, and one fabricated-evidence
+                    // delta whose quote is NOT in the prose. The miner stages the
+                    // first and discards the other two.
+                    r#"{"deltas":[
+                        {"delta_class":"canonical_fact","target_id":null,"confidence":"high","evidence":"MOCK_CANON_MINE_DISCARD","payload":{"subject_table":"character","predicate":"mood","value_text":"tense"}},
+                        {"delta_class":"totally_made_up_class","target_id":null,"confidence":"high","evidence":"MOCK_CANON_MINE_DISCARD","payload":{}},
+                        {"delta_class":"canonical_fact","target_id":null,"confidence":"high","evidence":"a quote that never appears in the prose at all","payload":{"subject_table":"character","predicate":"hidden","value_text":"x"}}
+                    ]}"#
+                        .to_string()
+                } else if prompt.contains("MOCK_CANON_MINE") {
+                    let fact_delta = r#"{"delta_class":"canonical_fact","target_id":null,"confidence":"high","evidence":"MOCK_CANON_MINE","payload":{"subject_table":"character","subject_id":null,"predicate":"eye_color","value_text":"grey"}}"#;
+                    match extract_mock_canon_mine_promise(prompt) {
+                        Some(promise_id) => format!(
+                            r#"{{"deltas":[{fact_delta},{{"delta_class":"promise_payoff_candidate","target_id":"{promise_id}","confidence":"medium","evidence":"MOCK_CANON_MINE","payload":{{"narrative_promise_id":"{promise_id}","proposed_status":"paid_off"}}}}]}}"#
+                        ),
+                        None => format!(r#"{{"deltas":[{fact_delta}]}}"#),
+                    }
+                } else {
+                    r#"{"deltas":[]}"#.to_string()
+                }
+            } else if prompt.contains("intra-scene temporal-coherence audit") {
                 if prompt.contains("MOCK_TEMPORAL_JUMP") {
                     r#"{"findings":[{"severity":"warning","message":"the scene skips from afternoon over a long, unrendered span into deep night with no transition beat or scene break","evidence":"MOCK_TEMPORAL_JUMP"}]}"#
                         .to_string()
@@ -2022,6 +2070,75 @@ mod tests {
     fn health_env_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    #[test]
+    fn canon_mine_marker_parses_promise_id_with_colon() {
+        // The promise-id marker echoes a real record id (which carries a colon).
+        assert_eq!(
+            extract_mock_canon_mine_promise(
+                "prose MOCK_CANON_MINE MOCK_CANON_MINE_PROMISE[narrative_promise:abc] tail"
+            )
+            .as_deref(),
+            Some("narrative_promise:abc")
+        );
+        // Empty id and absent marker both yield None.
+        assert_eq!(
+            extract_mock_canon_mine_promise("MOCK_CANON_MINE_PROMISE[]"),
+            None
+        );
+        assert_eq!(extract_mock_canon_mine_promise("no marker"), None);
+    }
+
+    #[tokio::test]
+    async fn canon_mine_stub_returns_deltas_only_with_sentinel() {
+        let router = ModelRouter::local_only();
+        // With the mining-audit header but no sentinel: empty deltas.
+        let empty = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "canon mining audit\nScene prose without sentinel.".to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        assert_eq!(empty.output, r#"{"deltas":[]}"#);
+
+        // With the sentinel AND a promise marker: canonical_fact + payoff delta.
+        let with_sentinel = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "canon mining audit\nMOCK_CANON_MINE \
+                         MOCK_CANON_MINE_PROMISE[narrative_promise:p1] appears here."
+                    .to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&with_sentinel.output).expect("stub emits valid JSON");
+        let deltas = parsed["deltas"].as_array().expect("deltas array");
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0]["delta_class"], "canonical_fact");
+        assert_eq!(deltas[0]["evidence"], "MOCK_CANON_MINE");
+        assert_eq!(deltas[1]["delta_class"], "promise_payoff_candidate");
+        assert_eq!(deltas[1]["target_id"], "narrative_promise:p1");
+
+        // Sentinel but NO promise marker: only the canonical_fact delta.
+        let no_promise = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "canon mining audit\nMOCK_CANON_MINE only.".to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&no_promise.output).expect("stub emits valid JSON");
+        assert_eq!(parsed["deltas"].as_array().expect("deltas").len(), 1);
     }
 
     #[test]
