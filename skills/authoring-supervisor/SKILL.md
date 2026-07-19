@@ -61,11 +61,25 @@ authoring_start_run({
   "start_chapter": 1,
   "end_chapter": 5,
   "checkpoint_interval": 1,
-  "editorial_directives": ["Keep the prose dark."]
+  "editorial_directives": ["Keep the prose dark."],
+  "mining_policy": "disabled"
 })
 ```
 
 This returns a `run_id` (e.g., `authoring_run:xyz`) which persists the run state in the SQLite database.
+
+`mining_policy` is optional and defaults to `disabled` (omit it for the exact
+pre-mining behavior). Set it to `"propose_all"` to have the run stage proposed
+canon deltas for every committed scene: a `mine canon` step runs automatically
+between `commit scene changes` and `annotate beats`, recording an honest
+`mine_status` (`staged` | `skipped` | `model_output_rejected` | `error`) and a
+`mine_detail` on each scene in `authoring_status`. Mining never blocks a run — a
+skip or error is reported, not fatal. When `propose_all` is set, run
+`authoring_prepare_run` with the same `mining_policy` first: it additionally
+verifies the mine-or-review route ladder covers every planned rating and returns
+`missing_requirements` when it does not. Ratification stays an operator decision
+between checkpoints — hand the staged queue to the **canon-steward** skill to
+review and apply/reject; never auto-apply mined deltas.
 
 ### 3. Drive the Bounded Execution Loop
 

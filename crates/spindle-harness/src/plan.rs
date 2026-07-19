@@ -109,6 +109,10 @@ pub enum NextAction {
         scene_order: i32,
         scene_id: String,
     },
+    MineScene {
+        chapter_number: i32,
+        scene_order: i32,
+    },
     AnnotateSceneBeats {
         chapter_number: i32,
         scene_order: i32,
@@ -171,6 +175,13 @@ impl std::fmt::Display for NextAction {
             } => write!(
                 f,
                 "commit scene changes for chapter {chapter_number} scene {scene_order} ({scene_id})"
+            ),
+            Self::MineScene {
+                chapter_number,
+                scene_order,
+            } => write!(
+                f,
+                "mine canon for chapter {chapter_number} scene {scene_order}"
             ),
             Self::AnnotateSceneBeats {
                 chapter_number,
@@ -757,6 +768,19 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
                     };
                 }
                 ScenePhase::ChangesCommitted => {
+                    // Opt-in canon mining sits between commit and beats
+                    // (evolution §3.1, I7). Only when the run opted into
+                    // `propose_all` AND this scene has not been mined yet does
+                    // the scheduler yield MineScene; otherwise scheduling is
+                    // byte-identical to the pre-mining loop. A `Some(_)`
+                    // mine_status (any outcome) means the pass already ran, so
+                    // it never re-fires.
+                    if mining_enabled(state) && scene.mine_status.is_none() {
+                        return NextAction::MineScene {
+                            chapter_number: chapter.chapter_number,
+                            scene_order: scene.scene_order,
+                        };
+                    }
                     return NextAction::AnnotateSceneBeats {
                         chapter_number: chapter.chapter_number,
                         scene_order: scene.scene_order,
@@ -785,6 +809,15 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
     }
 
     NextAction::Complete
+}
+
+/// True when the run opted into canon mining (`mining_policy == "propose_all"`).
+/// `None` (pre-upgrade / default) and any other value — including the explicit
+/// `"disabled"` — leave the loop exactly as it behaved before mining existed.
+/// The policy string is validated at `authoring_start_run`; the scheduler is
+/// deliberately lenient so an unknown value never diverts the loop.
+fn mining_enabled(state: &HarnessState) -> bool {
+    state.mining_policy.as_deref() == Some("propose_all")
 }
 
 fn contiguous_completed_after_last_checkpoint(state: &HarnessState) -> Vec<i32> {
@@ -1028,6 +1061,62 @@ mod tests {
                 scene_id: "scene:1".to_string(),
             }
         );
+    }
+
+    /// Advance a chapter-1 scene to `ChangesCommitted` and return its state so
+    /// the mining-scheduler tests can toggle `mining_policy` / `mine_status`
+    /// against a single committed scene without re-deriving the whole fixture.
+    fn committed_state(mining_policy: Option<&str>, mine_status: Option<&str>) -> HarnessState {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        state.mining_policy = mining_policy.map(str::to_string);
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::ChangesCommitted;
+        chapter.scenes[0].mine_status = mine_status.map(str::to_string);
+        state
+    }
+
+    #[test]
+    fn propose_all_committed_scene_without_mine_status_schedules_mine_before_beats() {
+        let state = committed_state(Some("propose_all"), None);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::MineScene {
+                chapter_number: 1,
+                scene_order: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn propose_all_committed_scene_with_mine_status_schedules_beats() {
+        let state = committed_state(Some("propose_all"), Some("staged"));
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::AnnotateSceneBeats {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn disabled_policy_committed_scene_schedules_beats_never_mine() {
+        // policy None (pre-upgrade / default) and policy "disabled" both keep the
+        // existing byte-identical schedule: straight to AnnotateSceneBeats.
+        for policy in [None, Some("disabled")] {
+            let state = committed_state(policy, None);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::AnnotateSceneBeats {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    scene_id: "scene:1".to_string(),
+                },
+                "policy {policy:?} must not schedule MineScene"
+            );
+        }
     }
 
     #[test]

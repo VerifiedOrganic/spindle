@@ -368,48 +368,29 @@ impl ModelRouter {
     /// external agent, serves every rating, and is never flagged.
     pub fn draft_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
         let runtime = self.runtime.read().expect("model router read lock");
-        let Some(route) = resolve_route(&runtime, "draft", Some(rating)) else {
-            return DraftRoutePreflight {
-                agent_id: None,
-                problem: Some(DraftRoutePreflightProblem::Unresolved),
-            };
-        };
-        // A resolved route whose model_name is a configured external agent is
-        // subject to preflight checks; a built-in local route (model_name not
-        // in the agent map) serves every rating and is never flagged.
-        let Some(agent) = runtime.agents.get(&route.model_name) else {
-            return DraftRoutePreflight {
-                agent_id: None,
-                problem: None,
-            };
-        };
-        let agent_id = Some(agent.config.id.clone());
-        if let Some(env_var) = agent.config.api_key_env.as_deref()
-            && agent.resolved_api_key.is_none()
-        {
-            return DraftRoutePreflight {
-                agent_id,
-                problem: Some(DraftRoutePreflightProblem::MissingApiKey {
-                    env_var: env_var.to_string(),
-                }),
-            };
+        route_preflight(&runtime, "draft", rating)
+    }
+
+    /// Verify — without network I/O — that canon mining can serve a scene of
+    /// the given content rating through its fallback ladder (evolution §2.3):
+    /// the `mine` route, or the `review` route as fallback. Returns `None` when
+    /// EITHER route resolves clear for the rating (a built-in local route on
+    /// either serves every rating), and `Some(problem)` only when the ladder is
+    /// exhausted — no cleared route for the rating on either `mine` or `review`.
+    /// The reported problem is the `mine`-route problem (the primary role),
+    /// mirroring `draft_route_preflight`'s shape for the caller's message.
+    pub fn mine_fallback_preflight(&self, rating: &str) -> Option<DraftRoutePreflight> {
+        let runtime = self.runtime.read().expect("model router read lock");
+        let mine = route_preflight(&runtime, "mine", rating);
+        // Cleared via mine, or (fallback) via review → the ladder is servable.
+        let review_clears = route_preflight(&runtime, "review", rating)
+            .problem
+            .is_none();
+        if mine.problem.is_none() || review_clears {
+            return None;
         }
-        let rating_norm = rating.trim().to_ascii_lowercase();
-        let covered = agent
-            .config
-            .ratings
-            .iter()
-            .any(|declared| declared.trim().to_ascii_lowercase() == rating_norm);
-        if !covered {
-            return DraftRoutePreflight {
-                agent_id,
-                problem: Some(DraftRoutePreflightProblem::RatingNotCovered),
-            };
-        }
-        DraftRoutePreflight {
-            agent_id,
-            problem: None,
-        }
+        // Ladder exhausted: report the primary (mine) route's problem.
+        Some(mine)
     }
 
     pub fn list_agents(&self) -> ListAgentsOutput {
@@ -912,6 +893,56 @@ where
     }
 
     unreachable!("retry loop always returns or retries");
+}
+
+/// Config-level preflight for a single prose-bearing route + rating (no network
+/// I/O). Shared by `draft_route_preflight` (route `"draft"`) and the mine
+/// fallback ladder (routes `"mine"` / `"review"`). Resolves the rating-aware
+/// route, maps it back to its configured agent, and reports the first unmet
+/// requirement: no resolvable route, an unset `api_key_env`, or the agent's
+/// declared `ratings` not covering the rating (ASCII-lowercase compare). A route
+/// that falls back to a built-in local route has no external agent, serves every
+/// rating, and is never flagged.
+fn route_preflight(runtime: &RuntimeConfig, route_name: &str, rating: &str) -> DraftRoutePreflight {
+    let Some(route) = resolve_route(runtime, route_name, Some(rating)) else {
+        return DraftRoutePreflight {
+            agent_id: None,
+            problem: Some(DraftRoutePreflightProblem::Unresolved),
+        };
+    };
+    let Some(agent) = runtime.agents.get(&route.model_name) else {
+        return DraftRoutePreflight {
+            agent_id: None,
+            problem: None,
+        };
+    };
+    let agent_id = Some(agent.config.id.clone());
+    if let Some(env_var) = agent.config.api_key_env.as_deref()
+        && agent.resolved_api_key.is_none()
+    {
+        return DraftRoutePreflight {
+            agent_id,
+            problem: Some(DraftRoutePreflightProblem::MissingApiKey {
+                env_var: env_var.to_string(),
+            }),
+        };
+    }
+    let rating_norm = rating.trim().to_ascii_lowercase();
+    let covered = agent
+        .config
+        .ratings
+        .iter()
+        .any(|declared| declared.trim().to_ascii_lowercase() == rating_norm);
+    if !covered {
+        return DraftRoutePreflight {
+            agent_id,
+            problem: Some(DraftRoutePreflightProblem::RatingNotCovered),
+        };
+    }
+    DraftRoutePreflight {
+        agent_id,
+        problem: None,
+    }
 }
 
 /// Resolve a logical route name + optional rating to a concrete `ModelRoute`.
@@ -3714,6 +3745,37 @@ agent = "tame-agent"
         let preflight = router.draft_route_preflight("explicit");
         assert_eq!(preflight.agent_id, None);
         assert_eq!(preflight.problem, None);
+    }
+
+    #[test]
+    fn mine_fallback_preflight_covered_when_review_covers_rating() {
+        // Mining's fallback ladder is mine → review (evolution §2.3). With NO
+        // `mine` route but a `review` route whose agent covers the rating, the
+        // fallback preflight is satisfied — the pass will resolve via review.
+        let router = cleared_route_router(&["general", "explicit"]);
+        assert!(router.mine_fallback_preflight("explicit").is_none());
+        assert!(router.mine_fallback_preflight("general").is_none());
+    }
+
+    #[test]
+    fn mine_fallback_preflight_flags_rating_no_route_covers() {
+        // A `review` route whose agent covers only general leaves `explicit`
+        // uncovered by both mine (absent) and review — the fallback ladder is
+        // exhausted, so the preflight reports a problem.
+        let router = cleared_route_router(&["general"]);
+        assert!(router.mine_fallback_preflight("general").is_none());
+        assert!(
+            router.mine_fallback_preflight("explicit").is_some(),
+            "explicit is covered by neither mine nor review"
+        );
+    }
+
+    #[test]
+    fn mine_fallback_preflight_ignores_builtin_local_route() {
+        // local_only() resolves both mine and review to the built-in local
+        // route, which serves every rating and is never flagged.
+        let router = ModelRouter::local_only();
+        assert!(router.mine_fallback_preflight("explicit").is_none());
     }
 
     // ── Rating-gated dispatch chokepoint (evolution §4 rules 1-2) ────────────

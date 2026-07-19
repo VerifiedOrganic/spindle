@@ -6198,6 +6198,12 @@ pub struct AuthoringStartRunInput {
     pub editorial_directives: Option<Vec<String>>,
     #[serde(default)]
     pub mode: Option<String>,
+    /// Canon-mining policy for the run (evolution §3.1). Omitted or `None` =
+    /// disabled (behaves exactly as before). Validated against
+    /// {`"disabled"`, `"propose_all"`}; `"propose_all"` stages proposed canon
+    /// deltas per committed scene.
+    #[serde(default)]
+    pub mining_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6246,6 +6252,16 @@ pub struct AuthoringStatusScene {
     pub scene_id: Option<String>,
     pub scene_artifact_path: Option<String>,
     pub blocked_reason: Option<String>,
+    /// Canon-mining outcome for this scene (evolution §3.1). `None` = mining
+    /// not attempted (disabled run or scene not yet past commit); otherwise
+    /// `staged` | `skipped` | `model_output_rejected` | `error`. Additive,
+    /// serde-default so pre-mining clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine_status: Option<String>,
+    /// Human-readable detail for the mining outcome (staged delta count or the
+    /// skip/error reason). Never carries prose (evolution I8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6421,6 +6437,13 @@ pub struct AuthoringPrepareRunInput {
     pub end_chapter: Option<i32>,
     #[serde(default)]
     pub chapter_count: Option<i32>,
+    /// Optional canon-mining policy the run will use (evolution §3.1). Prepare
+    /// does not know the policy at prepare time in the normal flow, so this is
+    /// `None` by default and the extra mine-route preflight is skipped;
+    /// `Some("propose_all")` additionally verifies mine-or-review route
+    /// coverage for every planned rating.
+    #[serde(default)]
+    pub mining_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6443,6 +6466,33 @@ pub struct AuthoringPrepareChapterDetails {
 
 pub fn normalize_name(input: &str) -> String {
     input.trim().to_lowercase()
+}
+
+/// The valid `mining_policy` values for an authoring run (evolution §3.1).
+/// `"disabled"` leaves the loop exactly as before; `"propose_all"` inserts the
+/// per-scene MineScene step. Kept as a small closed set — additive values ship
+/// with an explicit entry here.
+pub const AUTHORING_MINING_POLICIES: [&str; 2] = ["disabled", "propose_all"];
+
+/// Validate and canonicalize an optional `mining_policy` from run input.
+///
+/// - `None` → `Ok(None)` (disabled = default, byte-identical to pre-mining).
+/// - `Some(value)` where trimmed value ∈ {`disabled`, `propose_all`} →
+///   `Ok(Some(canonical))`. `"disabled"` canonicalizes to `None` so the run
+///   persists NULL, matching the pre-upgrade disabled state exactly.
+/// - anything else → `Err(rejected value)` for an input-error message.
+pub fn validate_mining_policy(policy: Option<&str>) -> Result<Option<String>, String> {
+    match policy {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "disabled" => Ok(None),
+                "propose_all" => Ok(Some("propose_all".to_string())),
+                _ => Err(raw.to_string()),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6676,6 +6726,29 @@ pub struct DecideCanonDeltasOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_mining_policy_accepts_known_and_rejects_unknown() {
+        // None (default) and explicit "disabled" both canonicalize to None so
+        // the run persists NULL = byte-identical disabled state.
+        assert_eq!(validate_mining_policy(None), Ok(None));
+        assert_eq!(validate_mining_policy(Some("disabled")), Ok(None));
+        assert_eq!(validate_mining_policy(Some("  Disabled ")), Ok(None));
+        // propose_all is the one enabling value.
+        assert_eq!(
+            validate_mining_policy(Some("propose_all")),
+            Ok(Some("propose_all".to_string()))
+        );
+        assert_eq!(
+            validate_mining_policy(Some("PROPOSE_ALL")),
+            Ok(Some("propose_all".to_string()))
+        );
+        // Anything else is an input error carrying the rejected value verbatim.
+        assert_eq!(
+            validate_mining_policy(Some("auto_accept")),
+            Err("auto_accept".to_string())
+        );
+    }
 
     #[test]
     fn canon_delta_classes_match_adr_d1_exactly() {

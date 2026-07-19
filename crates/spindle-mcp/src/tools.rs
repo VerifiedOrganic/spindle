@@ -1696,20 +1696,29 @@ impl ToolRouter {
                     .await
             }
             "authoring_prepare_run" => {
-                self.invoke(arguments, |input| self.handle_authoring_prepare_run(input))
-                    .await
+                // Box::pin: the authoring handlers' futures are large enough
+                // that un-boxed they push call_tool past the 2MB tokio worker
+                // stack (same class as the decide_canon_deltas fan-out fix).
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_authoring_prepare_run(input))
+                })
+                .await
             }
             "authoring_start_run" => {
-                self.invoke(arguments, |input| self.handle_authoring_start_run(input))
-                    .await
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_authoring_start_run(input))
+                })
+                .await
             }
             "authoring_status" => {
                 self.invoke(arguments, |input| self.handle_authoring_status(input))
                     .await
             }
             "authoring_execute_next" => {
-                self.invoke(arguments, |input| self.handle_authoring_execute_next(input))
-                    .await
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_authoring_execute_next(input))
+                })
+                .await
             }
             "authoring_save_scene_draft" => {
                 self.invoke(arguments, |input| {
@@ -2528,6 +2537,38 @@ impl ToolRouter {
             }
         }
 
+        // Canon-mining preflight (evolution §3.1/§4.4): only when the run opted
+        // into `propose_all`. Mining is prose-bearing, so every planned rating
+        // must be servable through the mine fallback ladder — covered if EITHER
+        // the `mine` route OR the `review` route resolves cleared for the
+        // rating. Uncovered ratings push a `missing_requirements` entry so the
+        // operator decides before the run starts, not hours in (I8).
+        if input.mining_policy.as_deref() == Some("propose_all") {
+            for rating in &planned_ratings {
+                if let Some(preflight) = model_router.mine_fallback_preflight(rating) {
+                    let detail = match preflight.problem {
+                        Some(DraftRoutePreflightProblem::Unresolved) => {
+                            "no mine or review route is configured for this rating".to_string()
+                        }
+                        Some(DraftRoutePreflightProblem::MissingApiKey { env_var }) => {
+                            format!("agent is missing API key env {env_var}")
+                        }
+                        Some(DraftRoutePreflightProblem::RatingNotCovered) => {
+                            "no mine or review agent covers this rating".to_string()
+                        }
+                        None => continue,
+                    };
+                    let agent = preflight
+                        .agent_id
+                        .map(|id| format!(" (agent {id})"))
+                        .unwrap_or_default();
+                    missing_requirements.push(format!(
+                        "Canon mining cannot serve rating {rating}{agent}: {detail}"
+                    ));
+                }
+            }
+        }
+
         let ready_to_draft = missing_requirements.is_empty();
         Ok(AuthoringPrepareRunOutput {
             project_id,
@@ -2556,14 +2597,38 @@ impl ToolRouter {
             });
         }
 
+        // Validate the opt-in mining policy up front. Canonical `mining_policy`
+        // is None (disabled/default) or Some("propose_all"); an unknown value
+        // is an input error (evolution §3.1). "disabled" canonicalizes to None
+        // so the run persists NULL, matching pre-upgrade runs exactly.
+        let mining_policy = match spindle_core::models::validate_mining_policy(
+            input.mining_policy.as_deref(),
+        ) {
+            Ok(policy) => policy,
+            Err(rejected) => {
+                return Ok(AuthoringStartRunOutput {
+                    run_id: String::new(),
+                    status: "blocked".to_string(),
+                    message: format!(
+                        "Cannot start authoring run: mining_policy must be one of {:?}, got {:?}",
+                        spindle_core::models::AUTHORING_MINING_POLICIES,
+                        rejected
+                    ),
+                });
+            }
+        };
+
         let prep_input = AuthoringPrepareRunInput {
             project_id: project_id.clone(),
             book_number: input.book_number,
             start_chapter: input.start_chapter,
             end_chapter: input.end_chapter,
             chapter_count: input.chapter_count,
+            // Thread the resolved policy so prepare's mine-route preflight runs
+            // only when the run actually opted into propose_all.
+            mining_policy: mining_policy.clone(),
         };
-        let prep_report = self.handle_authoring_prepare_run(prep_input).await?;
+        let prep_report = Box::pin(self.handle_authoring_prepare_run(prep_input)).await?;
         if !prep_report.ready_to_draft {
             return Ok(AuthoringStartRunOutput {
                 run_id: "".to_string(),
@@ -2638,6 +2703,7 @@ impl ToolRouter {
         let mut harness_state =
             spindle_harness::state::HarnessState::from_seed(seed, active_branch.id.clone());
         harness_state.artifacts_dir = "../artifacts".to_string();
+        harness_state.mining_policy = mining_policy;
 
         let run_id = format!(
             "authoring_run:{}",
@@ -2757,6 +2823,8 @@ impl ToolRouter {
                     scene_id: sc.scene_id.clone(),
                     scene_artifact_path: sc.scene_artifact_path.clone(),
                     blocked_reason: sc.blocked_reason.clone(),
+                    mine_status: sc.mine_status.clone(),
+                    mine_detail: sc.mine_detail.clone(),
                 });
             }
             let ch_status_str = match ch.status {
@@ -4428,6 +4496,7 @@ fn map_harness_to_records(
         status: status.to_string(),
         created_at: created_at.unwrap_or(now),
         updated_at: now,
+        mining_policy: state.mining_policy.clone(),
     };
 
     let mut chapters = Vec::new();
@@ -4476,6 +4545,8 @@ fn map_harness_to_records(
                 research_required: sc.research_required,
                 research_tags: sc.research_tags.clone(),
                 explicit_query: sc.explicit_query.clone(),
+                mine_status: sc.mine_status.clone(),
+                mine_detail: sc.mine_detail.clone(),
             });
         }
     }
@@ -4543,6 +4614,8 @@ fn map_records_to_harness(
                     research_required: sc.research_required,
                     research_tags: sc.research_tags.clone(),
                     explicit_query: sc.explicit_query.clone(),
+                    mine_status: sc.mine_status.clone(),
+                    mine_detail: sc.mine_detail.clone(),
                     ..Default::default()
                 });
             }
@@ -4593,6 +4666,7 @@ fn map_records_to_harness(
         last_checkpoint_end_chapter: run.last_checkpoint_end_chapter,
         artifacts_dir: run.artifacts_dir.clone(),
         editorial_directives: run.editorial_directives.clone(),
+        mining_policy: run.mining_policy.clone(),
         chapters: ch_states,
         checkpoint_history: cp_history,
     };

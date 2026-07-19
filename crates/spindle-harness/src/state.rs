@@ -70,6 +70,13 @@ pub struct HarnessState {
     pub artifacts_dir: String,
     #[serde(default)]
     pub editorial_directives: Vec<String>,
+    /// Canon-mining policy for this run (evolution §3.1). `None` (pre-upgrade
+    /// and default) or `Some("disabled")` runs the loop exactly as before;
+    /// `Some("propose_all")` inserts a `MineScene` step after each scene's
+    /// commit. Additive with a serde default so state fixtures written before
+    /// this field existed still deserialize.
+    #[serde(default)]
+    pub mining_policy: Option<String>,
     #[serde(default)]
     pub chapters: Vec<ChapterState>,
     #[serde(default)]
@@ -87,6 +94,7 @@ impl HarnessState {
             last_checkpoint_end_chapter: seed.range.start_chapter - 1,
             artifacts_dir: default_artifacts_dir(),
             editorial_directives: seed.editorial_directives,
+            mining_policy: None,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -116,6 +124,8 @@ impl HarnessState {
                             explicit_query: scene.explicit_query,
                             research_pack_empty: false,
                             research_tags_matched: true,
+                            mine_status: None,
+                            mine_detail: None,
                         })
                         .collect(),
                     summary_saved: false,
@@ -258,6 +268,16 @@ pub struct SceneState {
     pub research_pack_empty: bool,
     #[serde(default)]
     pub research_tags_matched: bool,
+    /// Outcome of this scene's canon-mining pass (evolution §3.1). `None` = not
+    /// attempted; otherwise `"staged"` | `"skipped"` | `"model_output_rejected"`
+    /// | `"error"`. A `Some(_)` value is what the scheduler treats as "mining
+    /// done" so the pass runs at most once per scene. Additive, serde-default.
+    #[serde(default)]
+    pub mine_status: Option<String>,
+    /// Human-readable detail for the mining outcome (staged delta count or the
+    /// skip/error reason). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub mine_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]

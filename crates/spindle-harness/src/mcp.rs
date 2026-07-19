@@ -309,6 +309,13 @@ impl McpHarnessClient {
         self.call_tool("annotate_scene_beats", input).await
     }
 
+    pub async fn mine_scene_canon(
+        &self,
+        input: &spindle_core::models::MineSceneCanonInput,
+    ) -> Result<spindle_core::models::MineSceneCanonOutput> {
+        self.call_tool("mine_scene_canon", input).await
+    }
+
     pub async fn save_summary(&self, input: &SaveSummaryInput) -> Result<SaveSummaryOutput> {
         self.call_tool("save_summary", input).await
     }

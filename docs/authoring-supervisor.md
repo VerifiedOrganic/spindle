@@ -28,7 +28,7 @@ The supervisor exposes 9 MCP tools through the `spindle-mcp` server:
 | Tool Name | Description | Key Input Fields | Key Output Fields |
 |---|---|---|---|
 | `authoring_prepare_run` | Verifies plans and resources are ready before drafting. | `project_id`, `book_number`, `start_chapter`, `end_chapter` | `ready_to_draft`, `missing_requirements` |
-| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval` | `run_id`, `status` |
+| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`) | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
 | `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
 | `authoring_save_scene_draft` | Saves host-drafted prose plus its required structured continuity package. | `project_id`, `run_id`, scene placement, `full_text`, `summary`, `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes` | `run_id`, `scene_id`, `scene_artifact_path`, `structured_update_count` |
@@ -42,6 +42,21 @@ Chapter plans are the source of truth for pre-draft scene requirements. Each
 and `content_rating` fields. `authoring_prepare_run` still accepts old plans
 that encoded `location:` / `rating:` in summary text as a legacy fallback, but
 new supervisor flows should not depend on that parsing convention.
+
+`mining_policy` on `authoring_start_run` is optional and defaults to `disabled`
+(a run that never opts in behaves exactly as before). Set it to `propose_all`
+to insert an automatic `mine canon` step between `commit scene changes` and
+`annotate beats`: each committed scene is mined into proposed canon deltas the
+operator ratifies via the canon-delta flow (`list_canon_deltas` /
+`decide_canon_deltas`). The mining outcome is recorded honestly per scene in
+`authoring_status` as `mine_status` (`staged` | `skipped` |
+`model_output_rejected` | `error`) plus a `mine_detail` — a skip or error never
+reads as a clean mine, and mining never blocks the run. When `propose_all` is
+in play, `authoring_prepare_run` (called with the same `mining_policy`) also
+verifies the mine-or-review route ladder covers every planned rating and reports
+`missing_requirements` when it cannot, so an offload gap fails at prepare rather
+than mid-run. `authoring_prepare_run`'s optional `mining_policy` input drives
+this extra preflight and defaults to skipping it.
 
 ## Interactive Drafting Workflow
 

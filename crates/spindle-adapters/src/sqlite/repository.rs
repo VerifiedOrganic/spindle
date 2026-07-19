@@ -13880,8 +13880,8 @@ impl Repository {
                     "INSERT OR REPLACE INTO authoring_run (
                     id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
                     checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
-                    editorial_directives, status, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    editorial_directives, status, created_at, updated_at, mining_policy
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     rusqlite::params![
                         run.id,
                         run.project_id,
@@ -13896,6 +13896,7 @@ impl Repository {
                         run.status,
                         created_at_micros,
                         updated_at_micros,
+                        run.mining_policy,
                     ],
                 )?;
 
@@ -13933,8 +13934,8 @@ impl Repository {
                         authoring_run_id, chapter_number, scene_order, character_ids, location_id,
                         content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
                         draft_diagnostics, blocked_reason, research_required, research_tags,
-                        explicit_query
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                        explicit_query, mine_status, mine_detail
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                         rusqlite::params![
                             sc.authoring_run_id,
                             sc.chapter_number,
@@ -13952,6 +13953,8 @@ impl Repository {
                             sc.research_required.map(|required| required as i32),
                             research_tags_json,
                             sc.explicit_query,
+                            sc.mine_status,
+                            sc.mine_detail,
                         ],
                     )?;
                 }

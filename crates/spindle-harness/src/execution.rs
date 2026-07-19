@@ -116,6 +116,23 @@ pub async fn execute_one(
             )
             .await?
         }
+        NextAction::MineScene {
+            chapter_number,
+            scene_order,
+        } => {
+            // Box::pin: this arm's future contributes its full size to the
+            // enclosing executor future even when never executed; un-boxed it
+            // pushes the C1 integration test past the default macOS test
+            // stack (same failure class as the ratify dispatch arms).
+            Box::pin(mine_scene(
+                state_path,
+                &mut state,
+                client,
+                chapter_number,
+                scene_order,
+            ))
+            .await?
+        }
         NextAction::AnnotateSceneBeats {
             chapter_number,
             scene_order,
@@ -397,6 +414,71 @@ async fn annotate_scene_beats(
     state.save(state_path)?;
     Ok(format!(
         "Annotated beats for chapter {chapter_number} scene {scene_order}"
+    ))
+}
+
+/// Canon-mining step (evolution §3.1). Invokes `mine_scene_canon` for the
+/// committed scene through the same MCP client the commit/annotate steps use,
+/// then records the outcome on the scene's `mine_status`/`mine_detail` and
+/// advances the run regardless of outcome.
+///
+/// Mining never blocks a run (evolution I8): a `staged`, `skipped`,
+/// `model_output_rejected`, OR a transport-level tool error all set a
+/// `Some(_)` mine_status and let the loop proceed to beats. Honesty lives in
+/// the recorded status/detail and the run-status render, not in blocking — a
+/// blocked mine would strand an otherwise complete scene. The detail carries a
+/// staged count or the skip/error reason and never carries prose.
+async fn mine_scene(
+    state_path: &Path,
+    state: &mut HarnessState,
+    client: &McpHarnessClient,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Result<String> {
+    let (chapter_index, scene_index) =
+        scene_indices(state, chapter_number, scene_order).context("scene not found in state")?;
+    let scene_id = state.chapters[chapter_index].scenes[scene_index]
+        .scene_id
+        .clone()
+        .context("scene_id missing for mine_scene")?;
+
+    let (status, detail) = match client
+        .mine_scene_canon(&spindle_core::models::MineSceneCanonInput {
+            project_id: state.project_id.clone(),
+            scene_id: scene_id.clone(),
+        })
+        .await
+    {
+        Ok(output) => {
+            let detail = match output.status.as_str() {
+                "staged" => format!("staged {} delta(s)", output.staged.len()),
+                _ => output
+                    .skip_reason
+                    .clone()
+                    .unwrap_or_else(|| output.status.clone()),
+            };
+            (output.status, detail)
+        }
+        Err(error) => {
+            // Transport-level tool error: record an honest `error` status and
+            // advance anyway (mining never blocks the run — evolution I8).
+            tracing::warn!(
+                "mine_scene_canon for scene {scene_id} failed at transport; \
+                 recording error and advancing: {error:#}"
+            );
+            (
+                "error".to_string(),
+                format!("mine transport error: {error}"),
+            )
+        }
+    };
+
+    let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+    live_scene.mine_status = Some(status.clone());
+    live_scene.mine_detail = Some(detail.clone());
+    state.save(state_path)?;
+    Ok(format!(
+        "Mined canon for chapter {chapter_number} scene {scene_order} ({status}: {detail})"
     ))
 }
 
@@ -1691,6 +1773,7 @@ mod tests {
             last_checkpoint_end_chapter: 0,
             artifacts_dir: "artifacts".to_string(),
             editorial_directives: vec!["Keep the voice sharp.".to_string()],
+            mining_policy: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         }
@@ -1727,6 +1810,8 @@ mod tests {
             explicit_query: None,
             research_pack_empty: false,
             research_tags_matched: true,
+            mine_status: None,
+            mine_detail: None,
         }
     }
 
@@ -2052,6 +2137,7 @@ mod tests {
             last_checkpoint_end_chapter: 0,
             artifacts_dir: "artifacts".to_string(),
             editorial_directives: vec!["Keep the voice sharp.".to_string()],
+            mining_policy: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         };
@@ -2082,6 +2168,8 @@ mod tests {
             explicit_query: None,
             research_pack_empty: false,
             research_tags_matched: true,
+            mine_status: None,
+            mine_detail: None,
         };
 
         let prompt = build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &[], &[]).unwrap();

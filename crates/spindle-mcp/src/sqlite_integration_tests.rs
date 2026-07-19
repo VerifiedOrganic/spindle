@@ -1677,3 +1677,662 @@ agent = "bold-draft"
         "explicit-covering keyless agent should pass: {val:?}"
     );
 }
+
+/// Like [`call_prepare`] but threads a `mining_policy` so the mine-route
+/// fallback preflight (evolution §3.1/§4.4) runs.
+async fn call_prepare_with_mining(
+    router: &crate::tools::ToolRouter,
+    project_id: &str,
+    mining_policy: &str,
+) -> serde_json::Value {
+    let prep_args = serde_json::json!({
+        "project_id": project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "mining_policy": mining_policy,
+    });
+    let res = router
+        .call_tool(
+            "authoring_prepare_run",
+            Some(prep_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.is_error, Some(false));
+    res.structured_content.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_with_propose_all_blocks_when_mine_route_lacks_explicit_coverage() {
+    // Test 6: the draft agent covers explicit (draft preflight passes), but the
+    // `mine` AND `review` routes are both overridden by external agents that
+    // cover only general — so the mine fallback ladder (mine → review) is
+    // exhausted for the planned explicit scene. Overriding review is required
+    // because the built-in local review route otherwise serves every rating and
+    // would clear the ladder. With mining_policy=propose_all prepare must push a
+    // canon-mining missing_requirements entry (I8: fail at prepare, not at 2am).
+    // The default prepare call (no policy) must still pass.
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "bold-draft"
+name = "Bold Draft"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "tame-mine"
+name = "Tame Mine"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general"]
+
+[[routing]]
+route = "draft"
+agent = "bold-draft"
+
+[[routing]]
+route = "mine"
+agent = "tame-mine"
+
+[[routing]]
+route = "review"
+agent = "tame-mine"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture(config).await;
+
+    // Without a policy, prepare skips the mine check entirely and passes.
+    let baseline = call_prepare(&router, &project_id).await;
+    assert_eq!(
+        baseline["ready_to_draft"].as_bool(),
+        Some(true),
+        "policy-less prepare must not run the mine preflight: {baseline:?}"
+    );
+
+    // With propose_all, the explicit scene has no cleared mine/review route.
+    let val = call_prepare_with_mining(&router, &project_id, "propose_all").await;
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(false),
+        "propose_all with uncovered explicit mining must block: {val:?}"
+    );
+    let reqs = val["missing_requirements"].as_array().unwrap();
+    assert!(
+        reqs.iter().any(|r| {
+            let s = r.as_str().unwrap();
+            s.contains("Canon mining") && s.contains("explicit")
+        }),
+        "expected a canon-mining missing_requirements entry naming rating explicit, got {reqs:?}"
+    );
+}
+
+// =============================================================================
+// Canon-mining run integration (evolution §3.1 — P1 run integration)
+// =============================================================================
+
+/// Shared setup for the mining run integration tests. Mirrors the C1 flow's
+/// structure: a mock CLI draft/review agent, an HTTP MCP server the harness
+/// connects to, a project with one general scene planned, and a started run
+/// carrying the given `mining_policy`. Returns everything a test needs to drive
+/// `authoring_execute_next` / `authoring_save_scene_draft` / `authoring_status`
+/// and read canon deltas, plus the run id and project id.
+struct MiningRunFixture {
+    _tmp: TempDir,
+    svc: SqliteSpindleService,
+    router: crate::tools::ToolRouter,
+    project_id: String,
+    run_id: String,
+    ct: tokio_util::sync::CancellationToken,
+    server_handle: tokio::task::JoinHandle<()>,
+    data_dir: std::path::PathBuf,
+}
+
+/// Build a mining-run fixture. `config_extra_routing` is appended to the base
+/// config (which wires a general+explicit-covering draft agent and leaves the
+/// review/mine routes to the built-in local adapters), letting a test override
+/// the `mine` route to force a skip. `mining_policy` is the run's opt-in string
+/// (e.g. "propose_all" or "disabled").
+async fn mining_run_fixture(
+    config_extra_routing: &str,
+    mining_policy: Option<&str>,
+) -> MiningRunFixture {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_mining.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Mock CLI agent: draft returns prose carrying the MOCK_CANON_MINE sentinel
+    // so the committed scene mines into a canonical_fact; review returns a plain
+    // strengths/concerns block (unused by mining, present for completeness).
+    let script_path = tmp.path().join("mock_agent.sh");
+    let script_content = r#"#!/bin/bash
+ROUTE=$1
+if [ "$ROUTE" = "draft" ]; then
+  cat <<EOF
+{
+  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE as the door swung wide.",
+  "summary": "Stranger crosses",
+  "tone": "grim",
+  "character_states": [],
+  "canonical_facts": [],
+  "relationship_updates": [],
+  "beats": [],
+  "continuity_notes": []
+}
+EOF
+else
+  cat <<EOF
+STRENGTHS:
+- ok
+CONCERNS:
+- none
+EOF
+fi
+"#;
+    std::fs::write(&script_path, script_content).unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    let config_path = tmp.path().join("config.toml");
+    // NOTE: the base config configures ONLY the draft route. It deliberately
+    // leaves `review` unconfigured so the canon miner's mine→review fallback
+    // lands on the built-in local review adapter, which recognizes the
+    // MOCK_CANON_MINE sentinel and stages a deterministic delta. A test that
+    // wants to force a mining skip overrides the `mine` route via `extra`.
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+{extra}
+"#,
+        script = script_path.display(),
+        extra = config_extra_routing,
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Mining Run".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Mined canon.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: "First watch.".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara takes the watch".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::General),
+            purpose: "establishing".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    // Start the run with the mining policy.
+    let mut start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+    });
+    if let Some(policy) = mining_policy {
+        start_args["mining_policy"] = serde_json::Value::String(policy.to_string());
+    }
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let start_val = start_res.structured_content.unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "run should start active: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    // Background HTTP MCP server the harness connects to for the mining step.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    MiningRunFixture {
+        _tmp: tmp,
+        svc,
+        router,
+        project_id: project.project_id,
+        run_id,
+        ct,
+        server_handle,
+        data_dir: data_dir.clone(),
+    }
+}
+
+/// Host-draft scene 1.1 with `full_text` and advance through its host-draft
+/// pause + save, returning the exec/save router. Shared by the mining tests.
+async fn host_draft_and_save_scene_1(fx: &MiningRunFixture, full_text: &str) {
+    let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+    // First execute_next pauses for host draft.
+    let host_exec = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let host_exec_val = host_exec.structured_content.unwrap();
+    assert!(
+        host_exec_val["message"]
+            .as_str()
+            .unwrap()
+            .contains("Host draft required"),
+        "expected host-draft pause, got {host_exec_val:?}"
+    );
+
+    let save_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": full_text,
+        "summary": "s",
+        "content_rating": "general",
+        "tone": "grim",
+        "continuity_notes": ["No durable canon changes beyond the mined fact."]
+    });
+    let saved = fx
+        .router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(save_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        saved.structured_content.unwrap()["status"].as_str(),
+        Some("saved")
+    );
+}
+
+async fn execute_next(fx: &MiningRunFixture) -> serde_json::Value {
+    let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+    fx.router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+async fn status(fx: &MiningRunFixture) -> serde_json::Value {
+    let status_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+    fx.router
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+async fn shutdown(fx: MiningRunFixture) {
+    fx.ct.cancel();
+    fx.server_handle.await.unwrap();
+    crate::remove_addr_file(&fx.data_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mining_run_stages_deltas_between_commit_and_beats() {
+    // Test 2: a propose_all run mines the committed scene between commit and
+    // beats. execute_next after commit performs mining; status shows
+    // mine_status "staged" with a count; deltas exist via list_canon_deltas;
+    // then beats proceed.
+    let fx = mining_run_fixture("", Some("propose_all")).await;
+
+    // Host-draft the scene carrying the mining sentinel, then commit it.
+    host_draft_and_save_scene_1(
+        &fx,
+        "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE as the door swung wide.",
+    )
+    .await;
+    let commit = execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes"),
+        "expected commit, got {commit:?}"
+    );
+
+    // Next action must be MineScene (not annotate beats) — the propose_all gate.
+    let mine = execute_next(&fx).await;
+    assert!(
+        mine["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("mine canon"),
+        "expected mine step between commit and beats, got {mine:?}"
+    );
+
+    // Status surfaces the honest mine outcome on the scene entry.
+    let st = status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert_eq!(
+        scene["mine_status"].as_str(),
+        Some("staged"),
+        "expected mine_status staged, got {st:?}"
+    );
+    assert!(
+        scene["mine_detail"].as_str().unwrap().contains("staged 1"),
+        "expected staged count detail, got {scene:?}"
+    );
+
+    // Deltas are really staged on the branch.
+    let list_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "status": "staged",
+    });
+    let list = fx
+        .router
+        .call_tool("list_canon_deltas", Some(list_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let deltas = list["deltas"].as_array().unwrap();
+    assert_eq!(deltas.len(), 1, "one staged delta expected: {list:?}");
+    assert_eq!(deltas[0]["delta_class"].as_str(), Some("canonical_fact"));
+
+    // Beats proceed next (mining fired once, mine_status is now Some).
+    let beats = execute_next(&fx).await;
+    assert!(
+        beats["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats"),
+        "expected annotate beats after mining, got {beats:?}"
+    );
+
+    shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mining_run_skips_honestly_when_route_uncleared_and_advances() {
+    // Test 3: the `mine` route is overridden by an agent that does NOT cover
+    // the scene's `general` rating, so mining skips honestly (mine_status
+    // "skipped", detail naming the rating). The run still advances to beats —
+    // mining never blocks (I8).
+    let extra = r#"
+[[agents]]
+id = "tame-mine"
+name = "Tame Mine"
+provider = "cli"
+endpoint = "/bin/true"
+model = "default"
+ratings = ["teen"]
+
+[[routing]]
+route = "mine"
+agent = "tame-mine"
+"#;
+    let fx = mining_run_fixture(extra, Some("propose_all")).await;
+
+    host_draft_and_save_scene_1(&fx, "A quiet watch. No sentinel here, just prose.").await;
+    let commit = execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes")
+    );
+
+    // Mining runs and skips (uncleared mine route for general), advancing anyway.
+    let mine = execute_next(&fx).await;
+    assert!(
+        mine["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("mine canon"),
+        "expected mine step, got {mine:?}"
+    );
+    assert_ne!(
+        mine["status"].as_str(),
+        Some("blocked"),
+        "mining must never block the run: {mine:?}"
+    );
+
+    let st = status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert_eq!(scene["mine_status"].as_str(), Some("skipped"), "got {st:?}");
+    assert!(
+        scene["mine_detail"].as_str().unwrap().contains("general"),
+        "skip detail must name the uncleared rating, got {scene:?}"
+    );
+
+    // No deltas were staged.
+    let list_args = serde_json::json!({ "project_id": fx.project_id, "status": "staged" });
+    let list = fx
+        .router
+        .call_tool("list_canon_deltas", Some(list_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        list["deltas"].as_array().unwrap().is_empty(),
+        "no deltas: {list:?}"
+    );
+
+    // Run advances to beats despite the skip.
+    let beats = execute_next(&fx).await;
+    assert!(
+        beats["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats"),
+        "run must advance to beats after a skip, got {beats:?}"
+    );
+
+    shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn policy_less_run_never_yields_mine_scene() {
+    // Test 4 (plan-level companion): a run started with NO mining_policy goes
+    // straight from commit to beats — MineScene is never scheduled.
+    let fx = mining_run_fixture("", None).await;
+
+    host_draft_and_save_scene_1(&fx, "A watch with MOCK_CANON_MINE present but no policy.").await;
+    let commit = execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes")
+    );
+
+    // With no policy the very next action is annotate beats — never mine.
+    let next = execute_next(&fx).await;
+    assert!(
+        next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats"),
+        "policy-less run must skip mining entirely, got {next:?}"
+    );
+    assert!(
+        !next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("mine canon"),
+        "policy-less run must never mine, got {next:?}"
+    );
+
+    // The scene's mine_status stays absent (mining not attempted).
+    let st = status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert!(scene.get("mine_status").is_none() || scene["mine_status"].is_null());
+
+    shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_upgrade_run_row_opens_and_resumes_with_null_policy_disabled() {
+    // Test 5: a run row written WITHOUT a mining_policy (NULL = pre-upgrade /
+    // V0024-era) opens fine and resumes. NULL policy = disabled: after commit
+    // the loop goes straight to beats, no MineScene. This proves the additive
+    // columns default cleanly for existing rows.
+    let fx = mining_run_fixture("", None).await;
+
+    // Confirm the persisted run row carries a NULL mining_policy (disabled).
+    let (run, _, _, _) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run.mining_policy, None,
+        "pre-upgrade/default run must persist NULL policy"
+    );
+
+    // Resume: host-draft, commit, then the next action is beats (disabled).
+    host_draft_and_save_scene_1(&fx, "A resumed watch, no mining.").await;
+    let commit = execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes")
+    );
+    let next = execute_next(&fx).await;
+    assert!(
+        next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats"),
+        "NULL-policy (disabled) run must go commit -> beats, got {next:?}"
+    );
+
+    shutdown(fx).await;
+}
