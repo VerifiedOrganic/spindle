@@ -271,6 +271,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
         confidence: Some(0.8),
         tags: Vec::new(),
         reader_visible: true,
+        secret_of_fact_id: None,
     })
     .await
     .unwrap();
@@ -298,6 +299,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
         valid_until: None,
         legacy_untyped: None,
         supersedes_fact_id: None,
+        secrecy: None,
     })
     .await
     .unwrap();

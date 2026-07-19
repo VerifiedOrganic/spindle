@@ -413,6 +413,11 @@ pub struct CreateCanonicalFactParams {
     pub valid_from: Option<StoryPlacement>,
     pub valid_until: Option<StoryPlacement>,
     pub legacy_untyped: bool,
+    /// Secret-knowledge gating (V0023): mark the new fact as secret. Defaults
+    /// to false for every public fact.
+    pub secret: bool,
+    /// Optional concealment guidance stored on the secret fact.
+    pub concealment_note: Option<String>,
 }
 
 /// Parameters for upserting a knowledge_fact.
@@ -429,6 +434,26 @@ pub struct UpsertKnowledgeFactParams {
     pub tags: Vec<String>,
     pub reader_visible: bool,
     pub source_import_session_id: Option<String>,
+    /// Secret-knowledge gating (V0023): link this knowledge row to the secret
+    /// canonical fact it grants circle membership in. `None` for ordinary
+    /// knowledge rows.
+    pub secret_of_fact_id: Option<String>,
+}
+
+/// Parameters for linking a single holder into a secret fact's circle of trust
+/// (design §2.1, declaration path). See [`Repository::link_secret_holder`].
+#[derive(Debug, Clone)]
+pub struct LinkSecretHolderParams {
+    pub project_id: String,
+    pub branch_id: String,
+    pub character_id: String,
+    /// The rendered fact text (reuses the canonical fact's value display).
+    pub fact_text: String,
+    /// `normalize_name(fact_text)` — the unique-index key.
+    pub normalized_fact: String,
+    pub source_summary: String,
+    /// The secret `canonical_fact.id` this holder is being linked to.
+    pub secret_of_fact_id: String,
 }
 
 /// Parameters for upserting a `knows` edge.
@@ -3967,9 +3992,12 @@ impl Repository {
             unit,
             scope,
             legacy_untyped,
+            secret,
+            concealment_note,
             ..
         } = params;
         let _ = legacy_untyped; // column dropped after v029; kept in params for caller parity.
+        let secret_flag = if secret { 1 } else { 0 };
 
         self.inner
             .pool
@@ -3978,9 +4006,10 @@ impl Repository {
                     "INSERT INTO canonical_fact (id, project_id, branch_id, scene_id, \
                      source_scene_id, book_number, chapter_number, subject_table, subject_id, \
                      predicate, value_kind, value_number, value_text, value_json, unit, aliases, \
-                     scope, valid_from, valid_until, superseded_by, created_at, updated_at) \
+                     scope, valid_from, valid_until, superseded_by, created_at, updated_at, \
+                     secret, concealment_note) \
                      VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                             ?15, ?16, ?17, ?18, NULL, ?19, ?19)",
+                             ?15, ?16, ?17, ?18, NULL, ?19, ?19, ?20, ?21)",
                     rusqlite::params![
                         &id,
                         &project_id,
@@ -4001,6 +4030,8 @@ impl Repository {
                         &valid_from_json,
                         &valid_until_json,
                         now,
+                        secret_flag,
+                        &concealment_note,
                     ],
                 )?;
                 Ok(())
@@ -4421,6 +4452,7 @@ impl Repository {
             source_summary,
             confidence,
             source_import_session_id,
+            secret_of_fact_id,
             ..
         } = params;
 
@@ -4442,8 +4474,9 @@ impl Repository {
                     tx.execute(
                         "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
                          fact, normalized_fact, source_summary, learned_at, confidence, tags, \
-                         reader_visible, source_import_session_id, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+                         reader_visible, source_import_session_id, created_at, updated_at, \
+                         secret_of_fact_id) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)",
                         rusqlite::params![
                             &id,
                             &project_id,
@@ -4458,6 +4491,7 @@ impl Repository {
                             reader_visible,
                             &source_import_session_id,
                             now,
+                            &secret_of_fact_id,
                         ],
                     )?;
                     tx.commit()?;
@@ -4466,6 +4500,125 @@ impl Repository {
             })
             .await?;
         self.get_knowledge_fact(&id_out).await
+    }
+
+    /// Secret-knowledge gating (design §2.1, declaration path): link a single
+    /// holder into a secret fact's circle of trust.
+    ///
+    /// Upsert semantics chosen for the holder-row collision the design calls
+    /// out: the unique index on `(project, branch, character, normalized_fact)`
+    /// means a holder may already carry a knowledge row for the same rendered
+    /// fact text. Rather than DELETE+re-INSERT (which would clobber a
+    /// pre-existing `learned_at`, `tags`, or `reader_visible`), when a matching
+    /// row exists we *UPDATE only its `secret_of_fact_id`* (and touch
+    /// `updated_at`), preserving every other field. When no row exists we
+    /// INSERT a fresh one with `learned_at = None` (known from the start) and
+    /// `reader_visible = true` (dramatic-irony default per design §2.5).
+    ///
+    /// Returns the linked knowledge_fact.
+    pub async fn link_secret_holder(
+        &self,
+        params: LinkSecretHolderParams,
+    ) -> Result<KnowledgeFact> {
+        let LinkSecretHolderParams {
+            project_id,
+            branch_id,
+            character_id,
+            fact_text,
+            normalized_fact,
+            source_summary,
+            secret_of_fact_id,
+        } = params;
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let tags_json = serde_json::to_string::<Vec<String>>(&Vec::new())?;
+
+        let linked_id = self
+            .inner
+            .pool
+            .write(move |conn| {
+                let existing_id: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM knowledge_fact \
+                         WHERE project_id = ?1 AND branch_id = ?2 AND character_id = ?3 \
+                           AND normalized_fact = ?4",
+                        rusqlite::params![&project_id, &branch_id, &character_id, &normalized_fact],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional_inner()?;
+
+                match existing_id {
+                    Some(id) => {
+                        // Collision: link the existing row without disturbing
+                        // its learned_at / tags / reader_visible.
+                        conn.execute(
+                            "UPDATE knowledge_fact \
+                             SET secret_of_fact_id = ?1, updated_at = ?2 WHERE id = ?3",
+                            rusqlite::params![&secret_of_fact_id, now, &id],
+                        )?;
+                        Ok(id)
+                    }
+                    None => {
+                        let id = mint_id_local("knowledge_fact");
+                        conn.execute(
+                            "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+                             fact, normalized_fact, source_summary, learned_at, confidence, tags, \
+                             reader_visible, source_import_session_id, created_at, updated_at, \
+                             secret_of_fact_id) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, 1, NULL, ?9, ?9, \
+                                     ?10)",
+                            rusqlite::params![
+                                &id,
+                                &project_id,
+                                &branch_id,
+                                &character_id,
+                                &fact_text,
+                                &normalized_fact,
+                                &source_summary,
+                                &tags_json,
+                                now,
+                                &secret_of_fact_id,
+                            ],
+                        )?;
+                        Ok(id)
+                    }
+                }
+            })
+            .await?;
+        self.get_knowledge_fact(&linked_id).await
+    }
+
+    /// Secret-knowledge gating (design §2.1): the derived circle of trust for a
+    /// secret fact — every character with a knowledge_fact row linked to it,
+    /// paired with the story index at which they entered the circle
+    /// (`learned_at`; `None` = known from the start / always in the circle).
+    /// Feeds the pure `resolve_secret_visibility` resolver.
+    pub async fn secret_circle_members(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        fact_id: &str,
+    ) -> Result<Vec<(String, Option<StoredStoryPlacement>)>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let fact_id = fact_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT character_id, learned_at FROM knowledge_fact \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND secret_of_fact_id = ?3",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id, &fact_id], |r| {
+                        let character_id: String = r.get(0)?;
+                        let learned_at: Option<StoredStoryPlacement> =
+                            crate::sqlite::row::opt_json(r, 1)?;
+                        Ok((character_id, learned_at))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
     }
 
     pub async fn get_knowledge_fact(&self, id: &str) -> Result<KnowledgeFact> {
@@ -12368,6 +12521,14 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("narrative_promise", "description")
             | ("narrative_promise", "status")
             | ("world_rule", "description")
+            // Secret-knowledge gating (V0023): retrofit an existing fact into a
+            // secret (or clear it) without a data migration. `secret` is a
+            // 0/1 flag via update_entity_field's numeric/bool path;
+            // `concealment_note` is free-form guidance. Pairs with
+            // `record_knowledge`'s secret_of_fact_id link to build the circle
+            // (design §2.1: "existing secrets ... retrofit ... without migration").
+            | ("canonical_fact", "secret")
+            | ("canonical_fact", "concealment_note")
     )
 }
 

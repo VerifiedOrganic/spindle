@@ -5078,6 +5078,12 @@ pub struct RecordKnowledgeInput {
     #[serde(default)]
     pub tags: Vec<String>,
     pub reader_visible: bool,
+    /// Secret-knowledge gating (design §2.3.1, the reveal path): when set, this
+    /// knowledge row grants the character membership in the circle of trust for
+    /// the referenced secret canonical fact. The id must reference an existing
+    /// canonical fact with `secret = 1`. `None` for ordinary knowledge.
+    #[serde(default)]
+    pub secret_of_fact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -5943,6 +5949,21 @@ pub enum DivergenceKind {
 
 // ── Canonical fact registry ─────────────────────────────────────────
 
+/// Secret-knowledge gating (design §2.1): the audience boundary for a fact
+/// registered in confidence. `holder_ids` is the initial circle of trust —
+/// the characters who know the fact at declaration time. `concealment_note` is
+/// optional drafting guidance rendered into the `[SECRETS IN PLAY]` envelope
+/// (Part B), e.g. "she deflects questions about her past with dry humor".
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SecrecyScope {
+    /// Characters who know the fact at declaration time (the initial circle).
+    pub holder_ids: Vec<String>,
+    /// Optional guidance rendered into the envelope when the fact ships to the
+    /// model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concealment_note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RegisterCanonicalFactInput {
     pub project_id: String,
@@ -5991,6 +6012,12 @@ pub struct RegisterCanonicalFactInput {
     /// If this fact supersedes a previous one, supply the old fact's id.
     #[serde(default)]
     pub supersedes_fact_id: Option<String>,
+    /// Secret-knowledge gating (design §2.1): when present, the fact is marked
+    /// `secret = 1`, its `concealment_note` is stored, and one knowledge_fact
+    /// row is written per `holder_id` linking that character into the fact's
+    /// circle of trust with `learned_at = None` (known from the start).
+    #[serde(default)]
+    pub secrecy: Option<SecrecyScope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -1607,7 +1607,8 @@ impl<'a> TryFrom<&Row<'a>> for FutureKnowledge {
 }
 
 pub const KNOWLEDGE_FACT_COLUMNS: &str = "id, project_id, branch_id, character_id, fact, normalized_fact, source_summary, \
-     learned_at, confidence, tags, reader_visible, source_import_session_id, created_at, updated_at";
+     learned_at, confidence, tags, reader_visible, source_import_session_id, created_at, updated_at, \
+     secret_of_fact_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeFact {
@@ -1625,6 +1626,11 @@ pub struct KnowledgeFact {
     pub source_import_session_id: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Secret-knowledge gating (V0023): when set, this per-character knowledge
+    /// row grants membership in the circle of trust for the referenced secret
+    /// `canonical_fact.id`. NULL for ordinary knowledge rows and pre-V0023
+    /// rows. The circle is derived from these links (never duplicated).
+    pub secret_of_fact_id: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for KnowledgeFact {
@@ -1645,6 +1651,7 @@ impl<'a> TryFrom<&Row<'a>> for KnowledgeFact {
             source_import_session_id: row::opt_text(r, 11)?,
             created_at: row::time(r, 12)?,
             updated_at: row::time(r, 13)?,
+            secret_of_fact_id: row::opt_text(r, 14)?,
         })
     }
 }
@@ -1955,7 +1962,8 @@ impl<'a> TryFrom<&Row<'a>> for WriterPosition {
 
 pub const CANONICAL_FACT_COLUMNS: &str = "id, project_id, branch_id, scene_id, source_scene_id, book_number, chapter_number, \
      subject_table, subject_id, predicate, value_kind, value_number, value_text, value_json, \
-     unit, aliases, scope, valid_from, valid_until, superseded_by, created_at, updated_at";
+     unit, aliases, scope, valid_from, valid_until, superseded_by, created_at, updated_at, \
+     secret, concealment_note";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalFact {
@@ -1981,6 +1989,14 @@ pub struct CanonicalFact {
     pub superseded_by: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Secret-knowledge gating (V0023): true when this fact is held in
+    /// confidence by a circle of trust. Defaults to false (public) for every
+    /// pre-V0023 row and every fact registered without a `secrecy` scope.
+    pub secret: bool,
+    /// Optional drafting guidance rendered into the `[SECRETS IN PLAY]`
+    /// envelope when the fact ships to the model (Part B). NULL for public
+    /// facts and pre-V0023 rows.
+    pub concealment_note: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
@@ -2009,6 +2025,8 @@ impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
             superseded_by: row::opt_text(r, 19)?,
             created_at: row::time(r, 20)?,
             updated_at: row::time(r, 21)?,
+            secret: row::boolean(r, 22)?,
+            concealment_note: row::opt_text(r, 23)?,
         })
     }
 }

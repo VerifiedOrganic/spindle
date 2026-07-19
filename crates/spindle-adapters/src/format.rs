@@ -3872,6 +3872,288 @@ pub fn render_open_threads_segment(threads: &[String], char_cap: usize) -> Strin
     format!("{LABEL}{body}")
 }
 
+// =============================================================================
+// Secret-knowledge gating: the pure `SecretVisibility` resolver.
+//
+// Part A of the secret-knowledge gating system (see
+// `docs/secret-knowledge-gating-design.md` §2.2). This is the ONE place the
+// per-scene context gate decides, for a single secret fact, whether the model
+// sees the fact at all and — when it does — which characters are inside its
+// circle of trust. The context-gate wiring in `get_scene_context` that calls
+// this resolver is deliberately Part B; here we only encode the decision table.
+//
+// The resolver is fully pure: it takes the fact's circle (each member's
+// `character_id` plus the story index at which they entered the circle, or
+// `None` for always-known), the scene cast, the POV character, and the scene's
+// story cursor, and returns a [`SecretDecision`].
+// =============================================================================
+
+/// The gating decision for a single secret fact in a single scene. See the
+/// §2.2 decision table in the design doc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretDecision {
+    /// No circle member (and no POV insider) is present: strip the fact from
+    /// every context carrier. The model cannot leak what it never saw (P-A).
+    Withhold,
+    /// At least one non-POV circle member is present: ship the fact with an
+    /// envelope naming who is and is not in the know (P-B).
+    Envelope {
+        /// Circle members, known at the cursor, who are present in the scene.
+        known_to: Vec<String>,
+        /// Present cast members who are NOT in the circle — they must not act
+        /// on the secret.
+        unaware_present: Vec<String>,
+        concealment_note: Option<String>,
+    },
+    /// The POV character is the only present circle member: the same envelope,
+    /// but narration may carry the POV's private awareness while dialogue and
+    /// other characters' behavior must not.
+    PovEnvelope {
+        known_to: Vec<String>,
+        concealment_note: Option<String>,
+    },
+}
+
+/// Resolve how a single secret fact should be gated for one scene.
+///
+/// `circle` is the fact's derived circle of trust: one entry per holder, the
+/// story index at which they learned it (`None` = always known, i.e. known
+/// from the start). `scene_cast` is the characters present in the scene;
+/// `pov_character_id` is the POV, if any. `scene_cursor` is the scene's packed
+/// story index. `concealment_note` is optional drafting guidance carried into
+/// the envelope.
+///
+/// Normalization: the POV character always counts as *present* whether or not
+/// its id also appears in `scene_cast` — the resolver treats the present set as
+/// `scene_cast ∪ {pov}`. Circle membership is evaluated *at the cursor*: a
+/// member with `learned_at = Some(idx)` is only in the circle when
+/// `idx <= scene_cursor` (so a ch-12 reveal does not leak into a ch-9 flashback
+/// drafted later); `learned_at = None` is always in the circle.
+///
+/// A secret with an empty circle (zero holders) resolves to [`SecretDecision::Withhold`]
+/// everywhere — an orphaned secret can never be drafted around. This is
+/// intentional and acceptable per the design: a secret nobody holds is inert.
+pub fn resolve_secret_visibility(
+    circle: &[(String, Option<i64>)],
+    scene_cast: &[String],
+    pov_character_id: Option<&str>,
+    scene_cursor: i64,
+    concealment_note: Option<&str>,
+) -> SecretDecision {
+    // Circle-at-cursor: members whose learned_at is None (always known) or
+    // has been reached by this scene's story position.
+    let circle_at_cursor: BTreeSet<&str> = circle
+        .iter()
+        .filter(|(_, learned_at)| learned_at.is_none_or(|idx| idx <= scene_cursor))
+        .map(|(id, _)| id.as_str())
+        .collect();
+
+    // Present set = cast ∪ {pov}. The POV counts as present even when the cast
+    // list omits its id (POV interiority is on-page regardless).
+    let mut present: BTreeSet<&str> = scene_cast.iter().map(String::as_str).collect();
+    if let Some(pov) = pov_character_id {
+        present.insert(pov);
+    }
+
+    let pov_in_circle = pov_character_id.is_some_and(|pov| circle_at_cursor.contains(pov));
+
+    // Circle members (at cursor) actually present in the scene.
+    let present_circle: Vec<&str> = present
+        .iter()
+        .copied()
+        .filter(|id| circle_at_cursor.contains(id))
+        .collect();
+
+    // Non-POV present circle members drive the plain Envelope variant.
+    let has_other_present_circle_member = present_circle
+        .iter()
+        .any(|id| pov_character_id != Some(*id));
+
+    let concealment_note = concealment_note.map(str::to_string);
+
+    if has_other_present_circle_member {
+        // ≥1 circle member present (someone other than the POV): full envelope.
+        let known_to: Vec<String> = present_circle.iter().map(|id| id.to_string()).collect();
+        let unaware_present: Vec<String> = present
+            .iter()
+            .filter(|id| !circle_at_cursor.contains(*id))
+            .map(|id| id.to_string())
+            .collect();
+        SecretDecision::Envelope {
+            known_to,
+            unaware_present,
+            concealment_note,
+        }
+    } else if pov_in_circle {
+        // POV is the only present circle member: POV-only envelope.
+        let known_to: Vec<String> = present_circle.iter().map(|id| id.to_string()).collect();
+        SecretDecision::PovEnvelope {
+            known_to,
+            concealment_note,
+        }
+    } else {
+        // No circle member present and POV not in circle: withhold entirely.
+        SecretDecision::Withhold
+    }
+}
+
+#[cfg(test)]
+mod secret_visibility_tests {
+    use super::*;
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// §2.2 row 1: no circle member present and POV not in circle → withhold.
+    #[test]
+    fn no_circle_member_present_withholds() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision = resolve_secret_visibility(
+            &circle,
+            &ids(&["bran", "aldric"]),
+            Some("bran"),
+            1_000,
+            None,
+        );
+        assert_eq!(decision, SecretDecision::Withhold);
+    }
+
+    /// §2.2 row 2: a non-POV circle member present → full envelope naming the
+    /// insider (known_to) and the out-of-circle cast (unaware_present).
+    #[test]
+    fn circle_member_present_yields_envelope() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision = resolve_secret_visibility(
+            &circle,
+            &ids(&["mara", "bran"]),
+            Some("bran"),
+            1_000,
+            Some("she deflects with dry humor"),
+        );
+        match decision {
+            SecretDecision::Envelope {
+                known_to,
+                unaware_present,
+                concealment_note,
+            } => {
+                assert_eq!(known_to, ids(&["mara"]));
+                assert_eq!(unaware_present, ids(&["bran"]));
+                assert_eq!(
+                    concealment_note.as_deref(),
+                    Some("she deflects with dry humor")
+                );
+            }
+            other => panic!("expected Envelope, got {other:?}"),
+        }
+    }
+
+    /// §2.2 row 3: POV is in the circle and is the ONLY present circle member →
+    /// POV-only envelope (narration may carry her private awareness).
+    #[test]
+    fn pov_only_circle_member_yields_pov_envelope() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("mara"), 1_000, None);
+        match decision {
+            SecretDecision::PovEnvelope { known_to, .. } => {
+                assert_eq!(known_to, ids(&["mara"]));
+            }
+            other => panic!("expected PovEnvelope, got {other:?}"),
+        }
+    }
+
+    /// POV counts as present via cast∪{pov} normalization even when the cast
+    /// list omits the POV id: a POV insider alone still yields PovEnvelope.
+    #[test]
+    fn pov_present_via_normalization_when_absent_from_cast() {
+        let circle = vec![("mara".to_string(), None)];
+        // Cast lists only bran; mara is POV but not in the cast slice.
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["bran"]), Some("mara"), 1_000, None);
+        match decision {
+            SecretDecision::PovEnvelope { known_to, .. } => {
+                assert_eq!(known_to, ids(&["mara"]));
+            }
+            other => panic!("expected PovEnvelope via pov normalization, got {other:?}"),
+        }
+    }
+
+    /// Flashback cursor: a member who learns the secret at index 500 is NOT in
+    /// the circle-at-cursor for a scene at cursor 400 → withhold.
+    #[test]
+    fn future_reveal_not_in_circle_before_cursor() {
+        let circle = vec![("mara".to_string(), Some(500))];
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("bran"), 400, None);
+        assert_eq!(
+            decision,
+            SecretDecision::Withhold,
+            "a reveal at index 500 must not leak into a scene at cursor 400"
+        );
+    }
+
+    /// The same member at the same cursor is in-circle once the cursor reaches
+    /// the reveal index (learned_at <= cursor).
+    #[test]
+    fn reveal_in_circle_at_or_after_cursor() {
+        let circle = vec![("mara".to_string(), Some(500))];
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("bran"), 500, None);
+        match decision {
+            SecretDecision::Envelope { known_to, .. } => assert_eq!(known_to, ids(&["mara"])),
+            other => panic!("expected Envelope at cursor 500, got {other:?}"),
+        }
+    }
+
+    /// Always-known (`learned_at = None`) members are in the circle at any
+    /// cursor, including cursor 0.
+    #[test]
+    fn always_known_member_in_circle_at_cursor_zero() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision = resolve_secret_visibility(&circle, &ids(&["mara"]), Some("mara"), 0, None);
+        match decision {
+            SecretDecision::PovEnvelope { known_to, .. } => assert_eq!(known_to, ids(&["mara"])),
+            other => panic!("expected PovEnvelope for always-known member, got {other:?}"),
+        }
+    }
+
+    /// Degenerate: a secret with zero holders withholds everywhere — an
+    /// orphaned secret can never be drafted around (design-acceptable).
+    #[test]
+    fn empty_circle_withholds_everywhere() {
+        let circle: Vec<(String, Option<i64>)> = Vec::new();
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("mara"), 1_000, None);
+        assert_eq!(decision, SecretDecision::Withhold);
+    }
+
+    /// Two present insiders plus an outsider: known_to lists both insiders,
+    /// unaware_present lists only the outsider.
+    #[test]
+    fn multiple_insiders_and_one_outsider() {
+        let circle = vec![("mara".to_string(), None), ("aldric".to_string(), None)];
+        let decision = resolve_secret_visibility(
+            &circle,
+            &ids(&["mara", "aldric", "bran"]),
+            Some("bran"),
+            1_000,
+            None,
+        );
+        match decision {
+            SecretDecision::Envelope {
+                known_to,
+                unaware_present,
+                ..
+            } => {
+                assert_eq!(known_to, ids(&["aldric", "mara"]));
+                assert_eq!(unaware_present, ids(&["bran"]));
+            }
+            other => panic!("expected Envelope, got {other:?}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod promise_timing_tests {
     use super::*;

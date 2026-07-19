@@ -3335,8 +3335,37 @@ impl SqliteSpindleService {
             valid_from: input.valid_from,
             valid_until: input.valid_until,
             legacy_untyped: input.legacy_untyped.unwrap_or(false),
+            secret: input.secrecy.is_some(),
+            concealment_note: input
+                .secrecy
+                .as_ref()
+                .and_then(|s| s.concealment_note.clone()),
         };
         let fact = self.repository.create_canonical_fact(params).await?;
+        // Declaration path (design §2.1): when secrecy is declared, write one
+        // knowledge_fact row per holder linking the character into the fact's
+        // circle of trust. The rendered fact text reuses the canonical fact's
+        // value display (the same rendering used for hard constraints), so the
+        // circle rows read like ordinary knowledge. `learned_at = None` (known
+        // from the start) and `reader_visible = true` are handled inside
+        // `link_secret_holder` (dramatic-irony default per design §2.5).
+        if let Some(secrecy) = input.secrecy.as_ref() {
+            let fact_text = crate::format::canonical_fact_hard_constraint(&fact).statement;
+            let normalized_fact = spindle_core::models::normalize_name(&fact_text);
+            for holder_id in &secrecy.holder_ids {
+                self.repository
+                    .link_secret_holder(crate::sqlite::repository::LinkSecretHolderParams {
+                        project_id: fact.project_id.clone(),
+                        branch_id: fact.branch_id.clone(),
+                        character_id: holder_id.clone(),
+                        fact_text: fact_text.clone(),
+                        normalized_fact: normalized_fact.clone(),
+                        source_summary: "secret declared".to_string(),
+                        secret_of_fact_id: fact.id.clone(),
+                    })
+                    .await?;
+            }
+        }
         let superseded_fact_id = match input.supersedes_fact_id {
             Some(old) => {
                 self.repository
@@ -11185,6 +11214,7 @@ impl SqliteSpindleService {
                     legacy_untyped: None,
                     context: entry.context,
                     supersedes_fact_id: entry.supersedes_fact_id,
+                    secrecy: None,
                 })
                 .await
             {
@@ -14224,6 +14254,11 @@ impl SqliteSpindleService {
                 valid_until,
                 legacy_untyped: Some(false),
                 supersedes_fact_id: Some(input.fact_id.clone()),
+                // Secrecy is a declaration-time concern; the untyped→typed
+                // upgrade path does not re-declare it (Part A scope). A secret
+                // fact's circle links are on knowledge_fact rows and survive the
+                // upgrade independently of this re-register.
+                secrecy: None,
             })
             .await?;
         // No-op against the v029+ schema (column dropped); kept for
@@ -16842,6 +16877,26 @@ impl SqliteSpindleService {
             Some(b) => b,
             None => character.branch_id.clone(),
         };
+        // Reveal path (design §2.3.1): a `secret_of_fact_id` link must point at
+        // an existing canonical fact that is actually marked secret, or the
+        // "reveal" would grant circle membership in a non-secret. Validate at
+        // the boundary and surface a clear domain error otherwise.
+        if let Some(fact_id) = input.secret_of_fact_id.as_deref() {
+            let linked = self
+                .repository
+                .get_canonical_fact(fact_id)
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "secret_of_fact_id '{fact_id}' does not reference an existing canonical fact"
+                    )
+                })?;
+            if !linked.secret {
+                anyhow::bail!(
+                    "secret_of_fact_id '{fact_id}' references a canonical fact that is not marked secret"
+                );
+            }
+        }
         let normalized_fact = spindle_core::models::normalize_name(&input.fact);
         let fact = self
             .repository
@@ -16857,6 +16912,7 @@ impl SqliteSpindleService {
                 tags: input.tags.clone(),
                 reader_visible: input.reader_visible,
                 source_import_session_id: None,
+                secret_of_fact_id: input.secret_of_fact_id.clone(),
             })
             .await?;
         // Best-effort knows edge linking character → fact.
@@ -18835,6 +18891,7 @@ impl SqliteSpindleService {
                             tags: vec!["imported".to_string(), "hydrated".to_string()],
                             reader_visible: true,
                             source_import_session_id: Some(input.session_id.clone()),
+                            secret_of_fact_id: None,
                         })
                         .await?;
                     created_knowledge += 1;
@@ -21566,6 +21623,7 @@ mod tests {
                 valid_until: None,
                 legacy_untyped: None,
                 supersedes_fact_id: None,
+                secrecy: None,
             })
             .await
             .unwrap();
@@ -22044,6 +22102,7 @@ mod tests {
             valid_until: None,
             legacy_untyped: Some(false),
             supersedes_fact_id: None,
+            secrecy: None,
         })
         .await
         .unwrap();
@@ -22935,6 +22994,7 @@ mod tests {
                 confidence: Some(0.8),
                 tags: vec!["intel".into()],
                 reader_visible: true,
+                secret_of_fact_id: None,
             })
             .await
             .unwrap();
@@ -22963,6 +23023,7 @@ mod tests {
                 valid_until: None,
                 legacy_untyped: None,
                 supersedes_fact_id: None,
+                secrecy: None,
             })
             .await
             .unwrap();
@@ -23299,6 +23360,7 @@ mod tests {
                 valid_until: None,
                 legacy_untyped: Some(true),
                 supersedes_fact_id: None,
+                secrecy: None,
             })
             .await
             .unwrap();
@@ -29525,6 +29587,7 @@ rating = "explicit"
             valid_until: None,
             legacy_untyped: Some(false),
             supersedes_fact_id: None,
+            secrecy: None,
         })
         .await
         .unwrap();
@@ -30375,6 +30438,8 @@ rating = "explicit"
                     valid_from: None,
                     valid_until: None,
                     legacy_untyped: false,
+                    secret: false,
+                    concealment_note: None,
                 })
                 .await
                 .unwrap();
@@ -30684,6 +30749,7 @@ rating = "explicit"
             confidence: None,
             tags: Vec::new(),
             reader_visible: true,
+            secret_of_fact_id: None,
         })
         .await
         .unwrap();
@@ -32016,6 +32082,7 @@ rating = "explicit"
             confidence: None,
             tags: Vec::new(),
             reader_visible: true,
+            secret_of_fact_id: None,
         })
         .await
         .unwrap();
@@ -32266,6 +32333,8 @@ rating = "explicit"
                 valid_from: None,
                 valid_until: None,
                 legacy_untyped: false,
+                secret: false,
+                concealment_note: None,
             })
             .await
             .unwrap();
@@ -36513,5 +36582,664 @@ agent = "review-http"
             )
             .is_err()
         );
+    }
+
+    // =========================================================================
+    // Secret-knowledge gating — Part A (design docs/secret-knowledge-gating-design.md).
+    // =========================================================================
+    mod secret_knowledge_gating {
+        use super::*;
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, ContentRating, ContextFormat,
+            CreateCharacterInput, CreateLocationInput, GetSceneContextInput, RecordKnowledgeInput,
+            RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope, WorldStateInput,
+        };
+
+        /// Build a project + one character + a location + a saved scene,
+        /// returning (project_id, character_id, scene_id, location_id) used
+        /// across the secret-gating tests.
+        async fn scaffold(svc: &SqliteSpindleService) -> (String, String, String, String) {
+            let proj = svc
+                .create_project(CreateProjectInput {
+                    name: "Secrets".into(),
+                    project_type: "novel".into(),
+                    genre: "fantasy".into(),
+                    reader_contract: ReaderContract {
+                        promise: "Nothing stays hidden forever.".into(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            let mara = svc
+                .create_character(CreateCharacterInput {
+                    project_id: proj.project_id.clone(),
+                    name: "Mara".into(),
+                    summary: "A reincarnated warden who has told no one.".into(),
+                    role: "protagonist".into(),
+                    realm: None,
+                    voice_profile: CharacterVoiceProfileData {
+                        tone: None,
+                        vocabulary: Vec::new(),
+                        sentence_structure: Vec::new(),
+                        tics: Vec::new(),
+                        forbidden_words: Vec::new(),
+                        example_lines: Vec::new(),
+                        established_in_scene_id: None,
+                        updated_at: None,
+                    },
+                    emotional_profile: CharacterEmotionalProfileData {
+                        base_emotions: std::collections::BTreeMap::new(),
+                        suppressed: Vec::new(),
+                        triggers: Vec::new(),
+                        defense_mechanisms: Vec::new(),
+                        flex_range: None,
+                    },
+                    initial_state: None,
+                })
+                .await
+                .unwrap();
+            let gate = svc
+                .create_location(CreateLocationInput {
+                    project_id: proj.project_id.clone(),
+                    name: "Ash Gate".into(),
+                    kind: "fortress".into(),
+                    realm: None,
+                    summary: "A blackened wall holding back the dark.".into(),
+                    initial_state: WorldStateInput {
+                        controlling_faction: None,
+                        status: Some("tense".into()),
+                        prosperity: None,
+                        stability: Some("fragile".into()),
+                        threat_level: Some("high".into()),
+                        sensory_details: vec!["smell of ash".into()],
+                    },
+                })
+                .await
+                .unwrap();
+            let scene = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: proj.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order: 1,
+                    full_text: "Mara kept her own counsel.".into(),
+                    summary: "Mara alone.".into(),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            (
+                proj.project_id,
+                mara.character_id,
+                scene.scene_id,
+                gate.location_id,
+            )
+        }
+
+        /// A1 back-compat/plumbing: a fact registered WITHOUT secrecy reads back
+        /// `secret = false` / `concealment_note = None`, and a knowledge row
+        /// recorded without a link reads `secret_of_fact_id = None`. This pins
+        /// the additive/defaulted schema: pre-V0023 shape is the default shape.
+        /// A1 migration back-compat: a row inserted the *pre-V0023 way* (the
+        /// INSERT omits `secret` / `concealment_note` / `secret_of_fact_id`
+        /// entirely, exactly as a pre-migration binary would) reads back through
+        /// the record `TryFrom` with `secret = false`, `concealment_note = None`,
+        /// and `secret_of_fact_id = None` — proving the additive migration's
+        /// DEFAULT 0 / NULL semantics hold for old rows.
+        #[tokio::test]
+        async fn pre_v0023_rows_default_to_non_secret() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
+            let branch = svc
+                .repository()
+                .get_active_branch(&project_id)
+                .await
+                .unwrap();
+            let branch_id = branch.id.clone();
+
+            let fact_id = "canonical_fact:pre_v0023".to_string();
+            let knowledge_id = "knowledge_fact:pre_v0023".to_string();
+            {
+                let fact_id = fact_id.clone();
+                let knowledge_id = knowledge_id.clone();
+                let project_id = project_id.clone();
+                let branch_id = branch_id.clone();
+                let scene_id = scene_id.clone();
+                let character_id = character_id.clone();
+                svc.repository()
+                    .pool()
+                    .write(move |conn| {
+                        // Pre-V0023 canonical_fact INSERT: no secret columns.
+                        conn.execute(
+                            "INSERT INTO canonical_fact (id, project_id, branch_id, scene_id, \
+                             book_number, chapter_number, subject_table, predicate, value_kind, \
+                             value_text, aliases, scope, created_at, updated_at) \
+                             VALUES (?1, ?2, ?3, ?4, 1, 1, 'project', 'motto', 'string', \
+                                     'hold the line', '[]', 'invariant', 0, 0)",
+                            rusqlite::params![&fact_id, &project_id, &branch_id, &scene_id],
+                        )?;
+                        // Pre-V0023 knowledge_fact INSERT: no secret_of_fact_id.
+                        conn.execute(
+                            "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+                             fact, normalized_fact, source_summary, tags, reader_visible, \
+                             created_at, updated_at) \
+                             VALUES (?1, ?2, ?3, ?4, 'old fact', 'old fact', 'legacy', '[]', 1, \
+                                     0, 0)",
+                            rusqlite::params![
+                                &knowledge_id,
+                                &project_id,
+                                &branch_id,
+                                &character_id
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            }
+
+            let fact = svc.repository().get_canonical_fact(&fact_id).await.unwrap();
+            assert!(!fact.secret, "pre-V0023 fact defaults to secret=false");
+            assert_eq!(fact.concealment_note, None);
+
+            let knowledge = svc
+                .repository()
+                .get_knowledge_fact(&knowledge_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                knowledge.secret_of_fact_id, None,
+                "pre-V0023 knowledge row has no secret link"
+            );
+        }
+
+        #[tokio::test]
+        async fn plain_fact_and_knowledge_default_to_non_secret() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
+
+            let out = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(character_id.clone()),
+                    predicate: Some("eye_color".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("grey".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: None,
+                })
+                .await
+                .unwrap();
+            let fact = svc
+                .repository()
+                .get_canonical_fact(&out.canonical_fact_id)
+                .await
+                .unwrap();
+            assert!(!fact.secret, "a fact without secrecy is public");
+            assert_eq!(fact.concealment_note, None);
+
+            svc.record_knowledge(RecordKnowledgeInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                character_id: character_id.clone(),
+                fact: "The sky is grey.".into(),
+                source_summary: "observation".into(),
+                learned_at: None,
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: None,
+            })
+            .await
+            .unwrap();
+            let branch = svc
+                .repository()
+                .get_active_branch(&project_id)
+                .await
+                .unwrap();
+            let rows = svc
+                .repository()
+                .list_knowledge_facts_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap();
+            assert!(
+                rows.iter().all(|r| r.secret_of_fact_id.is_none()),
+                "ordinary knowledge rows carry no secret link"
+            );
+        }
+
+        /// A2 declaration: registering with `secrecy` marks the fact secret,
+        /// stores the concealment note, and writes one linked holder row per
+        /// holder_id with `learned_at = None` (always known) and
+        /// `reader_visible = true` (dramatic-irony default).
+        #[tokio::test]
+        async fn declaring_secrecy_writes_linked_holder_rows() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
+
+            let out = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(character_id.clone()),
+                    predicate: Some("reincarnation".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("is a reincarnated warden".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: Some(SecrecyScope {
+                        holder_ids: vec![character_id.clone()],
+                        concealment_note: Some("she deflects with dry humor".into()),
+                    }),
+                })
+                .await
+                .unwrap();
+
+            let fact = svc
+                .repository()
+                .get_canonical_fact(&out.canonical_fact_id)
+                .await
+                .unwrap();
+            assert!(fact.secret, "declared fact is secret");
+            assert_eq!(
+                fact.concealment_note.as_deref(),
+                Some("she deflects with dry humor")
+            );
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project_id)
+                .await
+                .unwrap();
+            let circle = svc
+                .repository()
+                .secret_circle_members(&project_id, &branch.id, &out.canonical_fact_id)
+                .await
+                .unwrap();
+            assert_eq!(circle.len(), 1, "one holder row written");
+            assert_eq!(circle[0].0, character_id);
+            assert!(
+                circle[0].1.is_none(),
+                "declaration-time holder is known from the start (learned_at None)"
+            );
+
+            let rows = svc
+                .repository()
+                .list_knowledge_facts_by_project_and_branch(&project_id, &branch.id)
+                .await
+                .unwrap();
+            let linked = rows
+                .iter()
+                .find(|r| r.secret_of_fact_id.as_deref() == Some(out.canonical_fact_id.as_str()))
+                .expect("linked holder row exists");
+            assert!(
+                linked.reader_visible,
+                "dramatic-irony default is reader-visible"
+            );
+            assert_eq!(linked.source_summary, "secret declared");
+        }
+
+        /// A2 reveal path: `record_knowledge` with a valid `secret_of_fact_id`
+        /// expands the circle (the new holder appears with a placement-stamped
+        /// learned_at).
+        #[tokio::test]
+        async fn reveal_expands_circle_with_valid_link() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
+            let confidant = svc
+                .create_character(CreateCharacterInput {
+                    project_id: project_id.clone(),
+                    name: "Bran".into(),
+                    summary: "The one she finally tells.".into(),
+                    role: "supporting".into(),
+                    realm: None,
+                    voice_profile: CharacterVoiceProfileData {
+                        tone: None,
+                        vocabulary: Vec::new(),
+                        sentence_structure: Vec::new(),
+                        tics: Vec::new(),
+                        forbidden_words: Vec::new(),
+                        example_lines: Vec::new(),
+                        established_in_scene_id: None,
+                        updated_at: None,
+                    },
+                    emotional_profile: CharacterEmotionalProfileData {
+                        base_emotions: std::collections::BTreeMap::new(),
+                        suppressed: Vec::new(),
+                        triggers: Vec::new(),
+                        defense_mechanisms: Vec::new(),
+                        flex_range: None,
+                    },
+                    initial_state: None,
+                })
+                .await
+                .unwrap();
+
+            let out = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(character_id.clone()),
+                    predicate: Some("reincarnation".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("is a reincarnated warden".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: Some(SecrecyScope {
+                        holder_ids: vec![character_id.clone()],
+                        concealment_note: None,
+                    }),
+                })
+                .await
+                .unwrap();
+
+            svc.record_knowledge(RecordKnowledgeInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                character_id: confidant.character_id.clone(),
+                fact: "Mara is a reincarnated warden.".into(),
+                source_summary: "she finally told him".into(),
+                learned_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 12,
+                    scene_order: Some(1),
+                    note: None,
+                }),
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: Some(out.canonical_fact_id.clone()),
+            })
+            .await
+            .unwrap();
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project_id)
+                .await
+                .unwrap();
+            let mut circle = svc
+                .repository()
+                .secret_circle_members(&project_id, &branch.id, &out.canonical_fact_id)
+                .await
+                .unwrap();
+            circle.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(circle.len(), 2, "circle expanded to two members");
+            let confidant_entry = circle
+                .iter()
+                .find(|(id, _)| id == &confidant.character_id)
+                .expect("confidant in circle");
+            assert_eq!(
+                confidant_entry.1.as_ref().map(|p| p.chapter_number),
+                Some(12),
+                "the reveal is placement-stamped at chapter 12"
+            );
+        }
+
+        /// A2 reveal validation: a `secret_of_fact_id` pointing at a NON-secret
+        /// fact is rejected with a domain error (the reveal would grant
+        /// membership in a non-secret).
+        #[tokio::test]
+        async fn reveal_link_to_non_secret_fact_errors() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
+
+            let public = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(character_id.clone()),
+                    predicate: Some("eye_color".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("grey".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: None,
+                })
+                .await
+                .unwrap();
+
+            let err = svc
+                .record_knowledge(RecordKnowledgeInput {
+                    project_id: project_id.clone(),
+                    branch_id: None,
+                    character_id: character_id.clone(),
+                    fact: "grey eyes".into(),
+                    source_summary: "bogus reveal".into(),
+                    learned_at: None,
+                    confidence: None,
+                    tags: Vec::new(),
+                    reader_visible: true,
+                    secret_of_fact_id: Some(public.canonical_fact_id.clone()),
+                })
+                .await
+                .expect_err("linking a reveal to a non-secret fact must error");
+            assert!(
+                err.to_string().contains("not marked secret"),
+                "error names the non-secret cause: {err}"
+            );
+
+            let missing = svc
+                .record_knowledge(RecordKnowledgeInput {
+                    project_id: project_id.clone(),
+                    branch_id: None,
+                    character_id: character_id.clone(),
+                    fact: "phantom".into(),
+                    source_summary: "bogus reveal".into(),
+                    learned_at: None,
+                    confidence: None,
+                    tags: Vec::new(),
+                    reader_visible: true,
+                    secret_of_fact_id: Some("canonical_fact:does-not-exist".into()),
+                })
+                .await
+                .expect_err("linking a reveal to a missing fact must error");
+            assert!(
+                missing
+                    .to_string()
+                    .contains("does not reference an existing"),
+                "error names the missing cause: {missing}"
+            );
+        }
+
+        /// A2 retrofit: `canonical_fact.secret` and `.concealment_note` are in
+        /// the update_entity allowlist, so an existing public fact can be
+        /// retrofitted into a secret without a data migration.
+        #[tokio::test]
+        async fn update_entity_retrofits_secret_flag() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
+            let out = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(character_id.clone()),
+                    predicate: Some("origin".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("came from the drowned coast".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: None,
+                })
+                .await
+                .unwrap();
+
+            svc.repository()
+                .update_entity_field(
+                    "canonical_fact",
+                    &out.canonical_fact_id,
+                    "secret",
+                    serde_json::json!(1),
+                )
+                .await
+                .unwrap();
+            svc.repository()
+                .update_entity_field(
+                    "canonical_fact",
+                    &out.canonical_fact_id,
+                    "concealment_note",
+                    serde_json::json!("never volunteered"),
+                )
+                .await
+                .unwrap();
+
+            let fact = svc
+                .repository()
+                .get_canonical_fact(&out.canonical_fact_id)
+                .await
+                .unwrap();
+            assert!(fact.secret, "retrofit set the secret flag");
+            assert_eq!(fact.concealment_note.as_deref(), Some("never volunteered"));
+        }
+
+        /// A4 no-secrets regression pin (design §5 invariant): a project with
+        /// ZERO secret facts produces get_scene_context markdown with no
+        /// "[SECRETS" substring, and registering a plain (non-secret) canonical
+        /// fact does not change that. Part A does not wire the context gate, so
+        /// this passes trivially — it exists to pin the invariant Part B must
+        /// inherit (byte-identical no-secrets behavior).
+        #[tokio::test]
+        async fn no_secrets_context_markdown_has_no_secrets_block() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id, scene_id, location_id) = scaffold(&svc).await;
+
+            // A plain, non-secret canonical fact — the ordinary case.
+            svc.register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project_id.clone(),
+                scene_id: scene_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".into()),
+                subject_id: Some(character_id.clone()),
+                predicate: Some("oath".into()),
+                value_kind: Some("string".into()),
+                value_text: Some("ash gate warden".into()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+            let envelope = svc
+                .get_scene_context_envelope(GetSceneContextInput {
+                    project_id: project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order: 2,
+                    character_ids: vec![character_id.clone()],
+                    max_character_count: None,
+                    location_id: location_id.clone(),
+                    format: Some(ContextFormat::Markdown),
+                    budget_tokens: Some(4000),
+                    token_budget: None,
+                    sections: None,
+                })
+                .await
+                .unwrap();
+            let markdown = envelope
+                .context_markdown
+                .as_deref()
+                .expect("markdown requested");
+            assert!(
+                !markdown.contains("[SECRETS"),
+                "a project with no secret facts must not emit a secrets block"
+            );
+            assert!(
+                markdown.contains("ash gate warden"),
+                "the plain canonical fact still renders unchanged"
+            );
+        }
     }
 }
