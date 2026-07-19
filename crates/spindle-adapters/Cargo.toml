@@ -25,6 +25,7 @@ refinery.workspace = true
 sqlite-vec.workspace = true
 ulid.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true

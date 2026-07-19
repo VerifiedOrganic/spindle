@@ -469,7 +469,10 @@ name = "CLI Agent Review"
 provider = "cli"
 endpoint = "{}"
 model = "default"
-ratings = ["general"]
+# Must cover every rating the run's sampled scenes carry: the rating-gated
+# dispatch chokepoint (resolve_cleared_route) refuses to send explicit prose
+# to a review agent that does not declare it.
+ratings = ["general", "explicit"]
 
 [[routing]]
 route = "draft"

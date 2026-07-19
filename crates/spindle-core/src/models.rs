@@ -6456,9 +6456,148 @@ pub struct ResearchUsageForSceneOutput {
     pub usages: Vec<ResearchUsage>,
 }
 
+// =============================================================================
+// Canon deltas (ADR 0001 — canon mining & ratification)
+// =============================================================================
+
+/// The v1 canon-delta class vocabulary (ADR 0001 D1). Order and spelling are a
+/// **one-way door**: staged rows persist in operator databases keyed on these
+/// strings, so a rename strands rows and breaks decided-audit replay.
+///
+/// Classes are validated strings, not an enum — additions are additive by
+/// construction (ADR reversal-cost note), but [`is_canon_delta_class`] rejects
+/// any class not in this table at the staging boundary.
+pub const CANON_DELTA_CLASSES: [&str; 14] = [
+    "canonical_fact",
+    "promise_planted",
+    "promise_payoff_candidate",
+    "promise_reinforced",
+    "relationship_shift",
+    "character_state",
+    "knowledge_learned",
+    "beat_annotation",
+    "try_fail_cycle",
+    "consequence_delivered",
+    "escalation_demonstrated",
+    "arc_milestone_reached",
+    "quantity_change",
+    "entity_candidate",
+];
+
+/// Whether `class` is one of the recognised [`CANON_DELTA_CLASSES`]. Exact
+/// (case-sensitive) match — the class vocabulary is a public contract, not a
+/// free-form label. Staging rejects anything this returns `false` for.
+pub fn is_canon_delta_class(class: &str) -> bool {
+    CANON_DELTA_CLASSES.contains(&class)
+}
+
+/// A proposed canon delta mined from a committed scene and awaiting operator
+/// ratification (ADR 0001 D2). Read model: timestamps are ISO-8601 strings,
+/// mapped from the stored microsecond representation at the adapter boundary
+/// (mirrors [`SessionActivity`] / [`ProgressionEvent`]). `payload` is the typed
+/// per-class JSON — validated by the write tool the class maps to on apply.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonDelta {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the scene this delta was mined from.
+    pub scene_id: String,
+    /// The authoring run that mined it, or `None` when mined outside a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_run_id: Option<String>,
+    /// One of [`CANON_DELTA_CLASSES`].
+    pub delta_class: String,
+    /// The existing entity this modifies; `None` proposes a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    /// Typed per-class payload (the class's write-tool input, minus the fields
+    /// injected at apply).
+    pub payload: serde_json::Value,
+    /// Sanitized prose excerpt (≤300 chars) grounding the proposal; mandatory.
+    pub evidence: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+    /// `staged` | `applied` | `rejected` | `superseded`.
+    pub status: String,
+    /// Ratification audit — when the decision was recorded (ISO-8601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// Ratification audit — who recorded the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canon_delta_classes_match_adr_d1_exactly() {
+        // ADR 0001 D1 — the class vocabulary is a one-way door; this test pins
+        // the exact fourteen names and their order so a rename can never slip in
+        // unnoticed (orphaned staged rows, broken audit replay).
+        assert_eq!(CANON_DELTA_CLASSES.len(), 14);
+        assert_eq!(
+            CANON_DELTA_CLASSES,
+            [
+                "canonical_fact",
+                "promise_planted",
+                "promise_payoff_candidate",
+                "promise_reinforced",
+                "relationship_shift",
+                "character_state",
+                "knowledge_learned",
+                "beat_annotation",
+                "try_fail_cycle",
+                "consequence_delivered",
+                "escalation_demonstrated",
+                "arc_milestone_reached",
+                "quantity_change",
+                "entity_candidate",
+            ]
+        );
+    }
+
+    #[test]
+    fn canon_delta_class_validation_rejects_unknown_and_accepts_known() {
+        assert!(is_canon_delta_class("beat_annotation"));
+        assert!(is_canon_delta_class("entity_candidate"));
+        assert!(!is_canon_delta_class("made_up_class"));
+        assert!(!is_canon_delta_class(""));
+        // Classes are case-sensitive validated strings, not an enum.
+        assert!(!is_canon_delta_class("Canonical_Fact"));
+    }
+
+    #[test]
+    fn canon_delta_read_model_round_trips() {
+        let delta = CanonDelta {
+            id: "canon_delta:01J".to_string(),
+            project_id: "project:demo".to_string(),
+            branch_id: "bible_branch:main".to_string(),
+            scene_id: "scene:xyz".to_string(),
+            authoring_run_id: Some("authoring_run:run1".to_string()),
+            delta_class: "relationship_shift".to_string(),
+            target_id: Some("relationship:ab".to_string()),
+            payload: serde_json::json!({ "trust_delta": -2 }),
+            evidence: "She turned away without a word.".to_string(),
+            confidence: "high".to_string(),
+            status: "staged".to_string(),
+            decided_at: None,
+            decided_by: None,
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            updated_at: "2026-07-19T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&delta).expect("serialize canon delta");
+        let decoded: CanonDelta = serde_json::from_str(&json).expect("deserialize canon delta");
+        assert_eq!(decoded.id, delta.id);
+        assert_eq!(decoded.delta_class, "relationship_shift");
+        assert_eq!(decoded.status, "staged");
+        assert_eq!(decoded.payload["trust_delta"], -2);
+        assert!(decoded.decided_at.is_none());
+    }
 
     #[test]
     fn import_manuscript_contract_round_trips() {

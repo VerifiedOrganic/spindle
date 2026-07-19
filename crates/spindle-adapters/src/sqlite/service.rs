@@ -11218,6 +11218,12 @@ impl SqliteSpindleService {
             });
         }
 
+        // The prompt concatenates every scoped scene's prose, so the request
+        // must carry the STRICTEST rating in the batch — the rating-gated
+        // chokepoint then routes an explicit batch only to an explicit-cleared
+        // agent (evolution §4). `None` (no scenes) leaves the request unrated.
+        let batch_rating = max_scene_rating(scenes);
+
         for promise in promises {
             let matches = match self
                 .repository
@@ -11225,7 +11231,7 @@ impl SqliteSpindleService {
                 .complete(&ModelRequest {
                     route: "review".to_string(),
                     prompt: build_promise_payoff_deep_check_prompt(promise, scenes),
-                    rating: None,
+                    rating: batch_rating.clone(),
                     context: None,
                 })
                 .await
@@ -11235,21 +11241,13 @@ impl SqliteSpindleService {
                 Ok(response) => {
                     parse_deep_promise_payoff_output(&response.output).unwrap_or_default()
                 }
-                // Honest skip: the review route is unreachable/missing. Emit one
-                // info finding that reads as SKIPPED rather than clean, then stop
-                // (every promise would hit the same dead route).
-                Err(_) => {
-                    issues.push(ConsistencyIssue {
-                        severity: "info".to_string(),
-                        check_type: "promise_payoff_detection".to_string(),
-                        message: "promise payoff detection was SKIPPED: no usable review route \
-                                  (the model call failed). Promises were NOT scanned for payoff."
-                            .to_string(),
-                        entity_ids: Vec::new(),
-                        suggested_action: Some(
-                            "configure a review model route, then re-run this check".to_string(),
-                        ),
-                    });
+                // Honest skip: the review route is unreachable/missing or not
+                // cleared for the batch rating. Emit one info finding that reads
+                // as SKIPPED rather than clean, then stop (every promise hits the
+                // same route). A rating-clearance failure names route+rating —
+                // never any prose.
+                Err(err) => {
+                    issues.push(payoff_skip_issue(&err));
                     return Ok(issues);
                 }
             };
@@ -11343,22 +11341,13 @@ impl SqliteSpindleService {
                 // A non-JSON local stub (the default `review` route) parses to
                 // nothing, so a local-only deployment adds no behavioral findings.
                 Ok(response) => parse_deep_secret_leak_output(&response.output).unwrap_or_default(),
-                // Honest skip: the review route is unreachable/missing. Emit one
-                // info finding that reads as SKIPPED rather than clean, then stop
-                // (every unit would hit the same dead route).
-                Err(_) => {
-                    issues.push(ConsistencyIssue {
-                        severity: "info".to_string(),
-                        check_type: "secret_leak".to_string(),
-                        message: "behavioral secret-leak detection was SKIPPED: no usable review \
-                                  route (the model call failed). Scenes were NOT audited for \
-                                  behavioral leaks."
-                            .to_string(),
-                        entity_ids: Vec::new(),
-                        suggested_action: Some(
-                            "configure a review model route, then re-run this check".to_string(),
-                        ),
-                    });
+                // Honest skip: the review route is unreachable/missing or not
+                // cleared for the scene rating. Emit one info finding that reads
+                // as SKIPPED rather than clean, then stop (every unit hits the
+                // same route). A rating-clearance failure names route+rating —
+                // never any prose.
+                Err(err) => {
+                    issues.push(secret_leak_skip_issue(&err));
                     return Ok(issues);
                 }
             };
@@ -21751,6 +21740,86 @@ fn build_promise_payoff_deep_check_prompt(
          Set paid_off true only when the payoff is clearly on the page. Return an empty matches array when it is not.",
         promise.description, planted, planned_payoff, prose_block,
     )
+}
+
+/// Build the honest-skip `ConsistencyIssue` for a promise-payoff deep-check
+/// route failure. When `err` is a [`RouteClearanceError::RatingNotCovered`] the
+/// message names the route and rating (ids only, never prose); any other error
+/// (unreachable/missing route) reads as a generic dead-route skip. Either way
+/// the finding reads as SKIPPED, never clean.
+fn payoff_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
+    use spindle_core::models::ConsistencyIssue;
+    let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "promise payoff detection was SKIPPED: the `{route}` route is not cleared for rating \
+             `{rating}` (the scene set's maximum). Promises were NOT scanned for payoff."
+        ),
+        _ => "promise payoff detection was SKIPPED: no usable review route (the model call \
+              failed). Promises were NOT scanned for payoff."
+            .to_string(),
+    };
+    ConsistencyIssue {
+        severity: "info".to_string(),
+        check_type: "promise_payoff_detection".to_string(),
+        message,
+        entity_ids: Vec::new(),
+        suggested_action: Some(
+            "configure a review model route cleared for the batch rating, then re-run this check"
+                .to_string(),
+        ),
+    }
+}
+
+/// Build the honest-skip `ConsistencyIssue` for a behavioral secret-leak
+/// deep-check route failure. Same shape as [`payoff_skip_issue`]: a rating-
+/// clearance failure names route+rating (ids only, never prose); any other
+/// error reads as a generic dead-route skip.
+fn secret_leak_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
+    use spindle_core::models::ConsistencyIssue;
+    let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "behavioral secret-leak detection was SKIPPED: the `{route}` route is not cleared for \
+             rating `{rating}`. Scenes were NOT audited for behavioral leaks."
+        ),
+        _ => "behavioral secret-leak detection was SKIPPED: no usable review route (the model \
+              call failed). Scenes were NOT audited for behavioral leaks."
+            .to_string(),
+    };
+    ConsistencyIssue {
+        severity: "info".to_string(),
+        check_type: "secret_leak".to_string(),
+        message,
+        entity_ids: Vec::new(),
+        suggested_action: Some(
+            "configure a review model route cleared for the scene rating, then re-run this check"
+                .to_string(),
+        ),
+    }
+}
+
+/// The maximum content rating across a set of scenes, ordered
+/// general < teen < mature < explicit, lowercased. Returns `None` for an empty
+/// slice.
+///
+/// The promise-payoff deep check concatenates several scenes' prose into one
+/// prompt, so the outgoing request must carry the STRICTEST rating present — a
+/// single explicit scene in the batch makes the whole request explicit, so the
+/// rating-gated chokepoint routes it to an explicit-cleared agent (evolution
+/// §4). Unknown rating strings are treated as `general` (rank 0) so a typo can
+/// never silently downgrade a stricter scene below it.
+fn max_scene_rating(scenes: &[crate::sqlite::records::Scene]) -> Option<String> {
+    fn rank(rating: &str) -> u8 {
+        match rating.trim().to_ascii_lowercase().as_str() {
+            "explicit" => 3,
+            "mature" => 2,
+            "teen" => 1,
+            _ => 0,
+        }
+    }
+    scenes
+        .iter()
+        .max_by_key(|scene| rank(&scene.content_rating))
+        .map(|scene| scene.content_rating.trim().to_ascii_lowercase())
 }
 
 /// Parse the model router's promise-payoff deep-check output. Tolerates code
@@ -37874,6 +37943,64 @@ rating = "explicit"
             assert!(behavioral[0].entity_ids.contains(&bran));
         }
 
+        /// Rating-not-covered honest-skip (evolution §4): an EXPLICIT scene whose
+        /// only `review` agent declares no explicit coverage must NOT reach that
+        /// agent. The chokepoint returns RatingNotCovered, and the audit emits one
+        /// skip finding naming the route and rating — never any prose.
+        #[tokio::test]
+        async fn honest_skip_when_review_route_not_cleared_for_rating() {
+            use spindle_core::models::ConfigureAgentsInput;
+            let (tmp, svc, project_id, _mara, bran, _fact) = fixture().await;
+            let config_path = tmp.path().join("uncovered-review.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-safe"
+name = "Review Safe"
+provider = "local"
+endpoint = "local"
+model = "review-safe"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "review"
+agent = "review-safe"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+
+            let text = format!("Mara and Bran. MOCK_SECRET_BEHAVIORAL_LEAK[character:{bran}]");
+            save_leak_scene(&svc, &project_id, 2, &text, ContentRating::Explicit).await;
+
+            let deep = run(&svc, &project_id, true).await;
+            // No behavioral finding — the explicit prose never reached the agent.
+            assert!(
+                deep.iter()
+                    .all(|i| !i.message.contains("(model-detected behavioral leak)")),
+                "explicit prose must not have been audited by an uncleared agent: {deep:?}"
+            );
+            let skips: Vec<_> = deep
+                .iter()
+                .filter(|i| i.severity == "info" && i.message.to_lowercase().contains("skipped"))
+                .collect();
+            assert_eq!(
+                skips.len(),
+                1,
+                "exactly one rating-not-covered skip: {deep:?}"
+            );
+            assert!(skips[0].message.contains("`review`"));
+            assert!(skips[0].message.contains("`explicit`"));
+            assert!(skips[0].message.contains("not cleared for rating"));
+        }
+
         #[test]
         fn deep_secret_leak_parse_extracts_findings() {
             let out = r#"{"findings":[{"character_id":"character:abc","severity":"warning","description":"avoids the graveyard","evidence":"Bran refused to pass"}]}"#;
@@ -38216,6 +38343,89 @@ agent = "review-http"
         );
     }
 
+    /// Rating-not-covered honest-skip (evolution §4): the payoff prompt
+    /// concatenates the scoped scenes' prose, so an EXPLICIT scene in the batch
+    /// makes the request explicit. A `review` agent that declares no explicit
+    /// coverage must NOT receive it — the chokepoint returns RatingNotCovered and
+    /// the check emits one skip finding naming route+rating, never any prose.
+    #[tokio::test]
+    async fn deep_check_honest_skips_when_review_route_not_cleared_for_rating() {
+        use spindle_core::models::{ConfigureAgentsInput, ContentRating, SaveSceneDraftInput};
+        let (tmp, svc) = fresh_service_local().await;
+        let config_path = tmp.path().join("uncovered-review.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-safe"
+name = "Review Safe"
+provider = "local"
+endpoint = "local"
+model = "review-safe"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "review"
+agent = "review-safe"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let (project_id, _promise_id) = seed_promise_payoff_project(
+            &svc,
+            "promise-payoff-uncleared",
+            "At last the reclaimed crown settled on her brow. MOCK_PROMISE_PAYOFF.",
+        )
+        .await;
+        // Overwrite scene 1.1 with an EXPLICIT rating so the batch max is explicit.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "At last the reclaimed crown settled on her brow. MOCK_PROMISE_PAYOFF."
+                .into(),
+            summary: "s".into(),
+            content_rating: ContentRating::Explicit,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let deep = svc
+            .check_consistency(promise_payoff_input(&project_id, true))
+            .await
+            .unwrap();
+
+        let findings: Vec<_> = deep
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "promise_payoff_detection")
+            .collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "an uncleared review route must yield exactly one skip finding: {:?}",
+            deep.issues
+        );
+        assert_eq!(findings[0].severity, "info");
+        assert!(findings[0].message.to_lowercase().contains("skipped"));
+        assert!(findings[0].message.contains("`review`"));
+        assert!(findings[0].message.contains("`explicit`"));
+        assert!(findings[0].message.contains("not cleared for rating"));
+    }
+
     /// Resolved-promise exclusion: a paid_off promise with sentinel prose is
     /// never proposed.
     #[tokio::test]
@@ -38283,6 +38493,101 @@ agent = "review-http"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn max_scene_rating_picks_strictest_across_the_batch() {
+        use crate::sqlite::records::Scene;
+        fn scene(rating: &str) -> Scene {
+            Scene {
+                id: "scene:x".to_string(),
+                project_id: "project:x".to_string(),
+                branch_id: "bible_branch:main".to_string(),
+                book_id: "book:x".to_string(),
+                chapter_id: "chapter:x".to_string(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "prose".to_string(),
+                summary: "s".to_string(),
+                content_rating: rating.to_string(),
+                tone: None,
+                draft_origin: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                location_id: None,
+            }
+        }
+        // Empty batch → None.
+        assert_eq!(super::max_scene_rating(&[]), None);
+        // A single explicit scene makes the whole batch explicit.
+        assert_eq!(
+            super::max_scene_rating(&[scene("general"), scene("explicit"), scene("teen")])
+                .as_deref(),
+            Some("explicit")
+        );
+        // Strictest of general/teen/mature is mature.
+        assert_eq!(
+            super::max_scene_rating(&[scene("teen"), scene("mature"), scene("general")]).as_deref(),
+            Some("mature")
+        );
+        // Mixed case normalizes and still ranks.
+        assert_eq!(
+            super::max_scene_rating(&[scene("General"), scene("Explicit")]).as_deref(),
+            Some("explicit")
+        );
+        // Unknown token ranks as general (0) and never outranks a real rating.
+        assert_eq!(
+            super::max_scene_rating(&[scene("weird"), scene("teen")]).as_deref(),
+            Some("teen")
+        );
+    }
+
+    #[test]
+    fn payoff_skip_issue_names_route_and_rating_on_rating_not_covered() {
+        let err = anyhow::Error::new(crate::ai::RouteClearanceError::RatingNotCovered {
+            route: "review".to_string(),
+            rating: "explicit".to_string(),
+            agent_id: "reviewer".to_string(),
+        });
+        let issue = super::payoff_skip_issue(&err);
+        assert_eq!(issue.check_type, "promise_payoff_detection");
+        assert_eq!(issue.severity, "info");
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("`review`"));
+        assert!(issue.message.contains("`explicit`"));
+        // Never any prose — only ids/route/rating tokens.
+        assert!(issue.message.contains("not cleared for rating"));
+    }
+
+    #[test]
+    fn payoff_skip_issue_generic_message_for_non_clearance_error() {
+        let err = anyhow::anyhow!("connection refused");
+        let issue = super::payoff_skip_issue(&err);
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("no usable review route"));
+    }
+
+    #[test]
+    fn secret_leak_skip_issue_names_route_and_rating_on_rating_not_covered() {
+        let err = anyhow::Error::new(crate::ai::RouteClearanceError::RatingNotCovered {
+            route: "review".to_string(),
+            rating: "mature".to_string(),
+            agent_id: "reviewer".to_string(),
+        });
+        let issue = super::secret_leak_skip_issue(&err);
+        assert_eq!(issue.check_type, "secret_leak");
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("`review`"));
+        assert!(issue.message.contains("`mature`"));
+    }
+
+    #[test]
+    fn secret_leak_skip_issue_generic_message_for_non_clearance_error() {
+        let err = anyhow::anyhow!("timeout");
+        let issue = super::secret_leak_skip_issue(&err);
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("no usable review route"));
     }
 
     // =========================================================================

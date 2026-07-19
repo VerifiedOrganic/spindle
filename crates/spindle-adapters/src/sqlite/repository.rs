@@ -500,6 +500,46 @@ pub struct AppendQuantityStateParams {
     pub scene_order: i32,
 }
 
+/// Parameters for staging a proposed canon delta (ADR 0001 D2).
+#[derive(Debug, Clone)]
+pub struct StageCanonDeltaParams {
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the scene this was mined from.
+    pub scene_id: String,
+    /// The authoring run that mined it, or `None` when mined outside a run.
+    pub authoring_run_id: Option<String>,
+    /// One of `spindle_core::models::CANON_DELTA_CLASSES`; unknown is rejected.
+    pub delta_class: String,
+    /// Existing entity this modifies; `None` proposes a new one.
+    pub target_id: Option<String>,
+    /// Typed per-class payload.
+    pub payload: serde_json::Value,
+    /// Sanitized prose excerpt (non-empty, ≤300 chars).
+    pub evidence: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+}
+
+/// The operator's ratification of a staged canon delta (ADR 0001 D3). The
+/// repository records the decision only; the apply-dispatch to write tools is
+/// the service layer's responsibility (keeps the decide/apply seam clean).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonDeltaDecision {
+    Applied,
+    Rejected,
+}
+
+impl CanonDeltaDecision {
+    /// The terminal `status` string this decision records.
+    fn status(self) -> &'static str {
+        match self {
+            CanonDeltaDecision::Applied => "applied",
+            CanonDeltaDecision::Rejected => "rejected",
+        }
+    }
+}
+
 /// Parameters for appending a session-activity row.
 #[derive(Debug, Clone)]
 pub struct AppendSessionActivityParams {
@@ -1563,6 +1603,245 @@ impl Repository {
                     |r| crate::sqlite::records::StoredQuantityState::try_from(r),
                 )
                 .optional_inner()
+            })
+            .await
+    }
+
+    // ── Canon deltas (ADR 0001 — canon mining & ratification) ────────────────
+
+    /// Stage a proposed canon delta (ADR 0001 D2). Validates:
+    ///   * `delta_class` ∈ `CANON_DELTA_CLASSES` (unknown classes are rejected —
+    ///     forward-compat additions ship via a new constant entry, never a
+    ///     free-form label);
+    ///   * `evidence` non-empty (trimmed) and ≤300 **chars** (char-safe, so a
+    ///     multibyte quote is measured correctly);
+    ///   * `confidence` ∈ {high, medium, low}.
+    ///
+    /// Records the decision seam nothing here — apply-dispatch to write tools is
+    /// the service layer's job (see [`Repository::decide_canon_delta`]).
+    pub async fn stage_canon_delta(
+        &self,
+        params: StageCanonDeltaParams,
+    ) -> Result<crate::sqlite::records::StoredCanonDelta> {
+        let StageCanonDeltaParams {
+            project_id,
+            branch_id,
+            scene_id,
+            authoring_run_id,
+            delta_class,
+            target_id,
+            payload,
+            evidence,
+            confidence,
+        } = params;
+
+        if !spindle_core::models::is_canon_delta_class(&delta_class) {
+            return Err(anyhow!(
+                "unknown canon delta class '{delta_class}' (not in CANON_DELTA_CLASSES)"
+            ));
+        }
+        if evidence.trim().is_empty() {
+            return Err(anyhow!(
+                "canon delta evidence is mandatory — a delta with no quotable evidence is not stageable"
+            ));
+        }
+        let evidence_chars = evidence.chars().count();
+        if evidence_chars > 300 {
+            return Err(anyhow!(
+                "canon delta evidence must be ≤300 chars (got {evidence_chars})"
+            ));
+        }
+        if !matches!(confidence.as_str(), "high" | "medium" | "low") {
+            return Err(anyhow!(
+                "canon delta confidence must be one of high|medium|low (got '{confidence}')"
+            ));
+        }
+
+        let payload_str =
+            serde_json::to_string(&payload).context("serializing canon delta payload")?;
+        let id = mint_id("canon_delta");
+        let id_lookup = id.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO canon_delta \
+                     (id, project_id, branch_id, scene_id, authoring_run_id, delta_class, \
+                      target_id, payload, evidence, confidence, status, decided_at, decided_by, \
+                      created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'staged', NULL, NULL, \
+                             ?11, ?12)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        &scene_id,
+                        &authoring_run_id,
+                        &delta_class,
+                        &target_id,
+                        &payload_str,
+                        &evidence,
+                        &confidence,
+                        now,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.read_canon_delta(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("canon_delta vanished after insert"))
+    }
+
+    /// Fetch one canon delta by id, or `None` if absent.
+    async fn read_canon_delta(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredCanonDelta>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM canon_delta WHERE id = ?1",
+                    crate::sqlite::records::CANON_DELTA_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| {
+                    crate::sqlite::records::StoredCanonDelta::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// List canon deltas on a branch, optionally filtered by `status` and/or
+    /// provenance `scene_id`. Deterministic order: `(created_at, id)`.
+    pub async fn list_canon_deltas(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        status: Option<&str>,
+        scene_id: Option<&str>,
+    ) -> Result<Vec<crate::sqlite::records::StoredCanonDelta>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let status = status.map(str::to_string);
+        let scene_id = scene_id.map(str::to_string);
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Bind only the filters that are present. Params are pushed in
+                // the same order the placeholders are appended.
+                let mut clauses = String::from("project_id = ?1 AND branch_id = ?2");
+                let mut binds: Vec<&dyn rusqlite::ToSql> = vec![&project_id, &branch_id];
+                if let Some(status) = status.as_ref() {
+                    clauses.push_str(&format!(" AND status = ?{}", binds.len() + 1));
+                    binds.push(status);
+                }
+                if let Some(scene_id) = scene_id.as_ref() {
+                    clauses.push_str(&format!(" AND scene_id = ?{}", binds.len() + 1));
+                    binds.push(scene_id);
+                }
+                let sql = format!(
+                    "SELECT {} FROM canon_delta WHERE {clauses} ORDER BY created_at, id",
+                    crate::sqlite::records::CANON_DELTA_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        crate::sqlite::records::StoredCanonDelta::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Record the operator's ratification of a staged canon delta (ADR 0001
+    /// D3). Errors if the delta is not currently `staged` — decisions are final
+    /// history, never revised. When `edited_payload` is `Some`, it replaces the
+    /// stored payload (ratify-with-correction). Stamps `decided_at`/`decided_by`
+    /// and sets `status` to `applied`/`rejected`.
+    ///
+    /// This records the decision **only**. Apply-dispatch to the class's write
+    /// tool is the service layer's job — the repository decides, the service
+    /// applies.
+    pub async fn decide_canon_delta(
+        &self,
+        id: &str,
+        decision: CanonDeltaDecision,
+        decided_by: &str,
+        edited_payload: Option<serde_json::Value>,
+    ) -> Result<crate::sqlite::records::StoredCanonDelta> {
+        let id_owned = id.to_string();
+        let id_lookup = id_owned.clone();
+        let decided_by = decided_by.to_string();
+        let new_status = decision.status();
+        let edited_payload_str = match edited_payload {
+            Some(value) => Some(
+                serde_json::to_string(&value).context("serializing edited canon delta payload")?,
+            ),
+            None => None,
+        };
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Guard: only a `staged` row may be decided. The status
+                // predicate in the UPDATE makes the transition atomic; a zero
+                // rowcount means the row was absent or already terminal.
+                let affected = if let Some(payload_str) = edited_payload_str {
+                    conn.execute(
+                        "UPDATE canon_delta \
+                         SET status = ?1, payload = ?2, decided_at = ?3, decided_by = ?4, \
+                             updated_at = ?3 \
+                         WHERE id = ?5 AND status = 'staged'",
+                        rusqlite::params![new_status, payload_str, now, decided_by, id_owned],
+                    )?
+                } else {
+                    conn.execute(
+                        "UPDATE canon_delta \
+                         SET status = ?1, decided_at = ?2, decided_by = ?3, updated_at = ?2 \
+                         WHERE id = ?4 AND status = 'staged'",
+                        rusqlite::params![new_status, now, decided_by, id_owned],
+                    )?
+                };
+                Ok(affected)
+            })
+            .await
+            .and_then(|affected| {
+                if affected == 0 {
+                    Err(anyhow!(
+                        "canon delta '{id_lookup}' is not staged (already decided or absent — \
+                         decisions are final)"
+                    ))
+                } else {
+                    Ok(())
+                }
+            })?;
+        self.read_canon_delta(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("canon_delta '{id_lookup}' vanished after decide"))
+    }
+
+    /// Supersede-on-remine (ADR 0001 D3): flip only this scene's `staged` canon
+    /// deltas to `superseded`. `applied`/`rejected`/already-`superseded` rows are
+    /// untouched — decisions are history. Returns the number of rows flipped.
+    pub async fn supersede_scene_deltas(&self, scene_id: &str) -> Result<u64> {
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let affected = conn.execute(
+                    "UPDATE canon_delta SET status = 'superseded', updated_at = ?1 \
+                     WHERE scene_id = ?2 AND status = 'staged'",
+                    rusqlite::params![now, scene_id],
+                )?;
+                Ok(affected as u64)
             })
             .await
     }
@@ -14414,6 +14693,425 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         let repo = Repository::new(pool, data_dir);
         (tmp, repo)
+    }
+
+    /// Project + branch + one persisted scene, for FK-valid canon_delta rows.
+    async fn repo_with_scene() -> (TempDir, Repository, Project, BibleBranch, String) {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+        let (tmp, repo) = fresh_repo().await;
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let (scene, _) = repo
+            .save_scene_draft(
+                &project.id,
+                &branch.id,
+                &SaveSceneDraftInput {
+                    project_id: project.id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order: 1,
+                    full_text: "She turned away without a word.".into(),
+                    summary: "turn".into(),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let scene_id = scene.id.clone();
+        (tmp, repo, project, branch, scene_id)
+    }
+
+    fn stage_params(
+        project: &Project,
+        branch: &BibleBranch,
+        scene_id: &str,
+        class: &str,
+        evidence: &str,
+    ) -> StageCanonDeltaParams {
+        StageCanonDeltaParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_id.to_string(),
+            authoring_run_id: None,
+            delta_class: class.to_string(),
+            target_id: None,
+            payload: serde_json::json!({ "note": "x" }),
+            evidence: evidence.to_string(),
+            confidence: "high".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_round_trips() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "relationship_shift",
+                "She turned away without a word.",
+            ))
+            .await
+            .unwrap();
+        assert!(staged.id.starts_with("canon_delta:"));
+        assert_eq!(staged.delta_class, "relationship_shift");
+        assert_eq!(staged.status, "staged");
+        assert!(staged.decided_at.is_none());
+        assert!(staged.decided_by.is_none());
+
+        let listed = repo
+            .list_canon_deltas(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, staged.id);
+        assert_eq!(listed[0].evidence, "She turned away without a word.");
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_rejects_unknown_class() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let err = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "not_a_real_class",
+                "evidence quote",
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not_a_real_class"),
+            "error names the bad class: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_rejects_empty_and_oversized_evidence() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+
+        // Empty evidence rejected (ADR D2: not stageable without a quote).
+        let err = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "   ",
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("evidence"));
+
+        // Exactly 300 chars is allowed; 301 is not — using a multibyte char so
+        // the boundary is measured in chars, not bytes.
+        let ok_300 = "é".repeat(300);
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                &ok_300,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(staged.evidence.chars().count(), 300);
+
+        let too_long = "é".repeat(301);
+        let err = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                &too_long,
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("evidence"));
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_rejects_bad_confidence() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let mut params = stage_params(&project, &branch, &scene_id, "beat_annotation", "quote");
+        params.confidence = "certain".to_string();
+        let err = repo.stage_canon_delta(params).await.unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("confidence"));
+    }
+
+    #[tokio::test]
+    async fn list_canon_deltas_filters_and_orders_deterministically() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        // Stage three deltas; created_at then id is the deterministic order.
+        for class in ["beat_annotation", "quantity_change", "character_state"] {
+            repo.stage_canon_delta(stage_params(&project, &branch, &scene_id, class, "quote"))
+                .await
+                .unwrap();
+        }
+        let all = repo
+            .list_canon_deltas(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        // Deterministic order: sort a clone by (created_at, id) and compare ids.
+        let mut expected = all.clone();
+        expected.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let got_ids: Vec<_> = all.iter().map(|d| &d.id).collect();
+        let want_ids: Vec<_> = expected.iter().map(|d| &d.id).collect();
+        assert_eq!(got_ids, want_ids);
+
+        // Status filter: decide one, then filter by status.
+        let first = all[0].id.clone();
+        repo.decide_canon_delta(&first, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        let staged_only = repo
+            .list_canon_deltas(&project.id, &branch.id, Some("staged"), None)
+            .await
+            .unwrap();
+        assert_eq!(staged_only.len(), 2);
+        let applied_only = repo
+            .list_canon_deltas(&project.id, &branch.id, Some("applied"), None)
+            .await
+            .unwrap();
+        assert_eq!(applied_only.len(), 1);
+        assert_eq!(applied_only[0].id, first);
+
+        // scene_id filter narrows to the provenance scene.
+        let by_scene = repo
+            .list_canon_deltas(&project.id, &branch.id, None, Some(&scene_id))
+            .await
+            .unwrap();
+        assert_eq!(by_scene.len(), 3);
+        let other_scene = repo
+            .list_canon_deltas(&project.id, &branch.id, None, Some("scene:none"))
+            .await
+            .unwrap();
+        assert!(other_scene.is_empty());
+    }
+
+    #[tokio::test]
+    async fn decide_canon_delta_records_decision_and_is_final() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "quote",
+            ))
+            .await
+            .unwrap();
+
+        let decided = repo
+            .decide_canon_delta(&staged.id, CanonDeltaDecision::Applied, "operator-1", None)
+            .await
+            .unwrap();
+        assert_eq!(decided.status, "applied");
+        assert!(decided.decided_at.is_some());
+        assert_eq!(decided.decided_by.as_deref(), Some("operator-1"));
+        // Payload unchanged when no edit supplied.
+        assert_eq!(decided.payload, serde_json::json!({ "note": "x" }));
+
+        // Deciding a second time errors — decisions are final (ADR D3).
+        let err = repo
+            .decide_canon_delta(&staged.id, CanonDeltaDecision::Rejected, "op2", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("staged"));
+    }
+
+    #[tokio::test]
+    async fn decide_canon_delta_stores_edited_payload() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "canonical_fact",
+                "quote",
+            ))
+            .await
+            .unwrap();
+        let edited = serde_json::json!({ "note": "operator corrected" });
+        let decided = repo
+            .decide_canon_delta(
+                &staged.id,
+                CanonDeltaDecision::Applied,
+                "op",
+                Some(edited.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decided.payload, edited);
+    }
+
+    #[tokio::test]
+    async fn decide_canon_delta_on_superseded_errors() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "quote",
+            ))
+            .await
+            .unwrap();
+        repo.supersede_scene_deltas(&scene_id).await.unwrap();
+        let err = repo
+            .decide_canon_delta(&staged.id, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("staged"));
+    }
+
+    #[tokio::test]
+    async fn supersede_scene_deltas_only_flips_staged_rows() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        // Three deltas: one applied, one rejected, one staged.
+        let applied = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "a",
+            ))
+            .await
+            .unwrap();
+        let rejected = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "quantity_change",
+                "b",
+            ))
+            .await
+            .unwrap();
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "character_state",
+                "c",
+            ))
+            .await
+            .unwrap();
+        repo.decide_canon_delta(&applied.id, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        repo.decide_canon_delta(&rejected.id, CanonDeltaDecision::Rejected, "op", None)
+            .await
+            .unwrap();
+
+        let flipped = repo.supersede_scene_deltas(&scene_id).await.unwrap();
+        assert_eq!(flipped, 1, "only the staged row is superseded");
+
+        let by_id = |deltas: &[crate::sqlite::records::StoredCanonDelta], id: &str| {
+            deltas.iter().find(|d| d.id == id).unwrap().status.clone()
+        };
+        let all = repo
+            .list_canon_deltas(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(by_id(&all, &applied.id), "applied");
+        assert_eq!(by_id(&all, &rejected.id), "rejected");
+        assert_eq!(by_id(&all, &staged.id), "superseded");
+    }
+
+    #[tokio::test]
+    async fn pre_v0024_database_upgrades_additively() {
+        // A DB migrated only through V0023 (no canon_delta table) must upgrade
+        // to V0024 cleanly with its existing rows intact — the migration is a
+        // pure addition (ADR reversal-cost: additions are additive).
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("legacy.db");
+
+        // Open a throwaway pool first so sqlite-vec's `vec0` module is
+        // registered process-globally (via sqlite3_auto_extension) before we
+        // run the raw-connection migration — V0002 declares a vec0 table.
+        let _warm = SqlitePool::open(&tmp.path().join("warm.db")).await.unwrap();
+
+        // Stage 1: run migrations up to V0023 only, on a raw rusqlite conn.
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            crate::sqlite::migrations::runner()
+                .set_target(refinery::Target::Version(23))
+                .run(&mut conn)
+                .unwrap();
+            // canon_delta does not exist yet at V0023.
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='canon_delta'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "canon_delta must not exist before V0024");
+            // Seed a project row so we can prove it survives the upgrade.
+            let now = timestamp_to_micros(chrono::Utc::now());
+            conn.execute(
+                "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "project:legacy",
+                    "Legacy",
+                    "novel",
+                    "fantasy",
+                    r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                    now,
+                    now
+                ],
+            )
+            .unwrap();
+        }
+
+        // Stage 2: open through the pool, which runs the full runner (incl.
+        // V0024). Must succeed and the legacy row must still be there.
+        let pool = SqlitePool::open(&db_path).await.unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = Repository::new(pool, data_dir);
+
+        let again = repo.get_project("project:legacy").await.unwrap();
+        assert_eq!(again.name, "Legacy");
+
+        // And canon_delta now exists and is queryable (empty).
+        let listed = repo
+            .list_canon_deltas("project:legacy", "bible_branch:missing", None, None)
+            .await
+            .unwrap();
+        assert!(listed.is_empty());
     }
 
     #[tokio::test]

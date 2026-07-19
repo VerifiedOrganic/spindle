@@ -28,6 +28,28 @@ or euphemizing the adult beats. Write with direct, concrete physical language at
 requested explicit rating while preserving consent, adult age, continuity, character \
 voice, and story tone.";
 
+/// Prose-bearing routes: passes whose requests carry scene prose (as opposed to
+/// pure-metadata passes like `research`). The explicit-content rating gate and
+/// the explicit system-prompt appendixes apply uniformly to these routes
+/// (evolution §4 rule 1 — prose-bearing is a route property, not a name check).
+pub const PROSE_BEARING_ROUTES: &[&str] = &["draft", "mine", "line_edit", "reader_sim", "review"];
+
+/// System-prompt appendix for prose-bearing ANALYSIS passes (mine/review/…) on
+/// explicit-rated material — distinct from [`EXPLICIT_DRAFT_SYSTEM_APPENDIX`].
+///
+/// Design refinement over evolution §4.1: that section said "the explicit
+/// appendix" applies uniformly across prose-bearing routes, but the drafting
+/// appendix (which instructs the model to *write* on-page adult prose) is wrong
+/// for an auditor/miner. Gating uniformity — never dispatching explicit prose to
+/// an uncleared agent — is the invariant the owner approved; porn-prompting the
+/// analysts is not. So the appendix is split: draft keeps the drafting
+/// directive; every other prose-bearing route gets this analysis directive.
+const EXPLICIT_ANALYSIS_SYSTEM_APPENDIX: &str = "\
+Explicit-content analysis directive: the material below is authorized adult \
+fiction being ANALYZED/audited, not generated. Do not rewrite, censor, or \
+moralize about it. Perform the requested structured analysis over the prose as \
+given and return only the requested output format.";
+
 /// Default `--max-turns` for the grok-cli adapter. Long explicit scenes that
 /// pull bible context via MCP and span multiple output continuations can
 /// legitimately consume 50–150 messages; the headroom is intentional so that
@@ -494,8 +516,15 @@ impl ModelRouter {
 
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
-        let route = resolve_route(&runtime, &request.route, request.rating.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("unknown model route: {}", request.route))?;
+        // Rating-gated dispatch chokepoint (evolution §4 rule 2): every prose-
+        // bearing completion resolves through `resolve_cleared_route`, so an
+        // explicit-rated request whose agent is not cleared errors here rather
+        // than reaching an uncleared model. The typed `RouteClearanceError` is
+        // preserved through anyhow so callers can `downcast_ref` to honest-skip
+        // with a rating-not-covered message (never any prose). Non-prose routes
+        // and rating-None requests pass straight through.
+        let route = resolve_cleared_route(&runtime, &request.route, request.rating.as_deref())
+            .map_err(anyhow::Error::new)?;
 
         match route.adapter_kind.as_str() {
             "local" => Ok(ModelResponse {
@@ -572,8 +601,11 @@ impl ModelRouter {
         prior_output: &str,
     ) -> anyhow::Result<ModelResponse> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
-        let route = resolve_route(&runtime, route_name, rating)
-            .ok_or_else(|| anyhow::anyhow!("unknown model route: {route_name}"))?;
+        // Same rating-gated chokepoint as `complete` — a continuation carries
+        // the same prose and rating as the original request (I3), so an
+        // uncleared prose-bearing continuation must fail here too.
+        let route =
+            resolve_cleared_route(&runtime, route_name, rating).map_err(anyhow::Error::new)?;
 
         match route.adapter_kind.as_str() {
             "http" => {
@@ -906,21 +938,114 @@ fn resolve_route<'r>(
     runtime.routes.get(route_name)
 }
 
+/// Why a prose-bearing route could not be cleared for dispatch (evolution §4
+/// rule 2). Distinguishes "there is no route at all" from "the route resolved
+/// but its agent is not cleared for this rating" so callers can honest-skip with
+/// an accurate, prose-free message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RouteClearanceError {
+    /// No route resolves for `route` (neither a rating override nor a default).
+    #[error("no model route resolves for `{route}`")]
+    NoRoute { route: String },
+    /// The route resolved to `agent_id`, whose declared `ratings` do not cover
+    /// `rating`. Names ids only — never any prose.
+    #[error(
+        "route `{route}` resolved to agent `{agent_id}`, which is not cleared for rating `{rating}`"
+    )]
+    RatingNotCovered {
+        route: String,
+        rating: String,
+        agent_id: String,
+    },
+}
+
+/// Rating-gated dispatch chokepoint (evolution §4 rule 2). Wraps
+/// [`resolve_route`] and, for a prose-bearing route with a rating supplied,
+/// additionally verifies the resolved agent's declared `ratings` list covers
+/// the rating (ASCII-lowercase compare — the same normalization as
+/// [`draft_route_preflight`](ModelRouter::draft_route_preflight)).
+///
+/// - Non-prose-bearing routes, or `rating == None`, are a passthrough to
+///   `resolve_route` (no clearance check).
+/// - A prose-bearing route that resolves to a *built-in local* route (its
+///   `model_name` is not a configured agent) serves every rating and is cleared
+///   — this is the local-only-deployment path and must never be gated.
+///
+/// The agent ratings are reachable from the resolved [`ModelRoute`] with no
+/// extra threading: `route.model_name` is the agent id, the key into
+/// `runtime.agents`, whose `config.ratings` carries the declared list (exactly
+/// as `draft_route_preflight` already relies on).
+fn resolve_cleared_route<'r>(
+    runtime: &'r RuntimeConfig,
+    route_name: &str,
+    rating: Option<&str>,
+) -> Result<&'r ModelRoute, RouteClearanceError> {
+    let route =
+        resolve_route(runtime, route_name, rating).ok_or_else(|| RouteClearanceError::NoRoute {
+            route: route_name.to_string(),
+        })?;
+
+    // Clearance check applies only to prose-bearing routes with a rating.
+    let Some(raw_rating) = rating else {
+        return Ok(route);
+    };
+    if !PROSE_BEARING_ROUTES.contains(&route_name) {
+        return Ok(route);
+    }
+    let rating_norm = raw_rating.trim().to_ascii_lowercase();
+    if rating_norm.is_empty() {
+        return Ok(route);
+    }
+
+    // A built-in local route (model_name not a configured agent) serves every
+    // rating — never gated.
+    let Some(agent) = runtime.agents.get(&route.model_name) else {
+        return Ok(route);
+    };
+    let covered = agent
+        .config
+        .ratings
+        .iter()
+        .any(|declared| declared.trim().to_ascii_lowercase() == rating_norm);
+    if covered {
+        Ok(route)
+    } else {
+        Err(RouteClearanceError::RatingNotCovered {
+            route: route_name.to_string(),
+            rating: rating_norm,
+            agent_id: agent.config.id.clone(),
+        })
+    }
+}
+
 fn normalize_route_rating(rating: &str) -> String {
     rating.trim().to_ascii_lowercase()
 }
 
 fn system_prompt_for_request(route: &ModelRoute, rating: Option<&str>) -> String {
     let mut system_prompt = route.system_prompt.clone();
-    let is_explicit_draft = route.route_name == "draft"
-        && rating
-            .map(|value| value.trim().eq_ignore_ascii_case("explicit"))
-            .unwrap_or(false);
-    if is_explicit_draft && !system_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX) {
+    let is_explicit = rating
+        .map(|value| value.trim().eq_ignore_ascii_case("explicit"))
+        .unwrap_or(false);
+    // The drafting appendix stays draft-only — instructing a miner/auditor to
+    // write on-page adult prose would be wrong. Every other prose-bearing route
+    // gets the analysis appendix instead (evolution §4.1 design refinement).
+    let appendix = if !is_explicit {
+        None
+    } else if route.route_name == "draft" {
+        Some(EXPLICIT_DRAFT_SYSTEM_APPENDIX)
+    } else if PROSE_BEARING_ROUTES.contains(&route.route_name.as_str()) {
+        Some(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX)
+    } else {
+        None
+    };
+    if let Some(appendix) = appendix
+        && !system_prompt.contains(appendix)
+    {
         if !system_prompt.trim().is_empty() {
             system_prompt.push_str("\n\n");
         }
-        system_prompt.push_str(EXPLICIT_DRAFT_SYSTEM_APPENDIX);
+        system_prompt.push_str(appendix);
     }
     system_prompt
 }
@@ -2246,6 +2371,7 @@ name = "Venice Explicit"
 provider = "venice"
 endpoint = "{endpoint}"
 model = "venice-explicit-model"
+ratings = ["explicit"]
 
 [[routing]]
 route = "draft"
@@ -2318,6 +2444,7 @@ name = "Venice Explicit"
 provider = "venice"
 endpoint = "{endpoint}"
 model = "venice-explicit-model"
+ratings = ["explicit"]
 
 [[routing]]
 route = "draft"
@@ -3470,5 +3597,165 @@ agent = "tame-agent"
         let preflight = router.draft_route_preflight("explicit");
         assert_eq!(preflight.agent_id, None);
         assert_eq!(preflight.problem, None);
+    }
+
+    // ── Rating-gated dispatch chokepoint (evolution §4 rules 1-2) ────────────
+
+    /// Router whose `review` route resolves, for the given rating, to an agent
+    /// covering the ratings in `review_ratings`. A `draft` route is also present
+    /// so the constant's membership can be exercised.
+    fn cleared_route_router(review_ratings: &[&str]) -> ModelRouter {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        let ratings_toml = review_ratings
+            .iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "reviewer"
+name = "Reviewer"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "reviewer-model"
+ratings = [{ratings_toml}]
+
+[[routing]]
+route = "review"
+agent = "reviewer"
+
+[[routing]]
+route = "mine"
+agent = "reviewer"
+
+[[routing]]
+route = "draft"
+agent = "reviewer"
+"####
+            ),
+        )
+        .expect("write config");
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+        router
+    }
+
+    #[test]
+    fn prose_bearing_routes_constant_lists_the_five_prose_passes() {
+        assert_eq!(
+            PROSE_BEARING_ROUTES,
+            &["draft", "mine", "line_edit", "reader_sim", "review"]
+        );
+    }
+
+    #[test]
+    fn resolve_cleared_route_passes_through_when_agent_covers_rating() {
+        let router = cleared_route_router(&["mature", "explicit"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        let route = resolve_cleared_route(&runtime, "review", Some("explicit"))
+            .expect("explicit review is cleared");
+        assert_eq!(route.model_name, "reviewer");
+    }
+
+    #[test]
+    fn resolve_cleared_route_errors_rating_not_covered_when_agent_lacks_rating() {
+        // Agent covers only general/teen; an explicit review must be rejected.
+        let router = cleared_route_router(&["general", "teen"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        let err = resolve_cleared_route(&runtime, "review", Some("explicit"))
+            .expect_err("explicit not covered");
+        match err {
+            RouteClearanceError::RatingNotCovered {
+                route,
+                rating,
+                agent_id,
+            } => {
+                assert_eq!(route, "review");
+                assert_eq!(rating, "explicit");
+                assert_eq!(agent_id, "reviewer");
+            }
+            other => panic!("expected RatingNotCovered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_cleared_route_errors_no_route_when_unresolvable() {
+        let router = cleared_route_router(&["explicit"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        let err = resolve_cleared_route(&runtime, "reader_sim", Some("explicit"))
+            .expect_err("no reader_sim route configured");
+        assert!(matches!(err, RouteClearanceError::NoRoute { .. }));
+    }
+
+    #[test]
+    fn resolve_cleared_route_passes_through_non_prose_route_without_rating_check() {
+        // `research` is not prose-bearing: even a rating the agent does not
+        // cover must pass through (no clearance check applies).
+        let router = cleared_route_router(&["general"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        // Add nothing; `research` falls back to the built-in local route which
+        // resolves for any rating. The point is no RatingNotCovered is raised.
+        let route = resolve_cleared_route(&runtime, "research", Some("explicit"))
+            .expect("non-prose route passes through");
+        assert_eq!(route.route_name, "research");
+    }
+
+    #[test]
+    fn resolve_cleared_route_none_rating_is_passthrough() {
+        let router = cleared_route_router(&["general"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        // No rating supplied → no clearance check even for a prose route.
+        let route =
+            resolve_cleared_route(&runtime, "review", None).expect("None rating passes through");
+        assert_eq!(route.model_name, "reviewer");
+    }
+
+    #[test]
+    fn analysis_appendix_present_on_explicit_mine_and_review_absent_on_draft() {
+        let mut mine = grok_draft_route();
+        mine.route_name = "mine".to_string();
+        let mine_prompt = system_prompt_for_request(&mine, Some("explicit"));
+        assert!(
+            mine_prompt.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX),
+            "explicit mine gets the analysis appendix"
+        );
+        assert!(
+            !mine_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX),
+            "mine must NOT get the drafting appendix"
+        );
+
+        let mut review = grok_draft_route();
+        review.route_name = "review".to_string();
+        let review_prompt = system_prompt_for_request(&review, Some("explicit"));
+        assert!(review_prompt.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
+        assert!(!review_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX));
+
+        // Draft keeps ONLY the drafting appendix — never the analysis one.
+        let draft = grok_draft_route();
+        let draft_prompt = system_prompt_for_request(&draft, Some("explicit"));
+        assert!(draft_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX));
+        assert!(
+            !draft_prompt.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX),
+            "draft must NOT get the analysis appendix"
+        );
+    }
+
+    #[test]
+    fn analysis_appendix_absent_for_non_explicit_prose_routes() {
+        let mut review = grok_draft_route();
+        review.route_name = "review".to_string();
+        let mature = system_prompt_for_request(&review, Some("mature"));
+        assert!(!mature.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
+        let none = system_prompt_for_request(&review, None);
+        assert!(!none.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
     }
 }

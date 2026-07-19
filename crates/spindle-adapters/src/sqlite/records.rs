@@ -3223,3 +3223,77 @@ impl<'a> TryFrom<&Row<'a>> for StoredQuantityState {
         })
     }
 }
+
+pub const CANON_DELTA_COLUMNS: &str = "id, project_id, branch_id, scene_id, \
+     authoring_run_id, delta_class, target_id, payload, evidence, confidence, \
+     status, decided_at, decided_by, created_at, updated_at";
+
+/// A staged/decided canon delta (ADR 0001, migration V0024). Timestamps are the
+/// stored microsecond [`Timestamp`]; the adapter maps them to ISO-8601 strings
+/// when producing the spindle-core [`spindle_core::models::CanonDelta`] read
+/// model.
+#[derive(Debug, Clone)]
+pub struct StoredCanonDelta {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub scene_id: String,
+    pub authoring_run_id: Option<String>,
+    pub delta_class: String,
+    pub target_id: Option<String>,
+    pub payload: Value,
+    pub evidence: String,
+    pub confidence: String,
+    pub status: String,
+    pub decided_at: Option<Timestamp>,
+    pub decided_by: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredCanonDelta {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            scene_id: row::text(r, 3)?,
+            authoring_run_id: row::opt_text(r, 4)?,
+            delta_class: row::text(r, 5)?,
+            target_id: row::opt_text(r, 6)?,
+            payload: row::json(r, 7)?,
+            evidence: row::text(r, 8)?,
+            confidence: row::text(r, 9)?,
+            status: row::text(r, 10)?,
+            decided_at: row::opt_time(r, 11)?,
+            decided_by: row::opt_text(r, 12)?,
+            created_at: row::time(r, 13)?,
+            updated_at: row::time(r, 14)?,
+        })
+    }
+}
+
+impl StoredCanonDelta {
+    /// Map to the spindle-core read model, rendering microsecond timestamps as
+    /// ISO-8601 strings (mirrors the `SessionActivity` / scene mappings).
+    pub fn into_core(self) -> spindle_core::models::CanonDelta {
+        spindle_core::models::CanonDelta {
+            id: self.id,
+            project_id: self.project_id,
+            branch_id: self.branch_id,
+            scene_id: self.scene_id,
+            authoring_run_id: self.authoring_run_id,
+            delta_class: self.delta_class,
+            target_id: self.target_id,
+            payload: self.payload,
+            evidence: self.evidence,
+            confidence: self.confidence,
+            status: self.status,
+            decided_at: self.decided_at.map(|t| t.to_rfc3339()),
+            decided_by: self.decided_by,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
+        }
+    }
+}
