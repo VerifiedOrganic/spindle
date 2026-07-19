@@ -6562,6 +6562,117 @@ pub struct MineSceneCanonOutput {
     pub skip_reason: Option<String>,
 }
 
+/// An inclusive chapter span within a single book, used to scope a
+/// `list_canon_deltas` read to the scenes of those chapters (mirrors the way
+/// `compile_manuscript` resolves a chapter range to active-branch scenes).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChapterRange {
+    /// The book the chapter numbers belong to.
+    pub book_number: i32,
+    /// Inclusive first chapter.
+    pub start: i32,
+    /// Inclusive last chapter.
+    pub end: i32,
+}
+
+/// Input for `list_canon_deltas` (ADR 0001): read the ratify queue on a
+/// project's active branch. Filters compose (AND): `status` narrows to
+/// `staged`/`applied`/`rejected`/`superseded`; `scene_id` narrows to one
+/// scene's provenance; `chapter_range` resolves to the set of active-branch
+/// scenes in those chapters. `scene_id` and `chapter_range` are mutually
+/// exclusive — supplying both is an input error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListCanonDeltasInput {
+    pub project_id: String,
+    /// `staged` | `applied` | `rejected` | `superseded`; `None` returns all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Restrict to deltas mined from this one scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    /// Restrict to deltas mined from any scene in this chapter span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_range: Option<ChapterRange>,
+}
+
+/// Output of `list_canon_deltas`: the matching deltas in the repository's
+/// deterministic `(created_at, id)` order.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListCanonDeltasOutput {
+    #[serde(default)]
+    pub deltas: Vec<CanonDelta>,
+}
+
+/// One operator ratification decision on a staged canon delta (ADR 0001 D3).
+/// `action` is `apply` or `reject`. `edit` optionally replaces the staged
+/// payload (ratify-with-correction) — the edited payload is what is applied AND
+/// recorded on the row. `note` is an operator annotation surfaced in the output
+/// (the `canon_delta` row has no note column, so it is never persisted).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonDeltaDecisionInput {
+    pub delta_id: String,
+    /// `apply` | `reject`.
+    pub action: String,
+    /// Corrected payload replacing the staged one on apply. On reject it is
+    /// recorded but not applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "any_object_schema")]
+    pub edit: Option<serde_json::Value>,
+    /// Free-form operator note; echoed in the output, not persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Input for `decide_canon_deltas` (ADR 0001 D3): the apply dispatcher. All
+/// decisions are pre-flighted before any write; a single pre-flight failure
+/// aborts the whole call with zero writes (decisions on already-decided rows are
+/// input errors — finality). `decided_by` defaults to `operator`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecideCanonDeltasInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub decisions: Vec<CanonDeltaDecisionInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+}
+
+/// The per-decision outcome in a `decide_canon_deltas` response.
+///
+/// * `applied` — the delta's write tool ran and the decision was recorded.
+/// * `rejected` — the delta was marked rejected; no canon write.
+/// * `failed` — a real write error occurred after pre-flight; earlier applies in
+///   the batch stay applied (they are recorded canon), this row stays staged.
+/// * `not_reached` — a later decision the dispatcher never got to because an
+///   earlier one failed (this row stays staged).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonDeltaDecisionResult {
+    pub delta_id: String,
+    /// `applied` | `rejected` | `failed` | `not_reached`.
+    pub outcome: String,
+    /// Present on `failed`: the write error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Present on `applied` when the write tool returns a fresh record id (e.g.
+    /// a created fact/promise/entity). `None` for updates that mutate in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_record_id: Option<String>,
+    /// The operator note carried on the decision input, echoed back (the row has
+    /// no note column, so this is the only place it survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Output of `decide_canon_deltas`: one result per decision in input order,
+/// plus counts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecideCanonDeltasOutput {
+    #[serde(default)]
+    pub results: Vec<CanonDeltaDecisionResult>,
+    pub applied_count: usize,
+    pub rejected_count: usize,
+    pub failed_count: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

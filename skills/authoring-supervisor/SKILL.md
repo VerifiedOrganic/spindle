@@ -121,6 +121,16 @@ This will advance the current transition, such as:
 After every execution step, keep the user informed concisely. Do not stop for a
 choice unless the run is blocked on a real operator decision.
 
+**Post-scene canon mining (hand off to canon-steward).** Once a scene is
+committed, its prose can be mined into proposed canon deltas the operator
+ratifies, instead of hand-authoring canon calls. Call `mine_scene_canon` for the
+committed scene, then hand off to the **canon-steward** skill to review the
+staged queue with `list_canon_deltas` and apply/reject with
+`decide_canon_deltas`. The steward reads each delta's verbatim evidence before
+applying, never bulk-applies, and gives secret-link (circle-expansion) deltas
+extra scrutiny. Ratification stays an operator decision — never auto-apply mined
+deltas inside the run.
+
 ### 4. Check Status and Diagnoses
 
 You can check the overall state of the run at any time using `authoring_status`:

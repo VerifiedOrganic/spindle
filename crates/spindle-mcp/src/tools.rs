@@ -272,6 +272,8 @@ impl ToolRouter {
                 "preflight_book_export",
                 "compile_manuscript",
                 "mine_scene_canon",
+                "list_canon_deltas",
+                "decide_canon_deltas",
                 "get_writer_state",
                 "get_scene_context",
                 "get_entity",
@@ -793,6 +795,14 @@ impl ToolRouter {
             tool::<MineSceneCanonInput, MineSceneCanonOutput>(
                 "mine_scene_canon",
                 "Mine one committed scene's prose into proposed canon deltas (staged for operator ratification, never auto-applied). One rating-gated model call; malformed model output is rejected and evidence must appear verbatim in the prose. Re-mining a scene supersedes its prior staged deltas. Returns the staged deltas, discard/supersede counts, and a status of staged, skipped (no cleared route or empty scene), or model_output_rejected.",
+            ),
+            tool::<ListCanonDeltasInput, ListCanonDeltasOutput>(
+                "list_canon_deltas",
+                "List the canon deltas mined for a project's active branch (the ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance — either one scene_id OR a chapter_range { book_number, start, end } (mutually exclusive). Results carry each delta's class, payload, verbatim evidence quote, confidence, and status, in deterministic order. Read this before deciding — never bulk-apply without reading the evidence.",
+            ),
+            tool::<DecideCanonDeltasInput, DecideCanonDeltasOutput>(
+                "decide_canon_deltas",
+                "Ratify a batch of staged canon deltas: each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed in the output; not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, dangling target, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies dispatch to the class's existing write tool (register_canonical_fact, update_promise_status, update_relationship, commit_character_state, record_knowledge, annotate_scene_beats, commit_quantity_state, update_entity for conflict/arc columns, or create_character/location/term). Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
             ),
             tool::<ExportBibleInput, ExportBibleOutput>(
                 "export_bible",
@@ -1814,6 +1824,14 @@ impl ToolRouter {
             }
             "mine_scene_canon" => {
                 self.invoke(arguments, |input| self.service.mine_scene_canon(input))
+                    .await
+            }
+            "list_canon_deltas" => {
+                self.invoke(arguments, |input| self.service.list_canon_deltas(input))
+                    .await
+            }
+            "decide_canon_deltas" => {
+                self.invoke(arguments, |input| self.service.decide_canon_deltas(input))
                     .await
             }
             "export_bible" => {
@@ -6240,5 +6258,153 @@ mod tests {
         assert_eq!(out.status, "staged");
         assert_eq!(out.staged.len(), 1);
         assert_eq!(out.staged[0].delta_class, "canonical_fact");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canon_delta_ratify_round_trip_via_mcp() {
+        // End-to-end over the MCP surface: stage via mine (sentinel), list the
+        // queue, apply the one delta, and confirm the fact is real canon.
+        let router = router().await;
+
+        let create_project_args = serde_json::to_value(CreateProjectInput {
+            name: "Ratify MCP".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "ratified canon".to_string(),
+                style_notes: vec![],
+                boundaries: vec![],
+            },
+        })
+        .expect("create project args");
+        let create_project_args = create_project_args
+            .as_object()
+            .cloned()
+            .expect("create project object");
+        let project: CreateProjectOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("create_project", Some(&create_project_args))
+                .await
+                .expect("create project"),
+        ))
+        .expect("project output");
+
+        let save_args = serde_json::to_value(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "A grey tower loomed. MOCK_CANON_MINE stood at its gate.".to_string(),
+            summary: "s".to_string(),
+            content_rating: ContentRating::General,
+            tone: None,
+            source_path: None,
+            generation_id: None,
+            ..Default::default()
+        })
+        .expect("save args");
+        let save_args = save_args.as_object().cloned().expect("save args object");
+        let saved: SaveSceneDraftOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("save_scene_draft", Some(&save_args))
+                .await
+                .expect("save scene draft"),
+        ))
+        .expect("save output");
+
+        // Stage via mine.
+        let mine_args = serde_json::to_value(MineSceneCanonInput {
+            project_id: project.project_id.clone(),
+            scene_id: saved.scene_id.clone(),
+        })
+        .expect("mine args");
+        let mine_args = mine_args.as_object().cloned().expect("mine args object");
+        router
+            .call_tool("mine_scene_canon", Some(&mine_args))
+            .await
+            .expect("mine scene canon");
+
+        // List the ratify queue.
+        let list_args = serde_json::to_value(ListCanonDeltasInput {
+            project_id: project.project_id.clone(),
+            status: Some("staged".to_string()),
+            scene_id: Some(saved.scene_id.clone()),
+            chapter_range: None,
+        })
+        .expect("list args");
+        let list_args = list_args.as_object().cloned().expect("list args object");
+        let listed: ListCanonDeltasOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("list_canon_deltas", Some(&list_args))
+                .await
+                .expect("list canon deltas"),
+        ))
+        .expect("list output");
+        assert_eq!(listed.deltas.len(), 1);
+        let delta = &listed.deltas[0];
+        assert_eq!(delta.delta_class, "canonical_fact");
+        assert_eq!(delta.status, "staged");
+        // Evidence is the verbatim sentinel from the prose.
+        assert_eq!(delta.evidence, "MOCK_CANON_MINE");
+
+        // Apply it.
+        let decide_args = serde_json::to_value(DecideCanonDeltasInput {
+            project_id: project.project_id.clone(),
+            decisions: vec![CanonDeltaDecisionInput {
+                delta_id: delta.id.clone(),
+                action: "apply".to_string(),
+                edit: None,
+                note: Some("looks right".to_string()),
+            }],
+            decided_by: Some("mcp-operator".to_string()),
+        })
+        .expect("decide args");
+        let decide_args = decide_args
+            .as_object()
+            .cloned()
+            .expect("decide args object");
+        let decided: DecideCanonDeltasOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("decide_canon_deltas", Some(&decide_args))
+                .await
+                .expect("decide canon deltas"),
+        ))
+        .expect("decide output");
+        assert_eq!(decided.applied_count, 1);
+        assert_eq!(decided.results[0].outcome, "applied");
+        assert_eq!(decided.results[0].note.as_deref(), Some("looks right"));
+        assert!(
+            decided.results[0]
+                .applied_record_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("canonical_fact:"))
+        );
+
+        // The row is now applied.
+        let applied_list_args = serde_json::to_value(ListCanonDeltasInput {
+            project_id: project.project_id.clone(),
+            status: Some("applied".to_string()),
+            scene_id: Some(saved.scene_id.clone()),
+            chapter_range: None,
+        })
+        .expect("applied list args");
+        let applied_list_args = applied_list_args
+            .as_object()
+            .cloned()
+            .expect("applied list object");
+        let applied: ListCanonDeltasOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("list_canon_deltas", Some(&applied_list_args))
+                .await
+                .expect("list applied"),
+        ))
+        .expect("applied output");
+        assert_eq!(applied.deltas.len(), 1);
+        assert_eq!(applied.deltas[0].status, "applied");
+        assert_eq!(
+            applied.deltas[0].decided_by.as_deref(),
+            Some("mcp-operator")
+        );
     }
 }

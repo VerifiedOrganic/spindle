@@ -1695,6 +1695,16 @@ impl Repository {
             .ok_or_else(|| anyhow!("canon_delta vanished after insert"))
     }
 
+    /// Fetch one canon delta by id, or `None` if absent. Public read used by the
+    /// service-layer apply dispatcher to pre-flight each decision (row exists,
+    /// ownership, staged status) before any write.
+    pub async fn read_canon_delta_public(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredCanonDelta>> {
+        self.read_canon_delta(id).await
+    }
+
     /// Fetch one canon delta by id, or `None` if absent.
     async fn read_canon_delta(
         &self,
@@ -4332,6 +4342,26 @@ impl Repository {
             })
             .await?
             .ok_or_else(|| anyhow!("canonical_fact not found"))
+    }
+
+    /// Test-only seam: clear the `secret` flag on a canonical fact row. Used by
+    /// the `decide_canon_deltas` mid-apply-failure test to make a
+    /// `knowledge_learned` reveal's write fail *after* pre-flight validated the
+    /// fact was secret — `record_knowledge` re-checks the flag at apply time and
+    /// rejects a reveal linking to a now-non-secret fact. This proves the
+    /// dispatcher stops honestly and does not silently roll back the earlier
+    /// applies. A plain delete is unusable here: the circle row's
+    /// `secret_of_fact_id` FK would block it. Not part of the production surface.
+    #[cfg(test)]
+    pub async fn clear_canonical_fact_secret_for_test(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute("UPDATE canonical_fact SET secret = 0 WHERE id = ?1", [&id])?;
+                Ok(())
+            })
+            .await
     }
 
     /// Canonical facts about a specific subject (table+id), ordered by

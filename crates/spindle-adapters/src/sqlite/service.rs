@@ -16326,6 +16326,900 @@ impl SqliteSpindleService {
         })
     }
 
+    // ── Canon-delta ratification (list + decide/apply dispatcher, ADR 0001 D3) ─
+
+    /// List staged/decided canon deltas on a project's active branch (ADR 0001).
+    /// `status` and provenance (`scene_id` OR `chapter_range`) compose as AND
+    /// filters. `scene_id` and `chapter_range` are mutually exclusive. A chapter
+    /// range resolves to the active-branch scenes in those chapters (the same way
+    /// `compile_manuscript` resolves a range), then the per-scene queries are
+    /// unioned; the result preserves the repository's `(created_at, id)` order.
+    pub async fn list_canon_deltas(
+        &self,
+        input: spindle_core::models::ListCanonDeltasInput,
+    ) -> Result<spindle_core::models::ListCanonDeltasOutput> {
+        use spindle_core::models::ListCanonDeltasOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+        let status = input.status.as_deref();
+
+        if input.scene_id.is_some() && input.chapter_range.is_some() {
+            anyhow::bail!(
+                "list_canon_deltas: scene_id and chapter_range are mutually exclusive filters"
+            );
+        }
+
+        let stored = match (&input.scene_id, &input.chapter_range) {
+            (Some(scene_id), None) => {
+                self.repository
+                    .list_canon_deltas(&input.project_id, &active_branch.id, status, Some(scene_id))
+                    .await?
+            }
+            (None, Some(range)) => {
+                // Resolve the range to active-branch scene ids in those chapters,
+                // then union the per-scene queries. The repository already orders
+                // each query by (created_at, id); we re-sort the union to keep the
+                // overall result deterministic across scenes.
+                let scene_ids = self
+                    .canon_delta_scene_ids_for_chapter_range(
+                        &input.project_id,
+                        &active_branch.id,
+                        range,
+                    )
+                    .await?;
+                let mut all = Vec::new();
+                for scene_id in &scene_ids {
+                    let rows = self
+                        .repository
+                        .list_canon_deltas(
+                            &input.project_id,
+                            &active_branch.id,
+                            status,
+                            Some(scene_id),
+                        )
+                        .await?;
+                    all.extend(rows);
+                }
+                all.sort_by(|a, b| {
+                    a.created_at
+                        .cmp(&b.created_at)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                all
+            }
+            (None, None) => {
+                self.repository
+                    .list_canon_deltas(&input.project_id, &active_branch.id, status, None)
+                    .await?
+            }
+            (Some(_), Some(_)) => unreachable!("guarded above"),
+        };
+
+        Ok(ListCanonDeltasOutput {
+            deltas: stored.into_iter().map(|d| d.into_core()).collect(),
+        })
+    }
+
+    /// Resolve an inclusive `ChapterRange` to the active-branch scene ids in
+    /// those chapters, in deterministic story order. Mirrors the chapter→scene
+    /// resolution `compile_manuscript` performs.
+    async fn canon_delta_scene_ids_for_chapter_range(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        range: &spindle_core::models::ChapterRange,
+    ) -> Result<Vec<String>> {
+        let mut scenes = self
+            .repository
+            .list_scenes_by_project_and_branch(project_id, branch_id)
+            .await?;
+        scenes.retain(|scene| {
+            scene.book_number == range.book_number
+                && scene.chapter_number >= range.start
+                && scene.chapter_number <= range.end
+        });
+        scenes.sort_by(|a, b| {
+            (a.book_number, a.chapter_number, a.scene_order).cmp(&(
+                b.book_number,
+                b.chapter_number,
+                b.scene_order,
+            ))
+        });
+        Ok(scenes.into_iter().map(|scene| scene.id).collect())
+    }
+
+    /// The apply dispatcher (ADR 0001 D3, evolution §3.1). Ratifies a batch of
+    /// operator decisions on staged canon deltas:
+    ///
+    /// 1. **Pre-flight ALL before applying ANY.** Every decision is checked: the
+    ///    delta exists, belongs to the project, and is currently `staged`
+    ///    (deciding a decided/superseded row is an input error — decisions are
+    ///    final). For `apply` decisions, the (edited) payload is deserialized into
+    ///    the target tool's input DTO and cheap referential checks run (target
+    ///    exists where the class requires one). Any pre-flight failure aborts the
+    ///    whole call with **zero writes** — every row stays staged.
+    /// 2. **Apply phase (input order).** Each `apply` dispatches to the SAME
+    ///    existing write service method the class maps to (never a novel write
+    ///    path), then records the decision via
+    ///    [`Repository::decide_canon_delta`]. A `reject` records the decision only.
+    /// 3. **Mid-apply honesty.** If an apply fails after earlier ones succeeded
+    ///    (a real write error despite pre-flight), the dispatcher stops: earlier
+    ///    applies stay applied (they are real, recorded canon — nothing is rolled
+    ///    back silently), the failing row is reported `failed` with its error and
+    ///    stays staged, and remaining rows read `not_reached` and stay staged.
+    pub async fn decide_canon_deltas(
+        &self,
+        input: spindle_core::models::DecideCanonDeltasInput,
+    ) -> Result<spindle_core::models::DecideCanonDeltasOutput> {
+        self.decide_canon_deltas_with_seam(input, || async {}).await
+    }
+
+    /// Implementation of [`Self::decide_canon_deltas`] with an injectable hook
+    /// run once, after pre-flight and before the apply phase. The public entry
+    /// point passes a no-op; a test can inject a real mutation (e.g. deleting a
+    /// row pre-flight validated) to exercise the mid-apply-failure path through
+    /// the genuine dispatch code rather than a mock.
+    pub(crate) async fn decide_canon_deltas_with_seam<H, Fut>(
+        &self,
+        input: spindle_core::models::DecideCanonDeltasInput,
+        after_preflight: H,
+    ) -> Result<spindle_core::models::DecideCanonDeltasOutput>
+    where
+        H: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use crate::sqlite::repository::CanonDeltaDecision;
+        use spindle_core::models::{CanonDeltaDecisionResult, DecideCanonDeltasOutput};
+
+        self.repository.get_project(&input.project_id).await?;
+        let decided_by = input
+            .decided_by
+            .as_deref()
+            .unwrap_or("operator")
+            .to_string();
+
+        // ── Pre-flight ALL ───────────────────────────────────────────────────
+        // Resolve every referenced row, assert project ownership + staged status,
+        // and (for applies) validate the effective payload. Collect offenders so
+        // the error lists them all rather than failing on the first.
+        struct Preflighted {
+            delta_id: String,
+            action: Action,
+            effective_payload: serde_json::Value,
+            edited: bool,
+            delta: crate::sqlite::records::StoredCanonDelta,
+            note: Option<String>,
+        }
+        enum Action {
+            Apply,
+            Reject,
+        }
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut preflighted: Vec<Preflighted> = Vec::new();
+        for decision in &input.decisions {
+            let action = match decision.action.trim().to_ascii_lowercase().as_str() {
+                "apply" => Action::Apply,
+                "reject" => Action::Reject,
+                other => {
+                    offenders.push(format!(
+                        "decision on '{}' has unknown action '{other}' (expected apply|reject)",
+                        decision.delta_id
+                    ));
+                    continue;
+                }
+            };
+            let delta = match self
+                .repository
+                .read_canon_delta_public(&decision.delta_id)
+                .await?
+            {
+                Some(delta) => delta,
+                None => {
+                    offenders.push(format!("delta '{}' does not exist", decision.delta_id));
+                    continue;
+                }
+            };
+            if delta.project_id != input.project_id {
+                offenders.push(format!(
+                    "delta '{}' does not belong to project '{}'",
+                    decision.delta_id, input.project_id
+                ));
+                continue;
+            }
+            if delta.status != "staged" {
+                offenders.push(format!(
+                    "delta '{}' is '{}', not staged (decisions are final)",
+                    decision.delta_id, delta.status
+                ));
+                continue;
+            }
+            let edited = decision.edit.is_some();
+            let effective_payload = decision
+                .edit
+                .clone()
+                .unwrap_or_else(|| delta.payload.clone());
+            // Box the fan-out futures (pre-flight validates ~14 distinct DTO
+            // shapes; apply dispatches to ~13 distinct write-service futures).
+            // Un-boxed, the sum inflates the enclosing future — and therefore
+            // the MCP `call_tool` future — past a worker thread's stack. One
+            // heap indirection per decision keeps every caller's stack flat.
+            if matches!(action, Action::Apply)
+                && let Err(err) =
+                    Box::pin(self.preflight_apply_delta(&delta, &effective_payload)).await
+            {
+                offenders.push(format!(
+                    "delta '{}' failed pre-flight: {err}",
+                    decision.delta_id
+                ));
+                continue;
+            }
+            preflighted.push(Preflighted {
+                delta_id: decision.delta_id.clone(),
+                action,
+                effective_payload,
+                edited,
+                delta,
+                note: decision.note.clone(),
+            });
+        }
+
+        if !offenders.is_empty() {
+            anyhow::bail!(
+                "decide_canon_deltas pre-flight failed ({} offender(s)); zero writes applied: {}",
+                offenders.len(),
+                offenders.join("; ")
+            );
+        }
+
+        // Test/instrumentation seam: mutate state between pre-flight and apply.
+        after_preflight().await;
+
+        // ── Apply phase (input order) ────────────────────────────────────────
+        let mut results: Vec<CanonDeltaDecisionResult> = Vec::new();
+        let mut applied_count = 0usize;
+        let mut rejected_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut stopped = false;
+
+        for item in preflighted {
+            if stopped {
+                results.push(CanonDeltaDecisionResult {
+                    delta_id: item.delta_id,
+                    outcome: "not_reached".to_string(),
+                    error: None,
+                    applied_record_id: None,
+                    note: item.note,
+                });
+                continue;
+            }
+            match item.action {
+                Action::Reject => {
+                    self.repository
+                        .decide_canon_delta(
+                            &item.delta_id,
+                            CanonDeltaDecision::Rejected,
+                            &decided_by,
+                            // Record an edited payload only when the operator
+                            // actually corrected it; a plain reject keeps the
+                            // staged payload intact.
+                            item.edited.then(|| item.effective_payload.clone()),
+                        )
+                        .await?;
+                    rejected_count += 1;
+                    results.push(CanonDeltaDecisionResult {
+                        delta_id: item.delta_id,
+                        outcome: "rejected".to_string(),
+                        error: None,
+                        applied_record_id: None,
+                        note: item.note,
+                    });
+                }
+                Action::Apply => {
+                    match Box::pin(self.apply_canon_delta(&item.delta, &item.effective_payload))
+                        .await
+                    {
+                        Ok(applied_record_id) => {
+                            // Record the decision (with the edited payload so the
+                            // row reflects exactly what was applied).
+                            self.repository
+                                .decide_canon_delta(
+                                    &item.delta_id,
+                                    CanonDeltaDecision::Applied,
+                                    &decided_by,
+                                    Some(item.effective_payload.clone()),
+                                )
+                                .await?;
+                            applied_count += 1;
+                            results.push(CanonDeltaDecisionResult {
+                                delta_id: item.delta_id,
+                                outcome: "applied".to_string(),
+                                error: None,
+                                applied_record_id,
+                                note: item.note,
+                            });
+                        }
+                        Err(err) => {
+                            // Real write failure after pre-flight: stop honestly.
+                            // Earlier applies stay applied; this row stays staged.
+                            failed_count += 1;
+                            results.push(CanonDeltaDecisionResult {
+                                delta_id: item.delta_id,
+                                outcome: "failed".to_string(),
+                                error: Some(format!("{err:#}")),
+                                applied_record_id: None,
+                                note: item.note,
+                            });
+                            stopped = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(DecideCanonDeltasOutput {
+            results,
+            applied_count,
+            rejected_count,
+            failed_count,
+        })
+    }
+
+    /// Cheap referential pre-flight for one `apply` decision: deserialize the
+    /// effective payload into the class's target DTO shape and confirm any
+    /// required target row exists. No writes. Runs for every apply before any
+    /// apply so a malformed/dangling delta aborts the batch with zero writes.
+    async fn preflight_apply_delta(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<()> {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CommitCharacterStateInput, CommitQuantityStateInput,
+            CreateNarrativePromiseInput, RecordKnowledgeInput, UpdateRelationshipInput,
+        };
+
+        let scene = &delta.scene_id;
+        match delta.delta_class.as_str() {
+            "canonical_fact" => {
+                self.build_register_fact_input(delta, payload).await?;
+            }
+            "promise_planted" => {
+                let _: CreateNarrativePromiseInput =
+                    self.deser_with_provenance(delta, payload).await?;
+            }
+            "promise_payoff_candidate" | "promise_reinforced" => {
+                let promise_id = self.canon_delta_promise_id(delta, payload)?;
+                self.repository
+                    .get_narrative_promise(&promise_id)
+                    .await
+                    .with_context(|| format!("narrative_promise '{promise_id}' does not exist"))?;
+            }
+            "relationship_shift" => {
+                let input: UpdateRelationshipInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                self.repository
+                    .get_character(&input.character_a_id)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "relationship character '{}' does not exist",
+                            input.character_a_id
+                        )
+                    })?;
+                self.repository
+                    .get_character(&input.character_b_id)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "relationship character '{}' does not exist",
+                            input.character_b_id
+                        )
+                    })?;
+            }
+            "character_state" => {
+                let input: CommitCharacterStateInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                self.repository
+                    .get_character(&input.character_id)
+                    .await
+                    .with_context(|| {
+                        format!("character '{}' does not exist", input.character_id)
+                    })?;
+            }
+            "knowledge_learned" => {
+                let input: RecordKnowledgeInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                self.repository
+                    .get_character(&input.character_id)
+                    .await
+                    .with_context(|| {
+                        format!("character '{}' does not exist", input.character_id)
+                    })?;
+                if let Some(fact_id) = input.secret_of_fact_id.as_deref() {
+                    let fact = self
+                        .repository
+                        .get_canonical_fact(fact_id)
+                        .await
+                        .with_context(|| {
+                            format!("secret_of_fact_id '{fact_id}' does not reference a fact")
+                        })?;
+                    if !fact.secret {
+                        anyhow::bail!("secret_of_fact_id '{fact_id}' references a non-secret fact");
+                    }
+                }
+            }
+            "beat_annotation" => {
+                let _: AnnotateSceneBeatsInput = self.deser_with_provenance(delta, payload).await?;
+            }
+            "try_fail_cycle" | "consequence_delivered" | "escalation_demonstrated" => {
+                let conflict_id = self.canon_delta_conflict_id(delta, payload)?;
+                let conflict = self
+                    .repository
+                    .get_conflict(&conflict_id)
+                    .await
+                    .with_context(|| format!("conflict '{conflict_id}' does not exist"))?;
+                if delta.delta_class == "consequence_delivered" {
+                    let index = self.canon_delta_index(payload, "consequence_index")?;
+                    if index >= conflict.stated_consequences.len() {
+                        anyhow::bail!(
+                            "consequence_index {index} out of range ({} consequences)",
+                            conflict.stated_consequences.len()
+                        );
+                    }
+                } else if delta.delta_class == "escalation_demonstrated" {
+                    let index = self.canon_delta_index(payload, "stage_index")?;
+                    if index >= conflict.escalation_stages.len() {
+                        anyhow::bail!(
+                            "stage_index {index} out of range ({} escalation stages)",
+                            conflict.escalation_stages.len()
+                        );
+                    }
+                }
+            }
+            "arc_milestone_reached" => {
+                let arc_id = self.canon_delta_arc_id(delta, payload)?;
+                let arc = self
+                    .repository
+                    .get_character_arc(&arc_id)
+                    .await
+                    .with_context(|| format!("character_arc '{arc_id}' does not exist"))?;
+                let label = self.canon_delta_milestone_label(payload)?;
+                if !arc.milestones.iter().any(|m| m.label == label) {
+                    anyhow::bail!("arc '{arc_id}' has no milestone labelled '{label}'");
+                }
+            }
+            "quantity_change" => {
+                let _: CommitQuantityStateInput =
+                    self.deser_with_provenance(delta, payload).await?;
+            }
+            "entity_candidate" => {
+                let kind = payload
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .map(|k| k.trim().to_ascii_lowercase());
+                match kind.as_deref() {
+                    Some("character") => {
+                        let _: spindle_core::models::CreateCharacterInput =
+                            self.deser_with_provenance(delta, payload).await?;
+                    }
+                    Some("location") => {
+                        let _: spindle_core::models::CreateLocationInput =
+                            self.deser_with_provenance(delta, payload).await?;
+                    }
+                    Some("term") => {
+                        let _: spindle_core::models::CreateTermInput =
+                            self.deser_with_provenance(delta, payload).await?;
+                    }
+                    other => anyhow::bail!(
+                        "entity_candidate kind must be character|location|term (got {other:?})"
+                    ),
+                }
+            }
+            other => anyhow::bail!("unknown canon delta class '{other}'"),
+        }
+        let _ = scene;
+        Ok(())
+    }
+
+    /// Apply one pre-flighted `apply` decision by dispatching to the class's
+    /// existing write service method. Returns the fresh record id for classes
+    /// that create a row (`canonical_fact`, `promise_planted`, `entity_candidate`),
+    /// or `None` for in-place updates. Never a novel write path.
+    async fn apply_canon_delta(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<Option<String>> {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CommitCharacterStateInput, CommitQuantityStateInput,
+            CreateCharacterInput, CreateLocationInput, CreateNarrativePromiseInput,
+            CreateTermInput, RecordKnowledgeInput, UpdatePromiseStatusInput,
+            UpdateRelationshipInput,
+        };
+
+        match delta.delta_class.as_str() {
+            "canonical_fact" => {
+                let input = self.build_register_fact_input(delta, payload).await?;
+                let out = self.register_canonical_fact(input).await?;
+                Ok(Some(out.canonical_fact_id))
+            }
+            "promise_planted" => {
+                let input: CreateNarrativePromiseInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                let out = self.create_narrative_promise(input).await?;
+                Ok(Some(out.narrative_promise_id))
+            }
+            "promise_payoff_candidate" | "promise_reinforced" => {
+                let promise_id = self.canon_delta_promise_id(delta, payload)?;
+                let status = self.canon_delta_promise_status(delta, payload)?;
+                self.update_promise_status(UpdatePromiseStatusInput {
+                    narrative_promise_id: promise_id,
+                    status,
+                    note: None,
+                })
+                .await?;
+                Ok(None)
+            }
+            "relationship_shift" => {
+                let input: UpdateRelationshipInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                self.update_relationship(input).await?;
+                Ok(None)
+            }
+            "character_state" => {
+                let input: CommitCharacterStateInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                let out = self.commit_character_state(input).await?;
+                Ok(Some(out.state_id))
+            }
+            "knowledge_learned" => {
+                let input: RecordKnowledgeInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                let out = self.record_knowledge(input).await?;
+                Ok(Some(out.fact.knowledge_fact_id))
+            }
+            "beat_annotation" => {
+                let input: AnnotateSceneBeatsInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                let out = self.annotate_scene_beats(input).await?;
+                Ok(Some(out.scene_annotation_id))
+            }
+            "try_fail_cycle" | "consequence_delivered" | "escalation_demonstrated" => {
+                self.apply_conflict_delta(delta, payload).await
+            }
+            "arc_milestone_reached" => self.apply_arc_milestone_delta(delta, payload).await,
+            "quantity_change" => {
+                let input: CommitQuantityStateInput =
+                    self.deser_with_provenance(delta, payload).await?;
+                let out = self.commit_quantity_state(input).await?;
+                Ok(Some(out.quantity_state_id))
+            }
+            "entity_candidate" => {
+                let kind = payload
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .map(|k| k.trim().to_ascii_lowercase())
+                    .unwrap_or_default();
+                match kind.as_str() {
+                    "character" => {
+                        let input: CreateCharacterInput =
+                            self.deser_with_provenance(delta, payload).await?;
+                        let out = self.create_character(input).await?;
+                        Ok(Some(out.character_id))
+                    }
+                    "location" => {
+                        let input: CreateLocationInput =
+                            self.deser_with_provenance(delta, payload).await?;
+                        let out = self.create_location(input).await?;
+                        Ok(Some(out.location_id))
+                    }
+                    "term" => {
+                        let input: CreateTermInput =
+                            self.deser_with_provenance(delta, payload).await?;
+                        let out = self.create_term(input).await?;
+                        Ok(Some(out.term_id))
+                    }
+                    other => anyhow::bail!("entity_candidate kind '{other}' is not creatable"),
+                }
+            }
+            other => anyhow::bail!("unknown canon delta class '{other}'"),
+        }
+    }
+
+    /// Apply a conflict-touching delta (`try_fail_cycle`, `consequence_delivered`,
+    /// `escalation_demonstrated`) by reading the conflict, computing the merged
+    /// JSON, and writing it back through the SAME `update_entity` column path the
+    /// tool surface uses (never raw SQL). Returns `None` (an in-place update).
+    async fn apply_conflict_delta(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<Option<String>> {
+        use crate::sqlite::json_records::{
+            StoredStatedConsequence, StoredStoryPlacement, StoredTryFailCycleStep,
+        };
+        use spindle_core::models::UpdateEntityInput;
+
+        let conflict_id = self.canon_delta_conflict_id(delta, payload)?;
+        let conflict = self.repository.get_conflict(&conflict_id).await?;
+        let placement = self.canon_delta_scene_placement(delta).await?;
+
+        let (column, value) = match delta.delta_class.as_str() {
+            "try_fail_cycle" => {
+                // Append a new cycle step. The payload carries the step body
+                // (label/outcome/cost/revelation); attempt_order defaults to the
+                // next slot when omitted.
+                let mut cycles: Vec<StoredTryFailCycleStep> = conflict.try_fail_cycles.clone();
+                let next_order = cycles.iter().map(|c| c.attempt_order).max().unwrap_or(0) + 1;
+                let step = StoredTryFailCycleStep {
+                    attempt_order: payload
+                        .get("attempt_order")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as i32)
+                        .unwrap_or(next_order),
+                    label: payload
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    outcome: payload
+                        .get("outcome")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    cost: payload
+                        .get("cost")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    revelation: payload
+                        .get("revelation")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                };
+                cycles.push(step);
+                ("try_fail_cycles", serde_json::to_value(&cycles)?)
+            }
+            "consequence_delivered" => {
+                let index = self.canon_delta_index(payload, "consequence_index")?;
+                let mut consequences: Vec<StoredStatedConsequence> =
+                    conflict.stated_consequences.clone();
+                let entry = consequences
+                    .get_mut(index)
+                    .ok_or_else(|| anyhow::anyhow!("consequence_index {index} out of range"))?;
+                entry.delivered = true;
+                ("stated_consequences", serde_json::to_value(&consequences)?)
+            }
+            "escalation_demonstrated" => {
+                let index = self.canon_delta_index(payload, "stage_index")?;
+                let mut demonstrated: Vec<Option<StoredStoryPlacement>> =
+                    conflict.escalation_demonstrated.clone();
+                // Grow the vec so index is addressable, filling gaps with None.
+                if demonstrated.len() <= index {
+                    demonstrated.resize(index + 1, None);
+                }
+                demonstrated[index] = Some(StoredStoryPlacement::from(placement));
+                (
+                    "escalation_demonstrated",
+                    serde_json::to_value(&demonstrated)?,
+                )
+            }
+            other => anyhow::bail!("apply_conflict_delta called for non-conflict class '{other}'"),
+        };
+
+        self.update_entity(UpdateEntityInput {
+            entity_type: "conflict".to_string(),
+            entity_id: conflict_id,
+            changes: serde_json::json!({ column: value }),
+        })
+        .await?;
+        Ok(None)
+    }
+
+    /// Apply an `arc_milestone_reached` delta by reading the arc, stamping the
+    /// matching-label milestone's `reached_at` with the mined scene's placement,
+    /// and writing the whole milestones array back via `update_entity`.
+    async fn apply_arc_milestone_delta(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<Option<String>> {
+        use crate::sqlite::json_records::StoredStoryPlacement;
+        use spindle_core::models::UpdateEntityInput;
+
+        let arc_id = self.canon_delta_arc_id(delta, payload)?;
+        let arc = self.repository.get_character_arc(&arc_id).await?;
+        let label = self.canon_delta_milestone_label(payload)?;
+        let placement = self.canon_delta_scene_placement(delta).await?;
+
+        let mut milestones = arc.milestones.clone();
+        let target = milestones
+            .iter_mut()
+            .find(|m| m.label == label)
+            .ok_or_else(|| anyhow::anyhow!("arc '{arc_id}' has no milestone '{label}'"))?;
+        target.reached_at = Some(StoredStoryPlacement::from(placement));
+
+        self.update_entity(UpdateEntityInput {
+            entity_type: "character_arc".to_string(),
+            entity_id: arc_id,
+            changes: serde_json::json!({ "milestones": serde_json::to_value(&milestones)? }),
+        })
+        .await?;
+        Ok(None)
+    }
+
+    // ── Canon-delta payload helpers ──────────────────────────────────────────
+
+    /// Merge the delta's provenance (project_id + the mined scene's
+    /// book_number/chapter_number/scene_order + scene_id) into the payload
+    /// object, then deserialize into the target DTO. Provenance is injected only
+    /// where the payload does not already carry it, so an operator edit can
+    /// override. Reads the mined scene once for the numeric position fields the
+    /// quantity/fact DTOs require (they live on the scene, not the delta row).
+    async fn deser_with_provenance<T: serde::de::DeserializeOwned>(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<T> {
+        let mut object = match payload {
+            serde_json::Value::Object(map) => map.clone(),
+            serde_json::Value::Null => serde_json::Map::new(),
+            other => anyhow::bail!("canon delta payload must be a JSON object (got {other})"),
+        };
+        let scene = self.repository.get_scene(&delta.scene_id).await?;
+        object
+            .entry("project_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(delta.project_id.clone()));
+        object
+            .entry("scene_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(delta.scene_id.clone()));
+        object
+            .entry("book_number".to_string())
+            .or_insert(serde_json::Value::Number(scene.book_number.into()));
+        object
+            .entry("chapter_number".to_string())
+            .or_insert(serde_json::Value::Number(scene.chapter_number.into()));
+        object
+            .entry("scene_order".to_string())
+            .or_insert(serde_json::Value::Number(scene.scene_order.into()));
+        serde_json::from_value::<T>(serde_json::Value::Object(object)).map_err(|err| {
+            anyhow::anyhow!(
+                "canon delta '{}' payload does not match the {} DTO: {err}",
+                delta.id,
+                delta.delta_class
+            )
+        })
+    }
+
+    /// Build a fully-injected `RegisterCanonicalFactInput` from a
+    /// `canonical_fact` delta: the payload plus project/scene/book/chapter from
+    /// provenance. The book/chapter numbers come from the mined scene (the DTO
+    /// requires them and `register_canonical_fact` writes them onto the fact).
+    async fn build_register_fact_input(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<spindle_core::models::RegisterCanonicalFactInput> {
+        use spindle_core::models::RegisterCanonicalFactInput;
+        let mut object = match payload {
+            serde_json::Value::Object(map) => map.clone(),
+            serde_json::Value::Null => serde_json::Map::new(),
+            other => anyhow::bail!("canonical_fact payload must be a JSON object (got {other})"),
+        };
+        let scene = self.repository.get_scene(&delta.scene_id).await?;
+        object
+            .entry("project_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(delta.project_id.clone()));
+        object
+            .entry("scene_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(delta.scene_id.clone()));
+        object
+            .entry("book_number".to_string())
+            .or_insert(serde_json::Value::Number(scene.book_number.into()));
+        object
+            .entry("chapter_number".to_string())
+            .or_insert(serde_json::Value::Number(scene.chapter_number.into()));
+        serde_json::from_value::<RegisterCanonicalFactInput>(serde_json::Value::Object(object))
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "canon delta '{}' canonical_fact payload is malformed: {err}",
+                    delta.id
+                )
+            })
+    }
+
+    /// The mined scene's `StoryPlacement`, used to stamp arc/escalation markers.
+    async fn canon_delta_scene_placement(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+    ) -> Result<spindle_core::models::StoryPlacement> {
+        let scene = self.repository.get_scene(&delta.scene_id).await?;
+        Ok(spindle_core::models::StoryPlacement {
+            book_number: scene.book_number,
+            chapter_number: scene.chapter_number,
+            scene_order: Some(scene.scene_order),
+            note: None,
+        })
+    }
+
+    fn canon_delta_promise_id(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<String> {
+        payload
+            .get("narrative_promise_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| delta.target_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "promise delta '{}' has no narrative_promise_id (payload or target_id)",
+                    delta.id
+                )
+            })
+    }
+
+    /// The proposed promise status for a payoff/reinforced delta. Payload key is
+    /// `proposed_status` (ADR D1); falls back to the class default.
+    fn canon_delta_promise_status(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<String> {
+        if let Some(status) = payload.get("proposed_status").and_then(|v| v.as_str()) {
+            return Ok(status.to_string());
+        }
+        Ok(match delta.delta_class.as_str() {
+            "promise_reinforced" => "reinforced".to_string(),
+            _ => "paid_off".to_string(),
+        })
+    }
+
+    fn canon_delta_conflict_id(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<String> {
+        payload
+            .get("conflict_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| delta.target_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("conflict delta '{}' has no conflict_id", delta.id))
+    }
+
+    fn canon_delta_arc_id(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<String> {
+        payload
+            .get("character_arc_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| delta.target_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("arc delta '{}' has no character_arc_id", delta.id))
+    }
+
+    fn canon_delta_milestone_label(&self, payload: &serde_json::Value) -> Result<String> {
+        payload
+            .get("milestone_label")
+            .or_else(|| payload.get("label"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("arc_milestone_reached payload has no milestone_label"))
+    }
+
+    fn canon_delta_index(&self, payload: &serde_json::Value, key: &str) -> Result<usize> {
+        payload
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .ok_or_else(|| anyhow::anyhow!("payload is missing required index '{key}'"))
+    }
+
     // Import pipeline.
     //
     // The 10 stubs that follow implement the import passes against the
@@ -41007,5 +41901,1217 @@ agent = "review-safe"
         );
         // Content rating unaffected (guards the plumbing).
         let _ = ContentRating::General;
+    }
+
+    // ── Canon-delta ratification (list_canon_deltas + decide_canon_deltas) ────
+    //
+    // These exercise the apply-dispatcher (ADR 0001 D3): pre-flight-all,
+    // per-class apply to the SAME existing write tool, decision recording, and
+    // the honesty guarantees (finality, atomicity, mid-apply-failure).
+    mod ratify {
+        use super::*;
+        use crate::sqlite::repository::StageCanonDeltaParams;
+        use spindle_core::models::{
+            CanonDeltaDecisionInput, CommitQuantityStateInput, CreateCharacterArcInput,
+            CreateCharacterInput, CreateConflictInput, CreateMotifInput,
+            CreateNarrativePromiseInput, DecideCanonDeltasInput, ListCanonDeltasInput,
+            QuantityState, RegisterCanonicalFactInput, SecrecyScope, StatedConsequence,
+            StoryPlacement,
+        };
+
+        /// Stage one delta directly on the active branch, bypassing the model, so
+        /// the dispatcher can be driven deterministically per class.
+        async fn stage(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            scene_id: &str,
+            delta_class: &str,
+            target_id: Option<&str>,
+            payload: serde_json::Value,
+        ) -> String {
+            let branch = svc
+                .repository()
+                .get_active_branch(project_id)
+                .await
+                .unwrap();
+            let stored = svc
+                .repository()
+                .stage_canon_delta(StageCanonDeltaParams {
+                    project_id: project_id.to_string(),
+                    branch_id: branch.id,
+                    scene_id: scene_id.to_string(),
+                    authoring_run_id: None,
+                    delta_class: delta_class.to_string(),
+                    target_id: target_id.map(str::to_string),
+                    payload,
+                    evidence: "verbatim evidence".to_string(),
+                    confidence: "high".to_string(),
+                })
+                .await
+                .unwrap();
+            stored.id
+        }
+
+        fn voice() -> spindle_core::models::CharacterVoiceProfileData {
+            spindle_core::models::CharacterVoiceProfileData {
+                tone: None,
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            }
+        }
+
+        fn emotions() -> spindle_core::models::CharacterEmotionalProfileData {
+            spindle_core::models::CharacterEmotionalProfileData {
+                base_emotions: std::collections::BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            }
+        }
+
+        async fn make_character(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            name: &str,
+        ) -> String {
+            svc.create_character(CreateCharacterInput {
+                project_id: project_id.to_string(),
+                name: name.to_string(),
+                summary: format!("{name} exists."),
+                role: "supporting".to_string(),
+                realm: None,
+                voice_profile: voice(),
+                emotional_profile: emotions(),
+                initial_state: None,
+            })
+            .await
+            .unwrap()
+            .character_id
+        }
+
+        #[tokio::test]
+        async fn apply_canonical_fact_creates_the_fact() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Fact").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({
+                    "subject_table": "character",
+                    "predicate": "eye_color",
+                    "value_text": "grey"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id: delta_id.clone(),
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(out.applied_count, 1);
+            assert_eq!(out.rejected_count, 0);
+            assert_eq!(out.failed_count, 0);
+            let result = &out.results[0];
+            assert_eq!(result.outcome, "applied");
+            let fact_id = result
+                .applied_record_id
+                .as_deref()
+                .expect("fact id returned");
+            assert!(fact_id.starts_with("canonical_fact:"));
+
+            // The fact is real canon.
+            let fact = svc.repository().get_canonical_fact(fact_id).await.unwrap();
+            assert_eq!(fact.predicate, "eye_color");
+
+            // The row is now applied and stamped with the default decider.
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let rows = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("applied"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].decided_by.as_deref(), Some("operator"));
+        }
+
+        #[tokio::test]
+        async fn apply_promise_payoff_candidate_flips_promise_to_paid_off() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Payoff").await;
+            let promise = svc
+                .create_narrative_promise(CreateNarrativePromiseInput {
+                    project_id: project.project_id.clone(),
+                    promise_type: "mystery".to_string(),
+                    description: "The door will open".to_string(),
+                    planted_at: StoryPlacement {
+                        book_number: 1,
+                        chapter_number: 1,
+                        scene_order: Some(1),
+                        note: None,
+                    },
+                    planned_payoff: None,
+                    notes: Vec::new(),
+                })
+                .await
+                .unwrap();
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "promise_payoff_candidate",
+                Some(&promise.narrative_promise_id),
+                serde_json::json!({
+                    "narrative_promise_id": promise.narrative_promise_id,
+                    "proposed_status": "paid_off"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: Some("editor".to_string()),
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.applied_count, 1);
+            assert_eq!(out.results[0].outcome, "applied");
+
+            let updated = svc
+                .repository()
+                .get_narrative_promise(&promise.narrative_promise_id)
+                .await
+                .unwrap();
+            assert_eq!(updated.status, "paid_off");
+        }
+
+        #[tokio::test]
+        async fn apply_knowledge_learned_with_secret_link_expands_circle() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Reveal").await;
+            let keeper = make_character(&svc, &project.project_id, "Mara").await;
+            let confidant = make_character(&svc, &project.project_id, "Bran").await;
+
+            // A secret fact whose sole holder is the keeper.
+            let secret = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project.project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".to_string()),
+                    subject_id: Some(keeper.clone()),
+                    predicate: Some("reincarnation".to_string()),
+                    value_kind: Some("string".to_string()),
+                    value_text: Some("is a reincarnated warden".to_string()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: Some(SecrecyScope {
+                        holder_ids: vec![keeper.clone()],
+                        concealment_note: None,
+                    }),
+                })
+                .await
+                .unwrap();
+
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "knowledge_learned",
+                Some(&confidant),
+                serde_json::json!({
+                    "character_id": confidant,
+                    "fact": "Mara is a reincarnated warden.",
+                    "source_summary": "she finally told him",
+                    "reader_visible": true,
+                    "secret_of_fact_id": secret.canonical_fact_id,
+                }),
+            )
+            .await;
+
+            svc.decide_canon_deltas(DecideCanonDeltasInput {
+                project_id: project.project_id.clone(),
+                decisions: vec![CanonDeltaDecisionInput {
+                    delta_id,
+                    action: "apply".to_string(),
+                    edit: None,
+                    note: None,
+                }],
+                decided_by: None,
+            })
+            .await
+            .unwrap();
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let circle = svc
+                .repository()
+                .secret_circle_members(&project.project_id, &branch.id, &secret.canonical_fact_id)
+                .await
+                .unwrap();
+            assert_eq!(circle.len(), 2, "circle expanded to keeper + confidant");
+            assert!(circle.iter().any(|(id, _)| id == &confidant));
+        }
+
+        #[tokio::test]
+        async fn apply_escalation_demonstrated_sets_index_one_leaving_zero_none() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Escalation").await;
+            let conflict = svc
+                .create_conflict(CreateConflictInput {
+                    project_id: project.project_id.clone(),
+                    name: "The Siege".to_string(),
+                    conflict_type: "external".to_string(),
+                    stakes: "the city".to_string(),
+                    escalation_stages: vec!["walls breached".to_string(), "keep falls".to_string()],
+                    expected_total_cycles: None,
+                    try_fail_cycles: Vec::new(),
+                    stated_consequences: Vec::new(),
+                })
+                .await
+                .unwrap();
+
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "escalation_demonstrated",
+                Some(&conflict.conflict_id),
+                serde_json::json!({ "conflict_id": conflict.conflict_id, "stage_index": 1 }),
+            )
+            .await;
+
+            svc.decide_canon_deltas(DecideCanonDeltasInput {
+                project_id: project.project_id.clone(),
+                decisions: vec![CanonDeltaDecisionInput {
+                    delta_id,
+                    action: "apply".to_string(),
+                    edit: None,
+                    note: None,
+                }],
+                decided_by: None,
+            })
+            .await
+            .unwrap();
+
+            let updated = svc
+                .repository()
+                .get_conflict(&conflict.conflict_id)
+                .await
+                .unwrap();
+            assert_eq!(updated.escalation_demonstrated.len(), 2);
+            assert!(
+                updated.escalation_demonstrated[0].is_none(),
+                "index 0 stays None"
+            );
+            let stamp = updated.escalation_demonstrated[1]
+                .as_ref()
+                .expect("index 1 demonstrated");
+            assert_eq!(stamp.chapter_number, 1);
+        }
+
+        #[tokio::test]
+        async fn apply_arc_milestone_reached_sets_reached_at_by_label() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Arc").await;
+            let hero = make_character(&svc, &project.project_id, "Kael").await;
+            let arc = svc
+                .create_character_arc(CreateCharacterArcInput {
+                    project_id: project.project_id.clone(),
+                    character_id: hero,
+                    arc_type: "growth".to_string(),
+                    starting_state: "naive".to_string(),
+                    ending_state: "wise".to_string(),
+                    milestones: vec![
+                        spindle_core::models::CharacterArcMilestone {
+                            label: "first blood".to_string(),
+                            placement: None,
+                            description: "kills for the first time".to_string(),
+                            unlocks: Vec::new(),
+                            reached_at: None,
+                        },
+                        spindle_core::models::CharacterArcMilestone {
+                            label: "the reckoning".to_string(),
+                            placement: None,
+                            description: "faces the villain".to_string(),
+                            unlocks: Vec::new(),
+                            reached_at: None,
+                        },
+                    ],
+                    thematic_purpose: "coming of age".to_string(),
+                    connected_theme_ids: Vec::new(),
+                })
+                .await
+                .unwrap();
+
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "arc_milestone_reached",
+                Some(&arc.character_arc_id),
+                serde_json::json!({
+                    "character_arc_id": arc.character_arc_id,
+                    "milestone_label": "the reckoning"
+                }),
+            )
+            .await;
+
+            svc.decide_canon_deltas(DecideCanonDeltasInput {
+                project_id: project.project_id.clone(),
+                decisions: vec![CanonDeltaDecisionInput {
+                    delta_id,
+                    action: "apply".to_string(),
+                    edit: None,
+                    note: None,
+                }],
+                decided_by: None,
+            })
+            .await
+            .unwrap();
+
+            let updated = svc
+                .repository()
+                .get_character_arc(&arc.character_arc_id)
+                .await
+                .unwrap();
+            let first = updated
+                .milestones
+                .iter()
+                .find(|m| m.label == "first blood")
+                .unwrap();
+            assert!(first.reached_at.is_none(), "unrelated milestone untouched");
+            let reckoning = updated
+                .milestones
+                .iter()
+                .find(|m| m.label == "the reckoning")
+                .unwrap();
+            let stamp = reckoning.reached_at.as_ref().expect("milestone reached");
+            assert_eq!(stamp.chapter_number, 1);
+        }
+
+        #[tokio::test]
+        async fn apply_arc_milestone_unknown_label_is_preflight_failure() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Arc Bad").await;
+            let hero = make_character(&svc, &project.project_id, "Kael").await;
+            let arc = svc
+                .create_character_arc(CreateCharacterArcInput {
+                    project_id: project.project_id.clone(),
+                    character_id: hero,
+                    arc_type: "growth".to_string(),
+                    starting_state: "naive".to_string(),
+                    ending_state: "wise".to_string(),
+                    milestones: vec![spindle_core::models::CharacterArcMilestone {
+                        label: "first blood".to_string(),
+                        placement: None,
+                        description: "kills".to_string(),
+                        unlocks: Vec::new(),
+                        reached_at: None,
+                    }],
+                    thematic_purpose: "coming of age".to_string(),
+                    connected_theme_ids: Vec::new(),
+                })
+                .await
+                .unwrap();
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "arc_milestone_reached",
+                Some(&arc.character_arc_id),
+                serde_json::json!({
+                    "character_arc_id": arc.character_arc_id,
+                    "milestone_label": "no such milestone"
+                }),
+            )
+            .await;
+
+            let err = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id: delta_id.clone(),
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("milestone"),
+                "err names the label: {err}"
+            );
+            // Row untouched — still staged.
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let rows = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("staged"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn apply_beat_annotation_lands_intensity_and_motif() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Beat").await;
+            let motif = svc
+                .create_motif(CreateMotifInput {
+                    project_id: project.project_id.clone(),
+                    name: "mirrors".to_string(),
+                    description: "reflections recur".to_string(),
+                    max_uses_per_chapter: None,
+                    connected_theme_ids: Vec::new(),
+                })
+                .await
+                .unwrap();
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "beat_annotation",
+                Some(&scene_id),
+                serde_json::json!({
+                    "motif_ids": [motif.motif_id],
+                    "intensity": 0.7
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.applied_count, 1);
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let annotation = svc
+                .repository()
+                .get_scene_beat_annotation(&branch.id, &scene_id)
+                .await
+                .unwrap()
+                .expect("annotation written");
+            assert_eq!(annotation.intensity, Some(0.7));
+            assert_eq!(annotation.motif_ids, vec![motif.motif_id]);
+        }
+
+        #[tokio::test]
+        async fn apply_quantity_change_commits_state() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Quantity").await;
+            let hero = make_character(&svc, &project.project_id, "Rich").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "quantity_change",
+                Some(&hero),
+                serde_json::json!({
+                    "subject_table": "character",
+                    "subject_id": hero,
+                    "measure": "wealth",
+                    "state": { "band": "poor", "change_reason": "spent it all" }
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.applied_count, 1);
+            assert_eq!(out.results[0].outcome, "applied");
+        }
+
+        #[tokio::test]
+        async fn apply_entity_candidate_character_creates_character() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Entity").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "entity_candidate",
+                None,
+                serde_json::json!({
+                    "kind": "character",
+                    "name": "The Stranger",
+                    "summary": "A grey-eyed newcomer.",
+                    "role": "minor",
+                    "voice_profile": {},
+                    "emotional_profile": {}
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.applied_count, 1);
+            let new_char = out.results[0]
+                .applied_record_id
+                .as_deref()
+                .expect("character id");
+            assert!(new_char.starts_with("character:"));
+            let character = svc.repository().get_character(new_char).await.unwrap();
+            assert_eq!(character.name, "The Stranger");
+        }
+
+        #[tokio::test]
+        async fn edit_before_apply_uses_and_records_edited_payload() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Edit").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({
+                    "subject_table": "character",
+                    "predicate": "eye_color",
+                    "value_text": "grey"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id: delta_id.clone(),
+                        action: "apply".to_string(),
+                        edit: Some(serde_json::json!({
+                            "subject_table": "character",
+                            "predicate": "eye_color",
+                            "value_text": "hazel"
+                        })),
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            let fact_id = out.results[0].applied_record_id.as_deref().unwrap();
+            // Applied value is the EDITED one.
+            let fact = svc.repository().get_canonical_fact(fact_id).await.unwrap();
+            assert_eq!(fact.value_text.as_deref(), Some("hazel"));
+
+            // The edited payload is recorded on the row.
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let rows = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("applied"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rows[0].payload["value_text"], "hazel");
+        }
+
+        #[tokio::test]
+        async fn reject_marks_row_and_writes_no_canon() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Reject").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({
+                    "subject_table": "character",
+                    "predicate": "eye_color",
+                    "value_text": "grey"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "reject".to_string(),
+                        edit: None,
+                        note: Some("not canon — narrator is unreliable here".to_string()),
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.rejected_count, 1);
+            assert_eq!(out.applied_count, 0);
+            assert_eq!(out.results[0].outcome, "rejected");
+            // The note is echoed in the output (no row column for it).
+            assert_eq!(
+                out.results[0].note.as_deref(),
+                Some("not canon — narrator is unreliable here")
+            );
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let facts = svc
+                .repository()
+                .list_canonical_facts_by_project(&project.project_id)
+                .await
+                .unwrap();
+            assert!(facts.is_empty(), "reject writes no canon");
+            let rejected = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("rejected"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rejected.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn preflight_rejects_whole_batch_on_one_malformed_payload() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Atomic").await;
+            let good1 = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "a", "value_text": "1"}),
+            )
+            .await;
+            // Malformed: value_text should be a string, not a number.
+            let bad = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "b", "value_text": 42}),
+            )
+            .await;
+            let good2 = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "c", "value_text": "3"}),
+            )
+            .await;
+
+            let err = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![
+                        CanonDeltaDecisionInput {
+                            delta_id: good1.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                        CanonDeltaDecisionInput {
+                            delta_id: bad.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                        CanonDeltaDecisionInput {
+                            delta_id: good2.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                    ],
+                    decided_by: None,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(&bad),
+                "error names the offender: {err}"
+            );
+
+            // Zero writes; all three still staged.
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let staged = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("staged"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(staged.len(), 3);
+            let facts = svc
+                .repository()
+                .list_canonical_facts_by_project(&project.project_id)
+                .await
+                .unwrap();
+            assert!(facts.is_empty(), "no fact written");
+        }
+
+        #[tokio::test]
+        async fn decision_on_already_decided_row_errors_whole_call() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Final").await;
+            let already = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "x", "value_text": "1"}),
+            )
+            .await;
+            // Apply it first so it becomes terminal.
+            svc.decide_canon_deltas(DecideCanonDeltasInput {
+                project_id: project.project_id.clone(),
+                decisions: vec![CanonDeltaDecisionInput {
+                    delta_id: already.clone(),
+                    action: "apply".to_string(),
+                    edit: None,
+                    note: None,
+                }],
+                decided_by: None,
+            })
+            .await
+            .unwrap();
+
+            let fresh = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "y", "value_text": "2"}),
+            )
+            .await;
+            let err = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![
+                        CanonDeltaDecisionInput {
+                            delta_id: fresh.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                        CanonDeltaDecisionInput {
+                            delta_id: already.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                    ],
+                    decided_by: None,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(&already),
+                "names the decided row: {err}"
+            );
+            // The fresh row was NOT applied (pre-flight aborted the whole call).
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let staged = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("staged"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(staged.len(), 1, "the fresh row stays staged");
+            assert_eq!(staged[0].id, fresh);
+        }
+
+        #[tokio::test]
+        async fn mid_apply_failure_stops_and_reports_honestly() {
+            // Pre-flight passes for a knowledge_learned reveal (the secret fact
+            // exists and is secret), but between pre-flight and apply the fact's
+            // secret flag is cleared, so `record_knowledge` rejects the reveal at
+            // apply time (it re-checks the flag). Earlier applies in the same
+            // batch stay applied; the failing row stays staged; the later row
+            // reads as not_reached. The clear runs through the injectable
+            // after-pre-flight hook on `decide_canon_deltas_with_seam`, so the
+            // failure is driven through the genuine dispatch path, not a mock.
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Mid").await;
+            let confidant = make_character(&svc, &project.project_id, "Bran").await;
+            let keeper = make_character(&svc, &project.project_id, "Mara").await;
+
+            // A plain fact we apply first (must survive).
+            let first = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "k", "value_text": "v"}),
+            )
+            .await;
+
+            // A secret fact + a reveal delta that pre-flights clean.
+            let secret = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project.project_id.clone(),
+                    scene_id: scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".to_string()),
+                    subject_id: Some(keeper.clone()),
+                    predicate: Some("secret".to_string()),
+                    value_kind: Some("string".to_string()),
+                    value_text: Some("hidden".to_string()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: Some(SecrecyScope {
+                        holder_ids: vec![keeper.clone()],
+                        concealment_note: None,
+                    }),
+                })
+                .await
+                .unwrap();
+            let reveal = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "knowledge_learned",
+                Some(&confidant),
+                serde_json::json!({
+                    "character_id": confidant,
+                    "fact": "the secret",
+                    "source_summary": "told",
+                    "reader_visible": true,
+                    "secret_of_fact_id": secret.canonical_fact_id,
+                }),
+            )
+            .await;
+            let third = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({"subject_table": "character", "predicate": "t", "value_text": "3"}),
+            )
+            .await;
+
+            let fact_to_clear = secret.canonical_fact_id.clone();
+            let repo = svc.repository().clone();
+            let out = svc
+                .decide_canon_deltas_with_seam(
+                    DecideCanonDeltasInput {
+                        project_id: project.project_id.clone(),
+                        decisions: vec![
+                            CanonDeltaDecisionInput {
+                                delta_id: first.clone(),
+                                action: "apply".to_string(),
+                                edit: None,
+                                note: None,
+                            },
+                            CanonDeltaDecisionInput {
+                                delta_id: reveal.clone(),
+                                action: "apply".to_string(),
+                                edit: None,
+                                note: None,
+                            },
+                            CanonDeltaDecisionInput {
+                                delta_id: third.clone(),
+                                action: "apply".to_string(),
+                                edit: None,
+                                note: None,
+                            },
+                        ],
+                        decided_by: None,
+                    },
+                    move || {
+                        let repo = repo.clone();
+                        let fact_to_clear = fact_to_clear.clone();
+                        async move {
+                            repo.clear_canonical_fact_secret_for_test(&fact_to_clear)
+                                .await
+                                .unwrap();
+                        }
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(out.applied_count, 1);
+            assert_eq!(out.failed_count, 1);
+            assert_eq!(out.results[0].outcome, "applied");
+            assert_eq!(out.results[1].outcome, "failed");
+            assert!(out.results[1].error.is_some());
+            assert_eq!(out.results[2].outcome, "not_reached");
+
+            // The first apply is real canon (not rolled back).
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let applied = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("applied"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            assert_eq!(applied.len(), 1);
+            assert_eq!(applied[0].id, first);
+            // The failed + not-reached rows stay staged.
+            let staged = svc
+                .repository()
+                .list_canon_deltas(
+                    &project.project_id,
+                    &branch.id,
+                    Some("staged"),
+                    Some(&scene_id),
+                )
+                .await
+                .unwrap();
+            let staged_ids: Vec<_> = staged.iter().map(|d| d.id.clone()).collect();
+            assert!(staged_ids.contains(&reveal));
+            assert!(staged_ids.contains(&third));
+        }
+
+        #[tokio::test]
+        async fn list_canon_deltas_resolves_chapter_range() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify List").await;
+            // Stage two deltas on the ch.1 scene.
+            for predicate in ["a", "b"] {
+                stage(
+                    &svc,
+                    &project.project_id,
+                    &scene_id,
+                    "canonical_fact",
+                    None,
+                    serde_json::json!({"subject_table": "character", "predicate": predicate, "value_text": "x"}),
+                )
+                .await;
+            }
+
+            // By scene.
+            let by_scene = svc
+                .list_canon_deltas(ListCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    scene_id: Some(scene_id.clone()),
+                    chapter_range: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(by_scene.deltas.len(), 2);
+
+            // By chapter range covering chapter 1.
+            let by_range = svc
+                .list_canon_deltas(ListCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    scene_id: None,
+                    chapter_range: Some(spindle_core::models::ChapterRange {
+                        book_number: 1,
+                        start: 1,
+                        end: 1,
+                    }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(by_range.deltas.len(), 2);
+
+            // A range with no scenes yields nothing.
+            let empty = svc
+                .list_canon_deltas(ListCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    scene_id: None,
+                    chapter_range: Some(spindle_core::models::ChapterRange {
+                        book_number: 1,
+                        start: 5,
+                        end: 9,
+                    }),
+                })
+                .await
+                .unwrap();
+            assert!(empty.deltas.is_empty());
+
+            // scene_id + chapter_range together is an input error.
+            let err = svc
+                .list_canon_deltas(ListCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    scene_id: Some(scene_id.clone()),
+                    chapter_range: Some(spindle_core::models::ChapterRange {
+                        book_number: 1,
+                        start: 1,
+                        end: 1,
+                    }),
+                })
+                .await;
+            assert!(
+                err.is_err(),
+                "scene_id + chapter_range is mutually exclusive"
+            );
+
+            // Silence unused-import warnings for helpers not used in this arm.
+            let _ = (
+                CommitQuantityStateInput {
+                    project_id: String::new(),
+                    subject_table: String::new(),
+                    subject_id: String::new(),
+                    measure: String::new(),
+                    book_number: 0,
+                    chapter_number: 0,
+                    scene_order: 0,
+                    scene_id: None,
+                    state: QuantityState {
+                        amount: None,
+                        unit: None,
+                        band: None,
+                        change_reason: None,
+                    },
+                },
+                StatedConsequence {
+                    description: String::new(),
+                    stated_at: None,
+                    must_demonstrate_by: None,
+                    delivered: false,
+                },
+            );
+        }
     }
 }
