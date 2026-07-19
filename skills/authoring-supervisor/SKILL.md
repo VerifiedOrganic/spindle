@@ -157,6 +157,16 @@ When `next_action` becomes `"await_checkpoint_review"`, the execution loop is bl
 3. If deep consistency returns fixable findings, fix them before proceeding.
    Treat them the same way as reviewer findings: local fixes are autonomous;
    only ask for plot/canon/content-boundary choices.
+   - **`secret_leak` findings need deliberate-irony triage**, not a blind fix.
+     The check (deterministic; it runs at every checkpoint audit) flags an
+     out-of-circle character who speaks a secret in attributed dialogue. Two
+     legitimate outcomes: (a) the reveal is INTENDED — the character was told
+     off-page or guessed — so record it with `record_knowledge`
+     (`secret_of_fact_id` set, `learned_at` at the scene's placement), which
+     expands the circle and clears the finding; or (b) it is a genuine leak, so
+     revise the dialogue (autonomous local fix). If unsure whether the reveal is
+     canon, that is a plot/canon choice — ask the operator, or dismiss with a
+     note explaining the deliberate irony.
 4. Call `run_dual_persona_review` with `rounds: 2` for each sampled scene ID.
 5. Classify the review feedback:
    - **Autonomous local fix**: line-level prose, sensory grounding, pacing

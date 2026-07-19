@@ -90,6 +90,14 @@ impl SubjectSnapshot {
         &self.canonical_facts
     }
 
+    /// Retain only the canonical-fact summaries for which `keep` returns true.
+    /// Used by the secret-knowledge context gate to strip withheld/enveloped
+    /// secret facts from a snapshot before it ships to the drafting model
+    /// (design §2.2 — the gate must cover every carrier, snapshots included).
+    pub fn retain_canonical_facts(&mut self, keep: impl FnMut(&CanonicalFactSummary) -> bool) {
+        self.canonical_facts.retain(keep);
+    }
+
     pub fn knowledge(&self) -> &[KnowledgeFactSummary] {
         &self.knowledge
     }

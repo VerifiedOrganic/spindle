@@ -411,7 +411,11 @@ fn placement_leq(lhs: (i32, i32, i32), rhs: (i32, i32, i32)) -> bool {
     lhs <= rhs
 }
 
-fn contains_case_insensitive_word(haystack: &str, needle: &str) -> bool {
+/// Whole-word, case-insensitive containment — the exact lexeme matcher the
+/// `canonical_fact_prose_drift` validator uses. Reused (uninverted) by the
+/// `secret_leak` audit: a *hit* on a secret's value inside an out-of-circle
+/// speaker's attributed dialogue is the violation there.
+pub(crate) fn contains_case_insensitive_word(haystack: &str, needle: &str) -> bool {
     !find_all_case_insensitive_word(haystack, needle).is_empty()
 }
 

@@ -6900,9 +6900,12 @@ impl SqliteSpindleService {
             Vec::new()
         };
 
-        let knowledge_briefing = if want_knowledge_briefing && !ids.is_empty() {
-            let mut briefing = self
-                .repository
+        // Raw, cursor-gated knowledge rows for the present cast. Kept as rows
+        // (not yet mapped to briefing items) so the secret-knowledge gate can
+        // strip secret-linked entries by `secret_of_fact_id` before rendering —
+        // the briefing item drops that link. Filtered + mapped after the gate.
+        let knowledge_rows = if want_knowledge_briefing && !ids.is_empty() {
+            self.repository
                 .list_knowledge_facts_by_project_and_branch(&input.project_id, &active_branch.id)
                 .await?
                 .into_iter()
@@ -6912,14 +6915,7 @@ impl SqliteSpindleService {
                         .as_ref()
                         .is_none_or(|placement| story_index_from_placement(placement) <= cursor)
                 })
-                .map(knowledge_fact_briefing_item)
-                .collect::<Vec<_>>();
-            briefing.extend(
-                raw_future_knowledge
-                    .iter()
-                    .map(future_knowledge_briefing_item),
-            );
-            briefing
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -7081,6 +7077,62 @@ impl SqliteSpindleService {
                 )
                 .await?,
         );
+
+        // ── Secret-knowledge context gate (design §2.2) ──────────────────
+        // The single chokepoint: resolve every secret fact's visibility for
+        // this scene (cast = scene character ids; pov = chapter-plan POV;
+        // cursor = the same story index the knowledge/temporal filters use),
+        // then strip gated secrets from EVERY carrier via one helper. No-op
+        // when the project declares no secret facts (byte-identical output).
+        let secret_facts: Vec<crate::sqlite::records::CanonicalFact> = canonical_facts
+            .iter()
+            .filter(|fact| fact.secret)
+            .cloned()
+            .collect();
+        let secret_gate = if secret_facts.is_empty() {
+            SceneSecretGate::default()
+        } else {
+            // POV: the chapter plan's pov_character_id, when one exists.
+            let pov_character_id = self
+                .repository
+                .list_chapter_plans_by_project(&input.project_id)
+                .await?
+                .into_iter()
+                .find(|plan| {
+                    plan.book_number == input.book_number
+                        && plan.chapter_number == input.chapter_number
+                })
+                .and_then(|plan| plan.pov_character_id);
+            // Name map for the envelope rosters. Covers every project character
+            // so circle members outside the present cast still resolve.
+            let name_of: std::collections::BTreeMap<String, String> = self
+                .repository
+                .list_characters_by_project(&input.project_id)
+                .await?
+                .into_iter()
+                .map(|character| (character.id, character.name))
+                .collect();
+            self.resolve_scene_secret_gate(
+                &input.project_id,
+                &active_branch.id,
+                &secret_facts,
+                &SceneSecretGateParams {
+                    scene_cast: &input.character_ids,
+                    pov: pov_character_id.as_deref(),
+                    cursor,
+                    name_of: &name_of,
+                },
+            )
+            .await?
+        };
+
+        // Strip gated secrets from the loaded fact list BEFORE deriving read
+        // models and hard-constraint fact lines — every gated secret leaves the
+        // normal carriers and lives only in the [SECRETS IN PLAY] block.
+        if !secret_gate.is_empty() {
+            canonical_facts.retain(|fact| !secret_gate.gated_fact_ids.contains(&fact.id));
+        }
+
         let canonical_fact_read_models = canonical_facts
             .iter()
             .map(canonical_fact_read_model)
@@ -7153,6 +7205,34 @@ impl SqliteSpindleService {
                     &placement,
                 )
                 .await?
+        } else {
+            Vec::new()
+        };
+
+        // Secret gate: strip gated secrets from every subject snapshot's
+        // canonical_facts (one of the carriers §2.2 requires covering).
+        let mut subjects_snapshots = subjects_snapshots;
+        apply_secret_visibility(&secret_gate, &mut subjects_snapshots);
+
+        // Knowledge briefing: build from the cursor-gated rows, dropping any row
+        // linked to a gated secret (secret_of_fact_id ∈ gate) so a secret never
+        // leaks through the per-character briefing either.
+        let knowledge_briefing = if want_knowledge_briefing && !ids.is_empty() {
+            let mut briefing = knowledge_rows
+                .into_iter()
+                .filter(|fact| {
+                    fact.secret_of_fact_id
+                        .as_ref()
+                        .is_none_or(|fact_id| !secret_gate.gated_fact_ids.contains(fact_id))
+                })
+                .map(knowledge_fact_briefing_item)
+                .collect::<Vec<_>>();
+            briefing.extend(
+                raw_future_knowledge
+                    .iter()
+                    .map(future_knowledge_briefing_item),
+            );
+            briefing
         } else {
             Vec::new()
         };
@@ -7349,6 +7429,11 @@ impl SqliteSpindleService {
             })
             .chain(canonical_facts.iter().map(canonical_fact_hard_constraint))
             .collect();
+
+        // Secret gate: append the [SECRETS IN PLAY] block(s) as non-truncatable
+        // hard constraints (same tier as STORY SO FAR / IN-WORLD TIME, appended
+        // after the existing constraints per §2.2). Empty for no-secrets scenes.
+        hard_constraints.extend(secret_gate.envelope_blocks.iter().cloned());
 
         // Surface the in-world time as a non-truncatable hard constraint so the
         // drafting model anchors WHEN this scene takes place relative to the
@@ -7549,6 +7634,112 @@ impl SqliteSpindleService {
                 novel_layer_truncated,
             },
         })
+    }
+
+    /// Secret-knowledge gating (design §2.2): resolve, for one scene, which
+    /// secret canonical facts must be withheld or enveloped, and produce the
+    /// `[SECRETS IN PLAY]` hard-constraint block(s). This is the single
+    /// chokepoint the context-assembly path calls; the per-carrier filtering
+    /// (`apply_secret_visibility`) consumes the returned `SceneSecretGate` so no
+    /// section decides secrecy on its own.
+    ///
+    /// `secret_facts` are the loaded canonical facts already flagged
+    /// `secret = true`. The scene-scoping inputs (cast, POV, cursor, name map)
+    /// ride in [`SceneSecretGateParams`].
+    async fn resolve_scene_secret_gate(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        secret_facts: &[crate::sqlite::records::CanonicalFact],
+        params: &SceneSecretGateParams<'_>,
+    ) -> Result<SceneSecretGate> {
+        use crate::format::{
+            SECRETS_IN_PLAY_CONSTRAINT_ID, SecretDecision, canonical_fact_value_display,
+            resolve_secret_visibility, secret_in_play_block, story_index_from_placement,
+        };
+        use spindle_core::models::HardConstraint;
+
+        let scene_cast = params.scene_cast;
+        let pov = params.pov;
+        let cursor = params.cursor;
+        let name_of = params.name_of;
+
+        // Resolve a roster of character ids to display names (unknown ids fall
+        // back to the raw id so a roster line is never empty/misleading).
+        let names = |ids: &[String]| -> Vec<String> {
+            ids.iter()
+                .map(|id| name_of.get(id).cloned().unwrap_or_else(|| id.clone()))
+                .collect()
+        };
+
+        let mut gate = SceneSecretGate::default();
+        for fact in secret_facts {
+            if !fact.secret {
+                continue;
+            }
+            // Circle-at-cursor: derived from the linked knowledge rows.
+            let circle: Vec<(String, Option<i64>)> = self
+                .repository
+                .secret_circle_members(project_id, branch_id, &fact.id)
+                .await?
+                .into_iter()
+                .map(|(character_id, learned_at)| {
+                    let idx = learned_at.as_ref().map(story_index_from_placement);
+                    (character_id, idx)
+                })
+                .collect();
+
+            let decision = resolve_secret_visibility(
+                &circle,
+                scene_cast,
+                pov,
+                cursor,
+                fact.concealment_note.as_deref(),
+            );
+
+            // Every gated secret leaves the normal carriers: it is withheld, or
+            // it moves into the envelope block. In both cases it is stripped
+            // from hard-constraint fact lines, read models, snapshots, and the
+            // knowledge briefing — it only ever appears in [SECRETS IN PLAY].
+            gate.gated_fact_ids.insert(fact.id.clone());
+            gate.withheld_snapshot_facts
+                .insert(snapshot_fact_string(fact));
+
+            // Map the resolver's *id* rosters to display *names* so the block is
+            // human-facing (design: "resolve character names from ids like other
+            // blocks do"), keeping the pure formatter id-agnostic.
+            let named_decision = match &decision {
+                SecretDecision::Withhold => SecretDecision::Withhold,
+                SecretDecision::Envelope {
+                    known_to,
+                    unaware_present,
+                    concealment_note,
+                } => SecretDecision::Envelope {
+                    known_to: names(known_to),
+                    unaware_present: names(unaware_present),
+                    concealment_note: concealment_note.clone(),
+                },
+                SecretDecision::PovEnvelope {
+                    known_to,
+                    concealment_note,
+                } => SecretDecision::PovEnvelope {
+                    known_to: names(known_to),
+                    concealment_note: concealment_note.clone(),
+                },
+            };
+
+            if let Some(statement) = secret_in_play_block(
+                &canonical_fact_value_display(fact),
+                &named_decision,
+                fact.concealment_note.as_deref(),
+            ) {
+                gate.envelope_blocks.push(HardConstraint {
+                    id: SECRETS_IN_PLAY_CONSTRAINT_ID.to_string(),
+                    statement,
+                });
+            }
+        }
+        Ok(gate)
     }
 
     /// Build the public `get_scene_context` tool envelope while keeping
@@ -9602,6 +9793,141 @@ impl SqliteSpindleService {
                                 .to_string(),
                         ),
                     });
+                }
+            }
+        }
+
+        // secret_leak (design §2.4, deterministic tier): the audience-direction
+        // complement to knowledge_timing. For each scoped scene, for each secret
+        // fact whose circle-at-cursor does NOT cover a PRESENT character, scan
+        // that out-of-circle speaker's ATTRIBUTED DIALOGUE (reusing voice_drift's
+        // speaker attribution) for the secret's value lexeme (reusing
+        // canonical_fact_prose_drift's whole-word matcher). A hit is the leak.
+        // Narration/behavior scanning is deliberately out of v1 scope (deep tier,
+        // next wave). Silent for projects with no secret facts.
+        if should_run_check(&requested_checks_set, "secret_leak") {
+            use spindle_core::voice::{VoiceDriftCharacter, attributed_dialogue_ranges};
+
+            let secret_facts = self
+                .repository
+                .list_active_canonical_facts_by_project_and_branch(&project_id, &active_branch.id)
+                .await?
+                .into_iter()
+                .filter(|fact| fact.secret)
+                .collect::<Vec<_>>();
+
+            if !secret_facts.is_empty() {
+                let characters = self
+                    .repository
+                    .list_characters_by_project(&project_id)
+                    .await?;
+
+                // Circle-at-cursor per fact is cursor-dependent, so compute it
+                // per (scene, fact). Cache the raw circle rows per fact to avoid
+                // repeated DB reads across scenes.
+                let mut circle_cache: BTreeMap<String, Vec<(String, Option<i64>)>> =
+                    BTreeMap::new();
+
+                // Deterministic order: scenes are already ordered; secret facts
+                // by id; leaking characters by id.
+                let mut ordered_facts = secret_facts;
+                ordered_facts.sort_by(|a, b| a.id.cmp(&b.id));
+
+                for scene in &scenes {
+                    let cursor = crate::format::story_index(
+                        scene.book_number,
+                        scene.chapter_number,
+                        scene.scene_order,
+                    );
+                    for fact in &ordered_facts {
+                        let value = crate::format::canonical_fact_value(fact);
+                        if value.trim().is_empty() || value == "<unset>" {
+                            continue;
+                        }
+                        // Circle rows (cached), narrowed to the scene cursor.
+                        let rows = if let Some(rows) = circle_cache.get(&fact.id) {
+                            rows.clone()
+                        } else {
+                            let rows = self
+                                .repository
+                                .secret_circle_members(&project_id, &active_branch.id, &fact.id)
+                                .await?
+                                .into_iter()
+                                .map(|(character_id, learned_at)| {
+                                    let idx = learned_at
+                                        .as_ref()
+                                        .map(crate::format::story_index_from_placement);
+                                    (character_id, idx)
+                                })
+                                .collect::<Vec<_>>();
+                            circle_cache.insert(fact.id.clone(), rows.clone());
+                            rows
+                        };
+                        let circle_at_cursor: BTreeSet<&str> = rows
+                            .iter()
+                            .filter(|(_, idx)| idx.is_none_or(|i| i <= cursor))
+                            .map(|(id, _)| id.as_str())
+                            .collect();
+
+                        // Present, out-of-circle characters (deterministic by id).
+                        let mut leakers: Vec<&crate::sqlite::records::Character> = characters
+                            .iter()
+                            .filter(|character| !circle_at_cursor.contains(character.id.as_str()))
+                            .filter(|character| {
+                                spindle_core::voice::character_present_in_scene(
+                                    &scene.full_text,
+                                    &VoiceDriftCharacter {
+                                        id: character.id.clone(),
+                                        name: character.name.clone(),
+                                    },
+                                )
+                            })
+                            .collect();
+                        leakers.sort_by(|a, b| a.id.cmp(&b.id));
+
+                        for character in leakers {
+                            let speaker = VoiceDriftCharacter {
+                                id: character.id.clone(),
+                                name: character.name.clone(),
+                            };
+                            let leaked = attributed_dialogue_ranges(&scene.full_text, &speaker)
+                                .into_iter()
+                                .filter(|range| {
+                                    range.end > range.start && range.end <= scene.full_text.len()
+                                })
+                                .any(|range| {
+                                    crate::sqlite::validators::contains_case_insensitive_word(
+                                        &scene.full_text[range.start..range.end],
+                                        &value,
+                                    )
+                                });
+                            if leaked {
+                                issues.push(ConsistencyIssue {
+                                    severity: "warning".to_string(),
+                                    check_type: "secret_leak".to_string(),
+                                    message: format!(
+                                        "scene (book {}, chapter {} scene {}): {} speaks secret fact '{}' ('{}') — no recorded reveal to {} before this scene",
+                                        scene.book_number,
+                                        scene.chapter_number,
+                                        scene.scene_order,
+                                        character.name,
+                                        fact.predicate,
+                                        value,
+                                        character.name,
+                                    ),
+                                    entity_ids: vec![
+                                        fact.id.clone(),
+                                        character.id.clone(),
+                                        scene.id.clone(),
+                                    ],
+                                    suggested_action: Some(
+                                        "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
+                                            .to_string(),
+                                    ),
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -21138,6 +21464,81 @@ fn parse_deep_promise_payoff_output(output: &str) -> anyhow::Result<Vec<DeepProm
 /// to [`crate::format::canonical_fact_value`] so there is a single source of truth.
 fn canonical_fact_value_for_check(fact: &crate::sqlite::records::CanonicalFact) -> String {
     crate::format::canonical_fact_value(fact)
+}
+
+/// Secret-knowledge gating (design §2.2): the per-scene decision the context
+/// assembly applies to every carrier. Produced once by
+/// `resolve_scene_secret_gate` and consumed by `apply_secret_visibility`, so no
+/// section decides secrecy on its own.
+#[derive(Debug, Default)]
+struct SceneSecretGate {
+    /// Canonical-fact ids that must be stripped from the loaded fact list (and
+    /// therefore from hard-constraint fact lines and read models). Every gated
+    /// secret — withheld or enveloped — is here; it only ever surfaces in the
+    /// `[SECRETS IN PLAY]` block.
+    gated_fact_ids: std::collections::BTreeSet<String>,
+    /// Value-display strings of gated secrets, used to strip the fact from
+    /// subject-snapshot `canonical_facts` (which carry rendered text, not ids).
+    withheld_snapshot_facts: std::collections::BTreeSet<String>,
+    /// The `[SECRETS IN PLAY]` hard-constraint block(s) to append, one per
+    /// enveloped secret. Empty for pure-withhold scenes (and for the common
+    /// no-secrets case), keeping the no-secrets path byte-identical.
+    envelope_blocks: Vec<spindle_core::models::HardConstraint>,
+}
+
+impl SceneSecretGate {
+    fn is_empty(&self) -> bool {
+        self.gated_fact_ids.is_empty()
+    }
+}
+
+/// Scene-scoping inputs for `resolve_scene_secret_gate` (bundled to keep the
+/// method's signature narrow): the present cast, the POV, the story cursor, and
+/// the character id→name map used for the envelope rosters.
+struct SceneSecretGateParams<'a> {
+    scene_cast: &'a [String],
+    pov: Option<&'a str>,
+    cursor: i64,
+    name_of: &'a std::collections::BTreeMap<String, String>,
+}
+
+/// The value-display string used to recognise a gated secret inside a subject
+/// snapshot's `canonical_facts` (which render as `"{predicate}: {value}"` with
+/// no id). Matching on the value display is robust to the snapshot's
+/// `<unset>`/number formatting because filtering uses `contains`.
+fn snapshot_fact_string(fact: &crate::sqlite::records::CanonicalFact) -> String {
+    crate::format::canonical_fact_value(fact)
+}
+
+/// Apply a resolved [`SceneSecretGate`] to every context carrier in one place
+/// (design §2.2: "The filter lives in ONE place ... not scattered per-section").
+///
+/// Strips gated secrets from: the assembled hard-constraint fact lines and the
+/// `canonical_facts` list (via `gated_fact_ids` on the loaded facts BEFORE
+/// read models / hard constraints are derived — see the call site), every
+/// subject snapshot's `canonical_facts`, and the per-character knowledge
+/// briefing entries linked to a gated secret. The envelope block(s) are
+/// appended to `hard_constraints` as a non-truncatable tier.
+///
+/// Note on `semantic_references`: recon confirms semantic recall surfaces
+/// ENTITY hits (characters / locations by embedding similarity), never raw
+/// canonical-fact text — a secret fact statement cannot appear there, so no
+/// filtering is applied to that carrier (documented rather than dead-coded).
+fn apply_secret_visibility(
+    gate: &SceneSecretGate,
+    subjects: &mut [spindle_core::subject_snapshot::SubjectSnapshot],
+) {
+    if gate.is_empty() {
+        return;
+    }
+    for snapshot in subjects.iter_mut() {
+        snapshot.retain_canonical_facts(|summary| {
+            !gate
+                .withheld_snapshot_facts
+                .iter()
+                .any(|needle| summary.fact.contains(needle))
+        });
+    }
 }
 
 /// Map a structured [`spindle_core::models::RetconFinding`] to a
@@ -36205,6 +36606,394 @@ rating = "explicit"
         );
     }
 
+    // ── B2: secret_leak deterministic audience-direction audit ────────────
+    // Design §2.4 deterministic tier: an out-of-circle present character who
+    // speaks a secret's value in attributed dialogue leaks it → warning.
+    mod secret_leak_audit {
+        use super::*;
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
+            ConsistencyScopeInput, ContentRating, CreateCharacterInput, CreateLocationInput,
+            RecordKnowledgeInput, RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope,
+            StoryPlacement, WorldStateInput,
+        };
+
+        async fn make_character(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            name: &str,
+        ) -> String {
+            svc.create_character(CreateCharacterInput {
+                project_id: project_id.to_string(),
+                name: name.to_string(),
+                summary: format!("{name} in play."),
+                role: "supporting".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap()
+            .character_id
+        }
+
+        /// Project + Mara (holder) + Bran (outsider) + a location + a secret
+        /// fact whose value is the single lexeme "reincarnated". Returns
+        /// (svc, project_id, mara, bran, location_id, fact_id).
+        async fn fixture() -> (
+            tempfile::TempDir,
+            SqliteSpindleService,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) {
+            let (tmp, svc) = fresh_service().await;
+            let proj = svc
+                .create_project(CreateProjectInput {
+                    name: "Leak".into(),
+                    project_type: "novel".into(),
+                    genre: "fantasy".into(),
+                    reader_contract: ReaderContract {
+                        promise: "Secrets stay secret.".into(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            let project_id = proj.project_id;
+            let mara = make_character(&svc, &project_id, "Mara").await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            let location = svc
+                .create_location(CreateLocationInput {
+                    project_id: project_id.clone(),
+                    name: "Ash Gate".into(),
+                    kind: "fortress".into(),
+                    realm: None,
+                    summary: "A wall.".into(),
+                    initial_state: WorldStateInput {
+                        controlling_faction: None,
+                        status: Some("tense".into()),
+                        prosperity: None,
+                        stability: None,
+                        threat_level: None,
+                        sensory_details: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+
+            // A seed scene to anchor the secret's declaration.
+            let seed = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order: 1,
+                    full_text: "Mara kept her counsel.".into(),
+                    summary: "seed".into(),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+
+            let fact = svc
+                .register_canonical_fact(RegisterCanonicalFactInput {
+                    project_id: project_id.clone(),
+                    scene_id: seed.scene_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    context: None,
+                    subject_table: Some("character".into()),
+                    subject_id: Some(mara.clone()),
+                    predicate: Some("reincarnation".into()),
+                    value_kind: Some("string".into()),
+                    value_text: Some("reincarnated".into()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: None,
+                    valid_from: None,
+                    valid_until: None,
+                    legacy_untyped: None,
+                    supersedes_fact_id: None,
+                    secrecy: Some(SecrecyScope {
+                        holder_ids: vec![mara.clone()],
+                        concealment_note: None,
+                    }),
+                })
+                .await
+                .unwrap();
+
+            (
+                tmp,
+                svc,
+                project_id,
+                mara,
+                bran,
+                location.location_id,
+                fact.canonical_fact_id,
+            )
+        }
+
+        async fn save_dialogue_scene(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            chapter: i32,
+            scene_order: i32,
+            text: &str,
+        ) {
+            // Chapter 1 exists from create_project; create later chapters.
+            if chapter > 1 {
+                let _ = svc
+                    .create_chapter(spindle_core::models::CreateChapterInput {
+                        project_id: project_id.to_string(),
+                        book_id: None,
+                        book_number: Some(1),
+                        chapter_number: Some(chapter),
+                        title: None,
+                    })
+                    .await;
+            }
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order,
+                full_text: text.to_string(),
+                summary: "dialogue".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn run_secret_leak(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+        ) -> Vec<spindle_core::models::ConsistencyIssue> {
+            svc.check_consistency(CheckConsistencyInput {
+                project_id: project_id.to_string(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["secret_leak".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap()
+            .issues
+            .into_iter()
+            .filter(|i| i.check_type == "secret_leak")
+            .collect()
+        }
+
+        /// Firing: Bran (out of circle) speaks the secret's value in attributed
+        /// dialogue → one warning naming the fact, the character, and the scene.
+        #[tokio::test]
+        async fn outsider_speaks_secret_value_warns() {
+            let (_tmp, svc, project_id, _mara, bran, _loc, _fact) = fixture().await;
+            save_dialogue_scene(
+                &svc,
+                &project_id,
+                2,
+                1,
+                "\"You are reincarnated, I know it,\" Bran said, watching Mara.",
+            )
+            .await;
+
+            let hits = run_secret_leak(&svc, &project_id).await;
+            assert_eq!(hits.len(), 1, "outsider leak must warn once: {hits:?}");
+            assert_eq!(hits[0].severity, "warning");
+            assert!(
+                hits[0].entity_ids.contains(&bran),
+                "the leaking character is named: {:?}",
+                hits[0].entity_ids
+            );
+            assert!(
+                hits[0]
+                    .message
+                    .to_lowercase()
+                    .contains("no recorded reveal")
+                    && hits[0].message.contains("Bran"),
+                "message names the reveal status and character: {}",
+                hits[0].message
+            );
+        }
+
+        /// Clean: the insider Mara speaks it → no finding (she is in the circle).
+        #[tokio::test]
+        async fn insider_speaks_secret_value_is_clean() {
+            let (_tmp, svc, project_id, _mara, _bran, _loc, _fact) = fixture().await;
+            save_dialogue_scene(
+                &svc,
+                &project_id,
+                2,
+                1,
+                "\"I am reincarnated,\" Mara said, to no one.",
+            )
+            .await;
+
+            let hits = run_secret_leak(&svc, &project_id).await;
+            assert!(
+                hits.is_empty(),
+                "an insider speaking the secret is not a leak: {hits:?}"
+            );
+        }
+
+        /// Reveal-timing (earlier): Bran was revealed-to in an EARLIER scene
+        /// placement, so at the later leak scene he is in the circle → clean.
+        #[tokio::test]
+        async fn earlier_reveal_makes_speaker_in_circle_clean() {
+            let (_tmp, svc, project_id, _mara, bran, _loc, fact) = fixture().await;
+            // Reveal to Bran at ch 2 scene 1.
+            svc.record_knowledge(RecordKnowledgeInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                character_id: bran.clone(),
+                fact: "Mara is reincarnated.".into(),
+                source_summary: "she told him".into(),
+                learned_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 2,
+                    scene_order: Some(1),
+                    note: None,
+                }),
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: Some(fact.clone()),
+            })
+            .await
+            .unwrap();
+            // Leak scene at ch 3 (after the reveal): Bran is now in the circle.
+            save_dialogue_scene(
+                &svc,
+                &project_id,
+                3,
+                1,
+                "\"So you are reincarnated,\" Bran said.",
+            )
+            .await;
+
+            let hits = run_secret_leak(&svc, &project_id).await;
+            assert!(
+                hits.is_empty(),
+                "a speaker revealed-to earlier is in the circle → no leak: {hits:?}"
+            );
+        }
+
+        /// Reveal-timing (later): Bran is revealed-to only in a LATER scene, so
+        /// at the earlier leak scene he is still out of circle → warning.
+        #[tokio::test]
+        async fn later_reveal_does_not_excuse_earlier_leak_warns() {
+            let (_tmp, svc, project_id, _mara, bran, _loc, fact) = fixture().await;
+            // Leak scene at ch 2 (before any reveal).
+            save_dialogue_scene(
+                &svc,
+                &project_id,
+                2,
+                1,
+                "\"You are reincarnated,\" Bran said.",
+            )
+            .await;
+            // Reveal to Bran only at ch 5 — after the leak.
+            svc.record_knowledge(RecordKnowledgeInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                character_id: bran.clone(),
+                fact: "Mara is reincarnated.".into(),
+                source_summary: "later reveal".into(),
+                learned_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 5,
+                    scene_order: Some(1),
+                    note: None,
+                }),
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: Some(fact.clone()),
+            })
+            .await
+            .unwrap();
+
+            let hits = run_secret_leak(&svc, &project_id).await;
+            assert_eq!(
+                hits.len(),
+                1,
+                "a later reveal cannot excuse an earlier leak: {hits:?}"
+            );
+            assert!(hits[0].entity_ids.contains(&bran));
+        }
+
+        /// No secret facts → the audit is silent even with matching prose.
+        #[tokio::test]
+        async fn no_secrets_is_silent() {
+            let (_tmp, svc) = fresh_service().await;
+            let proj = svc
+                .create_project(CreateProjectInput {
+                    name: "Public".into(),
+                    project_type: "novel".into(),
+                    genre: "fantasy".into(),
+                    reader_contract: ReaderContract {
+                        promise: "Nothing hidden.".into(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            let project_id = proj.project_id;
+            make_character(&svc, &project_id, "Bran").await;
+            save_dialogue_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "\"You are reincarnated,\" Bran said.",
+            )
+            .await;
+
+            let hits = run_secret_leak(&svc, &project_id).await;
+            assert!(hits.is_empty(), "no secret facts → silent: {hits:?}");
+        }
+    }
+
     // ── T-106: promise-payoff deep-check candidate detection ──────────────
     // Model-backed Tier-2 check. Proposes (never writes) that an unresolved
     // promise the prose already paid off should be confirmed via
@@ -37239,6 +38028,394 @@ agent = "review-http"
             assert!(
                 markdown.contains("ash gate warden"),
                 "the plain canonical fact still renders unchanged"
+            );
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // B1: context-gate wiring in get_scene_context (design §2.2).
+        // ─────────────────────────────────────────────────────────────────
+
+        use spindle_core::models::{PlanChapterInput, PlanChapterSceneInput, StoryPlacement};
+
+        /// Register `is a reincarnated warden` as a secret held by `holder`.
+        /// Returns the canonical_fact_id.
+        async fn declare_reincarnation_secret(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            scene_id: &str,
+            subject_id: &str,
+            holder: &str,
+            concealment_note: Option<&str>,
+        ) -> String {
+            svc.register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project_id.to_string(),
+                scene_id: scene_id.to_string(),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".into()),
+                subject_id: Some(subject_id.to_string()),
+                predicate: Some("reincarnation".into()),
+                value_kind: Some("string".into()),
+                value_text: Some("is a reincarnated warden".into()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: Some(SecrecyScope {
+                    holder_ids: vec![holder.to_string()],
+                    concealment_note: concealment_note.map(str::to_string),
+                }),
+            })
+            .await
+            .unwrap()
+            .canonical_fact_id
+        }
+
+        /// Create a second character (returns the character id).
+        async fn make_character(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            name: &str,
+        ) -> String {
+            svc.create_character(CreateCharacterInput {
+                project_id: project_id.to_string(),
+                name: name.to_string(),
+                summary: format!("{name} is present."),
+                role: "supporting".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap()
+            .character_id
+        }
+
+        /// Fetch the chapter-1 scene-2 context envelope for the given cast.
+        async fn context_for(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            location_id: &str,
+            character_ids: Vec<String>,
+        ) -> spindle_core::models::SceneContextEnvelope {
+            svc.get_scene_context_envelope(GetSceneContextInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids,
+                max_character_count: None,
+                location_id: location_id.to_string(),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap()
+        }
+
+        /// B1 envelope: a non-POV circle member present with an out-of-circle
+        /// character in the room → the secret renders in a `[SECRETS IN PLAY]`
+        /// hard-constraint block naming the insider (Known ONLY to) and the
+        /// unaware character, and it does NOT appear as an ordinary canonical
+        /// fact hard-constraint line or read-model entry.
+        #[tokio::test]
+        async fn envelope_block_renders_and_secret_absent_from_normal_carriers() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            let fact_id = declare_reincarnation_secret(
+                &svc,
+                &project_id,
+                &scene_id,
+                &mara,
+                &mara,
+                Some("she deflects with dry humor"),
+            )
+            .await;
+
+            let envelope = context_for(
+                &svc,
+                &project_id,
+                &location_id,
+                vec![mara.clone(), bran.clone()],
+            )
+            .await;
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+
+            assert!(
+                markdown.contains("[SECRETS IN PLAY]"),
+                "an insider-present secret must render the envelope block: {markdown}"
+            );
+            assert!(
+                markdown.contains("Known ONLY to: Mara"),
+                "the block names the insider by name: {markdown}"
+            );
+            assert!(
+                markdown.contains("Present and NOT in the know: Bran"),
+                "the block names the unaware present character: {markdown}"
+            );
+            assert!(
+                markdown.contains("must not reference, imply, or react"),
+                "the block carries the must-not-reference instruction: {markdown}"
+            );
+            assert!(
+                markdown.contains("she deflects with dry humor"),
+                "the concealment note rides the envelope: {markdown}"
+            );
+
+            // The secret must NOT appear as an ordinary reincarnation fact line
+            // outside the envelope block. The value string appears exactly once
+            // (inside the block), never on a plain "**reincarnation**:" line.
+            assert!(
+                !markdown.contains("**reincarnation**: is a reincarnated warden"),
+                "the secret must not render as a normal canonical-fact hard constraint: {markdown}"
+            );
+
+            // Structured read models must not carry the secret fact.
+            assert!(
+                envelope
+                    .novel
+                    .subjects
+                    .iter()
+                    .flat_map(|s| s.canonical_facts())
+                    .all(|f| !f.fact.contains("is a reincarnated warden")),
+                "subject snapshots must not surface the withheld secret fact"
+            );
+            let _ = fact_id;
+        }
+
+        /// B1 withhold: no circle member present (and no POV insider) → the
+        /// secret is stripped from EVERY carrier — markdown, subject snapshots,
+        /// and there is no `[SECRETS IN PLAY]` block at all.
+        #[tokio::test]
+        async fn no_insider_present_withholds_from_all_carriers() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            declare_reincarnation_secret(&svc, &project_id, &scene_id, &mara, &mara, None).await;
+
+            // Only Bran (out of circle) is present; Mara is not in the cast and
+            // there is no chapter plan POV, so no insider is present.
+            let envelope = context_for(&svc, &project_id, &location_id, vec![bran.clone()]).await;
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+
+            assert!(
+                !markdown.contains("[SECRETS IN PLAY]"),
+                "no insider present → no envelope block: {markdown}"
+            );
+            assert!(
+                !markdown.contains("is a reincarnated warden"),
+                "the secret text must be absent from the markdown entirely: {markdown}"
+            );
+            assert!(
+                envelope
+                    .novel
+                    .subjects
+                    .iter()
+                    .flat_map(|s| s.canonical_facts())
+                    .all(|f| !f.fact.contains("is a reincarnated warden")),
+                "the withheld secret must not surface in any subject snapshot"
+            );
+        }
+
+        /// B1 knowledge-briefing withhold: when a holder's own knowledge row for
+        /// the secret would otherwise brief into context but no insider is
+        /// present, the briefing entry linked to the secret is stripped too.
+        #[tokio::test]
+        async fn no_insider_present_withholds_knowledge_briefing_entry() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            let fact_id =
+                declare_reincarnation_secret(&svc, &project_id, &scene_id, &mara, &mara, None)
+                    .await;
+
+            // Reveal to Bran at ch 12 — a placement-stamped circle row that also
+            // creates a knowledge briefing entry linked to the secret.
+            svc.record_knowledge(RecordKnowledgeInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                character_id: bran.clone(),
+                fact: "Mara is a reincarnated warden.".into(),
+                source_summary: "she finally told him".into(),
+                learned_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 12,
+                    scene_order: Some(1),
+                    note: None,
+                }),
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: Some(fact_id.clone()),
+            })
+            .await
+            .unwrap();
+
+            // Scene is ch 1 scene 2 (cursor before the ch-12 reveal), Bran alone:
+            // Bran is not yet in the circle at this cursor, so no insider present.
+            let envelope = context_for(&svc, &project_id, &location_id, vec![bran.clone()]).await;
+            assert!(
+                envelope
+                    .novel
+                    .knowledge_briefing
+                    .iter()
+                    .all(|item| !item.fact.contains("reincarnated warden")),
+                "the secret-linked briefing entry must be withheld when no insider is present"
+            );
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+            assert!(
+                !markdown.contains("[SECRETS IN PLAY]"),
+                "cursor precedes the reveal → Bran is not an insider → no block: {markdown}"
+            );
+        }
+
+        /// B1 POV-only: the POV character is the only present circle member →
+        /// the envelope carries the private-awareness narration line.
+        #[tokio::test]
+        async fn pov_only_insider_renders_narration_line() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            declare_reincarnation_secret(&svc, &project_id, &scene_id, &mara, &mara, None).await;
+
+            // Chapter plan sets Mara as POV; scene cast has Mara + Bran, so Mara
+            // is the only present circle member and is the POV → PovEnvelope.
+            svc.plan_chapter(PlanChapterInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                pov_character_id: Some(mara.clone()),
+                synopsis: "Mara keeps her secret.".into(),
+                target_theme_ids: Vec::new(),
+                target_conflict_ids: Vec::new(),
+                target_plot_line_ids: Vec::new(),
+                scenes: vec![PlanChapterSceneInput {
+                    scene_order: 2,
+                    summary: "Mara and Bran talk".into(),
+                    beat_structure: vec!["tension".into()],
+                    character_ids: vec![mara.clone(), bran.clone()],
+                    purpose: "development".into(),
+                    ..Default::default()
+                }],
+            })
+            .await
+            .unwrap();
+
+            let envelope = context_for(
+                &svc,
+                &project_id,
+                &location_id,
+                vec![mara.clone(), bran.clone()],
+            )
+            .await;
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+            assert!(
+                markdown.contains("[SECRETS IN PLAY]"),
+                "the POV insider still gets an envelope: {markdown}"
+            );
+            assert!(
+                markdown.contains("Narration may carry")
+                    && markdown.contains("private awareness")
+                    && markdown.contains("dialogue and other characters' behavior must not"),
+                "the POV-only variant carries the private-awareness narration line: {markdown}"
+            );
+        }
+
+        /// B1 flashback cursor: a reveal placed at ch 12 does not make the
+        /// recipient an insider for a ch-9-cursor scene drafted later. With the
+        /// original holder absent and the recipient present, the recipient is
+        /// listed as unaware (or the secret is withheld) — never leaked.
+        #[tokio::test]
+        async fn flashback_cursor_keeps_future_recipient_unaware() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, mara, scene_id, location_id) = scaffold(&svc).await;
+            let bran = make_character(&svc, &project_id, "Bran").await;
+            let fact_id =
+                declare_reincarnation_secret(&svc, &project_id, &scene_id, &mara, &mara, None)
+                    .await;
+
+            // Reveal to Bran at ch 12.
+            svc.record_knowledge(RecordKnowledgeInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                character_id: bran.clone(),
+                fact: "Mara is a reincarnated warden.".into(),
+                source_summary: "later reveal".into(),
+                learned_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 12,
+                    scene_order: Some(1),
+                    note: None,
+                }),
+                confidence: None,
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: Some(fact_id.clone()),
+            })
+            .await
+            .unwrap();
+
+            // A ch-9 scene: cursor precedes the ch-12 reveal. Mara (holder) is
+            // present too, so the envelope renders — but Bran must be UNAWARE.
+            let envelope = svc
+                .get_scene_context_envelope(GetSceneContextInput {
+                    project_id: project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 9,
+                    chapter_id: None,
+                    scene_order: 1,
+                    character_ids: vec![mara.clone(), bran.clone()],
+                    max_character_count: None,
+                    location_id: location_id.clone(),
+                    format: Some(ContextFormat::Markdown),
+                    budget_tokens: Some(8000),
+                    token_budget: None,
+                    sections: None,
+                })
+                .await
+                .unwrap();
+            let markdown = envelope.context_markdown.as_deref().unwrap();
+            assert!(
+                markdown.contains("[SECRETS IN PLAY]"),
+                "the holder Mara is present at ch 9 → envelope renders: {markdown}"
+            );
+            assert!(
+                markdown.contains("Present and NOT in the know: Bran"),
+                "a ch-12 reveal must not leak backward: Bran is unaware at ch 9: {markdown}"
+            );
+            assert!(
+                !markdown.contains("Known ONLY to: Bran")
+                    && !markdown.contains("Known ONLY to: Mara, Bran"),
+                "Bran must not be listed as an insider before the reveal cursor: {markdown}"
             );
         }
     }

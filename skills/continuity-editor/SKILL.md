@@ -370,6 +370,37 @@ later one (or reorder the writing), or correct the `escalation_demonstrated`
 markers (via `update_entity` on the `conflict`) if the demonstrations are
 mislabeled.
 
+### 25. Secret Leak (`secret_leak`)
+The audience-direction complement to `knowledge_timing`. Where `knowledge_timing`
+asks "does the *speaker* know this yet?", `secret_leak` asks the audience
+question: "did an out-of-circle character act on a secret they were never told?"
+A **secret** is a `canonical_fact` marked `secret = true`; its **circle of trust**
+is derived — every character with a `knowledge_fact` row linked back to that fact
+via `secret_of_fact_id`, placement-stamped by `learned_at`.
+
+Deterministic tier (always runs, no `deep_check` needed): for each scoped scene,
+for each secret fact whose circle **at that scene's story cursor** does not
+include a **present** character, the check scans that out-of-circle character's
+**attributed dialogue** (reusing the `voice_drift` speaker attribution) for the
+secret's value lexeme (reusing `canonical_fact_prose_drift`'s whole-word matcher,
+uninverted — a *hit* is the violation). A hit raises a **warning** naming the
+fact, the character, the scene reference, and the reveal status ("no recorded
+reveal to `<character>` before this scene"). An **insider** speaking the secret is
+clean, and a reveal recorded in an **earlier** scene puts the speaker inside the
+circle at the later cursor (so it is clean); a reveal only in a **later** scene
+does not excuse an earlier leak. Cursor-aware, so a ch-12 reveal never leaks
+backward into a ch-9 flashback. Behavioral/narration leaks (a character avoiding
+a place they have no reason to avoid) are the **deep tier** (`deep_check`), a
+later wave — v1 scans dialogue only. Silent for projects with no secret facts.
+
+**What to do when flagged**: this is a deliberate-irony triage point. If the
+reveal is intended (she told him off-page, or he guessed), record it —
+`record_knowledge` with `secret_of_fact_id` set and `learned_at` at the reveal's
+placement — which expands the circle and clears the finding. Otherwise the
+dialogue genuinely leaks: route to scene-writer to revise it out. Mark a reviewed
+false positive by recording the reveal or dismissing it with a note, mirroring how
+other findings are triaged at checkpoints.
+
 ---
 
 ## Running a Full Audit
@@ -418,8 +449,11 @@ Use these shipped Phase 4 validator IDs as your live evidence package:
 
 The deterministic story-time and quantity checks (`chronology`,
 `knowledge_timing`, `pacing_drift`, `quantity_drift`, `currency_consistency`,
-`affordability`) are requested by name and reported via the `check_type` field on
-each issue rather than as Phase 4 validator rows.
+`affordability`), the metadata audits (`motif_usage_audit`,
+`theme_placement_audit`, `plot_line_convergence_audit`, `arc_milestone_audit`,
+`conflict_escalation_audit`), and the secret-knowledge audit (`secret_leak`) are
+requested by name and reported via the `check_type` field on each issue rather
+than as Phase 4 validator rows.
 
 Example:
 - Canon says `cole.age = 20`.
@@ -452,6 +486,7 @@ use those alias names when calling live checks; use the concrete IDs above.
 | Plot-line convergence (`plot_line_convergence_audit`) | → scene-writer (annotate a connected conflict/theme in the convergence chapter) or → plot-architect (revise `convergence_points` / connected-id declarations) |
 | Arc milestone (`arc_milestone_audit`) | → scene-writer (demonstrate the milestone and set `reached_at`) or → plot-architect (move the milestone `placement`) |
 | Conflict escalation (`conflict_escalation_audit`) | → scene-writer (demonstrate the earlier stage first) or → plot-architect (correct the `escalation_demonstrated` markers) |
+| Secret leak (`secret_leak`) | → scene-writer (revise the leaking dialogue) or, if the reveal is intended, `record_knowledge` with `secret_of_fact_id` to expand the circle |
 
 If a world rule has a legitimate exception, encode it as a separate
 `world_rule` (e.g. with `relevance_tags: ["exception"]` and a

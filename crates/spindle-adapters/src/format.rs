@@ -2666,7 +2666,7 @@ pub fn canonical_fact_read_model(fact: &CanonicalFact) -> CanonicalFactReadModel
     }
 }
 
-fn canonical_fact_value_display(fact: &CanonicalFact) -> String {
+pub fn canonical_fact_value_display(fact: &CanonicalFact) -> String {
     if let Some(value_text) = fact.value_text.as_ref().filter(|value| !value.is_empty()) {
         return value_text.clone();
     }
@@ -3997,6 +3997,75 @@ pub fn resolve_secret_visibility(
     }
 }
 
+/// The hard-constraint id under which the secret-knowledge envelope renders.
+/// Non-truncatable, same tier as `[STORY SO FAR]` / `[IN-WORLD TIME]`.
+pub const SECRETS_IN_PLAY_CONSTRAINT_ID: &str = "[SECRETS IN PLAY]";
+
+/// Render the `[SECRETS IN PLAY]` hard-constraint statement for one secret fact
+/// (design §2.2). `fact_statement` is the secret's rendered prose; `known_to`
+/// and `unaware_present` are resolved character *names* (not ids). When
+/// `pov_only` is set, `pov_display` names the POV insider for the private-
+/// awareness narration line. Returns `None` for the `Withhold` decision — a
+/// withheld secret has no block at all.
+///
+/// Wording follows the design doc verbatim, gender-neutralized to the POV
+/// character name (or "the POV character" when unnamed).
+pub fn secret_in_play_block(
+    fact_statement: &str,
+    decision: &SecretDecision,
+    concealment_note: Option<&str>,
+) -> Option<String> {
+    let (known_to, unaware_present, is_pov_only) = match decision {
+        SecretDecision::Withhold => return None,
+        SecretDecision::Envelope {
+            known_to,
+            unaware_present,
+            ..
+        } => (known_to.as_slice(), unaware_present.as_slice(), false),
+        SecretDecision::PovEnvelope { known_to, .. } => (known_to.as_slice(), [].as_slice(), true),
+    };
+
+    let mut lines = vec![format!("Secret: {fact_statement}")];
+    lines.push(format!("Known ONLY to: {}", join_names(known_to)));
+    if !unaware_present.is_empty() {
+        lines.push(format!(
+            "Present and NOT in the know: {}",
+            join_names(unaware_present)
+        ));
+    }
+    lines.push(
+        "These characters must not reference, imply, or react to this — they do not know it."
+            .to_string(),
+    );
+    if let Some(note) = concealment_note
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+    {
+        lines.push(format!("Concealment: {note}"));
+    }
+    if is_pov_only {
+        let pov_name = known_to
+            .first()
+            .map(String::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("the POV character");
+        lines.push(format!(
+            "Narration may carry {pov_name}'s private awareness; dialogue and other characters' behavior must not."
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Join resolved character names for an envelope roster line. Empty rosters
+/// render as `(none)` so the constraint text is never dangling.
+fn join_names(names: &[String]) -> String {
+    if names.is_empty() {
+        "(none)".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
 #[cfg(test)]
 mod secret_visibility_tests {
     use super::*;
@@ -4151,6 +4220,73 @@ mod secret_visibility_tests {
             }
             other => panic!("expected Envelope, got {other:?}"),
         }
+    }
+
+    /// Withhold has no block at all.
+    #[test]
+    fn secret_block_none_for_withhold() {
+        assert_eq!(
+            secret_in_play_block("is a reincarnated warden", &SecretDecision::Withhold, None),
+            None
+        );
+    }
+
+    /// Envelope block names insiders (Known ONLY to), unaware present, the
+    /// must-not-reference sentence, and the concealment note when set.
+    #[test]
+    fn secret_block_envelope_names_roster_and_note() {
+        let decision = SecretDecision::Envelope {
+            known_to: ids(&["Mara"]),
+            unaware_present: ids(&["Bran"]),
+            concealment_note: None,
+        };
+        let block =
+            secret_in_play_block("is a reincarnated warden", &decision, Some("dry humor")).unwrap();
+        assert!(block.contains("Secret: is a reincarnated warden"));
+        assert!(block.contains("Known ONLY to: Mara"));
+        assert!(block.contains("Present and NOT in the know: Bran"));
+        assert!(block.contains("must not reference, imply, or react"));
+        assert!(block.contains("Concealment: dry humor"));
+        assert!(
+            !block.contains("Narration may carry"),
+            "the non-POV envelope carries no narration line"
+        );
+    }
+
+    /// PovEnvelope block carries the private-awareness narration line named to
+    /// the POV character, with no unaware-present roster.
+    #[test]
+    fn secret_block_pov_envelope_carries_narration_line() {
+        let decision = SecretDecision::PovEnvelope {
+            known_to: ids(&["Mara"]),
+            concealment_note: None,
+        };
+        let block = secret_in_play_block("is a reincarnated warden", &decision, None).unwrap();
+        assert!(block.contains("Known ONLY to: Mara"));
+        assert!(
+            block.contains(
+                "Narration may carry Mara's private awareness; dialogue and other characters' behavior must not."
+            ),
+            "POV narration line, named to the POV character: {block}"
+        );
+        assert!(
+            !block.contains("Present and NOT in the know"),
+            "the POV-only variant lists no unaware-present roster: {block}"
+        );
+    }
+
+    /// An unnamed POV falls back to "the POV character".
+    #[test]
+    fn secret_block_pov_envelope_falls_back_to_generic_pov_name() {
+        let decision = SecretDecision::PovEnvelope {
+            known_to: Vec::new(),
+            concealment_note: None,
+        };
+        let block = secret_in_play_block("a secret", &decision, None).unwrap();
+        assert!(
+            block.contains("Narration may carry the POV character's private awareness"),
+            "generic fallback wording: {block}"
+        );
     }
 }
 

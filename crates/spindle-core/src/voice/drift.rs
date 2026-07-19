@@ -64,7 +64,14 @@ pub fn check_voice_drift(
     findings
 }
 
-fn attributed_dialogue_ranges(
+/// Byte ranges of the dialogue attributed to `character` in `scene_text`.
+///
+/// Extracted from [`check_voice_drift`]'s internal attribution pass so the
+/// audience-direction `secret_leak` audit can reuse the exact same
+/// speaker-attribution machinery — a secret must not leak into an out-of-circle
+/// character's *attributed* dialogue. Behaviour-preserving: `check_voice_drift`
+/// still routes through this helper, so its regression suite is unaffected.
+pub fn attributed_dialogue_ranges(
     scene_text: &str,
     character: &VoiceDriftCharacter,
 ) -> Vec<TextByteRange> {

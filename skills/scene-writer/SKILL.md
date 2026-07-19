@@ -259,6 +259,46 @@ Each item is a briefing fact available to the current scene assembly. Check:
   foreknowledge creates interesting uncertainty — the character isn't sure if their knowledge
   still applies.
 
+### `[SECRETS IN PLAY]` — the circle-of-trust envelope (hard constraint)
+Some facts are held **in confidence** by a circle of trust — a reincarnated
+character who has told no one, an affair, a hidden identity. When at least one
+member of a secret's circle is present in the scene, the fact ships to you as a
+**non-truncatable hard constraint** headed `[SECRETS IN PLAY]`, NOT as an ordinary
+canonical fact. The block names, exactly:
+
+- **`Known ONLY to:`** the characters inside the circle at this scene's story
+  position (cursor-aware — a reveal that happens in a later chapter is *not* yet
+  in the circle here).
+- **`Present and NOT in the know:`** the characters in the room who do **not**
+  know it.
+- The rule: *"These characters must not reference, imply, or react to this — they
+  do not know it."*
+- A `Concealment:` line when the author gave concealment guidance (e.g. "she
+  deflects questions about her past with dry humor").
+
+**Write discipline.** The unaware characters must not act on the secret — no
+dialogue that references it, no behavior that implies it, no reaction that only
+makes sense if they knew. Only the circle may carry it, and only in the ways real
+people carry a secret (guardedness, deflection, private interiority). When the
+block is a **POV-only** variant, it adds: *"Narration may carry the POV
+character's private awareness; dialogue and other characters' behavior must not."*
+— the POV's inner life may hold the secret, but nothing on the page may let it
+escape to the others.
+
+**When a secret is NOT in play**, you will not see it at all — the assembler
+withholds it from every carrier (hard constraints, snapshots, the knowledge
+briefing, semantic recall) whenever no circle member is present. What you cannot
+see, you cannot leak. Do not invent it.
+
+**Flagging an on-page reveal.** If this scene is where the secret is finally
+told — the circle expands from this point on — flag the reveal in your continuity
+package so canon records it. The underlying mechanism is a `knowledge_fact` row
+linked to the secret via `secret_of_fact_id` (an author or the mining pass calls
+`record_knowledge` with `secret_of_fact_id` set and `learned_at` = this scene's
+placement). From that scene forward the new holder is inside the circle and may
+act on the secret; an unrecorded on-page reveal will trip the `secret_leak`
+continuity check.
+
 ### Narrative Promises Due (from `novel.narrative_promises_due`)
 If any Chekhov's guns, foreshadowing, or setups are overdue for payoff, weave the payoff
 into this scene if narratively appropriate. Don't force it, but don't ignore it either.
