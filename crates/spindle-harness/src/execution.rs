@@ -912,14 +912,39 @@ async fn build_scene_prompt(
     draft_route: &DraftRouteBinding,
 ) -> Result<String> {
     if draft_route.caller_should_send_brief {
-        // Pull path: the drafting agent fetches its own canon via MCP, so the
-        // host holds no scene context here (fetching one would defeat the
-        // pull architecture and violate the ticket's no-new-fetch guard). The
-        // shared threads-to-advance formatter therefore receives empty inputs
-        // on this path in production; when a caller does supply threads/promises
-        // (tests, or a future site that already holds them) the identical block
-        // is emitted.
-        return build_scene_mcp_pull_prompt(state, chapter, scene, research_pack, &[], &[]);
+        // Pull path: the drafting agent fetches its own full canon via MCP, so
+        // the host does NOT embed scene context here. It does, however, run a
+        // deliberately minimal `get_scene_context` fetch naming only the two
+        // threads sections (see `pull_path_threads_sections`) so the shared
+        // "## Threads to advance" block carries real data instead of empty
+        // slices — resolving the T-110 host/pull asymmetry. The fetch is
+        // best-effort: on error the block is simply omitted and the brief still
+        // builds (the agent pulls its own context regardless). No retry.
+        let scene_context = client
+            .get_scene_context(&GetSceneContextInput {
+                project_id: state.project_id.clone(),
+                book_number: state.book_number,
+                chapter_number: chapter.chapter_number,
+                chapter_id: None,
+                scene_order: scene.scene_order,
+                character_ids: scene.character_ids.clone(),
+                max_character_count: None,
+                location_id: scene.location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(SCENE_CONTEXT_TOKEN_BUDGET),
+                token_budget: Some(SCENE_CONTEXT_TOKEN_BUDGET),
+                sections: Some(pull_path_threads_sections()),
+            })
+            .await;
+        let (active_threads, promises_due) = pull_path_threads_from_result(scene_context);
+        return build_scene_mcp_pull_prompt(
+            state,
+            chapter,
+            scene,
+            research_pack,
+            &active_threads,
+            &promises_due,
+        );
     }
 
     let scene_context = client
@@ -1163,6 +1188,44 @@ fn build_scene_mcp_pull_prompt(
         explicit_query = scene.explicit_query.as_deref().unwrap_or("none"),
         research_counts = research_counts,
     ))
+}
+
+/// Section names the pull path requests from `get_scene_context` so the
+/// "## Threads to advance" block can carry real data instead of empty slices
+/// (fixes the T-110 host/pull asymmetry). Only `narrative_promises_due` is an
+/// individually-gated novel section in the service; `active_threads` is
+/// ungated (always hydrated whenever the chapter has a plan), so naming it is
+/// harmless intent-documentation that does not enlarge the payload. Naming
+/// exactly these two — and no other section — keeps the fetch minimal.
+fn pull_path_threads_sections() -> Vec<String> {
+    vec![
+        "active_threads".to_string(),
+        "narrative_promises_due".to_string(),
+    ]
+}
+
+/// Project a `get_scene_context` result into the `(active_threads,
+/// promises_due)` slices the pull prompt's threads block consumes. On success
+/// the scene context's novel layer is unpacked; on error the block must never
+/// fail the brief (the drafting agent will pull full context itself), so this
+/// logs at warn level via the existing tracing pattern and yields empty
+/// slices. No retry.
+fn pull_path_threads_from_result(
+    result: Result<crate::mcp::SceneContextEnvelope>,
+) -> (Vec<ActiveThreadSummary>, Vec<NarrativePromiseDueSummary>) {
+    match result {
+        Ok(context) => (
+            context.novel.active_threads,
+            context.novel.narrative_promises_due,
+        ),
+        Err(error) => {
+            tracing::warn!(
+                "pull-path scene-context fetch for threads block failed; \
+                 proceeding without it: {error:#}"
+            );
+            (Vec::new(), Vec::new())
+        }
+    }
 }
 
 async fn build_summary_prompt(
@@ -2032,5 +2095,74 @@ mod tests {
         assert!(prompt.contains("research_pack_for_scene"));
         assert!(!prompt.contains("Scene context envelope:"));
         assert!(!prompt.contains("Scene-writer skill guidance:"));
+    }
+
+    // -- Pull-path threads fetch (T-110 asymmetry fix) --------------------
+    //
+    // The pull path cannot be exercised end-to-end because `McpHarnessClient`
+    // is a concrete struct wrapping a live MCP transport with no trait seam to
+    // fake `get_scene_context` (see the report). The testable seams are the two
+    // pure helpers the pull path is built on: the sections request it issues,
+    // and the "response/error -> (threads, promises)" projection that feeds the
+    // shared formatter. These tests pin sections-minimality (test 2), the
+    // success projection that lets the block render (test 1), and the
+    // fetch-failure tolerance that yields empty slices (test 3).
+
+    #[test]
+    fn pull_path_requests_only_active_threads_and_promises_due_sections() {
+        // Sections-minimality: the fetch names exactly the two sections we
+        // need and nothing else, so the payload stays small.
+        let sections = pull_path_threads_sections();
+        assert_eq!(
+            sections,
+            vec![
+                "active_threads".to_string(),
+                "narrative_promises_due".to_string()
+            ],
+            "pull-path scene-context fetch must request only the two threads sections"
+        );
+    }
+
+    #[test]
+    fn pull_path_threads_projection_surfaces_threads_and_promises_on_success() {
+        // Success flow: a scene context carrying 1 active thread + 1 due
+        // promise projects to non-empty slices, so the shared formatter (and
+        // therefore the pull prompt) renders the "## Threads to advance" block.
+        let envelope = sample_envelope(
+            vec![thread("theme", "Sunk Cost", "Every chip doubles the lie.")],
+            vec![promise("Ricky's debt comes due", "due")],
+        );
+
+        let (threads, promises) = pull_path_threads_from_result(Ok(envelope));
+        assert_eq!(threads.len(), 1);
+        assert_eq!(promises.len(), 1);
+
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let prompt =
+            build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &threads, &promises)
+                .expect("pull prompt assembles");
+        assert!(prompt.contains("## Threads to advance"));
+        assert!(prompt.contains("Sunk Cost"));
+        assert!(prompt.contains("Ricky's debt comes due"));
+    }
+
+    #[test]
+    fn pull_path_threads_projection_tolerates_fetch_failure_with_empty_slices() {
+        // Fetch-failure tolerance: a fetch error yields empty slices (no
+        // propagation), so the pull prompt still builds without the block.
+        let (threads, promises) =
+            pull_path_threads_from_result(Err(anyhow::anyhow!("scene context fetch failed")));
+        assert!(threads.is_empty());
+        assert!(promises.is_empty());
+
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let prompt =
+            build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &threads, &promises)
+                .expect("pull prompt still assembles after a failed fetch");
+        assert!(!prompt.contains("## Threads to advance"));
     }
 }
