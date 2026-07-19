@@ -152,6 +152,16 @@ pub struct StoryPlacement {
     pub note: Option<String>,
 }
 
+/// One sampled point on a book's expected-intensity curve. `position` is a
+/// `0.0..=1.0` fraction of the book; `intensity` is the `0.0..=1.0` expected
+/// intensity there. Stored on `pacing_curve.intensity_points`; the realized-
+/// intensity trend directive interpolates against a curve's points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IntensityPoint {
+    pub position: f64,
+    pub intensity: f64,
+}
+
 /// In-world placement of a scene or event on the project's story clock. Every
 /// field is optional: a project that never declares story-time leaves them unset
 /// and behaves exactly as before. Distinct from [`StoryPlacement`], which is the
@@ -949,6 +959,12 @@ pub struct CharacterArcMilestone {
     pub description: String,
     #[serde(default)]
     pub unlocks: Vec<String>,
+    /// Where the milestone was actually reached in the manuscript, once
+    /// demonstrated. `None` means the milestone is still pending. Additive and
+    /// serde-defaulted so pre-existing milestone JSON (which lacks the field)
+    /// keeps deserializing. Drives `arc_milestone_audit`.
+    #[serde(default)]
+    pub reached_at: Option<StoryPlacement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -1172,7 +1188,8 @@ pub struct GetSceneContextInput {
     /// Supported novel sections: "reader_contract", "world_rules",
     /// "system_overlays", "timeline_briefing", "future_knowledge_briefing",
     /// "pacing_directives", "narrative_promises_due", "knowledge_briefing",
-    /// "semantic_references". Supported scene sections: "location",
+    /// "semantic_references", "previous_scene_tail". Supported scene sections:
+    /// "location",
     /// "world_state", "characters", "relationships", "agency_check".
     #[serde(default)]
     pub sections: Option<Vec<String>>,
@@ -1231,6 +1248,14 @@ pub struct SceneContextNovelLayer {
     pub future_knowledge_briefing: Vec<FutureKnowledgeSummary>,
     #[serde(default)]
     pub pacing_directives: Vec<PacingDirectiveSummary>,
+    /// Realized-intensity trend fed forward from recent annotated chapters
+    /// (T-109): the mean intensity of the last up-to-3 annotated chapters
+    /// strictly before the current one, with its direction (rising / falling /
+    /// flat), so the drafting agent sees the pacing trend it is about to extend.
+    /// `None` when no prior chapter carries an intensity annotation. Rides the
+    /// `pacing_directives` render/budget/trim path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realized_intensity_trend: Option<String>,
     #[serde(default)]
     pub narrative_promises_due: Vec<NarrativePromiseDueSummary>,
     #[serde(default)]
@@ -1242,6 +1267,46 @@ pub struct SceneContextNovelLayer {
     /// what trade system is in force; price *values* ride canonical facts.
     #[serde(default)]
     pub economy_briefing: Vec<EconomySummary>,
+    /// Themes, conflicts, plot lines, and theme-connected motifs the current
+    /// chapter plan explicitly targets. Hydrated so the drafting agent can
+    /// advance the threads the plan asked it to advance; empty when the chapter
+    /// has no plan or targets nothing.
+    #[serde(default)]
+    pub active_threads: Vec<ActiveThreadSummary>,
+    /// Closing excerpt of the immediately preceding scene, so the drafting
+    /// agent can hand off cleanly from its exit beat (emotional register,
+    /// physical continuity). `None` at the very start of a book or when the
+    /// preceding scene has no prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_scene_tail: Option<PreviousSceneTail>,
+}
+
+/// Closing excerpt of the scene immediately preceding the one being drafted,
+/// surfaced in scene context so the scene-to-scene prose hand-off (exit beat,
+/// emotional register, physical continuity) is visible to the drafting agent.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviousSceneTail {
+    pub scene_id: String,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub excerpt: String,
+}
+
+/// A narrative thread (theme, conflict, plot line, or theme-connected motif)
+/// the current chapter plan explicitly targets, projected for briefing so the
+/// drafting agent can advance it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ActiveThreadSummary {
+    pub id: String,
+    /// "theme" | "conflict" | "plot_line" | "motif".
+    pub kind: String,
+    pub name: String,
+    /// One-line statement/stakes/summary, truncated.
+    pub statement: String,
+    /// Entity status or placement summary; "" when none applies.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_expectation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1537,6 +1602,11 @@ pub struct GetChapterBriefingOutput {
     pub chapter_outline: Option<ChapterOutline>,
     pub book_outline: Option<BookOutline>,
     pub chapter_plan: Option<ChapterPlanBriefing>,
+    /// Themes, conflicts, plot lines, and theme-connected motifs the chapter
+    /// plan explicitly targets. Mirrors the scene-context novel layer's
+    /// `active_threads`; empty when the chapter has no plan or targets nothing.
+    #[serde(default)]
+    pub active_threads: Vec<ActiveThreadSummary>,
     pub scene_seed: ChapterBriefingSceneSeed,
     pub scene_context: Option<SceneContextOutput>,
 }
@@ -3247,6 +3317,10 @@ pub struct CreatePlotLineInput {
     pub status: Option<String>,
     #[serde(default)]
     pub convergence_points: Vec<StoryPlacement>,
+    #[serde(default)]
+    pub connected_conflict_ids: Vec<String>,
+    #[serde(default)]
+    pub connected_theme_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3421,6 +3495,8 @@ pub struct CreatePacingCurveInput {
     pub book_number: i32,
     pub act_breakpoints: BTreeMap<String, f64>,
     pub scene_type_density: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub intensity_points: Vec<IntensityPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -5798,6 +5874,49 @@ pub struct ExportEpubOutput {
     /// Scenes whose Spindle content differs from their linked local files.
     #[serde(default)]
     pub divergence_warnings: Vec<DivergenceWarning>,
+}
+
+/// Input for `compile_manuscript`: assemble the committed prose of a book (or a
+/// chapter range within it) on the active branch into a single Markdown
+/// document. Read-only over scene/plan data; the workspace write is opt-in.
+/// Branch resolution is implicit — the service compiles the project's active
+/// branch, matching the other read tools (`preflight_book_export`,
+/// `list_book_chapters`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompileManuscriptInput {
+    pub project_id: String,
+    pub book_number: i32,
+    /// Optional inclusive start chapter. When omitted, compilation begins at the
+    /// book's first chapter.
+    #[serde(default)]
+    pub start_chapter: Option<i32>,
+    /// Optional inclusive end chapter. When omitted, compilation runs to the
+    /// book's last chapter.
+    #[serde(default)]
+    pub end_chapter: Option<i32>,
+    /// When true, the compiled Markdown is also written to the project's
+    /// workspace artifacts directory under a deterministic filename, and the
+    /// path is returned in `artifact_path`.
+    #[serde(default)]
+    pub write_to_workspace: bool,
+}
+
+/// Output of `compile_manuscript`: the assembled Markdown plus counts and the
+/// list of planned-but-undrafted scenes rendered as placeholders. A zero-chapter
+/// range yields a structured empty result, not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompileManuscriptOutput {
+    pub markdown: String,
+    pub scene_count: usize,
+    pub word_count: usize,
+    /// `chapter.scene` refs (e.g. "2.2") for scenes present in a chapter plan
+    /// spine but not yet drafted. Never silently omitted from the Markdown.
+    #[serde(default)]
+    pub missing_scenes: Vec<String>,
+    /// Absolute path to the written artifact when `write_to_workspace` is set;
+    /// `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
 }
 
 /// A warning that a Spindle scene has diverged from its local source file.

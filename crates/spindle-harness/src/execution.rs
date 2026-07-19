@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use spindle_core::models::{
-    AnnotateSceneBeatsInput, CheckConsistencyInput, CommitSceneChangesInput, ConsistencyScopeInput,
-    ContextFormat, ContinueGenerationInput, CreateSavePointInput, GetChapterBriefingInput,
-    GetSceneContextInput, ResearchPackForSceneInput, SaveSceneDraftInput, SaveSummaryInput,
-    TestAgentInput,
+    ActiveThreadSummary, AnnotateSceneBeatsInput, CheckConsistencyInput, CommitSceneChangesInput,
+    ConsistencyScopeInput, ContextFormat, ContinueGenerationInput, CreateSavePointInput,
+    GetChapterBriefingInput, GetSceneContextInput, NarrativePromiseDueSummary,
+    ResearchPackForSceneInput, SaveSceneDraftInput, SaveSummaryInput, TestAgentInput,
 };
 
 use crate::artifacts::{
@@ -912,7 +912,14 @@ async fn build_scene_prompt(
     draft_route: &DraftRouteBinding,
 ) -> Result<String> {
     if draft_route.caller_should_send_brief {
-        return build_scene_mcp_pull_prompt(state, chapter, scene, research_pack);
+        // Pull path: the drafting agent fetches its own canon via MCP, so the
+        // host holds no scene context here (fetching one would defeat the
+        // pull architecture and violate the ticket's no-new-fetch guard). The
+        // shared threads-to-advance formatter therefore receives empty inputs
+        // on this path in production; when a caller does supply threads/promises
+        // (tests, or a future site that already holds them) the identical block
+        // is emitted.
+        return build_scene_mcp_pull_prompt(state, chapter, scene, research_pack, &[], &[]);
     }
 
     let scene_context = client
@@ -935,21 +942,6 @@ async fn build_scene_prompt(
         .read_text_resource("bible://skills/scene-writer".to_string())
         .await
         .context("failed to load scene-writer skill resource")?;
-
-    let directives = render_directives(&state.editorial_directives);
-    let manifest_json = serde_json::to_string_pretty(&serde_json::json!({
-        "book_number": state.book_number,
-        "chapter_number": chapter.chapter_number,
-        "chapter_synopsis": chapter.synopsis,
-        "pov_character_id": chapter.pov_character_id,
-        "scene_order": scene.scene_order,
-        "character_ids": scene.character_ids,
-        "location_id": scene.location_id,
-        "content_rating": scene.content_rating,
-        "target_tone": scene.tone,
-        "source_path": scene.source_path,
-    }))?;
-    let scene_context_json = serde_json::to_string_pretty(&scene_context)?;
 
     let mut research_section = String::new();
     if let Some(pack) = research_pack
@@ -1001,6 +993,53 @@ async fn build_scene_prompt(
         research_section.push('\n');
     }
 
+    assemble_host_scene_prompt(
+        state,
+        chapter,
+        scene,
+        &briefing.briefing_markdown,
+        &scene_context,
+        &scene_writer_skill,
+        research_section,
+    )
+}
+
+/// Assemble the host-embedded mega-prompt from data already in hand. Pure and
+/// synchronous so it is unit-testable without a live MCP client. The
+/// threads-to-advance directive block is derived from the scene context's
+/// novel layer (`active_threads` + `narrative_promises_due`) via the shared
+/// [`format_threads_to_advance`] formatter and inserted immediately after the
+/// editorial directives and before the scene manifest JSON.
+fn assemble_host_scene_prompt(
+    state: &HarnessState,
+    chapter: &crate::state::ChapterState,
+    scene: &crate::state::SceneState,
+    briefing_markdown: &str,
+    scene_context: &crate::mcp::SceneContextEnvelope,
+    scene_writer_skill: &str,
+    research_section: String,
+) -> Result<String> {
+    let directives = render_directives(&state.editorial_directives);
+    let threads_section = format_threads_to_advance(
+        &scene_context.novel.active_threads,
+        &scene_context.novel.narrative_promises_due,
+    )
+    .map(|block| format!("{block}\n\n"))
+    .unwrap_or_default();
+    let manifest_json = serde_json::to_string_pretty(&serde_json::json!({
+        "book_number": state.book_number,
+        "chapter_number": chapter.chapter_number,
+        "chapter_synopsis": chapter.synopsis,
+        "pov_character_id": chapter.pov_character_id,
+        "scene_order": scene.scene_order,
+        "character_ids": scene.character_ids,
+        "location_id": scene.location_id,
+        "content_rating": scene.content_rating,
+        "target_tone": scene.tone,
+        "source_path": scene.source_path,
+    }))?;
+    let scene_context_json = serde_json::to_string_pretty(&scene_context)?;
+
     Ok(format!(
         concat!(
             "Write exactly one scene for Spindle and return JSON only.\n\n",
@@ -1023,6 +1062,7 @@ async fn build_scene_prompt(
             "- Keep the scene aligned to the requested content rating and tone target.\n",
             "- Use empty arrays instead of null when you have no structured updates.\n\n",
             "Editorial directives:\n{directives}\n\n",
+            "{threads_section}",
             "Scene manifest:\n{manifest_json}\n\n",
             "{research_section}",
             "Chapter briefing markdown:\n{briefing_markdown}\n\n",
@@ -1030,9 +1070,10 @@ async fn build_scene_prompt(
             "Scene-writer skill guidance:\n{scene_writer_skill}\n"
         ),
         directives = directives,
+        threads_section = threads_section,
         manifest_json = manifest_json,
         research_section = research_section,
-        briefing_markdown = briefing.briefing_markdown,
+        briefing_markdown = briefing_markdown,
         scene_context_json = scene_context_json,
         scene_writer_skill = scene_writer_skill,
     ))
@@ -1043,8 +1084,13 @@ fn build_scene_mcp_pull_prompt(
     chapter: &crate::state::ChapterState,
     scene: &crate::state::SceneState,
     research_pack: Option<&spindle_core::models::ResearchPackForSceneOutput>,
+    active_threads: &[ActiveThreadSummary],
+    promises_due: &[NarrativePromiseDueSummary],
 ) -> Result<String> {
     let directives = render_directives(&state.editorial_directives);
+    let threads_section = format_threads_to_advance(active_threads, promises_due)
+        .map(|block| format!("{block}\n\n"))
+        .unwrap_or_default();
     let research_tags = if scene.research_tags.is_empty() {
         "none".to_string()
     } else {
@@ -1105,10 +1151,12 @@ fn build_scene_mcp_pull_prompt(
             "- Keep the scene aligned to the requested content rating and target tone.\n",
             "- Use empty arrays instead of null when you have no structured updates.\n\n",
             "Editorial directives:\n{directives}\n\n",
+            "{threads_section}",
             "Scene manifest:\n{manifest_json}\n\n",
             "Research cue: required={research_required}; tags=[{research_tags}]; explicit_query={explicit_query}; preflight pack={research_counts}\n"
         ),
         directives = directives,
+        threads_section = threads_section,
         manifest_json = manifest_json,
         research_required = scene.research_required.unwrap_or(false),
         research_tags = research_tags,
@@ -1272,6 +1320,86 @@ fn chapter_index(state: &HarnessState, chapter_number: i32) -> Option<usize> {
 fn resolve_artifacts_root(state_path: &Path, state: &HarnessState) -> PathBuf {
     let parent = state_path.parent().unwrap_or_else(|| Path::new("."));
     parent.join(&state.artifacts_dir)
+}
+
+/// Maximum number of item lines the "Threads to advance" directive block may
+/// carry before it collapses the remainder into a single overflow note.
+const THREADS_TO_ADVANCE_MAX_LINES: usize = 8;
+/// Char-boundary-safe truncation width applied to every directive-block line.
+const THREADS_TO_ADVANCE_LINE_WIDTH: usize = 160;
+
+/// Build the "## Threads to advance" directive block shared by both agent-brief
+/// builders (host-assembled and MCP-pull). Active threads render first in their
+/// existing order, then promises whose urgency is `due`, `overdue`, or `soon`
+/// (in that order); `watch`/`resolved` promises are excluded. The block caps at
+/// [`THREADS_TO_ADVANCE_MAX_LINES`] item lines and, when more candidates exist,
+/// appends exactly one `+N more in context` line. Every line is truncated to
+/// [`THREADS_TO_ADVANCE_LINE_WIDTH`] chars on a char boundary.
+///
+/// Returns `None` when there are zero active threads AND zero due/overdue/soon
+/// promises, so the caller omits the header entirely rather than emitting an
+/// empty block.
+fn format_threads_to_advance(
+    active_threads: &[ActiveThreadSummary],
+    promises_due: &[NarrativePromiseDueSummary],
+) -> Option<String> {
+    let promise_order = |urgency: &str| match urgency {
+        "due" => Some(0u8),
+        "overdue" => Some(1u8),
+        "soon" => Some(2u8),
+        _ => None,
+    };
+
+    let mut candidates: Vec<String> = Vec::new();
+    for thread in active_threads {
+        candidates.push(format!(
+            "- [{}] {} — {}",
+            thread.kind, thread.name, thread.statement
+        ));
+    }
+    let mut relevant_promises: Vec<&NarrativePromiseDueSummary> = promises_due
+        .iter()
+        .filter(|promise| promise_order(promise.urgency.as_str()).is_some())
+        .collect();
+    // Stable sort by urgency rank (due < overdue < soon); ties keep source order.
+    relevant_promises
+        .sort_by_key(|promise| promise_order(promise.urgency.as_str()).unwrap_or(u8::MAX));
+    for promise in relevant_promises {
+        candidates.push(format!(
+            "- [promise/{}] {} ({})",
+            promise.urgency, promise.description, promise.urgency
+        ));
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let total = candidates.len();
+    let mut lines: Vec<String> = candidates
+        .into_iter()
+        .take(THREADS_TO_ADVANCE_MAX_LINES)
+        .map(|line| truncate_on_char_boundary(&line, THREADS_TO_ADVANCE_LINE_WIDTH))
+        .collect();
+    if total > THREADS_TO_ADVANCE_MAX_LINES {
+        lines.push(format!(
+            "+{} more in context",
+            total - THREADS_TO_ADVANCE_MAX_LINES
+        ));
+    }
+
+    let mut block = String::from("## Threads to advance\n");
+    block.push_str(&lines.join("\n"));
+    Some(block)
+}
+
+/// Truncate `input` to at most `max_chars` characters, never splitting a
+/// multibyte char. Returns the input unchanged when it already fits.
+fn truncate_on_char_boundary(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    input.chars().take(max_chars).collect()
 }
 
 fn render_directives(directives: &[String]) -> String {
@@ -1476,8 +1604,373 @@ fn sample_checkpoint_scene_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::SceneContextEnvelope;
     use crate::state::{ChapterState, ChapterStatus, SceneState};
-    use spindle_core::models::ContentRating;
+    use spindle_core::models::{
+        ActiveThreadSummary, AgencyCheckSummary, ContentRating, LocationSummary,
+        NarrativePromiseDueSummary, ReaderContract, SceneContextBudgetMeta, SceneContextNovelLayer,
+        SceneContextSceneLayer, StoryPlacement, WorldStateSummary,
+    };
+
+    fn sample_state() -> HarnessState {
+        HarnessState {
+            project_id: "project:test".to_string(),
+            active_branch_id: "branch:main".to_string(),
+            book_number: 1,
+            range: crate::state::ChapterRange {
+                start_chapter: 1,
+                end_chapter: 1,
+            },
+            checkpoint_interval: 1,
+            last_checkpoint_end_chapter: 0,
+            artifacts_dir: "artifacts".to_string(),
+            editorial_directives: vec!["Keep the voice sharp.".to_string()],
+            chapters: Vec::new(),
+            checkpoint_history: Vec::new(),
+        }
+    }
+
+    fn sample_chapter() -> ChapterState {
+        ChapterState {
+            chapter_number: 1,
+            planned: true,
+            synopsis: "A first turn in the casino.".to_string(),
+            pov_character_id: Some("character:dave".to_string()),
+            status: ChapterStatus::Pending,
+            scenes: Vec::new(),
+            summary_saved: false,
+            summary_artifact_path: None,
+        }
+    }
+
+    fn sample_scene() -> SceneState {
+        SceneState {
+            scene_order: 1,
+            character_ids: vec!["character:dave".to_string(), "character:ricky".to_string()],
+            location_id: "location:vegas-strip".to_string(),
+            content_rating: ContentRating::Mature,
+            tone: Some("tense comic dread".to_string()),
+            source_path: None,
+            phase: ScenePhase::Pending,
+            scene_id: None,
+            scene_artifact_path: None,
+            draft_diagnostics: None,
+            blocked_reason: None,
+            research_required: Some(true),
+            research_tags: vec!["1970s-vegas".to_string()],
+            explicit_query: None,
+            research_pack_empty: false,
+            research_tags_matched: true,
+        }
+    }
+
+    fn thread(kind: &str, name: &str, statement: &str) -> ActiveThreadSummary {
+        ActiveThreadSummary {
+            id: format!("{kind}:{name}"),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            statement: statement.to_string(),
+            status: String::new(),
+            next_expectation: None,
+        }
+    }
+
+    fn promise(description: &str, urgency: &str) -> NarrativePromiseDueSummary {
+        NarrativePromiseDueSummary {
+            narrative_promise_id: format!("promise:{description}"),
+            promise_type: "setup".to_string(),
+            description: description.to_string(),
+            status: "open".to_string(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: None,
+            urgency: urgency.to_string(),
+            chapters_since_plant: 2,
+            notes: Vec::new(),
+        }
+    }
+
+    fn sample_envelope(
+        active_threads: Vec<ActiveThreadSummary>,
+        promises_due: Vec<NarrativePromiseDueSummary>,
+    ) -> SceneContextEnvelope {
+        SceneContextEnvelope {
+            standards: "house standards".to_string(),
+            novel: SceneContextNovelLayer {
+                reader_contract: ReaderContract {
+                    promise: "a tense casino noir".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+                style_directive: None,
+                world_rules: Vec::new(),
+                subjects: Vec::new(),
+                active_style_profile_id: None,
+                system_overlays: Vec::new(),
+                timeline_briefing: Vec::new(),
+                future_knowledge_briefing: Vec::new(),
+                pacing_directives: Vec::new(),
+                realized_intensity_trend: None,
+                narrative_promises_due: promises_due,
+                knowledge_briefing: Vec::new(),
+                semantic_references: Vec::new(),
+                economy_briefing: Vec::new(),
+                active_threads,
+                previous_scene_tail: None,
+            },
+            scene: SceneContextSceneLayer {
+                location: LocationSummary {
+                    location_id: "location:vegas-strip".to_string(),
+                    name: "The Strip".to_string(),
+                    kind: "district".to_string(),
+                    realm: None,
+                    summary: "Neon and desperation.".to_string(),
+                },
+                world_state: WorldStateSummary {
+                    controlling_faction: None,
+                    status: None,
+                    prosperity: None,
+                    stability: None,
+                    threat_level: None,
+                    sensory_details: Vec::new(),
+                },
+                characters: Vec::new(),
+                relationships: Vec::new(),
+                agency_check: AgencyCheckSummary {
+                    protagonist_character_id: None,
+                    scenes_since_active_choice: 0,
+                    needs_active_choice: false,
+                    warning: None,
+                },
+            },
+            budget: SceneContextBudgetMeta {
+                estimated_tokens: 0,
+                token_budget: None,
+                novel_layer_truncated: false,
+            },
+        }
+    }
+
+    /// Pull the "## Threads to advance" block (header through the last consecutive
+    /// bullet line) out of an assembled prompt, for byte-equality assertions.
+    fn extract_threads_block(prompt: &str) -> Option<String> {
+        let start = prompt.find("## Threads to advance")?;
+        let tail = &prompt[start..];
+        let mut end = tail.len();
+        let mut seen_header = false;
+        for (offset, line) in line_spans(tail) {
+            if !seen_header {
+                seen_header = true;
+                continue;
+            }
+            if line.starts_with("- ") || line.starts_with("+") {
+                continue;
+            }
+            end = offset;
+            break;
+        }
+        Some(tail[..end].trim_end().to_string())
+    }
+
+    /// Yield (byte offset of line start, line without trailing newline).
+    fn line_spans(text: &str) -> Vec<(usize, &str)> {
+        let mut spans = Vec::new();
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            spans.push((offset, line.trim_end_matches('\n')));
+            offset += line.len();
+        }
+        spans
+    }
+
+    #[test]
+    fn threads_block_absent_when_no_threads_and_no_due_promises() {
+        // Watch-urgency promises must not trigger the block.
+        let promises = vec![promise("A slow-burn romance", "watch")];
+        assert!(format_threads_to_advance(&[], &promises).is_none());
+        assert!(format_threads_to_advance(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn host_prompt_carries_threads_block_after_directives_before_manifest() {
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let envelope = sample_envelope(
+            vec![
+                thread("theme", "Sunk Cost", "Every chip doubles the lie."),
+                thread("conflict", "Dave vs the House", "The pit boss is onto him."),
+            ],
+            vec![promise("Ricky's debt comes due", "due")],
+        );
+
+        let prompt = assemble_host_scene_prompt(
+            &state,
+            &chapter,
+            &scene,
+            "chapter briefing markdown",
+            &envelope,
+            "scene-writer skill text",
+            String::new(),
+        )
+        .expect("host prompt assembles");
+
+        assert!(prompt.contains("## Threads to advance"));
+        assert!(prompt.contains("Sunk Cost"));
+        assert!(prompt.contains("Dave vs the House"));
+        assert!(prompt.contains("Ricky's debt comes due"));
+
+        let block_pos = prompt.find("## Threads to advance").unwrap();
+        let directives_pos = prompt.find("Editorial directives:").unwrap();
+        let manifest_pos = prompt.find("Scene manifest:").unwrap();
+        assert!(
+            directives_pos < block_pos,
+            "block must follow the editorial directives"
+        );
+        assert!(
+            block_pos < manifest_pos,
+            "block must precede the scene manifest JSON"
+        );
+    }
+
+    #[test]
+    fn mcp_pull_prompt_carries_threads_block_after_directives_before_manifest() {
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let active_threads = vec![
+            thread("theme", "Sunk Cost", "Every chip doubles the lie."),
+            thread("conflict", "Dave vs the House", "The pit boss is onto him."),
+        ];
+        let promises = vec![promise("Ricky's debt comes due", "due")];
+
+        let prompt =
+            build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &active_threads, &promises)
+                .expect("pull prompt assembles");
+
+        assert!(prompt.contains("## Threads to advance"));
+        assert!(prompt.contains("Sunk Cost"));
+        assert!(prompt.contains("Ricky's debt comes due"));
+
+        let block_pos = prompt.find("## Threads to advance").unwrap();
+        let directives_pos = prompt.find("Editorial directives:").unwrap();
+        let manifest_pos = prompt.find("Scene manifest:").unwrap();
+        assert!(directives_pos < block_pos);
+        assert!(block_pos < manifest_pos);
+    }
+
+    #[test]
+    fn threads_block_absent_from_both_paths_when_empty() {
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let watch_only = vec![promise("A slow-burn romance", "watch")];
+        let envelope = sample_envelope(Vec::new(), watch_only.clone());
+
+        let host = assemble_host_scene_prompt(
+            &state,
+            &chapter,
+            &scene,
+            "chapter briefing markdown",
+            &envelope,
+            "scene-writer skill text",
+            String::new(),
+        )
+        .unwrap();
+        let pull =
+            build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &[], &watch_only).unwrap();
+
+        assert!(!host.contains("## Threads to advance"));
+        assert!(!pull.contains("## Threads to advance"));
+    }
+
+    #[test]
+    fn threads_block_caps_at_eight_lines_with_overflow_note_and_multibyte_safe_truncation() {
+        // 10 threads + 3 due promises = 13 candidates. Cap 8, then "+5 more".
+        // The first thread's statement is built so that after the "- [theme]
+        // First — " prefix (18 chars) a run of multibyte '★' straddles the
+        // 160-char truncation frontier: char 159 (last kept) and char 160
+        // (first dropped) are both '★', so a naive byte-index slice at 160
+        // would split the multibyte char and panic.
+        let mut long_statement = "y".repeat(140);
+        long_statement.push_str("★★★★★");
+        long_statement.push_str(&"z".repeat(60));
+        let mut threads = vec![thread("theme", "First", &long_statement)];
+        for i in 2..=10 {
+            threads.push(thread("plot_line", &format!("T{i}"), "short"));
+        }
+        let promises = vec![
+            promise("Overdue payoff", "overdue"),
+            promise("Due payoff", "due"),
+            promise("Soon payoff", "soon"),
+        ];
+
+        let block = format_threads_to_advance(&threads, &promises).expect("block present");
+        let item_lines: Vec<&str> = block
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect();
+        assert_eq!(item_lines.len(), 8, "exactly 8 item lines");
+        assert!(
+            block.contains("+5 more in context"),
+            "overflow note for the 5 dropped candidates"
+        );
+
+        // Every line is char-boundary-safe truncated to at most 160 chars.
+        for line in &item_lines {
+            assert!(
+                line.chars().count() <= 160,
+                "line exceeded 160 chars: {line}"
+            );
+        }
+        // The long first line is truncated to exactly 160 chars and lands on a
+        // whole multibyte '★', proving no byte-boundary split occurred.
+        let long_line = item_lines[0];
+        assert_eq!(long_line.chars().count(), 160);
+        assert_eq!(long_line.chars().last(), Some('★'));
+    }
+
+    #[test]
+    fn shared_formatter_produces_byte_identical_block_in_both_paths() {
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let active_threads = vec![
+            thread("theme", "Sunk Cost", "Every chip doubles the lie."),
+            thread("motif", "The Red Seven", "A number that keeps recurring."),
+        ];
+        let promises = vec![
+            promise("Ricky's debt comes due", "due"),
+            promise("The marker is called", "overdue"),
+        ];
+        let envelope = sample_envelope(active_threads.clone(), promises.clone());
+
+        let host = assemble_host_scene_prompt(
+            &state,
+            &chapter,
+            &scene,
+            "chapter briefing markdown",
+            &envelope,
+            "scene-writer skill text",
+            String::new(),
+        )
+        .unwrap();
+        let pull =
+            build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &active_threads, &promises)
+                .unwrap();
+
+        let host_block = extract_threads_block(&host).expect("host block present");
+        let pull_block = extract_threads_block(&pull).expect("pull block present");
+        assert_eq!(
+            host_block.as_bytes(),
+            pull_block.as_bytes(),
+            "the shared formatter must yield a byte-identical block in both paths"
+        );
+    }
 
     #[test]
     fn mcp_pull_scene_prompt_is_compact_and_context_seeking() {
@@ -1525,7 +2018,7 @@ mod tests {
             research_tags_matched: true,
         };
 
-        let prompt = build_scene_mcp_pull_prompt(&state, &chapter, &scene, None).unwrap();
+        let prompt = build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &[], &[]).unwrap();
 
         assert!(
             prompt.len() < 6_000,

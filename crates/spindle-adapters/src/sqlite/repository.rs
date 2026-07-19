@@ -73,10 +73,10 @@ use super::records::{
     LOCATION_COLUMNS, Location, MOTIF_COLUMNS, Motif, NARRATIVE_PROMISE_COLUMNS, NarrativePromise,
     PLOT_LINE_COLUMNS, PROJECT_COLUMNS, PlotLine, Project, RELIGION_COLUMNS, Religion,
     SCENE_COLUMNS, SYSTEM_OVERLAY_COLUMNS, Scene, StoredCharacterArcMilestone, StoredEstablishedIn,
-    StoredFlexRange, StoredStatedConsequence, StoredStoryPlacement, StoredTryFailCycleStep,
-    SystemOverlay, TEMPORAL_INTERVENTION_COLUMNS, TERM_COLUMNS, THEME_COLUMNS,
-    TIMELINE_EVENT_COLUMNS, TemporalIntervention, Term, Theme, TimelineEvent, WORLD_RULE_COLUMNS,
-    WORLD_STATE_COLUMNS, WorldRule, WorldState,
+    StoredFlexRange, StoredIntensityPoint, StoredStatedConsequence, StoredStoryPlacement,
+    StoredTryFailCycleStep, SystemOverlay, TEMPORAL_INTERVENTION_COLUMNS, TERM_COLUMNS,
+    THEME_COLUMNS, TIMELINE_EVENT_COLUMNS, TemporalIntervention, Term, Theme, TimelineEvent,
+    WORLD_RULE_COLUMNS, WORLD_STATE_COLUMNS, WorldRule, WorldState,
 };
 use super::records::{
     BOOK_OUTLINE_COLUMNS, BookOutline, CANONICAL_FACT_COLUMNS, CHAPTER_OUTLINE_COLUMNS,
@@ -2783,6 +2783,10 @@ impl Repository {
             .collect();
         let convergence_json =
             serde_json::to_string(&convergence_points).context("serializing convergence_points")?;
+        let connected_conflict_json = serde_json::to_string(&input.connected_conflict_ids)
+            .context("serializing connected_conflict_ids")?;
+        let connected_theme_json = serde_json::to_string(&input.connected_theme_ids)
+            .context("serializing connected_theme_ids")?;
         let now = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
@@ -2791,8 +2795,8 @@ impl Repository {
                 conn.execute(
                     "INSERT INTO plot_line (id, project_id, branch_id, name, normalized_name, \
                      plot_type, summary, status, convergence_points, notes, archived_at, \
-                     created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?10)",
+                     created_at, updated_at, connected_conflict_ids, connected_theme_ids) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?10, ?11, ?12)",
                     rusqlite::params![
                         &id,
                         &project_id,
@@ -2804,6 +2808,8 @@ impl Repository {
                         &status,
                         &convergence_json,
                         now,
+                        &connected_conflict_json,
+                        &connected_theme_json,
                     ],
                 )?;
                 Ok(())
@@ -7250,6 +7256,14 @@ impl Repository {
         let book_number = input.book_number;
         let act_breakpoints_json = serde_json::to_string(&input.act_breakpoints)?;
         let scene_density_json = serde_json::to_string(&input.scene_type_density)?;
+        let intensity_points: Vec<StoredIntensityPoint> = input
+            .intensity_points
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect();
+        let intensity_points_json =
+            serde_json::to_string(&intensity_points).context("serializing intensity_points")?;
         let now = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
@@ -7257,11 +7271,12 @@ impl Repository {
             .write(move |conn| {
                 conn.execute(
                     "INSERT INTO pacing_curve (id, project_id, branch_id, book_number, \
-                     act_breakpoints, scene_type_density, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
+                     act_breakpoints, scene_type_density, created_at, updated_at, intensity_points) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8) \
                      ON CONFLICT (project_id, branch_id, book_number) DO UPDATE SET \
                         act_breakpoints = excluded.act_breakpoints, \
                         scene_type_density = excluded.scene_type_density, \
+                        intensity_points = excluded.intensity_points, \
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         &id,
@@ -7271,6 +7286,7 @@ impl Repository {
                         &act_breakpoints_json,
                         &scene_density_json,
                         now,
+                        &intensity_points_json,
                     ],
                 )?;
                 Ok(())
@@ -7708,19 +7724,67 @@ impl Repository {
                     let (synopsis, truncated) =
                         crate::format::build_book_synopsis(&parts, BOOK_DIGEST_CHAR_CAP);
                     let token_estimate = (synopsis.len() / 4) as i64;
+
+                    // Derive the still-open narrative threads (promises, conflicts,
+                    // plot lines) so distant thread state survives into later-book
+                    // drafting via [STORY SO FAR]. Deterministic ordering lives in
+                    // `build_open_threads`.
+                    let promises = {
+                        let mut stmt = tx.prepare(&format!(
+                            "SELECT {NARRATIVE_PROMISE_COLUMNS} FROM narrative_promise \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND archived_at IS NULL"
+                        ))?;
+                        stmt.query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                            NarrativePromise::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let conflicts = {
+                        let mut stmt = tx.prepare(&format!(
+                            "SELECT {CONFLICT_COLUMNS} FROM conflict \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND archived_at IS NULL"
+                        ))?;
+                        stmt.query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                            Conflict::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let plot_lines = {
+                        let mut stmt = tx.prepare(&format!(
+                            "SELECT {PLOT_LINE_COLUMNS} FROM plot_line \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND archived_at IS NULL"
+                        ))?;
+                        stmt.query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                            PlotLine::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let current_index =
+                        crate::format::story_index(book_number, last_chapter_covered, 0);
+                    let open_threads = crate::format::build_open_threads(
+                        &promises,
+                        &conflicts,
+                        &plot_lines,
+                        current_index,
+                    );
+                    let open_threads_json = serde_json::to_string(&open_threads)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
                     tx.execute(
                         "INSERT INTO book_digest (id, project_id, branch_id, book_number, synopsis, \
                          open_threads, last_chapter_covered, token_estimate, truncated, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?7, ?8, ?9, ?9) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10) \
                          ON CONFLICT(project_id, branch_id, book_number) DO UPDATE SET \
                            synopsis = excluded.synopsis, \
+                           open_threads = excluded.open_threads, \
                            last_chapter_covered = excluded.last_chapter_covered, \
                            token_estimate = excluded.token_estimate, \
                            truncated = excluded.truncated, \
                            updated_at = excluded.updated_at",
                         rusqlite::params![
                             &digest_id, &project_id, &branch_id, book_number, &synopsis,
-                            last_chapter_covered, token_estimate, truncated as i32, now,
+                            &open_threads_json, last_chapter_covered, token_estimate,
+                            truncated as i32, now,
                         ],
                     )?;
 
@@ -12267,6 +12331,13 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("term", "pronunciation")
             | ("plot_line", "summary")
             | ("plot_line", "status")
+            // Convergence audit inputs (V0022): the plot line's connected
+            // conflicts/themes can be declared at create time or retrofitted
+            // onto an existing row so plot_line_convergence_audit has something
+            // to check against. JSON arrays via the update_entity_field path.
+            | ("plot_line", "connected_conflict_ids")
+            | ("plot_line", "connected_theme_ids")
+            | ("plot_line", "convergence_points")
             | ("conflict", "stakes")
             | ("conflict", "resolution_summary")
             // Rich array fields. Settable at create_conflict time; without
@@ -12282,6 +12353,15 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("conflict", "stated_consequences")
             | ("conflict", "expected_total_cycles")
             | ("conflict", "conflict_type")
+            // Per-stage demonstration markers (V0022), index-aligned with
+            // escalation_stages. Settable after the row exists so the author
+            // can mark a stage demonstrated as they write; drives
+            // conflict_escalation_audit. JSON array via update_entity_field.
+            | ("conflict", "escalation_demonstrated")
+            // Milestone `reached_at` lives inside this JSON blob; the arc
+            // update path resends the whole milestones array with the marker
+            // set (no per-milestone merge). Drives arc_milestone_audit.
+            | ("character_arc", "milestones")
             | ("theme", "theme_statement")
             | ("theme", "thesis_antithesis")
             | ("motif", "description")
@@ -14998,6 +15078,8 @@ mod tests {
                     scene_order: Some(2),
                     note: None,
                 }],
+                connected_conflict_ids: Vec::new(),
+                connected_theme_ids: Vec::new(),
             })
             .await
             .unwrap();

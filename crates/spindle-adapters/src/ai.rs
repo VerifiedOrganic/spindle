@@ -190,6 +190,35 @@ pub struct RouteBinding {
     pub rating: Option<String>,
 }
 
+/// Why a `draft` route cannot serve a planned scene rating. Absent (`None` on
+/// [`DraftRoutePreflight::problem`]) means the route is serviceable for that
+/// rating with no unmet requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftRoutePreflightProblem {
+    /// No `draft` route resolves for the rating (neither a rating-specific
+    /// override nor a default rule is configured).
+    Unresolved,
+    /// The resolved agent declares an `api_key_env` whose environment variable
+    /// is unset. `env_var` is the variable NAME only — never any value.
+    MissingApiKey { env_var: String },
+    /// The resolved agent is configured but its declared `ratings` list does
+    /// not contain the scene rating (ASCII-lowercase comparison).
+    RatingNotCovered,
+}
+
+/// Result of verifying that the `draft` route can serve a specific content
+/// rating without network I/O. Config-level only: reachability stays the domain
+/// of `test_agent` / health checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftRoutePreflight {
+    /// The resolved external agent id, when the route maps to a configured
+    /// agent. `None` when the route falls back to a built-in local route (which
+    /// serves every rating and is never flagged).
+    pub agent_id: Option<String>,
+    /// The unmet requirement, if any. `None` means serviceable.
+    pub problem: Option<DraftRoutePreflightProblem>,
+}
+
 #[derive(Debug, Clone)]
 struct AgentRuntime {
     config: ConfiguredAgent,
@@ -292,6 +321,9 @@ impl ModelRouter {
     pub fn configure(&self, explicit_path: Option<&str>) -> anyhow::Result<ConfigureAgentsOutput> {
         let loaded = load_agent_config(explicit_path)?;
         let warnings = configuration_warnings(&loaded);
+        for warning in &warnings {
+            tracing::warn!(source_path = ?loaded.source_path, "agent config lint: {warning}");
+        }
         let health_checks = health_checks_enabled(&loaded);
         let runtime = runtime_from_loaded_config(&self.http_client, loaded.clone());
         *self.runtime.write().expect("model router write lock") = runtime;
@@ -303,6 +335,59 @@ impl ModelRouter {
             health_checks_enabled: health_checks,
             warnings,
         })
+    }
+
+    /// Verify — without any network I/O — that the `draft` route can serve a
+    /// scene of the given content rating. Resolves the rating-aware route,
+    /// maps it back to its configured agent (if any), and reports the first
+    /// unmet requirement: no resolvable route, an unset `api_key_env`, or the
+    /// agent's declared `ratings` list not covering the rating (ASCII-lowercase
+    /// comparison). A route that falls back to a built-in local route has no
+    /// external agent, serves every rating, and is never flagged.
+    pub fn draft_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
+        let runtime = self.runtime.read().expect("model router read lock");
+        let Some(route) = resolve_route(&runtime, "draft", Some(rating)) else {
+            return DraftRoutePreflight {
+                agent_id: None,
+                problem: Some(DraftRoutePreflightProblem::Unresolved),
+            };
+        };
+        // A resolved route whose model_name is a configured external agent is
+        // subject to preflight checks; a built-in local route (model_name not
+        // in the agent map) serves every rating and is never flagged.
+        let Some(agent) = runtime.agents.get(&route.model_name) else {
+            return DraftRoutePreflight {
+                agent_id: None,
+                problem: None,
+            };
+        };
+        let agent_id = Some(agent.config.id.clone());
+        if let Some(env_var) = agent.config.api_key_env.as_deref()
+            && agent.resolved_api_key.is_none()
+        {
+            return DraftRoutePreflight {
+                agent_id,
+                problem: Some(DraftRoutePreflightProblem::MissingApiKey {
+                    env_var: env_var.to_string(),
+                }),
+            };
+        }
+        let rating_norm = rating.trim().to_ascii_lowercase();
+        let covered = agent
+            .config
+            .ratings
+            .iter()
+            .any(|declared| declared.trim().to_ascii_lowercase() == rating_norm);
+        if !covered {
+            return DraftRoutePreflight {
+                agent_id,
+                problem: Some(DraftRoutePreflightProblem::RatingNotCovered),
+            };
+        }
+        DraftRoutePreflight {
+            agent_id,
+            problem: None,
+        }
     }
 
     pub fn list_agents(&self) -> ListAgentsOutput {
@@ -1364,18 +1449,72 @@ pub fn adapter_pulls_canon_via_mcp(adapter_kind: &str) -> bool {
     matches!(adapter_kind, "grok")
 }
 
+/// The closed content-rating vocabulary agent/routing config may reference.
+/// Mirrors `spindle_core::models::ContentRating` and the routing-rule
+/// `allowed_ratings` set in `agent_config::validate_config`. Kept ASCII so
+/// comparisons are plain `to_ascii_lowercase` (closed vocabulary — no Unicode
+/// case folding).
+const KNOWN_RATINGS: &[&str] = &["general", "teen", "mature", "explicit"];
+
 fn configuration_warnings(config: &LoadedAgentConfig) -> Vec<String> {
-    let mut warnings = config
-        .agents
-        .iter()
-        .filter_map(|agent| {
-            agent.api_key_env.as_deref().and_then(|name| {
-                std::env::var(name)
-                    .err()
-                    .map(|_| format!("agent {} is missing API key env {}", agent.id, name))
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+
+    for agent in &config.agents {
+        // Missing API-key env var. NEVER include the value — only the name.
+        if let Some(name) = agent.api_key_env.as_deref()
+            && std::env::var(name).is_err()
+        {
+            warnings.push(format!(
+                "agent {} is missing API key env {}",
+                agent.id, name
+            ));
+        }
+
+        // Rating casing + vocabulary lint. Does not mutate the config.
+        for declared in &agent.ratings {
+            let normalized = declared.trim().to_ascii_lowercase();
+            if declared != &normalized {
+                warnings.push(format!(
+                    "agent {} rating '{}' is not ascii-lowercase; normalized form is '{}'",
+                    agent.id, declared, normalized
+                ));
+            }
+            if !KNOWN_RATINGS.contains(&normalized.as_str()) {
+                warnings.push(format!(
+                    "agent {} declares unknown rating '{}'; known ratings are {:?}",
+                    agent.id, declared, KNOWN_RATINGS
+                ));
+            }
+        }
+    }
+
+    // Exact-duplicate routing rules: same (route, agent, normalized rating incl.
+    // both-None) triple. A base rule (rating=None) plus a rated override for the
+    // same route+agent is valid rating-aware config and must NOT warn — only
+    // literal duplicate triples warn, one warning per redundant copy.
+    let mut seen_triples: BTreeMap<(String, String, Option<String>), ()> = BTreeMap::new();
+    for rule in &config.routing {
+        let triple = (
+            rule.route.clone(),
+            rule.agent.clone(),
+            rule.rating
+                .as_deref()
+                .map(|r| r.trim().to_ascii_lowercase()),
+        );
+        if seen_triples.insert(triple, ()).is_some() {
+            match rule.rating.as_deref() {
+                Some(rating) => warnings.push(format!(
+                    "duplicate routing rule: route '{}', agent '{}', rating '{}'",
+                    rule.route, rule.agent, rating
+                )),
+                None => warnings.push(format!(
+                    "duplicate routing rule: route '{}', agent '{}', no rating",
+                    rule.route, rule.agent
+                )),
+            }
+        }
+    }
+
     if health_checks_enabled(config) {
         warnings.push("endpoint health checks are enabled during configuration reload".to_string());
     }
@@ -1533,6 +1672,17 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
                         .to_string()
                 } else {
                     r#"{"findings":[]}"#.to_string()
+                }
+            } else if prompt.contains("narrative promise payoff audit") {
+                // The promise-payoff deep check (T-106) also rides the `review`
+                // route. Emit a single positive match only when the scoped prose
+                // carries the test sentinel; otherwise an empty findings array,
+                // so a local-only deployment degrades to no proposals.
+                if prompt.contains("MOCK_PROMISE_PAYOFF") {
+                    r#"{"matches":[{"paid_off":true,"scene_ref":"scene 1","evidence":"MOCK_PROMISE_PAYOFF"}]}"#
+                        .to_string()
+                } else {
+                    r#"{"matches":[]}"#.to_string()
                 }
             } else {
                 format!("Literary critic and craft technician both reviewed: {compact_prompt}")
@@ -3008,5 +3158,263 @@ rating = "explicit"
             skill.contains("bible://config/routing"),
             "scene-writer skill must point callers at bible://config/routing"
         );
+    }
+
+    // ---- T-108: config lint + draft-route preflight ----
+
+    fn write_fixture(dir: &tempfile::TempDir, contents: &str) -> String {
+        let config_path = dir.path().join("spindle.toml");
+        std::fs::write(&config_path, contents).expect("write fixture");
+        config_path.display().to_string()
+    }
+
+    #[test]
+    fn configure_warns_and_normalizes_capitalized_agent_rating() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "explicit-agent"
+name = "Explicit Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "uncensored"
+ratings = ["Explicit"]
+
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert_eq!(output.source_path.as_deref(), Some(path.as_str()));
+        assert!(
+            output.warnings.iter().any(|w| {
+                w.contains("explicit-agent") && w.contains("Explicit") && w.contains("explicit")
+            }),
+            "expected rating-casing normalization warning, got {:?}",
+            output.warnings
+        );
+
+        // Case-insensitive coverage: scene needs `explicit`, agent declares
+        // `Explicit` — the preflight must treat that as covered.
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(
+            preflight.problem, None,
+            "expected covered, got {preflight:?}"
+        );
+    }
+
+    #[test]
+    fn configure_warns_on_unknown_agent_rating_token() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "spicy-agent"
+name = "Spicy Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["spicy"]
+
+[[routing]]
+route = "draft"
+agent = "spicy-agent"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            output.warnings.iter().any(|w| {
+                w.contains("unknown rating") && w.contains("spicy-agent") && w.contains("spicy")
+            }),
+            "expected unknown-rating warning naming agent + token, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn configure_warns_once_on_literal_duplicate_routing_triple() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "agent-a"
+name = "Agent A"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+rating = "explicit"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        let dup_warnings = output
+            .warnings
+            .iter()
+            .filter(|w| w.contains("duplicate routing rule"))
+            .count();
+        assert_eq!(
+            dup_warnings, 1,
+            "expected exactly one duplicate warning, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn configure_does_not_warn_on_base_plus_rated_override_for_same_route_agent() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "agent-a"
+name = "Agent A"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("duplicate routing rule")),
+            "base rule + rated override must not warn, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn draft_preflight_flags_missing_api_key_with_env_name_only() {
+        // A var name unique to this test that must not be set.
+        let env_var = "SPINDLE_T108_MISSING_KEY_ENV";
+        // Guard: ensure the environment really lacks it.
+        assert!(
+            std::env::var(env_var).is_err(),
+            "test precondition: {env_var} must be unset"
+        );
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            &format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "keyed-agent"
+name = "Keyed Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+api_key_env = "{env_var}"
+ratings = ["explicit"]
+
+[[routing]]
+route = "draft"
+agent = "keyed-agent"
+"####
+            ),
+        );
+
+        router.configure(Some(&path)).expect("configure");
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(preflight.agent_id.as_deref(), Some("keyed-agent"));
+        match &preflight.problem {
+            Some(DraftRoutePreflightProblem::MissingApiKey { env_var: reported }) => {
+                assert_eq!(reported, env_var);
+            }
+            other => panic!("expected MissingApiKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn draft_preflight_flags_rating_not_covered() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "tame-agent"
+name = "Tame Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "draft"
+agent = "tame-agent"
+"####,
+        );
+
+        router.configure(Some(&path)).expect("configure");
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(preflight.agent_id.as_deref(), Some("tame-agent"));
+        assert_eq!(
+            preflight.problem,
+            Some(DraftRoutePreflightProblem::RatingNotCovered)
+        );
+
+        // A rating the agent covers must pass.
+        let covered = router.draft_route_preflight("general");
+        assert_eq!(covered.problem, None, "general should be covered");
+    }
+
+    #[test]
+    fn draft_preflight_ignores_builtin_local_route() {
+        // local_only() has no external agents; the built-in draft route serves
+        // every rating and must never be flagged.
+        let router = ModelRouter::local_only();
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(preflight.agent_id, None);
+        assert_eq!(preflight.problem, None);
     }
 }

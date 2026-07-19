@@ -1418,3 +1418,257 @@ async fn test_two_independent_book_workspaces() {
     // A's project shouldn't be in B's database
     assert!(!search_b.results.iter().any(|r| r.title == "Book A Project"));
 }
+
+// ---- T-108: authoring_prepare_run draft-route preflight ----
+
+/// Build a service whose model router is configured from `config_toml`, seed a
+/// project with a single explicit-rated planned scene in book 1 / chapter 1,
+/// and return the ToolRouter plus project id ready for `authoring_prepare_run`.
+async fn preflight_fixture(config_toml: &str) -> (TempDir, crate::tools::ToolRouter, String) {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_preflight.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_path = tmp.path().join("spindle.toml");
+    std::fs::write(&config_path, config_toml).unwrap();
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+
+    let configured = svc
+        .configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+        })
+        .unwrap();
+    // Hermeticity: the router loaded the injected fixture, not a home-dir file.
+    assert_eq!(
+        configured.source_path.as_deref(),
+        Some(config_path.to_string_lossy().as_ref())
+    );
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Preflight Project".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Mara holds the gate.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: "First watch.".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara meets the beast".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::Explicit),
+            purpose: "climax".into(),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+    let project_id = project.project_id.clone();
+    // Keep svc alive for the duration by leaking through the router clone; drop
+    // the standalone handle now that router owns its own clone.
+    drop(svc);
+    (tmp, router, project_id)
+}
+
+async fn call_prepare(router: &crate::tools::ToolRouter, project_id: &str) -> serde_json::Value {
+    let prep_args = serde_json::json!({
+        "project_id": project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1
+    });
+    let res = router
+        .call_tool(
+            "authoring_prepare_run",
+            Some(prep_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.is_error, Some(false));
+    res.structured_content.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_blocks_when_draft_route_lacks_explicit_coverage() {
+    // Draft agent only covers general/teen; the planned scene is explicit.
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "tame-draft"
+name = "Tame Draft"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "draft"
+agent = "tame-draft"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture(config).await;
+    let val = call_prepare(&router, &project_id).await;
+
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(false),
+        "explicit scene with no explicit coverage must block: {val:?}"
+    );
+    let reqs = val["missing_requirements"].as_array().unwrap();
+    assert!(
+        reqs.iter().any(|r| {
+            let s = r.as_str().unwrap();
+            s.contains("draft") && s.contains("explicit")
+        }),
+        "expected a missing_requirements entry naming route draft + rating explicit, got {reqs:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_blocks_when_draft_agent_missing_api_key() {
+    let env_var = "SPINDLE_T108_PREPARE_MISSING_KEY";
+    assert!(
+        std::env::var(env_var).is_err(),
+        "test precondition: {env_var} must be unset"
+    );
+    let config = format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "keyed-draft"
+name = "Keyed Draft"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+api_key_env = "{env_var}"
+ratings = ["explicit"]
+
+[[routing]]
+route = "draft"
+agent = "keyed-draft"
+"#
+    );
+    let (_tmp, router, project_id) = preflight_fixture(&config).await;
+    let val = call_prepare(&router, &project_id).await;
+
+    assert_eq!(val["ready_to_draft"].as_bool(), Some(false));
+    let reqs = val["missing_requirements"].as_array().unwrap();
+    let entry = reqs
+        .iter()
+        .map(|r| r.as_str().unwrap())
+        .find(|s| s.contains("keyed-draft"))
+        .unwrap_or_else(|| panic!("expected entry naming agent keyed-draft, got {reqs:?}"));
+    assert!(
+        entry.contains(env_var),
+        "entry must name the env var: {entry}"
+    );
+    // Message must carry only the env var NAME — never any value/key material.
+    assert!(
+        !entry.contains("secret") && !entry.contains('='),
+        "entry must not leak any key material or value: {entry}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_passes_when_draft_agent_covers_explicit() {
+    // Positive control: explicit-covering, keyless agent — prepare must pass.
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "bold-draft"
+name = "Bold Draft"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "bold-draft"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture(config).await;
+    let val = call_prepare(&router, &project_id).await;
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(true),
+        "explicit-covering keyless agent should pass: {val:?}"
+    );
+}

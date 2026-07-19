@@ -20,9 +20,9 @@ use super::row::{self, Timestamp};
 // Re-export the JSON-only stored sub-structs from the SQLite-native module.
 pub use super::json_records::{
     StoredAnnotatedBeat, StoredChapterOutlineBeat, StoredCharacterArcMilestone,
-    StoredDualPersonaReviewRound, StoredEstablishedIn, StoredFlexRange, StoredNarratorVoice,
-    StoredPersonaReviewNotes, StoredPlannedScene, StoredReaderContract, StoredStatedConsequence,
-    StoredStoryPlacement, StoredTryFailCycleStep,
+    StoredDualPersonaReviewRound, StoredEstablishedIn, StoredFlexRange, StoredIntensityPoint,
+    StoredNarratorVoice, StoredPersonaReviewNotes, StoredPlannedScene, StoredReaderContract,
+    StoredStatedConsequence, StoredStoryPlacement, StoredTryFailCycleStep,
 };
 
 // =============================================================================
@@ -778,7 +778,8 @@ impl<'a> TryFrom<&Row<'a>> for Term {
 // =============================================================================
 
 pub const PLOT_LINE_COLUMNS: &str = "id, project_id, branch_id, name, normalized_name, plot_type, summary, status, \
-     convergence_points, notes, archived_at, created_at, updated_at";
+     convergence_points, notes, archived_at, created_at, updated_at, \
+     connected_conflict_ids, connected_theme_ids";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlotLine {
@@ -795,6 +796,15 @@ pub struct PlotLine {
     pub archived_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Conflicts this plot line expects a beat annotation to link at its
+    /// convergence chapter. JSON id array (V0022), mirrors motif's
+    /// connected_theme_ids. Drives `plot_line_convergence_audit`.
+    #[serde(default)]
+    pub connected_conflict_ids: Vec<String>,
+    /// Themes this plot line expects a beat annotation to link at its
+    /// convergence chapter. JSON id array (V0022).
+    #[serde(default)]
+    pub connected_theme_ids: Vec<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for PlotLine {
@@ -815,6 +825,8 @@ impl<'a> TryFrom<&Row<'a>> for PlotLine {
             archived_at: row::opt_time(r, 10)?,
             created_at: row::time(r, 11)?,
             updated_at: row::time(r, 12)?,
+            connected_conflict_ids: row::json(r, 13)?,
+            connected_theme_ids: row::json(r, 14)?,
         })
     }
 }
@@ -825,7 +837,7 @@ impl<'a> TryFrom<&Row<'a>> for PlotLine {
 
 pub const CONFLICT_COLUMNS: &str = "id, project_id, branch_id, name, normalized_name, conflict_type, stakes, \
      escalation_stages, expected_total_cycles, try_fail_cycles, stated_consequences, \
-     resolution_summary, notes, archived_at, created_at, updated_at";
+     resolution_summary, notes, archived_at, created_at, updated_at, escalation_demonstrated";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conflict {
@@ -845,6 +857,13 @@ pub struct Conflict {
     pub archived_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Per-stage demonstration markers, index-aligned with `escalation_stages`.
+    /// Entry `Some(placement)` = that stage was demonstrated at that manuscript
+    /// position; `None`/absent = not demonstrated. A shorter-than-stages vector
+    /// (including the default empty vec on pre-V0022 rows) reads as all-None
+    /// beyond its length. Drives `conflict_escalation_audit`.
+    #[serde(default)]
+    pub escalation_demonstrated: Vec<Option<StoredStoryPlacement>>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Conflict {
@@ -868,6 +887,7 @@ impl<'a> TryFrom<&Row<'a>> for Conflict {
             archived_at: row::opt_time(r, 13)?,
             created_at: row::time(r, 14)?,
             updated_at: row::time(r, 15)?,
+            escalation_demonstrated: row::json(r, 16)?,
         })
     }
 }
@@ -1121,7 +1141,8 @@ impl<'a> TryFrom<&Row<'a>> for PacingConfig {
     }
 }
 
-pub const PACING_CURVE_COLUMNS: &str = "id, project_id, branch_id, book_number, act_breakpoints, scene_type_density, created_at, updated_at";
+pub const PACING_CURVE_COLUMNS: &str = "id, project_id, branch_id, book_number, act_breakpoints, scene_type_density, \
+     created_at, updated_at, intensity_points";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacingCurve {
@@ -1133,6 +1154,11 @@ pub struct PacingCurve {
     pub scene_type_density: BTreeMap<String, f64>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Per-position expected intensity samples (position = 0..1 fraction of the
+    /// book). JSON array (V0022), defaulted empty. The realized-intensity trend
+    /// directive interpolates against these when ≥2 points are present.
+    #[serde(default)]
+    pub intensity_points: Vec<StoredIntensityPoint>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for PacingCurve {
@@ -1147,6 +1173,7 @@ impl<'a> TryFrom<&Row<'a>> for PacingCurve {
             scene_type_density: row::json(r, 5)?,
             created_at: row::time(r, 6)?,
             updated_at: row::time(r, 7)?,
+            intensity_points: row::json(r, 8)?,
         })
     }
 }

@@ -11,7 +11,7 @@ pub mod guidance;
 pub mod sqlite;
 pub mod workspace;
 
-pub use ai::ModelRouter;
+pub use ai::{DraftRoutePreflight, DraftRoutePreflightProblem, ModelRouter};
 pub use guidance::{
     EmbeddedReference, get_reference, get_skill, list_references, list_skills, standards_text,
 };

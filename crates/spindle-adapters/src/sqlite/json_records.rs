@@ -165,6 +165,34 @@ impl From<core::StoryPlacement> for StoredStoryPlacement {
     }
 }
 
+/// A single sampled point on a book's expected-intensity curve. `position` is a
+/// 0..1 fraction of the book (chapter / max-chapter); `intensity` is the 0..1
+/// expected intensity there. Persisted inside `pacing_curve.intensity_points`
+/// (V0022).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredIntensityPoint {
+    pub position: f64,
+    pub intensity: f64,
+}
+
+impl StoredIntensityPoint {
+    pub fn into_core(self) -> core::IntensityPoint {
+        core::IntensityPoint {
+            position: self.position,
+            intensity: self.intensity,
+        }
+    }
+}
+
+impl From<core::IntensityPoint> for StoredIntensityPoint {
+    fn from(value: core::IntensityPoint) -> Self {
+        Self {
+            position: value.position,
+            intensity: value.intensity,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredTryFailCycleStep {
     pub attempt_order: i32,
@@ -235,6 +263,11 @@ pub struct StoredCharacterArcMilestone {
     pub description: String,
     #[serde(default)]
     pub unlocks: Vec<String>,
+    /// Manuscript position where the milestone was demonstrated, once reached.
+    /// serde-defaulted so pre-V0022 milestone JSON blobs (which never carried
+    /// the field) still deserialize. See `arc_milestone_audit`.
+    #[serde(default)]
+    pub reached_at: Option<StoredStoryPlacement>,
 }
 
 impl StoredCharacterArcMilestone {
@@ -244,6 +277,7 @@ impl StoredCharacterArcMilestone {
             placement: self.placement.map(StoredStoryPlacement::into_core),
             description: self.description,
             unlocks: self.unlocks,
+            reached_at: self.reached_at.map(StoredStoryPlacement::into_core),
         }
     }
 }
@@ -255,6 +289,7 @@ impl From<core::CharacterArcMilestone> for StoredCharacterArcMilestone {
             placement: value.placement.map(StoredStoryPlacement::from),
             description: value.description,
             unlocks: value.unlocks,
+            reached_at: value.reached_at.map(StoredStoryPlacement::from),
         }
     }
 }
@@ -435,5 +470,83 @@ impl From<core::DualPersonaReviewRound> for StoredDualPersonaReviewRound {
             genre_reader: Some(value.genre_reader.into()),
             priority_actions: value.priority_actions,
         }
+    }
+}
+
+#[cfg(test)]
+mod v0022_backcompat_tests {
+    use super::*;
+
+    /// A pre-V0022 milestone JSON blob (no `reached_at` field) must still
+    /// deserialize, defaulting the marker to `None`.
+    #[test]
+    fn milestone_without_reached_at_deserializes_to_none() {
+        let legacy = r#"{
+            "label": "opening pressure",
+            "placement": {"book_number": 1, "chapter_number": 3, "scene_order": null, "note": null},
+            "description": "the ask is refused",
+            "unlocks": []
+        }"#;
+        let milestone: StoredCharacterArcMilestone =
+            serde_json::from_str(legacy).expect("legacy milestone must deserialize");
+        assert!(milestone.reached_at.is_none());
+        assert_eq!(milestone.label, "opening pressure");
+    }
+
+    /// A milestone carrying `reached_at` round-trips through core and back.
+    #[test]
+    fn milestone_reached_at_round_trips() {
+        let stored = StoredCharacterArcMilestone {
+            label: "turning point".to_string(),
+            placement: Some(StoredStoryPlacement {
+                book_number: 1,
+                chapter_number: 4,
+                scene_order: None,
+                note: None,
+            }),
+            description: "the mask cracks".to_string(),
+            unlocks: Vec::new(),
+            reached_at: Some(StoredStoryPlacement {
+                book_number: 1,
+                chapter_number: 5,
+                scene_order: Some(2),
+                note: None,
+            }),
+        };
+        let core = stored.clone().into_core();
+        let back = StoredCharacterArcMilestone::from(core);
+        assert_eq!(back.reached_at.as_ref().unwrap().chapter_number, 5);
+        assert_eq!(back.reached_at.as_ref().unwrap().scene_order, Some(2));
+    }
+
+    /// A pre-V0022 conflict escalation blob (empty/absent) defaults to no
+    /// demonstration markers, and a shorter-than-stages vector is honored
+    /// verbatim (callers treat missing tail entries as all-None).
+    #[test]
+    fn escalation_demonstrated_defaults_and_partial() {
+        let empty: Vec<Option<StoredStoryPlacement>> =
+            serde_json::from_str("[]").expect("empty markers deserialize");
+        assert!(empty.is_empty());
+
+        let partial: Vec<Option<StoredStoryPlacement>> = serde_json::from_str(
+            r#"[null, {"book_number": 1, "chapter_number": 2, "scene_order": null, "note": null}]"#,
+        )
+        .expect("partial markers deserialize");
+        assert_eq!(partial.len(), 2);
+        assert!(partial[0].is_none());
+        assert_eq!(partial[1].as_ref().unwrap().chapter_number, 2);
+    }
+
+    /// IntensityPoint round-trips between stored and core shapes.
+    #[test]
+    fn intensity_point_round_trips() {
+        let stored = StoredIntensityPoint {
+            position: 0.5,
+            intensity: 0.55,
+        };
+        let core = stored.clone().into_core();
+        let back = StoredIntensityPoint::from(core);
+        assert_eq!(back.position, 0.5);
+        assert_eq!(back.intensity, 0.55);
     }
 }

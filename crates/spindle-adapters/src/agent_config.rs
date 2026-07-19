@@ -288,8 +288,14 @@ fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
     // Routing rules are unique per (route, rating). A rule with `rating: None`
     // acts as the default for the route; at most one default per route. A
     // rule with `rating: Some(...)` overrides the default for that rating; at
-    // most one such override per (route, rating) pair.
-    let mut seen_routes: BTreeSet<(String, Option<String>)> = BTreeSet::new();
+    // most one such override per (route, rating) pair — UNLESS the collision is
+    // an exact-duplicate triple (same agent too), which is merely redundant
+    // config. Those are not fatal: the loader surfaces them as a lint warning
+    // (see `configuration_warnings`) rather than failing the whole load.
+    // Values map each (route, normalized-rating) key to the agent that first
+    // claimed it so a same-key/different-agent conflict still hard-fails.
+    let mut seen_routes: std::collections::BTreeMap<(String, Option<String>), String> =
+        std::collections::BTreeMap::new();
     let allowed_ratings = ["general", "teen", "mature", "explicit"];
     for rule in &config.routing {
         if rule.route.trim().is_empty() {
@@ -312,18 +318,25 @@ fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
                 .as_deref()
                 .map(|r| r.trim().to_ascii_lowercase()),
         );
-        if !seen_routes.insert(key) {
-            match rule.rating.as_deref() {
-                Some(rating) => anyhow::bail!(
-                    "duplicate routing rule for route {} with rating {}",
-                    rule.route,
-                    rating
-                ),
-                None => anyhow::bail!(
-                    "duplicate default routing rule for route {} (only one rule per route may omit `rating`)",
-                    rule.route
-                ),
+        if let Some(existing_agent) = seen_routes.get(&key) {
+            // Same (route, rating) claimed twice. Only fail when the agents
+            // differ (a genuine ambiguity); an identical triple is redundant
+            // and left for the load-time lint to warn about.
+            if existing_agent != &rule.agent {
+                match rule.rating.as_deref() {
+                    Some(rating) => anyhow::bail!(
+                        "duplicate routing rule for route {} with rating {}",
+                        rule.route,
+                        rating
+                    ),
+                    None => anyhow::bail!(
+                        "duplicate default routing rule for route {} (only one rule per route may omit `rating`)",
+                        rule.route
+                    ),
+                }
             }
+        } else {
+            seen_routes.insert(key, rule.agent.clone());
         }
         if !known_agents.contains(rule.agent.as_str()) {
             anyhow::bail!(

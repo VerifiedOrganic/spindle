@@ -225,6 +225,33 @@ fn has_tag(tags: &[String], needle: &str) -> bool {
     tags.iter().any(|tag| tag.eq_ignore_ascii_case(needle))
 }
 
+/// Sort a single kind's active-thread rows by id ascending and cap the count,
+/// enforcing the deterministic within-kind ordering and per-kind budget from
+/// T-102.
+fn finalize_active_thread_kind(
+    kind: &mut Vec<spindle_core::models::ActiveThreadSummary>,
+    cap: usize,
+) {
+    kind.sort_by(|a, b| a.id.cmp(&b.id));
+    kind.truncate(cap);
+}
+
+/// Render a theme's placement status from its introduction / resolution chapter
+/// numbers. Returns "" when neither is set.
+fn active_thread_placement_status(
+    introduction_chapter: Option<i32>,
+    resolution_chapter: Option<i32>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(chapter) = introduction_chapter {
+        parts.push(format!("introduction: ch {chapter}"));
+    }
+    if let Some(chapter) = resolution_chapter {
+        parts.push(format!("resolution: ch {chapter}"));
+    }
+    parts.join(" / ")
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ResearchQueryOutputJson {
     pub summary: String,
@@ -5932,6 +5959,23 @@ impl SqliteSpindleService {
             });
 
         let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+
+        // Hydrate the plan-targeted narrative threads (themes, conflicts, plot
+        // lines, theme-connected motifs) at the briefing top level, mirroring
+        // the scene-context novel layer. Empty when the chapter has no plan.
+        let active_threads = if let Some(plan) = chapter_plan.as_ref() {
+            self.assemble_active_threads(
+                &input.project_id,
+                &active_branch.id,
+                &plan.target_theme_ids,
+                &plan.target_conflict_ids,
+                &plan.target_plot_line_ids,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+
         let chapter_scene_orders = self
             .repository
             .list_scenes_by_project_and_branch(&input.project_id, &active_branch.id)
@@ -6218,6 +6262,7 @@ impl SqliteSpindleService {
             chapter_outline.as_ref(),
             book_outline.as_ref(),
             chapter_plan.as_ref(),
+            &active_threads,
             scene_context.as_ref(),
             &scene_seed,
         );
@@ -6234,6 +6279,7 @@ impl SqliteSpindleService {
             chapter_outline,
             book_outline,
             chapter_plan,
+            active_threads,
             scene_seed,
             scene_context,
         };
@@ -6251,6 +6297,7 @@ impl SqliteSpindleService {
             output.chapter_outline.as_ref(),
             output.book_outline.as_ref(),
             output.chapter_plan.as_ref(),
+            &output.active_threads,
             output.scene_context.as_ref(),
             &output.scene_seed,
         );
@@ -6265,6 +6312,7 @@ impl SqliteSpindleService {
             &mut output.chapter_outline,
             &mut output.book_outline,
             &mut output.chapter_plan,
+            &mut output.active_threads,
             &mut output.scene_context,
         );
         output.briefing_markdown = format_chapter_briefing_markdown(
@@ -6277,6 +6325,7 @@ impl SqliteSpindleService {
             output.chapter_outline.as_ref(),
             output.book_outline.as_ref(),
             output.chapter_plan.as_ref(),
+            &output.active_threads,
             output.scene_context.as_ref(),
             &output.scene_seed,
         );
@@ -6291,6 +6340,143 @@ impl SqliteSpindleService {
         }
 
         Ok(output)
+    }
+
+    /// Hydrate the narrative threads a chapter plan explicitly targets into
+    /// [`ActiveThreadSummary`] rows so the drafting agent sees the themes,
+    /// conflicts, plot lines, and theme-connected motifs it is meant to advance.
+    ///
+    /// Rules (T-102): stale/nonexistent and archived ids are skipped silently;
+    /// each statement is truncated char-boundary-safe; at most five entries per
+    /// kind survive; ordering is deterministic — kind order
+    /// theme→conflict→plot_line→motif, then id ascending within kind.
+    async fn assemble_active_threads(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        target_theme_ids: &[String],
+        target_conflict_ids: &[String],
+        target_plot_line_ids: &[String],
+    ) -> Result<Vec<spindle_core::models::ActiveThreadSummary>> {
+        use crate::format::truncate_active_thread_statement;
+        use spindle_core::models::ActiveThreadSummary;
+
+        const PER_KIND_CAP: usize = 5;
+
+        let mut threads: Vec<ActiveThreadSummary> = Vec::new();
+
+        // Themes: name/label doubles as the statement (the entity has no
+        // separate name field); status renders the introduction/resolution
+        // placement pair when either is set.
+        let mut themes: Vec<ActiveThreadSummary> = Vec::new();
+        for id in target_theme_ids {
+            let Some(theme) = self.repository.get_theme(id).await.ok() else {
+                continue;
+            };
+            if theme.archived_at.is_some() {
+                continue;
+            }
+            let status = active_thread_placement_status(
+                theme.introduction_point.as_ref().map(|p| p.chapter_number),
+                theme.resolution_point.as_ref().map(|p| p.chapter_number),
+            );
+            themes.push(ActiveThreadSummary {
+                id: theme.id,
+                kind: "theme".to_string(),
+                name: theme.theme_statement.clone(),
+                statement: truncate_active_thread_statement(&theme.theme_statement),
+                status,
+                next_expectation: None,
+            });
+        }
+        finalize_active_thread_kind(&mut themes, PER_KIND_CAP);
+        threads.extend(themes);
+
+        // Conflicts: statement = stakes; status = conflict_type; next
+        // expectation = the first undelivered stated consequence.
+        let mut conflicts: Vec<ActiveThreadSummary> = Vec::new();
+        for id in target_conflict_ids {
+            let Some(conflict) = self.repository.get_conflict(id).await.ok() else {
+                continue;
+            };
+            if conflict.archived_at.is_some() {
+                continue;
+            }
+            let next_expectation = conflict
+                .stated_consequences
+                .iter()
+                .find(|consequence| !consequence.delivered)
+                .map(|consequence| consequence.description.clone());
+            conflicts.push(ActiveThreadSummary {
+                id: conflict.id,
+                kind: "conflict".to_string(),
+                name: conflict.name.clone(),
+                statement: truncate_active_thread_statement(&conflict.stakes),
+                status: conflict.conflict_type.clone(),
+                next_expectation,
+            });
+        }
+        finalize_active_thread_kind(&mut conflicts, PER_KIND_CAP);
+        threads.extend(conflicts);
+
+        // Plot lines: statement = summary; status = the plot line's status.
+        let mut plot_lines: Vec<ActiveThreadSummary> = Vec::new();
+        for id in target_plot_line_ids {
+            let Some(plot_line) = self.repository.get_plot_line(id).await.ok() else {
+                continue;
+            };
+            if plot_line.archived_at.is_some() {
+                continue;
+            }
+            plot_lines.push(ActiveThreadSummary {
+                id: plot_line.id,
+                kind: "plot_line".to_string(),
+                name: plot_line.name.clone(),
+                statement: truncate_active_thread_statement(&plot_line.summary),
+                status: plot_line.status.clone(),
+                next_expectation: None,
+            });
+        }
+        finalize_active_thread_kind(&mut plot_lines, PER_KIND_CAP);
+        threads.extend(plot_lines);
+
+        // Motifs: theme-connected only — any motif whose connected_theme_ids
+        // intersect the plan's target themes. statement = description; next
+        // expectation = the per-chapter usage cap when one is set.
+        if !target_theme_ids.is_empty() {
+            let target_set: std::collections::HashSet<&str> =
+                target_theme_ids.iter().map(String::as_str).collect();
+            let mut motifs: Vec<ActiveThreadSummary> = self
+                .repository
+                .list_motifs_by_project_and_branch(project_id, branch_id)
+                .await?
+                .into_iter()
+                .filter(|motif| motif.archived_at.is_none())
+                .filter(|motif| {
+                    motif
+                        .connected_theme_ids
+                        .iter()
+                        .any(|theme_id| target_set.contains(theme_id.as_str()))
+                })
+                .map(|motif| {
+                    let next_expectation = motif
+                        .max_uses_per_chapter
+                        .map(|n| format!("use sparingly: ≤{n} per chapter"));
+                    ActiveThreadSummary {
+                        id: motif.id,
+                        kind: "motif".to_string(),
+                        name: motif.name.clone(),
+                        statement: truncate_active_thread_statement(&motif.description),
+                        status: String::new(),
+                        next_expectation,
+                    }
+                })
+                .collect();
+            finalize_active_thread_kind(&mut motifs, PER_KIND_CAP);
+            threads.extend(motifs);
+        }
+
+        Ok(threads)
     }
 
     /// Assemble a budget-aware scene-context bundle for the requested scene
@@ -6352,6 +6538,7 @@ impl SqliteSpindleService {
         let want_semantic_references = input.wants_novel_section("semantic_references");
         let want_economy_briefing = input.wants_novel_section("economy_briefing");
         let want_subjects = input.wants_novel_section("subjects");
+        let want_previous_scene_tail = input.wants_novel_section("previous_scene_tail");
 
         let want_location = input.wants_scene_section("location");
         let want_world_state = input.wants_scene_section("world_state");
@@ -6618,6 +6805,51 @@ impl SqliteSpindleService {
             )
         } else {
             Vec::new()
+        };
+
+        // Realized-intensity feed-forward (T-109): summarize the trend across the
+        // last up-to-3 annotated chapters strictly before this one so the drafting
+        // agent sees the pacing trajectory it is about to extend. Book/chapter
+        // level, independent of the per-arc pacing directives above; rides the
+        // same pacing_directives render/budget/trim path.
+        let realized_intensity_trend = if want_pacing_directives {
+            let scenes = self
+                .repository
+                .list_scenes_by_project_and_branch(&input.project_id, &active_branch.id)
+                .await?;
+            let annotations = self
+                .repository
+                .list_scene_beat_annotations_by_project(&input.project_id)
+                .await?;
+            let chapter_means = crate::format::chapter_mean_intensities(&scenes, &annotations);
+            // Curve expectation clause (V0022): pull the book's pacing curve
+            // intensity_points and derive the chapter denominator from the max
+            // persisted chapter number in the same book. Empty points / no
+            // denominator → the without-expectation form.
+            let intensity_points = self
+                .repository
+                .list_pacing_curves_by_project(&input.project_id)
+                .await?
+                .into_iter()
+                .find(|curve| {
+                    curve.branch_id == active_branch.id && curve.book_number == input.book_number
+                })
+                .map(|curve| curve.intensity_points)
+                .unwrap_or_default();
+            let max_chapter = scenes
+                .iter()
+                .filter(|scene| scene.book_number == input.book_number)
+                .map(|scene| scene.chapter_number)
+                .max();
+            crate::format::realized_intensity_trend_directive(
+                &chapter_means,
+                input.book_number,
+                input.chapter_number,
+                &intensity_points,
+                max_chapter,
+            )
+        } else {
+            None
         };
 
         let narrative_promises_due = if want_narrative_promises_due {
@@ -6896,6 +7128,77 @@ impl SqliteSpindleService {
             Vec::new()
         };
 
+        // Hydrate the narrative threads this chapter's plan explicitly targets
+        // (themes, conflicts, plot lines, theme-connected motifs) so the
+        // drafting agent can advance them. No-op when the chapter has no plan.
+        let active_threads = if let Some(plan) = self
+            .repository
+            .list_chapter_plans_by_project(&input.project_id)
+            .await?
+            .into_iter()
+            .find(|plan| {
+                plan.book_number == input.book_number && plan.chapter_number == input.chapter_number
+            }) {
+            self.assemble_active_threads(
+                &input.project_id,
+                &active_branch.id,
+                &plan.target_theme_ids,
+                &plan.target_conflict_ids,
+                &plan.target_plot_line_ids,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+
+        // Resolve the immediately preceding scene's closing prose so the drafting
+        // agent can hand off cleanly from its exit beat. Prefer the same-chapter
+        // predecessor (scene_order - 1); when the current scene is the chapter's
+        // first, reach back to the highest-order scene of the previous chapter in
+        // the same book. Book start (chapter 1, no earlier scene) yields None.
+        let previous_scene_tail = if want_previous_scene_tail {
+            let previous_scene = if input.scene_order > 1
+                && let Some(scene) = self
+                    .repository
+                    .find_scene_by_natural_key(
+                        &input.project_id,
+                        &active_branch.id,
+                        input.book_number,
+                        input.chapter_number,
+                        input.scene_order - 1,
+                    )
+                    .await?
+            {
+                Some(scene)
+            } else if input.chapter_number > 1 {
+                // First scene of a later chapter: pull the highest-order scene of
+                // the previous chapter in the same book (active branch).
+                self.repository
+                    .list_scenes_by_project_and_branch(&input.project_id, &active_branch.id)
+                    .await?
+                    .into_iter()
+                    .filter(|scene| {
+                        scene.book_number == input.book_number
+                            && scene.chapter_number == input.chapter_number - 1
+                    })
+                    .max_by_key(|scene| scene.scene_order)
+            } else {
+                None
+            };
+
+            previous_scene.and_then(|scene| {
+                let excerpt = crate::format::scene_closing_excerpt(&scene.full_text);
+                excerpt.map(|excerpt| spindle_core::models::PreviousSceneTail {
+                    scene_id: scene.id,
+                    chapter_number: scene.chapter_number,
+                    scene_order: scene.scene_order,
+                    excerpt,
+                })
+            })
+        } else {
+            None
+        };
+
         let mut novel_layer = SceneContextNovelLayer {
             reader_contract: if want_reader_contract {
                 project.reader_contract.into_core()
@@ -6943,10 +7246,13 @@ impl SqliteSpindleService {
             timeline_briefing,
             future_knowledge_briefing,
             pacing_directives,
+            realized_intensity_trend,
             narrative_promises_due,
             knowledge_briefing,
             semantic_references,
             economy_briefing,
+            active_threads,
+            previous_scene_tail,
         };
 
         let mut scene_layer = SceneContextSceneLayer {
@@ -7133,10 +7439,23 @@ impl SqliteSpindleService {
             let mut sections: Vec<String> = Vec::new();
             let mut used = 0usize;
             for digest in &prior_digests {
+                // Synopsis keeps its existing per-book cap; the open-threads
+                // segment gets whatever per-book budget the synopsis leaves
+                // (threads truncate first, synopsis second — never over cap).
                 let head: String = digest.synopsis.chars().take(PER_BOOK_INJECT_CAP).collect();
+                let mut body = head;
+                let thread_budget = PER_BOOK_INJECT_CAP.saturating_sub(body.len());
+                let threads_segment = crate::format::render_open_threads_segment(
+                    &digest.open_threads,
+                    thread_budget.saturating_sub(1), // reserve one byte for the joining newline
+                );
+                if !threads_segment.is_empty() {
+                    body.push('\n');
+                    body.push_str(&threads_segment);
+                }
                 let section = format!(
                     "Book {} (through ch {}): {}",
-                    digest.book_number, digest.last_chapter_covered, head
+                    digest.book_number, digest.last_chapter_covered, body
                 );
                 if used + section.len() > TOTAL_INJECT_CAP {
                     break;
@@ -7892,6 +8211,52 @@ impl SqliteSpindleService {
             }
         }
 
+        // ── Promise-payoff candidate detection (T-106, Tier 2) ──────────
+        // Deep-only, opt-in. Propose (never write) that an unresolved promise the
+        // scoped prose already delivered be confirmed with update_promise_status.
+        // Runs ONLY when deep_check is set AND the check is requested, mirroring
+        // the temporal Tier-2 gating shape.
+        if deep_check && should_run_check(&requested_checks_set, "promise_payoff_detection") {
+            let mut candidates = scoped_narrative_promises(
+                self.repository
+                    .list_narrative_promises_by_project(&project_id)
+                    .await?,
+                &scope,
+            )
+            .into_iter()
+            .filter(|promise| {
+                promise.archived_at.is_none()
+                    && promise.status != "paid_off"
+                    && promise.status != "abandoned"
+            })
+            .collect::<Vec<_>>();
+
+            // Rank by urgency (overdue > due > soon > watch), tiebreak id asc, so
+            // the most pressing unresolved threads are audited first under the cap.
+            if let Some(current_index) = end_scope_index(&scope, &scenes) {
+                candidates.sort_by(|a, b| {
+                    let ua = crate::format::promise_timing_verdict(a, current_index)
+                        .urgency
+                        .rank();
+                    let ub = crate::format::promise_timing_verdict(b, current_index)
+                        .urgency
+                        .rank();
+                    ub.cmp(&ua).then_with(|| a.id.cmp(&b.id))
+                });
+            } else {
+                candidates.sort_by(|a, b| a.id.cmp(&b.id));
+            }
+
+            const PROMISE_PAYOFF_SCAN_CAP: usize = 10;
+            let unscanned = candidates.len().saturating_sub(PROMISE_PAYOFF_SCAN_CAP);
+            candidates.truncate(PROMISE_PAYOFF_SCAN_CAP);
+
+            issues.extend(
+                self.deep_promise_payoff_issues(&candidates, &scenes, unscanned)
+                    .await?,
+            );
+        }
+
         // ── Quantity drift: an unexplained multi-band jump ──────────────
         // For subjects with a declared scheme, flag when a measure's band moves
         // more than `max_band_jump` ordered tiers between consecutive stamps with
@@ -8191,33 +8556,19 @@ impl SqliteSpindleService {
                 .map(|curve| curve.book_number)
                 .collect();
             if !books_with_curves.is_empty() {
-                let intensity_by_scene: BTreeMap<String, f64> = self
+                let annotations = self
                     .repository
                     .list_scene_beat_annotations_by_project(&project_id)
-                    .await?
-                    .into_iter()
-                    .filter_map(|annotation| {
-                        annotation
-                            .intensity
-                            .map(|value| (annotation.scene_id, value))
-                    })
-                    .collect();
-                let mut chapter_intensities: BTreeMap<(i32, i32), Vec<f64>> = BTreeMap::new();
-                for scene in &scenes {
-                    if let Some(intensity) = intensity_by_scene.get(&scene.id) {
-                        chapter_intensities
-                            .entry((scene.book_number, scene.chapter_number))
-                            .or_default()
-                            .push(*intensity);
-                    }
-                }
+                    .await?;
+                // Shared per-chapter mean-intensity computation, also driving the
+                // realized-intensity feed-forward in `get_scene_context`.
+                let chapter_means = crate::format::chapter_mean_intensities(&scenes, &annotations);
                 let mut per_book: BTreeMap<i32, Vec<(i32, f64)>> = BTreeMap::new();
-                for ((book, chapter), values) in &chapter_intensities {
+                for ((book, chapter), mean) in &chapter_means {
                     if !books_with_curves.contains(book) {
                         continue;
                     }
-                    let mean = values.iter().sum::<f64>() / values.len() as f64;
-                    per_book.entry(*book).or_default().push((*chapter, mean));
+                    per_book.entry(*book).or_default().push((*chapter, *mean));
                 }
                 for (book, mut chapters) in per_book {
                     chapters.sort_by_key(|(chapter, _)| *chapter);
@@ -8840,6 +9191,388 @@ impl SqliteSpindleService {
                             suggested_action: Some("Draft or save the scene with research references".to_string()),
                         });
                     }
+                }
+            }
+        }
+
+        // Chapter lookup for the metadata-only motif/theme audits below: each
+        // scoped scene id maps to its (book, chapter) key, and the scoped
+        // chapter set feeds the ≥3-chapter noise gate on unused motifs.
+        let scene_chapter_by_id: BTreeMap<String, (i32, i32)> = scenes
+            .iter()
+            .map(|scene| (scene.id.clone(), (scene.book_number, scene.chapter_number)))
+            .collect();
+        let scoped_chapter_keys: BTreeSet<(i32, i32)> =
+            scene_chapter_by_id.values().copied().collect();
+
+        if should_run_check(&requested_checks_set, "motif_usage_audit") {
+            let mut motifs = self
+                .repository
+                .list_motifs_by_project(&project_id)
+                .await?
+                .into_iter()
+                .filter(|motif| motif.archived_at.is_none())
+                .collect::<Vec<_>>();
+            // Deterministic finding order: entity id then chapter (chapter
+            // order falls out of the BTreeMap iteration below).
+            motifs.sort_by(|a, b| a.id.cmp(&b.id));
+
+            // Count beat-annotation motif links per (motif, chapter) within
+            // scope, plus whether the motif was linked anywhere in scope at all.
+            let mut links_by_motif_chapter: BTreeMap<(String, (i32, i32)), i64> = BTreeMap::new();
+            let mut linked_motifs: BTreeSet<String> = BTreeSet::new();
+            for annotation in &scoped_annotations {
+                let Some(chapter) = scene_chapter_by_id.get(&annotation.scene_id).copied() else {
+                    continue;
+                };
+                for motif_id in &annotation.motif_ids {
+                    linked_motifs.insert(motif_id.clone());
+                    *links_by_motif_chapter
+                        .entry((motif_id.clone(), chapter))
+                        .or_insert(0) += 1;
+                }
+            }
+
+            for motif in &motifs {
+                if let Some(limit) = motif.max_uses_per_chapter {
+                    // Overuse: strictly above the limit fires; exactly at the
+                    // limit is clean.
+                    for ((motif_id, chapter), count) in &links_by_motif_chapter {
+                        if motif_id != &motif.id {
+                            continue;
+                        }
+                        if *count > limit as i64 {
+                            issues.push(ConsistencyIssue {
+                                severity: "warning".to_string(),
+                                check_type: "motif_usage_audit".to_string(),
+                                message: format!(
+                                    "motif '{}' is linked {} time(s) in book {}, chapter {}, over its limit of {}",
+                                    motif.name, count, chapter.0, chapter.1, limit
+                                ),
+                                entity_ids: vec![motif.id.clone()],
+                                suggested_action: Some(
+                                    "thin the motif in this chapter or raise max_uses_per_chapter"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                // Declared-but-unused: only when the scope covers ≥3 chapters,
+                // to avoid noise on small scopes.
+                if scoped_chapter_keys.len() >= 3 && !linked_motifs.contains(&motif.id) {
+                    issues.push(ConsistencyIssue {
+                        severity: "info".to_string(),
+                        check_type: "motif_usage_audit".to_string(),
+                        message: format!(
+                            "motif '{}' is declared but never linked by any beat annotation in scope",
+                            motif.name
+                        ),
+                        entity_ids: vec![motif.id.clone()],
+                        suggested_action: Some(
+                            "annotate a scene with this motif or archive it".to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+
+        if should_run_check(&requested_checks_set, "theme_placement_audit") {
+            let mut themes = self
+                .repository
+                .list_themes_by_project(&project_id)
+                .await?
+                .into_iter()
+                .filter(|theme| theme.archived_at.is_none())
+                .collect::<Vec<_>>();
+            // Deterministic finding order: entity id (introduction before
+            // resolution within a theme).
+            themes.sort_by(|a, b| a.id.cmp(&b.id));
+
+            // Chapters in which each theme is linked by a beat annotation.
+            let mut theme_link_chapters: BTreeMap<String, BTreeSet<(i32, i32)>> = BTreeMap::new();
+            for annotation in &scoped_annotations {
+                let Some(chapter) = scene_chapter_by_id.get(&annotation.scene_id).copied() else {
+                    continue;
+                };
+                for theme_id in &annotation.theme_ids {
+                    theme_link_chapters
+                        .entry(theme_id.clone())
+                        .or_default()
+                        .insert(chapter);
+                }
+            }
+
+            for theme in &themes {
+                let linked_chapters = theme_link_chapters.get(&theme.id);
+                for (label, placement) in [
+                    ("introduction", theme.introduction_point.as_ref()),
+                    ("resolution", theme.resolution_point.as_ref()),
+                ] {
+                    let Some(placement) = placement else {
+                        continue;
+                    };
+                    let chapter = (placement.book_number, placement.chapter_number);
+                    if !scope_contains_chapter(&scope, chapter.0, chapter.1) {
+                        continue;
+                    }
+                    let linked_here = linked_chapters
+                        .map(|chapters| chapters.contains(&chapter))
+                        .unwrap_or(false);
+                    if !linked_here {
+                        issues.push(ConsistencyIssue {
+                            severity: "info".to_string(),
+                            check_type: "theme_placement_audit".to_string(),
+                            message: format!(
+                                "theme '{}' declares its {} point at book {}, chapter {} but no beat annotation links it there",
+                                theme.theme_statement, label, chapter.0, chapter.1
+                            ),
+                            entity_ids: vec![theme.id.clone()],
+                            suggested_action: Some(
+                                "annotate a scene in that chapter with this theme or move the placement"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // plot_line_convergence_audit (V0022): a plot line whose convergence
+        // point resolves to a chapter in scope, that declares connected
+        // conflicts and/or themes, but whose convergence chapter carries no beat
+        // annotation linking any of those connected ids → info. A convergence
+        // outside scope, or a plot line that declares no connected ids at all,
+        // is silent.
+        if should_run_check(&requested_checks_set, "plot_line_convergence_audit") {
+            let mut plot_lines = self
+                .repository
+                .list_plot_lines_by_project(&project_id)
+                .await?
+                .into_iter()
+                .filter(|plot_line| plot_line.archived_at.is_none())
+                .collect::<Vec<_>>();
+            // Deterministic finding order: entity id then chapter.
+            plot_lines.sort_by(|a, b| a.id.cmp(&b.id));
+
+            // Conflicts and themes linked by a beat annotation, keyed by chapter.
+            let mut conflicts_by_chapter: BTreeMap<(i32, i32), BTreeSet<String>> = BTreeMap::new();
+            let mut themes_by_chapter: BTreeMap<(i32, i32), BTreeSet<String>> = BTreeMap::new();
+            for annotation in &scoped_annotations {
+                let Some(chapter) = scene_chapter_by_id.get(&annotation.scene_id).copied() else {
+                    continue;
+                };
+                for conflict_id in &annotation.conflict_ids {
+                    conflicts_by_chapter
+                        .entry(chapter)
+                        .or_default()
+                        .insert(conflict_id.clone());
+                }
+                for theme_id in &annotation.theme_ids {
+                    themes_by_chapter
+                        .entry(chapter)
+                        .or_default()
+                        .insert(theme_id.clone());
+                }
+            }
+
+            for plot_line in &plot_lines {
+                if plot_line.connected_conflict_ids.is_empty()
+                    && plot_line.connected_theme_ids.is_empty()
+                {
+                    // No declared connections → nothing to check against.
+                    continue;
+                }
+                // Convergence chapters in scope, ascending for deterministic order.
+                let mut convergence_chapters: Vec<(i32, i32)> = plot_line
+                    .convergence_points
+                    .iter()
+                    .map(|point| (point.book_number, point.chapter_number))
+                    .filter(|(book, chapter)| scope_contains_chapter(&scope, *book, *chapter))
+                    .collect();
+                convergence_chapters.sort_unstable();
+                convergence_chapters.dedup();
+
+                for chapter in convergence_chapters {
+                    let conflict_here = conflicts_by_chapter.get(&chapter);
+                    let theme_here = themes_by_chapter.get(&chapter);
+                    let linked = plot_line
+                        .connected_conflict_ids
+                        .iter()
+                        .any(|id| conflict_here.map(|set| set.contains(id)).unwrap_or(false))
+                        || plot_line
+                            .connected_theme_ids
+                            .iter()
+                            .any(|id| theme_here.map(|set| set.contains(id)).unwrap_or(false));
+                    if !linked {
+                        issues.push(ConsistencyIssue {
+                            severity: "info".to_string(),
+                            check_type: "plot_line_convergence_audit".to_string(),
+                            message: format!(
+                                "plot line '{}' converges at book {}, chapter {} but no beat annotation there links any of its connected conflicts or themes",
+                                plot_line.name, chapter.0, chapter.1
+                            ),
+                            entity_ids: vec![plot_line.id.clone()],
+                            suggested_action: Some(
+                                "annotate a scene in that chapter with a connected conflict/theme, or revise the convergence point"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // arc_milestone_audit (V0022): a milestone placed at chapter P (in or
+        // before the scope end) that has not been reached. If the manuscript
+        // already runs past P (max scoped chapter ≥ P+1) → warning with the
+        // overdue count; if the scope has only reached P (max == P) → info "due
+        // now". A milestone with a `reached_at` marker, or with no placement, is
+        // silent.
+        if should_run_check(&requested_checks_set, "arc_milestone_audit") {
+            let mut arcs = self
+                .repository
+                .list_character_arcs_by_project(&project_id)
+                .await?
+                .into_iter()
+                .filter(|arc| arc.archived_at.is_none())
+                .collect::<Vec<_>>();
+            // Deterministic finding order: entity id then chapter.
+            arcs.sort_by(|a, b| a.id.cmp(&b.id));
+
+            // Max scoped chapter per book, from the scoped scene set.
+            let mut max_chapter_by_book: BTreeMap<i32, i32> = BTreeMap::new();
+            for (book, chapter) in &scoped_chapter_keys {
+                let entry = max_chapter_by_book.entry(*book).or_insert(*chapter);
+                if *chapter > *entry {
+                    *entry = *chapter;
+                }
+            }
+
+            for arc in &arcs {
+                // Milestones in ascending placement order for deterministic finds.
+                let mut pending: Vec<(&str, i32, i32)> = arc
+                    .milestones
+                    .iter()
+                    .filter(|milestone| milestone.reached_at.is_none())
+                    .filter_map(|milestone| {
+                        milestone.placement.as_ref().map(|placement| {
+                            (
+                                milestone.label.as_str(),
+                                placement.book_number,
+                                placement.chapter_number,
+                            )
+                        })
+                    })
+                    .collect();
+                pending.sort_by(|a, b| (a.1, a.2, a.0).cmp(&(b.1, b.2, b.0)));
+
+                for (label, book, milestone_chapter) in pending {
+                    if !scope_contains_chapter(&scope, book, milestone_chapter) {
+                        continue;
+                    }
+                    let Some(max_chapter) = max_chapter_by_book.get(&book).copied() else {
+                        continue;
+                    };
+                    if max_chapter < milestone_chapter {
+                        // Manuscript hasn't reached the milestone chapter yet.
+                        continue;
+                    }
+                    // max_chapter >= milestone_chapter here; strictly greater
+                    // means the manuscript has run past the due chapter.
+                    if max_chapter > milestone_chapter {
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "arc_milestone_audit".to_string(),
+                            message: format!(
+                                "arc milestone '{}' is due at book {}, chapter {} but is not marked reached, and the manuscript is {} chapter(s) past it",
+                                label, book, milestone_chapter, max_chapter - milestone_chapter
+                            ),
+                            entity_ids: vec![arc.id.clone()],
+                            suggested_action: Some(
+                                "mark the milestone reached_at where it lands, or move its placement"
+                                    .to_string(),
+                            ),
+                        });
+                    } else {
+                        // max_chapter == milestone_chapter.
+                        issues.push(ConsistencyIssue {
+                            severity: "info".to_string(),
+                            check_type: "arc_milestone_audit".to_string(),
+                            message: format!(
+                                "arc milestone '{}' is due now at book {}, chapter {} and not yet marked reached",
+                                label, book, milestone_chapter
+                            ),
+                            entity_ids: vec![arc.id.clone()],
+                            suggested_action: Some(
+                                "demonstrate the milestone in this chapter and set reached_at"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // conflict_escalation_audit (V0022): a conflict whose per-stage
+        // demonstration markers are out of order — any pair (i < j) where stage
+        // j is demonstrated (Some placement) while an earlier stage i is not →
+        // warning naming the conflict and the out-of-order stage labels. All
+        // demonstrated stages in order, or no markers at all, is silent.
+        if should_run_check(&requested_checks_set, "conflict_escalation_audit") {
+            let mut conflicts = self
+                .repository
+                .list_conflicts_by_project(&project_id)
+                .await?
+                .into_iter()
+                .filter(|conflict| conflict.archived_at.is_none())
+                .collect::<Vec<_>>();
+            // Deterministic finding order: entity id.
+            conflicts.sort_by(|a, b| a.id.cmp(&b.id));
+
+            for conflict in &conflicts {
+                let stages = &conflict.escalation_stages;
+                let markers = &conflict.escalation_demonstrated;
+                // Absent markers beyond the vector length read as None.
+                let demonstrated = |index: usize| -> bool {
+                    markers.get(index).map(|m| m.is_some()).unwrap_or(false)
+                };
+                let stage_label = |index: usize| -> String {
+                    stages
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("stage {}", index + 1))
+                };
+                // First out-of-order pair (earliest undemonstrated i, earliest
+                // later demonstrated j) is enough to flag the conflict once.
+                let mut flagged: Option<(usize, usize)> = None;
+                let stage_count = stages.len().max(markers.len());
+                'outer: for i in 0..stage_count {
+                    if demonstrated(i) {
+                        continue;
+                    }
+                    for j in (i + 1)..stage_count {
+                        if demonstrated(j) {
+                            flagged = Some((i, j));
+                            break 'outer;
+                        }
+                    }
+                }
+                if let Some((i, j)) = flagged {
+                    issues.push(ConsistencyIssue {
+                        severity: "warning".to_string(),
+                        check_type: "conflict_escalation_audit".to_string(),
+                        message: format!(
+                            "conflict '{}' demonstrates escalation stage '{}' before the earlier stage '{}' is demonstrated",
+                            conflict.name, stage_label(j), stage_label(i)
+                        ),
+                        entity_ids: vec![conflict.id.clone()],
+                        suggested_action: Some(
+                            "demonstrate the earlier escalation stage first, or correct the demonstration markers"
+                                .to_string(),
+                        ),
+                    });
                 }
             }
         }
@@ -9938,6 +10671,122 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "add a transition beat or scene break at the jump, split into separately \
                          clocked scenes, or mark an intended rewind with temporal_mode \"flashback\""
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-backed promise-payoff candidate detection (T-106, Tier 2).
+    /// Proposes — never writes — that an unresolved promise the scoped prose
+    /// already delivered should be confirmed via `update_promise_status`.
+    ///
+    /// `promises` arrives already filtered to non-resolved, non-archived rows in
+    /// scope, urgency-ranked, and capped to the first 10; `unscanned` is the
+    /// count that overflowed the cap (surfaced as one summary info finding so a
+    /// silent cap never hides a dropped thread). `scenes` is the scoped prose.
+    ///
+    /// Unlike the temporal check's silent `Err(_) => Vec::new()`, an errored or
+    /// unusable review route here emits ONE honest-skip info finding: a route
+    /// failure must never read as a clean payoff scan.
+    async fn deep_promise_payoff_issues(
+        &self,
+        promises: &[crate::sqlite::records::NarrativePromise],
+        scenes: &[crate::sqlite::records::Scene],
+        unscanned: usize,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use crate::ai::ModelRequest;
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+
+        if unscanned > 0 {
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "promise_payoff_detection".to_string(),
+                message: format!(
+                    "{unscanned} additional unresolved promise(s) were not scanned for payoff \
+                     (only the 10 most urgent candidates are audited per run)"
+                ),
+                entity_ids: Vec::new(),
+                suggested_action: Some(
+                    "narrow the scope or resolve higher-urgency promises, then re-run".to_string(),
+                ),
+            });
+        }
+
+        for promise in promises {
+            let matches = match self
+                .repository
+                .model_router()
+                .complete(&ModelRequest {
+                    route: "review".to_string(),
+                    prompt: build_promise_payoff_deep_check_prompt(promise, scenes),
+                    rating: None,
+                    context: None,
+                })
+                .await
+            {
+                // A non-JSON local stub (the default `review` route) parses to
+                // nothing, so a local-only deployment degrades to no proposals.
+                Ok(response) => {
+                    parse_deep_promise_payoff_output(&response.output).unwrap_or_default()
+                }
+                // Honest skip: the review route is unreachable/missing. Emit one
+                // info finding that reads as SKIPPED rather than clean, then stop
+                // (every promise would hit the same dead route).
+                Err(_) => {
+                    issues.push(ConsistencyIssue {
+                        severity: "info".to_string(),
+                        check_type: "promise_payoff_detection".to_string(),
+                        message: "promise payoff detection was SKIPPED: no usable review route \
+                                  (the model call failed). Promises were NOT scanned for payoff."
+                            .to_string(),
+                        entity_ids: Vec::new(),
+                        suggested_action: Some(
+                            "configure a review model route, then re-run this check".to_string(),
+                        ),
+                    });
+                    return Ok(issues);
+                }
+            };
+
+            for m in matches {
+                if !m.paid_off {
+                    continue;
+                }
+                let scene_ref = m
+                    .scene_ref
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("the scoped prose");
+                let desc = crate::format::truncate_at_chars(&promise.description, 80);
+                let mut message = format!(
+                    "promise {} (\"{}\") appears to be paid off in {} — confirm with \
+                     update_promise_status",
+                    promise.id, desc, scene_ref
+                );
+                if let Some(evidence) = m.evidence.as_ref() {
+                    let cleaned = evidence.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !cleaned.is_empty() {
+                        message.push_str(&format!(
+                            " Evidence: {}",
+                            crate::format::truncate_at_chars(&cleaned, 200)
+                        ));
+                    }
+                }
+                issues.push(ConsistencyIssue {
+                    severity: "info".to_string(),
+                    check_type: "promise_payoff_detection".to_string(),
+                    message,
+                    entity_ids: vec![promise.id.clone()],
+                    suggested_action: Some(
+                        "confirm the payoff and call update_promise_status(\"paid_off\"), or \
+                         reinforce the thread if it is not actually landed"
                             .to_string(),
                     ),
                 });
@@ -14370,6 +15219,160 @@ impl SqliteSpindleService {
         })
     }
 
+    /// Assemble the committed prose of a book (or a chapter range within it) on
+    /// the active branch into a single Markdown "read-so-far" document. Unlike
+    /// `export_epub` (an end-product path) this is a mid-run review view:
+    /// planned-but-undrafted scenes are rendered as explicit placeholders and
+    /// reported in `missing_scenes` rather than silently omitted. Read-only
+    /// over scene/plan data; the workspace write is opt-in via
+    /// `write_to_workspace`. Branch resolution is implicit (active branch),
+    /// matching the other read tools.
+    pub async fn compile_manuscript(
+        &self,
+        input: spindle_core::models::CompileManuscriptInput,
+    ) -> Result<spindle_core::models::CompileManuscriptOutput> {
+        use spindle_core::models::CompileManuscriptOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+
+        // Chapters of the requested book, in order, filtered to the (optional)
+        // inclusive range. Absent book → empty chapter set → structured empty.
+        let chapters = match self
+            .repository
+            .find_book_by_number(&input.project_id, input.book_number)
+            .await?
+        {
+            Some(book) => self
+                .repository
+                .list_chapters_by_book(&book.id)
+                .await?
+                .into_iter()
+                .filter(|chapter| {
+                    input
+                        .start_chapter
+                        .is_none_or(|start| chapter.chapter_number >= start)
+                        && input
+                            .end_chapter
+                            .is_none_or(|end| chapter.chapter_number <= end)
+                })
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+
+        // Active-branch scenes for this book, indexed by (chapter, scene_order).
+        let scenes = self
+            .repository
+            .list_scenes_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?;
+        let mut scene_by_position: std::collections::BTreeMap<(i32, i32), &super::records::Scene> =
+            std::collections::BTreeMap::new();
+        for scene in &scenes {
+            if scene.book_number == input.book_number {
+                scene_by_position.insert((scene.chapter_number, scene.scene_order), scene);
+            }
+        }
+
+        // Chapter-plan spines (active-branch scoped) keyed by chapter number, so
+        // a planned scene with no persisted prose is enumerated as a gap.
+        let plans = self
+            .repository
+            .list_chapter_plans_by_project(&input.project_id)
+            .await?;
+        let plan_orders_by_chapter: std::collections::BTreeMap<i32, Vec<i32>> = plans
+            .into_iter()
+            .filter(|plan| plan.book_number == input.book_number)
+            .map(|plan| {
+                (
+                    plan.chapter_number,
+                    plan.scenes
+                        .iter()
+                        .map(|scene| scene.scene_order)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
+        let mut markdown = String::new();
+        let mut prose_parts: Vec<String> = Vec::new();
+        let mut scene_count = 0usize;
+        let mut missing_scenes: Vec<String> = Vec::new();
+
+        for chapter in &chapters {
+            let chapter_number = chapter.chapter_number;
+            match chapter.title.as_deref().map(str::trim) {
+                Some(title) if !title.is_empty() => {
+                    markdown.push_str(&format!("## Chapter {chapter_number}: {title}\n\n"));
+                }
+                _ => markdown.push_str(&format!("## Chapter {chapter_number}\n\n")),
+            }
+
+            // Union of persisted scene_orders and plan-spine scene_orders for
+            // this chapter, ascending, deduplicated.
+            let mut orders: std::collections::BTreeSet<i32> = scene_by_position
+                .keys()
+                .filter(|(ch, _)| *ch == chapter_number)
+                .map(|(_, order)| *order)
+                .collect();
+            if let Some(plan_orders) = plan_orders_by_chapter.get(&chapter_number) {
+                orders.extend(plan_orders.iter().copied());
+            }
+
+            for scene_order in orders {
+                markdown.push_str(&format!("### Scene {chapter_number}.{scene_order}\n\n"));
+                let drafted = scene_by_position
+                    .get(&(chapter_number, scene_order))
+                    .filter(|scene| !scene.full_text.trim().is_empty());
+                match drafted {
+                    Some(scene) => {
+                        markdown.push_str(&scene.full_text);
+                        markdown.push_str("\n\n");
+                        prose_parts.push(scene.full_text.clone());
+                        scene_count += 1;
+                    }
+                    None => {
+                        markdown.push_str(&format!(
+                            "> [scene {chapter_number}.{scene_order} not yet drafted]\n\n"
+                        ));
+                        missing_scenes.push(format!("{chapter_number}.{scene_order}"));
+                    }
+                }
+            }
+        }
+
+        let word_count = prose_parts
+            .iter()
+            .map(|part| part.split_whitespace().count())
+            .sum();
+
+        let artifact_path = if input.write_to_workspace {
+            let artifacts_dir = artifacts_dir_for_data_dir(self.repository.data_dir());
+            std::fs::create_dir_all(&artifacts_dir)?;
+            let start = input
+                .start_chapter
+                .or_else(|| chapters.first().map(|chapter| chapter.chapter_number))
+                .unwrap_or(0);
+            let end = input
+                .end_chapter
+                .or_else(|| chapters.last().map(|chapter| chapter.chapter_number))
+                .unwrap_or(start);
+            let filename = format!("book-{}-ch{start}-{end}.md", input.book_number);
+            let file_path = artifacts_dir.join(&filename);
+            std::fs::write(&file_path, markdown.as_bytes())?;
+            Some(file_path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        Ok(CompileManuscriptOutput {
+            markdown,
+            scene_count,
+            word_count,
+            missing_scenes,
+            artifact_path,
+        })
+    }
+
     // Import pipeline.
     //
     // The 10 stubs that follow implement the import passes against the
@@ -17233,6 +18236,8 @@ impl SqliteSpindleService {
                         summary: plot_line.summary.clone(),
                         status: plot_line.status.clone(),
                         convergence_points: Vec::new(),
+                        connected_conflict_ids: Vec::new(),
+                        connected_theme_ids: Vec::new(),
                     })
                     .await?;
                 created_plot_lines += 1;
@@ -17472,6 +18477,7 @@ impl SqliteSpindleService {
                         book_number,
                         act_breakpoints: hint.act_breakpoints.clone(),
                         scene_type_density: hint.scene_type_density.clone(),
+                        intensity_points: Vec::new(),
                     })
                     .await?;
                     created_pacing_curves += 1;
@@ -18291,6 +19297,20 @@ fn export_dir_for_data_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
         return workspace_root.join("exports");
     }
     data_dir.join("exports")
+}
+
+/// Resolve the workspace `artifacts/` directory for a data dir, using the same
+/// workspace-root discovery as [`export_dir_for_data_dir`]: a project-local
+/// `.spindle/` data dir places artifacts beside the workspace root, and a
+/// global data dir nests them under itself. This is the directory the
+/// `compile_manuscript` opt-in write targets; it does not invent a new root.
+fn artifacts_dir_for_data_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    if data_dir.file_name().and_then(|name| name.to_str()) == Some(".spindle")
+        && let Some(workspace_root) = data_dir.parent()
+    {
+        return workspace_root.join("artifacts");
+    }
+    data_dir.join("artifacts")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -19963,6 +20983,95 @@ fn parse_deep_temporal_check_output(output: &str) -> anyhow::Result<Vec<DeepTemp
     };
     let parsed: DeepTemporalCheckOutput = serde_json::from_str(&candidate)?;
     Ok(parsed.findings)
+}
+
+/// Output shape returned by the model router for the promise-payoff deep check
+/// (T-106). A `match` claims that an unresolved narrative promise appears to be
+/// paid off within the scoped prose. `paid_off` gates the claim so a model that
+/// echoes an empty/negative verdict never produces a false proposal.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeepPromisePayoffOutput {
+    #[serde(default)]
+    matches: Vec<DeepPromisePayoffMatch>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeepPromisePayoffMatch {
+    #[serde(default)]
+    paid_off: bool,
+    #[serde(default)]
+    scene_ref: Option<String>,
+    #[serde(default)]
+    evidence: Option<String>,
+}
+
+/// Build the prompt for the model-backed promise-payoff audit. The
+/// "narrative promise payoff audit" header line is also the marker the local
+/// stub keys on to return deterministic JSON in tests / local-only runs.
+///
+/// Prose budgeting mirrors [`build_temporal_deep_check_prompt`] exactly: that
+/// check sends the whole `scene.full_text` with no character cap, one model
+/// call per scene. Here we make one call per promise and concatenate the FULL
+/// text of every scoped scene under the same convention — no additional
+/// truncation cap is applied, because the temporal check applies none.
+fn build_promise_payoff_deep_check_prompt(
+    promise: &crate::sqlite::records::NarrativePromise,
+    scenes: &[crate::sqlite::records::Scene],
+) -> String {
+    let planted = format!(
+        "{}:{}",
+        promise.planted_at.book_number, promise.planted_at.chapter_number
+    );
+    let planned_payoff = promise
+        .planned_payoff
+        .as_ref()
+        .map(|p| format!("{}:{}", p.book_number, p.chapter_number))
+        .unwrap_or_else(|| "unset".to_string());
+    let prose_block = scenes
+        .iter()
+        .map(|scene| {
+            format!(
+                "[scene {} @ {}:{}]\n{}",
+                scene.id, scene.book_number, scene.chapter_number, scene.full_text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!(
+        "You are performing a narrative promise payoff audit for a single novel promise.\n\
+         Read the scoped prose and decide whether the promise below appears to have ALREADY been paid off — its setup delivered on the page.\n\
+         Judge by what the prose renders, not by what is merely foreshadowed or restated. Do NOT claim a payoff that has not actually landed.\n\
+         Return strict JSON only.\n\n\
+         Promise description: {}\n\
+         Planted at (book:chapter): {}\n\
+         Planned payoff (book:chapter): {}\n\
+         Scoped prose:\n{}\n\n\
+         Return this exact shape:\n\
+         {{\"matches\":[{{\"paid_off\":true,\"scene_ref\":\"scene <id>\",\"evidence\":\"<short quote>\"}}]}}\n\
+         Set paid_off true only when the payoff is clearly on the page. Return an empty matches array when it is not.",
+        promise.description, planted, planned_payoff, prose_block,
+    )
+}
+
+/// Parse the model router's promise-payoff deep-check output. Tolerates code
+/// fences and surrounding prose via [`extract_json_object`]; an unparseable
+/// response (e.g. the default local stub) is an error the caller treats as no
+/// match rather than a guess.
+fn parse_deep_promise_payoff_output(output: &str) -> anyhow::Result<Vec<DeepPromisePayoffMatch>> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else if let Some(fenced) = extract_json_object(output) {
+        fenced
+    } else {
+        trimmed.to_string()
+    };
+    let parsed: DeepPromisePayoffOutput = serde_json::from_str(&candidate)?;
+    Ok(parsed.matches)
 }
 
 /// Render a canonical-fact value to its display string. Order of
@@ -22305,6 +23414,423 @@ mod tests {
         assert!(err.to_string().contains("requires both"));
     }
 
+    /// Variant of `fresh_service` whose data dir is a real `.spindle`
+    /// directory under a tempdir, so `artifacts_dir_for_data_dir` resolves to
+    /// the workspace root (the tempdir) exactly as it does in a real project.
+    async fn fresh_service_workspace() -> (TempDir, SqliteSpindleService) {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join(".spindle");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let pool = SqlitePool::open(&data_dir.join("spindle.db"))
+            .await
+            .unwrap();
+        let repo = Repository::new(pool, data_dir);
+        (tmp, SqliteSpindleService::new(repo))
+    }
+
+    #[tokio::test]
+    async fn compile_manuscript_assembles_headings_prose_and_flags_undrafted_scenes() {
+        use spindle_core::models::{
+            CompileManuscriptInput, ContentRating, PlanChapterInput, PlanChapterSceneInput,
+            SaveSceneDraftInput, UpdateEntityInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Read So Far".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Chapter 1: two committed scenes, no plan.
+        for (order, text) in [
+            (1, "Ch1 scene1 opens the tale."),
+            (2, "Ch1 scene2 raises stakes."),
+        ] {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: order,
+                full_text: text.into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        // Give chapter 1 a title so the heading renders it.
+        let ch1 = svc
+            .repository
+            .find_chapter_by_number(&proj.project_id, 1, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        svc.update_entity(UpdateEntityInput {
+            entity_type: "chapter".into(),
+            entity_id: ch1.id.clone(),
+            changes: serde_json::json!({ "title": "The Gate" }),
+        })
+        .await
+        .unwrap();
+
+        // Chapter 2: plan spine of 2 scenes; only scene 2.1 persisted.
+        svc.plan_chapter(PlanChapterInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 2,
+            pov_character_id: None,
+            synopsis: "The reckoning".into(),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![
+                PlanChapterSceneInput {
+                    scene_order: 1,
+                    summary: "drafted".into(),
+                    purpose: "establishing".into(),
+                    ..Default::default()
+                },
+                PlanChapterSceneInput {
+                    scene_order: 2,
+                    summary: "undrafted".into(),
+                    purpose: "complication".into(),
+                    ..Default::default()
+                },
+            ],
+        })
+        .await
+        .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 2,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Ch2 scene1 lands the blow.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .compile_manuscript(CompileManuscriptInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                start_chapter: None,
+                end_chapter: None,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+
+        // Ordered headings and prose bodies for chapter 1 (title included).
+        assert!(out.markdown.contains("## Chapter 1: The Gate"));
+        assert!(out.markdown.contains("### Scene 1.1"));
+        assert!(out.markdown.contains("Ch1 scene1 opens the tale."));
+        assert!(out.markdown.contains("### Scene 1.2"));
+        assert!(out.markdown.contains("Ch1 scene2 raises stakes."));
+        assert!(out.markdown.contains("## Chapter 2"));
+        assert!(out.markdown.contains("### Scene 2.1"));
+        assert!(out.markdown.contains("Ch2 scene1 lands the blow."));
+        // Undrafted 2.2 renders an explicit placeholder, never silently omitted.
+        assert!(out.markdown.contains("> [scene 2.2 not yet drafted]"));
+
+        // Chapter 1 precedes chapter 2 in the assembled document.
+        let ch1 = out.markdown.find("## Chapter 1").unwrap();
+        let ch2 = out.markdown.find("## Chapter 2").unwrap();
+        assert!(ch1 < ch2, "chapters must be assembled in order");
+
+        assert_eq!(out.missing_scenes, vec!["2.2".to_string()]);
+        assert_eq!(out.scene_count, 3);
+        assert!(out.word_count > 0);
+        assert!(out.artifact_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn compile_manuscript_range_filters_to_requested_chapters() {
+        use spindle_core::models::{
+            CompileManuscriptInput, ContentRating, CreateChapterInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Range".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Chapter 1 exists from create_project; create chapter 2 explicitly.
+        svc.create_chapter(CreateChapterInput {
+            project_id: proj.project_id.clone(),
+            book_id: None,
+            book_number: Some(1),
+            chapter_number: Some(2),
+            title: None,
+        })
+        .await
+        .unwrap();
+
+        for chapter in [1, 2] {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: format!("Chapter {chapter} unique body."),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        let out = svc
+            .compile_manuscript(CompileManuscriptInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                start_chapter: Some(2),
+                end_chapter: Some(2),
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(out.markdown.contains("## Chapter 2"));
+        assert!(out.markdown.contains("Chapter 2 unique body."));
+        assert!(!out.markdown.contains("## Chapter 1"));
+        assert!(!out.markdown.contains("Chapter 1 unique body."));
+        assert_eq!(out.scene_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compile_manuscript_writes_deterministic_artifact_inside_workspace() {
+        use spindle_core::models::{CompileManuscriptInput, ContentRating, SaveSceneDraftInput};
+        use std::path::Path;
+
+        let (tmp, svc) = fresh_service_workspace().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Artifact".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Persisted prose.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let input = || CompileManuscriptInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            start_chapter: None,
+            end_chapter: None,
+            write_to_workspace: true,
+        };
+
+        let first = svc.compile_manuscript(input()).await.unwrap();
+        let path = first.artifact_path.clone().expect("artifact path");
+        assert!(
+            path.ends_with("book-1-ch1-1.md"),
+            "deterministic filename: {path}"
+        );
+
+        // The written path canonicalizes to inside the canonicalized workspace
+        // root, checked component-wise (never string prefix).
+        let workspace_root = tmp.path().canonicalize().unwrap();
+        let written = Path::new(&path).canonicalize().unwrap();
+        assert!(
+            written.starts_with(&workspace_root),
+            "{written:?} must live inside {workspace_root:?}"
+        );
+
+        // Calling twice overwrites: same path, no duplicate files.
+        let second = svc.compile_manuscript(input()).await.unwrap();
+        assert_eq!(second.artifact_path.as_deref(), Some(path.as_str()));
+        let artifacts_dir = written.parent().unwrap();
+        let md_count = std::fs::read_dir(artifacts_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .count();
+        assert_eq!(md_count, 1, "overwrite must not duplicate files");
+    }
+
+    #[tokio::test]
+    async fn compile_manuscript_empty_book_yields_structured_empty_result() {
+        use spindle_core::models::CompileManuscriptInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Empty Book".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Compile a book number with no chapters at all — structured empty,
+        // not an error.
+        let out = svc
+            .compile_manuscript(CompileManuscriptInput {
+                project_id: proj.project_id.clone(),
+                book_number: 7,
+                start_chapter: None,
+                end_chapter: None,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.scene_count, 0);
+        assert!(out.missing_scenes.is_empty());
+        assert!(out.artifact_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn compile_manuscript_is_active_branch_scoped() {
+        use spindle_core::models::{
+            CompileManuscriptInput, ContentRating, CreateBranchInput, SaveSceneDraftInput,
+            SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Branchy".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Scene committed on branch A only.
+        let branch_a = svc
+            .create_branch(CreateBranchInput {
+                project_id: proj.project_id.clone(),
+                parent_branch_id: None,
+                name: "alt-a".into(),
+                branch_type: "alternative".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: proj.project_id.clone(),
+            branch_id: branch_a.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Only on branch A.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        // Compile on a different active branch B: the branch-A scene is absent.
+        let branch_b = svc
+            .create_branch(CreateBranchInput {
+                project_id: proj.project_id.clone(),
+                parent_branch_id: None,
+                name: "alt-b".into(),
+                branch_type: "alternative".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: proj.project_id.clone(),
+            branch_id: branch_b.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .compile_manuscript(CompileManuscriptInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                start_chapter: None,
+                end_chapter: None,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert!(!out.markdown.contains("Only on branch A."));
+        assert_eq!(out.scene_count, 0);
+    }
+
     #[tokio::test]
     async fn compare_alternatives_ranks_by_quality_score() {
         use spindle_core::models::{
@@ -24362,6 +25888,463 @@ rating = "explicit"
         );
     }
 
+    /// Shared fixture for the previous-scene-tail (T-103) tests: a project with
+    /// one protagonist and one location so scenes can be saved and context
+    /// resolved. Returns (tmp guard, service, project_id, character_id,
+    /// location_id).
+    async fn previous_scene_tail_fixture() -> (TempDir, SqliteSpindleService, String, String, String)
+    {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CreateCharacterInput, CreateLocationInput, WorldStateInput,
+        };
+
+        let (tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "PrevTail".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "Scenes hand off cleanly.".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Warden of the Ash Gate.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: Some(CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: None,
+                    source_summary: None,
+                }),
+            })
+            .await
+            .unwrap();
+        let location = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Ash Gate".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A blackened wall holding back the dark.".into(),
+                initial_state: WorldStateInput {
+                    controlling_faction: None,
+                    status: None,
+                    prosperity: None,
+                    stability: None,
+                    threat_level: None,
+                    sensory_details: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        (
+            tmp,
+            svc,
+            proj.project_id,
+            character.character_id,
+            location.location_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_carries_previous_scene_tail_same_chapter() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, character_id, location_id) =
+            previous_scene_tail_fixture().await;
+
+        // Build prose long enough that the tail must be truncated to <=1200
+        // chars. The final ~1400 chars are all multibyte (em-dash + CJK, 3 bytes
+        // each), so the byte offset a naive `&s[s.len()-1200..]` byte slice would
+        // pick lands *inside* a codepoint (it would panic / split); a
+        // char-boundary-safe walk from the END must not.
+        let head = "A".repeat(200);
+        // 350 * 4 = 1400 multibyte chars, well past the 1200-char tail window.
+        let multibyte_run = "—世界—".repeat(350);
+        let tail = "闇が迫った——Mara did not flinch.";
+        let scene_one_prose = format!("{head}{multibyte_run}{tail}");
+
+        // Guard: a naive `&s[s.len() - 1200..]` byte slice (treating the 1200
+        // char budget as a byte count) would land mid-codepoint here, so this
+        // test genuinely exercises the char-boundary-safe path rather than
+        // passing by accident on ASCII prose.
+        let naive_byte_start = scene_one_prose.len() - 1200;
+        assert!(
+            !scene_one_prose.is_char_boundary(naive_byte_start),
+            "test fixture must place the naive byte-slice boundary mid-codepoint"
+        );
+
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: scene_one_prose.clone(),
+            summary: "Mara holds the gate".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let scene_one_id = svc
+            .repository
+            .find_scene_by_natural_key(
+                &project_id,
+                &svc.repository
+                    .get_active_branch(&project_id)
+                    .await
+                    .unwrap()
+                    .id,
+                1,
+                1,
+                1,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let tail_dto = ctx
+            .novel
+            .previous_scene_tail
+            .as_ref()
+            .expect("scene 2 should carry the tail of scene 1");
+        assert_eq!(tail_dto.scene_id, scene_one_id);
+        assert_eq!(tail_dto.chapter_number, 1);
+        assert_eq!(tail_dto.scene_order, 1);
+        assert!(
+            tail_dto.excerpt.chars().count() <= 1200,
+            "excerpt must be at most 1200 chars, got {}",
+            tail_dto.excerpt.chars().count()
+        );
+        assert!(
+            scene_one_prose.ends_with(&tail_dto.excerpt),
+            "excerpt must be the exact final characters of scene 1"
+        );
+        assert!(
+            tail_dto.excerpt.ends_with(tail),
+            "excerpt must end with the final characters of scene 1's prose"
+        );
+
+        let envelope = svc
+            .get_scene_context_envelope(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            envelope
+                .context_markdown
+                .as_deref()
+                .is_some_and(|markdown| markdown.contains("PREVIOUS SCENE (closing)")),
+            "markdown should carry the previous-scene closing block"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_previous_scene_tail_crosses_chapter_boundary() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, character_id, location_id) =
+            previous_scene_tail_fixture().await;
+
+        // Chapter 1 has two scenes; the last (highest order) is scene 2.
+        for (order, text) in [
+            (1, "Chapter one opens."),
+            (2, "Chapter one closes at the gate."),
+        ] {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: order,
+                full_text: text.into(),
+                summary: "seed".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 2,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let tail_dto = ctx
+            .novel
+            .previous_scene_tail
+            .as_ref()
+            .expect("ch2 scene1 should pull the last scene of ch1");
+        assert_eq!(tail_dto.chapter_number, 1);
+        assert_eq!(tail_dto.scene_order, 2);
+        assert_eq!(tail_dto.excerpt, "Chapter one closes at the gate.");
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_previous_scene_tail_absent_at_book_start() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, character_id, location_id) =
+            previous_scene_tail_fixture().await;
+
+        // Save chapter 1 scene 1 itself; requesting context for it must yield
+        // no previous scene tail (book start).
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "The very first scene.".into(),
+            summary: "opening".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.novel.previous_scene_tail.is_none(),
+            "book-start scene must have no previous-scene tail"
+        );
+
+        let envelope = svc
+            .get_scene_context_envelope(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            envelope
+                .context_markdown
+                .as_deref()
+                .is_some_and(|markdown| !markdown.contains("PREVIOUS SCENE (closing)")),
+            "book-start markdown must omit the previous-scene block"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_previous_scene_tail_none_when_prose_empty() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, character_id, location_id) =
+            previous_scene_tail_fixture().await;
+
+        // Previous scene saved with whitespace-only prose.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "   \n\t  ".into(),
+            summary: "blank".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.novel.previous_scene_tail.is_none(),
+            "a whitespace-only previous scene must yield no tail (not an empty excerpt)"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_previous_scene_tail_omitted_when_section_disabled() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, character_id, location_id) =
+            previous_scene_tail_fixture().await;
+
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "A prior scene with real prose.".into(),
+            summary: "seed".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        // Request a sections list that omits `previous_scene_tail` while still
+        // asking for other novel sections.
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: Some(vec!["reader_contract".into(), "location".into()]),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.novel.previous_scene_tail.is_none(),
+            "previous_scene_tail must be absent when the sections filter omits it"
+        );
+    }
+
     #[tokio::test]
     async fn get_chapter_briefing_assembles_from_real_scene_seed() {
         use spindle_core::models::{
@@ -25750,6 +27733,8 @@ rating = "explicit"
             summary: "Hunt the wraith.".to_string(),
             status: None,
             convergence_points: Vec::new(),
+            connected_conflict_ids: Vec::new(),
+            connected_theme_ids: Vec::new(),
         })
         .await
         .unwrap();
@@ -29064,6 +31049,608 @@ rating = "explicit"
     }
 
     #[tokio::test]
+    async fn save_summary_populates_open_threads_from_unresolved_threads() {
+        use spindle_core::models::{
+            CreateConflictInput, CreateNarrativePromiseInput, CreatePlotLineInput,
+            SaveSummaryInput, StatedConsequence, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "threads".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // An active promise (not paid_off/abandoned) with placements.
+        let promise = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.project_id.clone(),
+                promise_type: "setup".into(),
+                description: "the buried crown will be reclaimed".into(),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(0),
+                    note: None,
+                },
+                planned_payoff: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 10,
+                    scene_order: Some(0),
+                    note: None,
+                }),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.update_promise_status(spindle_core::models::UpdatePromiseStatusInput {
+            narrative_promise_id: promise.narrative_promise_id.clone(),
+            status: "active".into(),
+            note: None,
+        })
+        .await
+        .unwrap();
+
+        // A conflict with an undelivered stated consequence.
+        svc.create_conflict(CreateConflictInput {
+            project_id: proj.project_id.clone(),
+            name: "Siege of the Ash Gate".into(),
+            conflict_type: "external".into(),
+            stakes: "the last free city".into(),
+            escalation_stages: Vec::new(),
+            expected_total_cycles: None,
+            try_fail_cycles: Vec::new(),
+            stated_consequences: vec![StatedConsequence {
+                description: "the wall will crack".into(),
+                stated_at: None,
+                must_demonstrate_by: None,
+                delivered: false,
+            }],
+        })
+        .await
+        .unwrap();
+
+        // A plot line not yet complete.
+        svc.create_plot_line(CreatePlotLineInput {
+            project_id: proj.project_id.clone(),
+            name: "The Reclamation".into(),
+            plot_type: "main".into(),
+            summary: "the rightful heir returns".into(),
+            status: Some("developing".into()),
+            convergence_points: Vec::new(),
+            connected_conflict_ids: Vec::new(),
+            connected_theme_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let repo = svc.repository();
+        let branch = repo.get_active_branch(&proj.project_id).await.unwrap();
+        repo.save_summary(&SaveSummaryInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            entity_type: None,
+            entity_id: None,
+            summary: "The heir flees the burning capital".into(),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let digests = repo
+            .list_book_digests_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        assert_eq!(digests.len(), 1);
+        let threads = &digests[0].open_threads;
+        assert!(!threads.is_empty(), "open threads persisted: {threads:?}");
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.contains("the buried crown will be reclaimed")),
+            "promise carried into open threads: {threads:?}"
+        );
+        assert!(
+            threads.iter().any(|t| t.contains("Siege of the Ash Gate")),
+            "conflict carried into open threads: {threads:?}"
+        );
+        assert!(
+            threads.iter().any(|t| t.contains("The Reclamation")),
+            "plot line carried into open threads: {threads:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_renders_open_threads_line() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, CreateNarrativePromiseInput, GetSceneContextInput,
+            SaveSceneDraftInput, SaveSummaryInput, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "threadctx".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        svc.create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: proj.project_id.clone(),
+            promise_type: "setup".into(),
+            description: "the oath sworn at the gate must be kept".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(0),
+                note: None,
+            },
+            planned_payoff: None,
+            notes: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        // Book 1 scene + summary → builds the book-1 digest with open threads.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "x".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        svc.repository()
+            .save_summary(&SaveSummaryInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                entity_type: None,
+                entity_id: None,
+                summary: "The oath is sworn".into(),
+                key_events: Vec::new(),
+                character_changes: Vec::new(),
+                relationship_shifts: Vec::new(),
+                arc_advances: Vec::new(),
+                promise_events: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let location = svc
+            .create_location(spindle_core::models::CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Keep".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A keep.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Ask for context in book 2 → prior book-1 digest (with threads) surfaces.
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 2,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            ctx.hard_constraints.iter().any(|c| {
+                c.statement.contains("STORY SO FAR")
+                    && c.statement.contains("Open threads:")
+                    && c.statement
+                        .contains("the oath sworn at the gate must be kept")
+            }),
+            "story-so-far should carry the open-threads line naming the promise: {:?}",
+            ctx.hard_constraints
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_omits_open_threads_when_all_resolved() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, CreateNarrativePromiseInput, GetSceneContextInput,
+            SaveSceneDraftInput, SaveSummaryInput, StoryPlacement, UpdatePromiseStatusInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "noThreads".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let promise = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.project_id.clone(),
+                promise_type: "setup".into(),
+                description: "a promise that gets paid off".into(),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(0),
+                    note: None,
+                },
+                planned_payoff: None,
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.update_promise_status(UpdatePromiseStatusInput {
+            narrative_promise_id: promise.narrative_promise_id,
+            status: "paid_off".into(),
+            note: None,
+        })
+        .await
+        .unwrap();
+
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "x".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repo = svc.repository();
+        let branch = repo.get_active_branch(&proj.project_id).await.unwrap();
+        repo.save_summary(&SaveSummaryInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            entity_type: None,
+            entity_id: None,
+            summary: "Everything resolves".into(),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let digests = repo
+            .list_book_digests_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap();
+        assert_eq!(digests.len(), 1);
+        assert!(
+            digests[0].open_threads.is_empty(),
+            "no open threads when all resolved: {:?}",
+            digests[0].open_threads
+        );
+
+        let location = svc
+            .create_location(spindle_core::models::CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Keep".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A keep.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 2,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !ctx.hard_constraints
+                .iter()
+                .any(|c| c.statement.contains("Open threads:")),
+            "no open-threads line when nothing is open: {:?}",
+            ctx.hard_constraints
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_open_threads_respects_per_book_cap_with_multibyte() {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, CreateNarrativePromiseInput, GetSceneContextInput,
+            SaveSceneDraftInput, SaveSummaryInput, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "capThreads".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // 15 promises with long multibyte (em-dash / CJK) descriptions.
+        for n in 0..15 {
+            svc.create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.project_id.clone(),
+                promise_type: "setup".into(),
+                description: format!("約束{n:02}—a long thread {}", "字".repeat(60)),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(0),
+                    note: None,
+                },
+                planned_payoff: None,
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "x".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        svc.repository()
+            .save_summary(&SaveSummaryInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                entity_type: None,
+                entity_id: None,
+                summary: "多くの約束".into(),
+                key_events: Vec::new(),
+                character_changes: Vec::new(),
+                relationship_shifts: Vec::new(),
+                arc_advances: Vec::new(),
+                promise_events: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let location = svc
+            .create_location(spindle_core::models::CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Keep".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A keep.".into(),
+                initial_state: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 2,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                max_character_count: None,
+                location_id: location.location_id,
+                format: Some(ContextFormat::Json),
+                budget_tokens: None,
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        let sofar = ctx
+            .hard_constraints
+            .iter()
+            .find(|c| c.statement.contains("STORY SO FAR"))
+            .expect("story-so-far present");
+        // The rendered per-book section must stay within the 700-char cap. The
+        // statement wraps one book section, so its non-header body is bounded.
+        // Assert the whole statement is valid UTF-8 (guaranteed) and that the
+        // book-1 section is inside the per-book budget.
+        let body = sofar.statement.as_str();
+        assert!(body.is_char_boundary(body.len()), "valid UTF-8 boundary");
+        // Book section header + synopsis + threads must not exceed per-book cap.
+        // Locate the "Book 1" section and measure to end (single book here).
+        let section = body
+            .find("Book 1")
+            .map(|i| &body[i..])
+            .expect("book 1 section present");
+        assert!(
+            section.len() <= 700 + "Book 1 (through ch 1): ".len(),
+            "per-book section within cap: {} bytes",
+            section.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn save_summary_open_threads_deterministic_across_rebuilds() {
+        use spindle_core::models::{
+            CreateConflictInput, CreateNarrativePromiseInput, CreatePlotLineInput,
+            SaveSummaryInput, StatedConsequence, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "detThreads".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        for n in 0..4 {
+            svc.create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.project_id.clone(),
+                promise_type: "setup".into(),
+                description: format!("promise number {n}"),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(0),
+                    note: None,
+                },
+                planned_payoff: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: n + 2,
+                    scene_order: Some(0),
+                    note: None,
+                }),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        }
+        svc.create_conflict(CreateConflictInput {
+            project_id: proj.project_id.clone(),
+            name: "A Conflict".into(),
+            conflict_type: "external".into(),
+            stakes: "high".into(),
+            escalation_stages: Vec::new(),
+            expected_total_cycles: None,
+            try_fail_cycles: Vec::new(),
+            stated_consequences: vec![StatedConsequence {
+                description: "cost".into(),
+                stated_at: None,
+                must_demonstrate_by: None,
+                delivered: false,
+            }],
+        })
+        .await
+        .unwrap();
+        svc.create_plot_line(CreatePlotLineInput {
+            project_id: proj.project_id.clone(),
+            name: "A Plot".into(),
+            plot_type: "main".into(),
+            summary: "s".into(),
+            status: Some("developing".into()),
+            convergence_points: Vec::new(),
+            connected_conflict_ids: Vec::new(),
+            connected_theme_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let repo = svc.repository();
+        let branch = repo.get_active_branch(&proj.project_id).await.unwrap();
+        let mk = |summary: &str| SaveSummaryInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            entity_type: None,
+            entity_id: None,
+            summary: summary.into(),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        };
+
+        repo.save_summary(&mk("first build")).await.unwrap();
+        let first = repo
+            .list_book_digests_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap()[0]
+            .open_threads
+            .clone();
+        // Rebuild (idempotent re-derive over the same chapter).
+        repo.save_summary(&mk("first build")).await.unwrap();
+        let second = repo
+            .list_book_digests_by_project_and_branch(&proj.project_id, &branch.id)
+            .await
+            .unwrap()[0]
+            .open_threads
+            .clone();
+        assert_eq!(first, second, "open_threads byte-identical across rebuilds");
+        assert!(!first.is_empty(), "threads present: {first:?}");
+    }
+
+    #[tokio::test]
     async fn check_consistency_flags_pacing_drift_on_sustained_sag() {
         use spindle_core::models::{
             AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
@@ -29090,6 +31677,7 @@ rating = "explicit"
             book_number: 1,
             act_breakpoints: BTreeMap::new(),
             scene_type_density: BTreeMap::new(),
+            intensity_points: Vec::new(),
         })
         .await
         .unwrap();
@@ -29153,6 +31741,213 @@ rating = "explicit"
             out.issues.iter().any(|i| i.check_type == "pacing_drift"),
             "pacing_drift should flag a sustained intensity sag: {:?}",
             out.issues
+        );
+    }
+
+    /// Shared fixture for the pacing feed-forward (T-109) tests: a project with
+    /// one protagonist, one location, and a book-1 pacing curve so scenes can be
+    /// saved, annotated, and scene context resolved. Chapters and intensity
+    /// annotations are seeded by the caller. Returns
+    /// (tmp guard, service, project_id, character_id, location_id).
+    async fn pacing_feed_forward_fixture() -> (TempDir, SqliteSpindleService, String, String, String)
+    {
+        use spindle_core::models::CreatePacingCurveInput;
+        use std::collections::BTreeMap;
+
+        let (tmp, svc, project_id, character_id, location_id) = previous_scene_tail_fixture().await;
+        svc.create_pacing_curve(CreatePacingCurveInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            act_breakpoints: BTreeMap::new(),
+            scene_type_density: BTreeMap::new(),
+            intensity_points: Vec::new(),
+        })
+        .await
+        .unwrap();
+        (tmp, svc, project_id, character_id, location_id)
+    }
+
+    /// Seed chapter `chapter` (book 1) with a single scene, optionally annotated
+    /// with `intensity`. `None` intensity leaves the annotation intensity NULL.
+    async fn seed_annotated_chapter(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        chapter: i32,
+        intensity: Option<f64>,
+    ) {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, ContentRating, CreateChapterInput, SaveSceneDraftInput,
+        };
+
+        svc.create_chapter(CreateChapterInput {
+            project_id: project_id.to_string(),
+            book_number: Some(1),
+            book_id: None,
+            chapter_number: Some(chapter),
+            title: None,
+        })
+        .await
+        .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+            project_id: project_id.to_string(),
+            scene_id: scene.scene_id.clone(),
+            beats: Vec::new(),
+            motif_ids: Vec::new(),
+            theme_ids: Vec::new(),
+            conflict_ids: Vec::new(),
+            intensity,
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn scene_context_for_chapter(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        character_id: &str,
+        location_id: &str,
+        chapter: i32,
+    ) -> spindle_core::models::SceneContextOutput {
+        use spindle_core::models::{ContextFormat, GetSceneContextInput};
+
+        svc.get_scene_context(GetSceneContextInput {
+            project_id: project_id.to_string(),
+            book_number: 1,
+            chapter_number: chapter,
+            chapter_id: None,
+            scene_order: 1,
+            character_ids: vec![character_id.to_string()],
+            max_character_count: None,
+            location_id: location_id.to_string(),
+            format: Some(ContextFormat::Json),
+            budget_tokens: Some(8000),
+            token_budget: None,
+            sections: None,
+        })
+        .await
+        .unwrap()
+    }
+
+    /// T-109 test 1: three annotated prior chapters (0.6/0.45/0.3) feed forward a
+    /// falling-intensity trend directive into a chapter-4 scene context.
+    #[tokio::test]
+    async fn scene_context_feeds_forward_falling_intensity_trend() {
+        let (_tmp, svc, project_id, character_id, location_id) =
+            pacing_feed_forward_fixture().await;
+        for (chapter, intensity) in [(1, 0.6_f64), (2, 0.45), (3, 0.3)] {
+            seed_annotated_chapter(&svc, &project_id, chapter, Some(intensity)).await;
+        }
+
+        let ctx =
+            scene_context_for_chapter(&svc, &project_id, &character_id, &location_id, 4).await;
+
+        let trend =
+            ctx.novel.realized_intensity_trend.as_ref().expect(
+                "chapter-4 scene context should carry a realized-intensity trend directive",
+            );
+        assert!(
+            trend.contains("0.60 → 0.45 → 0.30"),
+            "trend directive must state the last-3-chapter sequence: {trend}"
+        );
+        assert!(
+            trend.contains("falling"),
+            "trend directive must name the falling direction: {trend}"
+        );
+    }
+
+    /// T-109 test 2: no prior annotations → no trend directive at all.
+    #[tokio::test]
+    async fn scene_context_omits_trend_when_no_prior_annotations() {
+        let (_tmp, svc, project_id, character_id, location_id) =
+            pacing_feed_forward_fixture().await;
+        // Chapters exist but carry no intensity annotations at all.
+        for chapter in 1..=3 {
+            seed_annotated_chapter(&svc, &project_id, chapter, None).await;
+        }
+
+        let ctx =
+            scene_context_for_chapter(&svc, &project_id, &character_id, &location_id, 4).await;
+
+        assert!(
+            ctx.novel.realized_intensity_trend.is_none(),
+            "no annotated prior chapters must yield no trend directive: {:?}",
+            ctx.novel.realized_intensity_trend
+        );
+    }
+
+    /// T-109 test 3: exactly one annotated prior chapter → single-value directive
+    /// with NO rising/falling/flat wording.
+    #[tokio::test]
+    async fn scene_context_single_prior_chapter_states_value_without_direction() {
+        let (_tmp, svc, project_id, character_id, location_id) =
+            pacing_feed_forward_fixture().await;
+        seed_annotated_chapter(&svc, &project_id, 1, Some(0.42)).await;
+
+        let ctx =
+            scene_context_for_chapter(&svc, &project_id, &character_id, &location_id, 2).await;
+
+        let trend = ctx
+            .novel
+            .realized_intensity_trend
+            .as_ref()
+            .expect("a single annotated prior chapter should still surface its mean");
+        assert!(
+            trend.contains("0.42"),
+            "single-chapter directive must state the mean: {trend}"
+        );
+        assert!(
+            !trend.contains("rising") && !trend.contains("falling") && !trend.contains("flat"),
+            "single-chapter directive must make no trend claim: {trend}"
+        );
+    }
+
+    /// T-109 test 4: a chapter whose only annotation has NULL intensity is treated
+    /// as unannotated and excluded from the trend window. Representable because
+    /// `scene_beat_annotation.intensity` is nullable (V0019).
+    #[tokio::test]
+    async fn scene_context_excludes_all_null_intensity_chapter_from_window() {
+        let (_tmp, svc, project_id, character_id, location_id) =
+            pacing_feed_forward_fixture().await;
+        // Chapter 1 annotated (0.6); chapter 2 annotated but intensity NULL;
+        // chapter 3 annotated (0.3). The window for chapter 4 must skip chapter 2.
+        seed_annotated_chapter(&svc, &project_id, 1, Some(0.6)).await;
+        seed_annotated_chapter(&svc, &project_id, 2, None).await;
+        seed_annotated_chapter(&svc, &project_id, 3, Some(0.3)).await;
+
+        let ctx =
+            scene_context_for_chapter(&svc, &project_id, &character_id, &location_id, 4).await;
+
+        let trend = ctx
+            .novel
+            .realized_intensity_trend
+            .as_ref()
+            .expect("chapter-4 scene context should carry a trend directive");
+        // Only the two annotated chapters (0.60 and 0.30) form the sequence; the
+        // NULL chapter contributes no value.
+        assert!(
+            trend.contains("0.60 → 0.30"),
+            "all-NULL chapter must be excluded from the window: {trend}"
+        );
+        assert!(
+            !trend.contains("0.45") && !trend.contains("0.00"),
+            "the NULL chapter must not appear as a value: {trend}"
         );
     }
 
@@ -31512,5 +34307,2211 @@ rating = "explicit"
                 && issue.message.contains("no note or source provenance")
         });
         assert!(orphaned_claim_issue.is_some());
+    }
+
+    // -------------------------------------------------------------------------
+    // T-102: chapter-plan targeted threads hydrated into scene context /
+    // chapter briefing (active_threads).
+    // -------------------------------------------------------------------------
+
+    /// Shared fixture: project + one character + one location. Returns
+    /// (project_id, character_id, location_id).
+    async fn active_threads_base(
+        svc: &SqliteSpindleService,
+        name: &str,
+    ) -> (String, String, String) {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CreateCharacterInput, CreateLocationInput, WorldStateInput,
+        };
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: name.into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "Threads must advance.".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Warden.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: Some(CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: None,
+                    source_summary: None,
+                }),
+            })
+            .await
+            .unwrap();
+        let location = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Ash Gate".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A blackened wall.".into(),
+                initial_state: WorldStateInput {
+                    controlling_faction: None,
+                    status: None,
+                    prosperity: None,
+                    stability: None,
+                    threat_level: None,
+                    sensory_details: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        (
+            proj.project_id,
+            character.character_id,
+            location.location_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn scene_context_hydrates_plan_targeted_active_threads() {
+        use spindle_core::models::{
+            ContextFormat, CreateConflictInput, CreateMotifInput, CreatePlotLineInput,
+            CreateThemeInput, GetSceneContextInput, PlanChapterInput, PlanChapterSceneInput,
+            StatedConsequence,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, character_id, location_id) =
+            active_threads_base(&svc, "Active Threads Scene").await;
+
+        let theme = svc
+            .create_theme(CreateThemeInput {
+                project_id: project_id.clone(),
+                theme_statement: "Duty devours the self.".into(),
+                thesis_antithesis: "duty vs freedom".into(),
+                introduction_point: None,
+                resolution_point: None,
+            })
+            .await
+            .unwrap();
+        let conflict = svc
+            .create_conflict(CreateConflictInput {
+                project_id: project_id.clone(),
+                name: "Mara vs Wraith".into(),
+                conflict_type: "person-vs-supernatural".into(),
+                stakes: "The village burns if she fails.".into(),
+                escalation_stages: Vec::new(),
+                expected_total_cycles: None,
+                try_fail_cycles: Vec::new(),
+                stated_consequences: vec![StatedConsequence {
+                    description: "The ward will shatter by dawn.".into(),
+                    stated_at: None,
+                    must_demonstrate_by: None,
+                    delivered: false,
+                }],
+            })
+            .await
+            .unwrap();
+        let plot_line = svc
+            .create_plot_line(CreatePlotLineInput {
+                project_id: project_id.clone(),
+                name: "The Sundering".into(),
+                plot_type: "main".into(),
+                summary: "The dark returns to reclaim the world.".into(),
+                status: Some("rising".into()),
+                convergence_points: Vec::new(),
+                connected_conflict_ids: Vec::new(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let motif = svc
+            .create_motif(CreateMotifInput {
+                project_id: project_id.clone(),
+                name: "Cold iron".into(),
+                description: "Iron that never warms.".into(),
+                max_uses_per_chapter: Some(2),
+                connected_theme_ids: vec![theme.theme_id.clone()],
+            })
+            .await
+            .unwrap();
+
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            pov_character_id: Some(character_id.clone()),
+            synopsis: "Mara holds the gate.".into(),
+            target_theme_ids: vec![theme.theme_id.clone()],
+            target_conflict_ids: vec![conflict.conflict_id.clone()],
+            target_plot_line_ids: vec![plot_line.plot_line_id.clone()],
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara takes the watch".into(),
+                beat_structure: vec!["arrival".into()],
+                character_ids: vec![character_id.clone()],
+                purpose: "establishing".into(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let threads = &ctx.novel.active_threads;
+        assert_eq!(threads.len(), 4, "all four targeted threads hydrate");
+        let by_kind = |kind: &str| threads.iter().find(|t| t.kind == kind).unwrap();
+        assert_eq!(by_kind("theme").id, theme.theme_id);
+        assert_eq!(by_kind("theme").name, "Duty devours the self.");
+        assert_eq!(by_kind("theme").statement, "Duty devours the self.");
+        let conflict_thread = by_kind("conflict");
+        assert_eq!(conflict_thread.name, "Mara vs Wraith");
+        assert_eq!(conflict_thread.statement, "The village burns if she fails.");
+        assert_eq!(conflict_thread.status, "person-vs-supernatural");
+        assert_eq!(
+            conflict_thread.next_expectation.as_deref(),
+            Some("The ward will shatter by dawn."),
+            "undelivered stated consequence surfaces as next expectation"
+        );
+        let plot_thread = by_kind("plot_line");
+        assert_eq!(plot_thread.name, "The Sundering");
+        assert_eq!(
+            plot_thread.statement,
+            "The dark returns to reclaim the world."
+        );
+        assert_eq!(plot_thread.status, "rising");
+        let motif_thread = by_kind("motif");
+        assert_eq!(motif_thread.id, motif.motif_id);
+        assert_eq!(motif_thread.name, "Cold iron");
+        assert_eq!(motif_thread.statement, "Iron that never warms.");
+        assert_eq!(
+            motif_thread.next_expectation.as_deref(),
+            Some("use sparingly: ≤2 per chapter")
+        );
+
+        // Deterministic ordering: theme -> conflict -> plot_line -> motif.
+        let kinds: Vec<&str> = threads.iter().map(|t| t.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["theme", "conflict", "plot_line", "motif"]);
+
+        let envelope = svc
+            .get_scene_context_envelope(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            envelope
+                .context_markdown
+                .as_deref()
+                .is_some_and(|md| md.contains("ACTIVE THREADS")),
+            "rendered scene-context markdown contains an ACTIVE THREADS block"
+        );
+    }
+
+    #[tokio::test]
+    async fn chapter_briefing_hydrates_plan_targeted_active_threads() {
+        use spindle_core::models::{
+            ContextFormat, CreateThemeInput, GetChapterBriefingInput, PlanChapterInput,
+            PlanChapterSceneInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, character_id, location_id) =
+            active_threads_base(&svc, "Active Threads Briefing").await;
+
+        let theme = svc
+            .create_theme(CreateThemeInput {
+                project_id: project_id.clone(),
+                theme_statement: "The line must hold.".into(),
+                thesis_antithesis: "order vs chaos".into(),
+                introduction_point: None,
+                resolution_point: None,
+            })
+            .await
+            .unwrap();
+
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            pov_character_id: Some(character_id.clone()),
+            synopsis: "Mara holds the gate.".into(),
+            target_theme_ids: vec![theme.theme_id.clone()],
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara takes the watch".into(),
+                beat_structure: vec!["arrival".into()],
+                character_ids: vec![character_id.clone()],
+                purpose: "establishing".into(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+
+        let briefing = svc
+            .get_chapter_briefing(GetChapterBriefingInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                character_ids: vec![character_id.clone()],
+                location_id: Some(location_id.clone()),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                recent_chapter_limit: None,
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(briefing.active_threads.len(), 1);
+        assert_eq!(briefing.active_threads[0].kind, "theme");
+        assert_eq!(briefing.active_threads[0].id, theme.theme_id);
+        assert!(
+            briefing.briefing_markdown.contains("ACTIVE THREADS"),
+            "briefing markdown contains an ACTIVE THREADS block"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_skips_stale_active_thread_ids() {
+        use spindle_core::models::{
+            ContextFormat, CreatePlotLineInput, GetSceneContextInput, PlanChapterInput,
+            PlanChapterSceneInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, character_id, location_id) =
+            active_threads_base(&svc, "Stale Thread").await;
+
+        let plot_line = svc
+            .create_plot_line(CreatePlotLineInput {
+                project_id: project_id.clone(),
+                name: "Live plot".into(),
+                plot_type: "main".into(),
+                summary: "This one exists.".into(),
+                status: Some("rising".into()),
+                convergence_points: Vec::new(),
+                connected_conflict_ids: Vec::new(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            pov_character_id: Some(character_id.clone()),
+            synopsis: "Mara holds the gate.".into(),
+            // A theme id that resolves to nothing plus a real plot line.
+            target_theme_ids: vec!["theme:does-not-exist".into()],
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: vec![plot_line.plot_line_id.clone()],
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara takes the watch".into(),
+                beat_structure: vec!["arrival".into()],
+                character_ids: vec![character_id.clone()],
+                purpose: "establishing".into(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ctx.novel.active_threads.len(),
+            1,
+            "stale theme id is skipped, real plot line survives"
+        );
+        assert_eq!(ctx.novel.active_threads[0].kind, "plot_line");
+        assert_eq!(ctx.novel.active_threads[0].id, plot_line.plot_line_id);
+    }
+
+    #[tokio::test]
+    async fn scene_context_omits_active_threads_when_no_targets() {
+        use spindle_core::models::{
+            ContextFormat, GetSceneContextInput, PlanChapterInput, PlanChapterSceneInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, character_id, location_id) = active_threads_base(&svc, "No Targets").await;
+
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            pov_character_id: Some(character_id.clone()),
+            synopsis: "Mara holds the gate.".into(),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara takes the watch".into(),
+                beat_structure: vec!["arrival".into()],
+                character_ids: vec![character_id.clone()],
+                purpose: "establishing".into(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(ctx.novel.active_threads.is_empty());
+
+        let envelope = svc
+            .get_scene_context_envelope(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            envelope
+                .context_markdown
+                .as_deref()
+                .is_some_and(|md| !md.contains("ACTIVE THREADS")),
+            "no ACTIVE THREADS header when the vec is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_context_active_threads_budget_and_ordering() {
+        use spindle_core::models::{
+            ContextFormat, CreateThemeInput, GetSceneContextInput, PlanChapterInput,
+            PlanChapterSceneInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let (project_id, character_id, location_id) =
+            active_threads_base(&svc, "Budget Threads").await;
+
+        // One theme with a very long statement including multibyte chars near
+        // the 240-char boundary, to prove char-boundary-safe truncation.
+        let long_statement = format!("{}é{}", "a".repeat(239), "b".repeat(4760));
+        let long_theme = svc
+            .create_theme(CreateThemeInput {
+                project_id: project_id.clone(),
+                theme_statement: long_statement.clone(),
+                thesis_antithesis: "x vs y".into(),
+                introduction_point: None,
+                resolution_point: None,
+            })
+            .await
+            .unwrap();
+
+        // Seven targeted themes total (the long one + six more) to prove the
+        // cap of five and id-ascending order within kind.
+        let mut theme_ids = vec![long_theme.theme_id.clone()];
+        for i in 0..6 {
+            let t = svc
+                .create_theme(CreateThemeInput {
+                    project_id: project_id.clone(),
+                    theme_statement: format!("Filler theme {i}."),
+                    thesis_antithesis: "a vs b".into(),
+                    introduction_point: None,
+                    resolution_point: None,
+                })
+                .await
+                .unwrap();
+            theme_ids.push(t.theme_id);
+        }
+
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            pov_character_id: Some(character_id.clone()),
+            synopsis: "Mara holds the gate.".into(),
+            target_theme_ids: theme_ids.clone(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara takes the watch".into(),
+                beat_structure: vec!["arrival".into()],
+                character_ids: vec![character_id.clone()],
+                purpose: "establishing".into(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(16000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let threads = &ctx.novel.active_threads;
+        assert_eq!(threads.len(), 5, "cap of five per kind is enforced");
+
+        // Ordered by id ascending within the theme kind.
+        let mut expected_ids = theme_ids.clone();
+        expected_ids.sort();
+        expected_ids.truncate(5);
+        let got_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(got_ids, expected_ids, "threads sorted by id ascending");
+
+        // Whichever surviving thread is the long theme must be char-safe and
+        // truncated to at most 240 chars.
+        if let Some(long) = threads.iter().find(|t| t.id == long_theme.theme_id) {
+            assert!(
+                long.statement.chars().count() <= 240,
+                "statement truncated to 240 chars, got {}",
+                long.statement.chars().count()
+            );
+            // Char-boundary safety: indexing the whole string must succeed.
+            assert!(long.statement.is_char_boundary(long.statement.len()));
+        }
+    }
+
+    // =========================================================================
+    // T-104 — motif_usage_audit + theme_placement_audit
+    // =========================================================================
+
+    /// Shared fixture: fresh project with a scene drafted at (book 1, chapter
+    /// `chapter`, scene 1). Returns (tempdir, service, project_id, scene_id).
+    async fn motif_theme_fixture_scene(
+        chapter: i32,
+    ) -> (tempfile::TempDir, SqliteSpindleService, String, String) {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+
+        let (tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "mtaudit".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        (tmp, svc, proj.project_id, scene.scene_id)
+    }
+
+    #[tokio::test]
+    async fn motif_usage_audit_flags_overuse_beyond_limit() {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+            CreateMotifInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, scene1) = motif_theme_fixture_scene(1).await;
+        // A second scene in the SAME chapter so two annotation links land in
+        // chapter 1.
+        let scene2 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let motif = svc
+            .create_motif(CreateMotifInput {
+                project_id: project_id.clone(),
+                name: "raven".into(),
+                description: "a black bird".into(),
+                max_uses_per_chapter: Some(1),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        for sid in [&scene1, &scene2.scene_id] {
+            svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+                project_id: project_id.clone(),
+                scene_id: sid.clone(),
+                beats: Vec::new(),
+                motif_ids: vec![motif.motif_id.clone()],
+                theme_ids: Vec::new(),
+                conflict_ids: Vec::new(),
+                intensity: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["motif_usage_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let hits: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "motif_usage_audit" && i.severity == "warning")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "2 links with limit 1 should warn once: {:?}",
+            out.issues
+        );
+        assert!(hits[0].entity_ids.contains(&motif.motif_id));
+    }
+
+    #[tokio::test]
+    async fn motif_usage_audit_at_limit_is_clean() {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput, CreateMotifInput,
+        };
+
+        let (_tmp, svc, project_id, scene1) = motif_theme_fixture_scene(1).await;
+        let motif = svc
+            .create_motif(CreateMotifInput {
+                project_id: project_id.clone(),
+                name: "raven".into(),
+                description: "a black bird".into(),
+                max_uses_per_chapter: Some(1),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        // Exactly one link in chapter 1 == the limit; boundary must be clean.
+        svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+            project_id: project_id.clone(),
+            scene_id: scene1.clone(),
+            beats: Vec::new(),
+            motif_ids: vec![motif.motif_id.clone()],
+            theme_ids: Vec::new(),
+            conflict_ids: Vec::new(),
+            intensity: None,
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                // Two-chapter scope: below the ≥3 threshold, so no unused-info
+                // noise either.
+                scope: ConsistencyScopeInput::chapter_range(1, 1, 1, 2),
+                checks: vec!["motif_usage_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "motif_usage_audit"),
+            "at-limit usage must not fire: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn motif_usage_audit_null_limit_is_silent() {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+            CreateMotifInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, scene1) = motif_theme_fixture_scene(1).await;
+        let scene2 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let motif = svc
+            .create_motif(CreateMotifInput {
+                project_id: project_id.clone(),
+                name: "raven".into(),
+                description: "a black bird".into(),
+                max_uses_per_chapter: None,
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        // Two links, but no limit declared: overuse arm must stay silent.
+        for sid in [&scene1, &scene2.scene_id] {
+            svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+                project_id: project_id.clone(),
+                scene_id: sid.clone(),
+                beats: Vec::new(),
+                motif_ids: vec![motif.motif_id.clone()],
+                theme_ids: Vec::new(),
+                conflict_ids: Vec::new(),
+                intensity: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["motif_usage_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "motif_usage_audit"),
+            "None limit must be silent for overuse: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn motif_usage_audit_unused_info_only_on_wide_scope() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateChapterInput,
+            CreateMotifInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, _scene1) = motif_theme_fixture_scene(1).await;
+        // Add chapters 2 and 3 with scenes so the full scope covers ≥3 chapters.
+        for ch in 2..=3 {
+            svc.create_chapter(CreateChapterInput {
+                project_id: project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(ch),
+                title: None,
+            })
+            .await
+            .unwrap();
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: ch,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+        // A motif never linked by any beat annotation anywhere.
+        let motif = svc
+            .create_motif(CreateMotifInput {
+                project_id: project_id.clone(),
+                name: "raven".into(),
+                description: "a black bird".into(),
+                max_uses_per_chapter: Some(2),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        // Wide scope (3 chapters) → info "declared but unused".
+        let wide = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["motif_usage_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            wide.issues.iter().any(|i| {
+                i.check_type == "motif_usage_audit"
+                    && i.severity == "info"
+                    && i.entity_ids.contains(&motif.motif_id)
+            }),
+            "unused motif over a ≥3-chapter scope should raise info: {:?}",
+            wide.issues
+        );
+
+        // Narrow scope (2 chapters) → no unused-info noise.
+        let narrow = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::chapter_range(1, 1, 1, 2),
+                checks: vec!["motif_usage_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !narrow
+                .issues
+                .iter()
+                .any(|i| i.check_type == "motif_usage_audit"),
+            "unused motif on a <3-chapter scope must stay silent: {:?}",
+            narrow.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn theme_placement_audit_flags_unlinked_introduction() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, CreateThemeInput, StoryPlacement,
+        };
+
+        let (_tmp, svc, project_id, _scene1) = motif_theme_fixture_scene(1).await;
+        // Theme introduced in chapter 1 (in scope) but no beat annotation links
+        // it there.
+        let theme = svc
+            .create_theme(CreateThemeInput {
+                project_id: project_id.clone(),
+                theme_statement: "power corrupts".into(),
+                thesis_antithesis: "order vs freedom".into(),
+                introduction_point: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: None,
+                    note: None,
+                }),
+                resolution_point: None,
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["theme_placement_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            out.issues.iter().any(|i| {
+                i.check_type == "theme_placement_audit"
+                    && i.severity == "info"
+                    && i.entity_ids.contains(&theme.theme_id)
+            }),
+            "introduction chapter with no theme link should raise info: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn theme_placement_audit_linked_introduction_is_clean() {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput,
+            CreateThemeInput, StoryPlacement,
+        };
+
+        let (_tmp, svc, project_id, scene1) = motif_theme_fixture_scene(1).await;
+        let theme = svc
+            .create_theme(CreateThemeInput {
+                project_id: project_id.clone(),
+                theme_statement: "power corrupts".into(),
+                thesis_antithesis: "order vs freedom".into(),
+                introduction_point: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: None,
+                    note: None,
+                }),
+                resolution_point: None,
+            })
+            .await
+            .unwrap();
+        // Link the theme in chapter 1 → placement is honored, no finding.
+        svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+            project_id: project_id.clone(),
+            scene_id: scene1.clone(),
+            beats: Vec::new(),
+            motif_ids: Vec::new(),
+            theme_ids: vec![theme.theme_id.clone()],
+            conflict_ids: Vec::new(),
+            intensity: None,
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["theme_placement_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "theme_placement_audit"),
+            "linked introduction must be clean: {:?}",
+            out.issues
+        );
+    }
+
+    #[tokio::test]
+    async fn theme_placement_audit_null_placement_is_silent() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, CreateThemeInput,
+        };
+
+        let (_tmp, svc, project_id, _scene1) = motif_theme_fixture_scene(1).await;
+        // No introduction_point / resolution_point → silent.
+        svc.create_theme(CreateThemeInput {
+            project_id: project_id.clone(),
+            theme_statement: "power corrupts".into(),
+            thesis_antithesis: "order vs freedom".into(),
+            introduction_point: None,
+            resolution_point: None,
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["theme_placement_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "theme_placement_audit"),
+            "null placement must be silent: {:?}",
+            out.issues
+        );
+    }
+
+    // =========================================================================
+    // V0022 — plot_line_convergence_audit / arc_milestone_audit /
+    // conflict_escalation_audit
+    // =========================================================================
+
+    /// Fresh project + a scene at (book 1, chapter `chapter`, scene 1).
+    /// Returns (tempdir, service, project_id, scene_id, character_id).
+    async fn convergence_fixture_scene(
+        chapter: i32,
+    ) -> (
+        tempfile::TempDir,
+        SqliteSpindleService,
+        String,
+        String,
+        String,
+    ) {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, ContentRating,
+            CreateCharacterInput, SaveSceneDraftInput,
+        };
+
+        let (tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "convaudit".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "x".into(),
+                summary: "s".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Protagonist".into(),
+                summary: "the lead".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        (
+            tmp,
+            svc,
+            proj.project_id,
+            scene.scene_id,
+            character.character_id,
+        )
+    }
+
+    fn placement(book: i32, chapter: i32) -> spindle_core::models::StoryPlacement {
+        spindle_core::models::StoryPlacement {
+            book_number: book,
+            chapter_number: chapter,
+            scene_order: None,
+            note: None,
+        }
+    }
+
+    // ── plot_line_convergence_audit ──────────────────────────────────────
+
+    /// Convergence chapter is in scope, connected conflict declared, but no
+    /// beat annotation in that chapter links it → info naming line + chapter.
+    #[tokio::test]
+    async fn plot_line_convergence_audit_fires_when_unlinked() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, CreateConflictInput, CreatePlotLineInput,
+        };
+
+        let (_tmp, svc, project_id, _scene, _char) = convergence_fixture_scene(1).await;
+        let conflict = svc
+            .create_conflict(CreateConflictInput {
+                project_id: project_id.clone(),
+                name: "the siege".into(),
+                conflict_type: "external".into(),
+                stakes: "the city".into(),
+                escalation_stages: Vec::new(),
+                expected_total_cycles: None,
+                try_fail_cycles: Vec::new(),
+                stated_consequences: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let plot = svc
+            .create_plot_line(CreatePlotLineInput {
+                project_id: project_id.clone(),
+                name: "main line".into(),
+                plot_type: "main".into(),
+                summary: "s".into(),
+                status: None,
+                convergence_points: vec![placement(1, 1)],
+                connected_conflict_ids: vec![conflict.conflict_id.clone()],
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["plot_line_convergence_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let hits: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "plot_line_convergence_audit")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "one unlinked convergence should fire: {:?}",
+            out.issues
+        );
+        assert_eq!(hits[0].severity, "info");
+        assert!(hits[0].entity_ids.contains(&plot.plot_line_id));
+    }
+
+    /// A beat annotation in the convergence chapter links the connected conflict
+    /// → no finding.
+    #[tokio::test]
+    async fn plot_line_convergence_audit_linked_is_clean() {
+        use spindle_core::models::{
+            AnnotateSceneBeatsInput, CheckConsistencyInput, ConsistencyScopeInput,
+            CreateConflictInput, CreatePlotLineInput,
+        };
+
+        let (_tmp, svc, project_id, scene, _char) = convergence_fixture_scene(1).await;
+        let conflict = svc
+            .create_conflict(CreateConflictInput {
+                project_id: project_id.clone(),
+                name: "the siege".into(),
+                conflict_type: "external".into(),
+                stakes: "the city".into(),
+                escalation_stages: Vec::new(),
+                expected_total_cycles: None,
+                try_fail_cycles: Vec::new(),
+                stated_consequences: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.create_plot_line(CreatePlotLineInput {
+            project_id: project_id.clone(),
+            name: "main line".into(),
+            plot_type: "main".into(),
+            summary: "s".into(),
+            status: None,
+            convergence_points: vec![placement(1, 1)],
+            connected_conflict_ids: vec![conflict.conflict_id.clone()],
+            connected_theme_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+        svc.annotate_scene_beats(AnnotateSceneBeatsInput {
+            project_id: project_id.clone(),
+            scene_id: scene,
+            beats: Vec::new(),
+            motif_ids: Vec::new(),
+            theme_ids: Vec::new(),
+            conflict_ids: vec![conflict.conflict_id.clone()],
+            intensity: None,
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["plot_line_convergence_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "plot_line_convergence_audit"),
+            "linked convergence must be clean: {:?}",
+            out.issues
+        );
+    }
+
+    /// A plot line that declares no connected conflicts/themes is silent even if
+    /// its convergence chapter is unannotated.
+    #[tokio::test]
+    async fn plot_line_convergence_audit_no_connections_is_silent() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, CreatePlotLineInput,
+        };
+
+        let (_tmp, svc, project_id, _scene, _char) = convergence_fixture_scene(1).await;
+        svc.create_plot_line(CreatePlotLineInput {
+            project_id: project_id.clone(),
+            name: "main line".into(),
+            plot_type: "main".into(),
+            summary: "s".into(),
+            status: None,
+            convergence_points: vec![placement(1, 1)],
+            connected_conflict_ids: Vec::new(),
+            connected_theme_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["plot_line_convergence_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "plot_line_convergence_audit"),
+            "no declared connections must be silent: {:?}",
+            out.issues
+        );
+    }
+
+    // ── arc_milestone_audit ──────────────────────────────────────────────
+
+    async fn seed_arc_with_milestone(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        character_id: &str,
+        milestone_placement: Option<spindle_core::models::StoryPlacement>,
+        reached_at: Option<spindle_core::models::StoryPlacement>,
+    ) -> String {
+        use spindle_core::models::{CharacterArcMilestone, CreateCharacterArcInput};
+        let arc = svc
+            .create_character_arc(CreateCharacterArcInput {
+                project_id: project_id.to_string(),
+                character_id: character_id.to_string(),
+                arc_type: "positive".into(),
+                starting_state: "naive".into(),
+                ending_state: "wise".into(),
+                milestones: vec![CharacterArcMilestone {
+                    label: "the reckoning".into(),
+                    placement: milestone_placement,
+                    description: "faces the truth".into(),
+                    unlocks: Vec::new(),
+                    reached_at,
+                }],
+                thematic_purpose: "growth".into(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        arc.character_arc_id
+    }
+
+    async fn seed_scene_at(svc: &SqliteSpindleService, project_id: &str, chapter: i32) {
+        use spindle_core::models::{ContentRating, CreateChapterInput, SaveSceneDraftInput};
+        svc.create_chapter(CreateChapterInput {
+            project_id: project_id.to_string(),
+            book_number: Some(1),
+            book_id: None,
+            chapter_number: Some(chapter),
+            title: None,
+        })
+        .await
+        .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.to_string(),
+            book_number: 1,
+            chapter_number: chapter,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "x".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    /// Milestone placed at chapter P, not reached, and the manuscript already
+    /// runs past P → warning with the overdue chapter count.
+    #[tokio::test]
+    async fn arc_milestone_audit_overdue_warns() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, character_id) = convergence_fixture_scene(1).await;
+        // Scenes exist through chapter 4; milestone due at chapter 2.
+        for ch in [2, 3, 4] {
+            seed_scene_at(&svc, &project_id, ch).await;
+        }
+        let arc_id = seed_arc_with_milestone(
+            &svc,
+            &project_id,
+            &character_id,
+            Some(placement(1, 2)),
+            None,
+        )
+        .await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["arc_milestone_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let hits: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "arc_milestone_audit")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "one overdue milestone should warn: {:?}",
+            out.issues
+        );
+        assert_eq!(hits[0].severity, "warning");
+        assert!(hits[0].entity_ids.contains(&arc_id));
+        assert!(
+            hits[0].message.contains("the reckoning"),
+            "message should name the milestone: {}",
+            hits[0].message
+        );
+        assert!(
+            hits[0].message.contains('2'),
+            "overdue by max(4) - P(2) = 2: {}",
+            hits[0].message
+        );
+    }
+
+    /// Milestone due at the current max chapter (== P), not reached → info
+    /// "due now".
+    #[tokio::test]
+    async fn arc_milestone_audit_due_now_info() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, character_id) = convergence_fixture_scene(1).await;
+        seed_scene_at(&svc, &project_id, 2).await; // max scoped chapter = 2
+        let arc_id = seed_arc_with_milestone(
+            &svc,
+            &project_id,
+            &character_id,
+            Some(placement(1, 2)),
+            None,
+        )
+        .await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["arc_milestone_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let hits: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "arc_milestone_audit")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "due-now should surface one info: {:?}",
+            out.issues
+        );
+        assert_eq!(hits[0].severity, "info");
+        assert!(hits[0].entity_ids.contains(&arc_id));
+    }
+
+    /// Milestone with a `reached_at` marker is silent regardless of chapters.
+    #[tokio::test]
+    async fn arc_milestone_audit_reached_is_silent() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, character_id) = convergence_fixture_scene(1).await;
+        for ch in [2, 3, 4] {
+            seed_scene_at(&svc, &project_id, ch).await;
+        }
+        seed_arc_with_milestone(
+            &svc,
+            &project_id,
+            &character_id,
+            Some(placement(1, 2)),
+            Some(placement(1, 3)),
+        )
+        .await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["arc_milestone_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "arc_milestone_audit"),
+            "reached milestone must be silent: {:?}",
+            out.issues
+        );
+    }
+
+    /// Milestone with no placement is silent.
+    #[tokio::test]
+    async fn arc_milestone_audit_null_placement_is_silent() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, character_id) = convergence_fixture_scene(1).await;
+        for ch in [2, 3, 4] {
+            seed_scene_at(&svc, &project_id, ch).await;
+        }
+        seed_arc_with_milestone(&svc, &project_id, &character_id, None, None).await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["arc_milestone_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "arc_milestone_audit"),
+            "null placement must be silent: {:?}",
+            out.issues
+        );
+    }
+
+    /// The arc-update path can set `reached_at` on a milestone by resending the
+    /// milestones array through update_entity; the audit then goes silent.
+    #[tokio::test]
+    async fn arc_milestone_reached_at_settable_via_update_entity() {
+        use spindle_core::models::{
+            CheckConsistencyInput, ConsistencyScopeInput, UpdateEntityInput,
+        };
+
+        let (_tmp, svc, project_id, _scene, character_id) = convergence_fixture_scene(1).await;
+        for ch in [2, 3, 4] {
+            seed_scene_at(&svc, &project_id, ch).await;
+        }
+        let arc_id = seed_arc_with_milestone(
+            &svc,
+            &project_id,
+            &character_id,
+            Some(placement(1, 2)),
+            None,
+        )
+        .await;
+
+        // Overdue before the update.
+        let before = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["arc_milestone_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            before
+                .issues
+                .iter()
+                .any(|i| i.check_type == "arc_milestone_audit"),
+            "milestone should be overdue before it is reached"
+        );
+
+        // Resend the whole milestones array with reached_at set.
+        svc.update_entity(UpdateEntityInput {
+            entity_type: "character_arc".into(),
+            entity_id: arc_id.clone(),
+            changes: serde_json::json!({
+                "milestones": [{
+                    "label": "the reckoning",
+                    "placement": {"book_number": 1, "chapter_number": 2, "scene_order": null, "note": null},
+                    "description": "faces the truth",
+                    "unlocks": [],
+                    "reached_at": {"book_number": 1, "chapter_number": 3, "scene_order": null, "note": null}
+                }]
+            }),
+        })
+        .await
+        .unwrap();
+
+        let after = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["arc_milestone_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !after
+                .issues
+                .iter()
+                .any(|i| i.check_type == "arc_milestone_audit"),
+            "after setting reached_at the milestone must be silent: {:?}",
+            after.issues
+        );
+    }
+
+    // ── conflict_escalation_audit ────────────────────────────────────────
+
+    async fn seed_conflict_with_markers(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        markers: serde_json::Value,
+    ) -> String {
+        use spindle_core::models::{CreateConflictInput, UpdateEntityInput};
+        let conflict = svc
+            .create_conflict(CreateConflictInput {
+                project_id: project_id.to_string(),
+                name: "the rivalry".into(),
+                conflict_type: "interpersonal".into(),
+                stakes: "the throne".into(),
+                escalation_stages: vec!["tension".into(), "clash".into(), "war".into()],
+                expected_total_cycles: None,
+                try_fail_cycles: Vec::new(),
+                stated_consequences: Vec::new(),
+            })
+            .await
+            .unwrap();
+        if !markers.is_null() {
+            svc.update_entity(UpdateEntityInput {
+                entity_type: "conflict".into(),
+                entity_id: conflict.conflict_id.clone(),
+                changes: serde_json::json!({ "escalation_demonstrated": markers }),
+            })
+            .await
+            .unwrap();
+        }
+        conflict.conflict_id
+    }
+
+    /// Stage 2 (index 1) demonstrated while stage 1 (index 0) is not → warning.
+    #[tokio::test]
+    async fn conflict_escalation_audit_out_of_order_warns() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, _char) = convergence_fixture_scene(1).await;
+        let conflict_id = seed_conflict_with_markers(
+            &svc,
+            &project_id,
+            serde_json::json!([
+                null,
+                {"book_number": 1, "chapter_number": 2, "scene_order": null, "note": null}
+            ]),
+        )
+        .await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["conflict_escalation_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let hits: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "conflict_escalation_audit")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "out-of-order should warn once: {:?}",
+            out.issues
+        );
+        assert_eq!(hits[0].severity, "warning");
+        assert!(hits[0].entity_ids.contains(&conflict_id));
+        assert!(
+            hits[0].message.contains("tension") && hits[0].message.contains("clash"),
+            "message should name the out-of-order pair labels: {}",
+            hits[0].message
+        );
+    }
+
+    /// Stages demonstrated in order (1 then 2) → silent.
+    #[tokio::test]
+    async fn conflict_escalation_audit_in_order_is_clean() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, _char) = convergence_fixture_scene(1).await;
+        seed_conflict_with_markers(
+            &svc,
+            &project_id,
+            serde_json::json!([
+                {"book_number": 1, "chapter_number": 1, "scene_order": null, "note": null},
+                {"book_number": 1, "chapter_number": 2, "scene_order": null, "note": null}
+            ]),
+        )
+        .await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["conflict_escalation_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "conflict_escalation_audit"),
+            "in-order demonstration must be clean: {:?}",
+            out.issues
+        );
+    }
+
+    /// No demonstration markers at all → silent.
+    #[tokio::test]
+    async fn conflict_escalation_audit_no_markers_is_silent() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc, project_id, _scene, _char) = convergence_fixture_scene(1).await;
+        seed_conflict_with_markers(&svc, &project_id, serde_json::Value::Null).await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["conflict_escalation_audit".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !out.issues
+                .iter()
+                .any(|i| i.check_type == "conflict_escalation_audit"),
+            "no markers must be silent: {:?}",
+            out.issues
+        );
+    }
+
+    // ── T-106: promise-payoff deep-check candidate detection ──────────────
+    // Model-backed Tier-2 check. Proposes (never writes) that an unresolved
+    // promise the prose already paid off should be confirmed via
+    // `update_promise_status`. Gated to `deep_check == true`. All tests are
+    // hermetic and drive `model_router.complete` through `fresh_service_local`
+    // (or a config-pinned unroutable HTTP route for the honest-skip path).
+
+    /// Seed a project + one scoped scene whose prose carries `prose`, and an
+    /// active (planted) promise with a declared payoff. Returns
+    /// `(project_id, promise_id)`.
+    async fn seed_promise_payoff_project(
+        svc: &SqliteSpindleService,
+        name: &str,
+        prose: &str,
+    ) -> (String, String) {
+        use spindle_core::models::{
+            ContentRating, CreateNarrativePromiseInput, SaveSceneDraftInput, StoryPlacement,
+        };
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: name.into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: prose.into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let promise = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.project_id.clone(),
+                promise_type: "setup".into(),
+                description: "the buried crown will be reclaimed".into(),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(0),
+                    note: None,
+                },
+                planned_payoff: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 2,
+                    scene_order: Some(0),
+                    note: None,
+                }),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        (proj.project_id, promise.narrative_promise_id)
+    }
+
+    fn promise_payoff_input(
+        project_id: &str,
+        deep: bool,
+    ) -> spindle_core::models::CheckConsistencyInput {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+        CheckConsistencyInput {
+            project_id: project_id.to_string(),
+            scope: ConsistencyScopeInput::full(),
+            checks: vec!["promise_payoff_detection".to_string()],
+            severity_filter: Vec::new(),
+            deep_check: Some(deep),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        }
+    }
+
+    /// Positive: a scoped scene carrying the payoff sentinel yields exactly one
+    /// info finding naming the promise and the `update_promise_status` follow-up.
+    #[tokio::test]
+    async fn deep_check_surfaces_promise_payoff_candidate() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project_id, promise_id) = seed_promise_payoff_project(
+            &svc,
+            "promise-payoff",
+            "At last the reclaimed crown settled on her brow, and the hall knelt. \
+             MOCK_PROMISE_PAYOFF. The old debt was paid in full.",
+        )
+        .await;
+
+        let deep = svc
+            .check_consistency(promise_payoff_input(&project_id, true))
+            .await
+            .unwrap();
+
+        let findings: Vec<_> = deep
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "promise_payoff_detection")
+            .collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "exactly one payoff candidate expected: {:?}",
+            deep.issues
+        );
+        let finding = findings[0];
+        assert_eq!(finding.severity, "info");
+        assert!(
+            finding.message.contains(&promise_id),
+            "message must name the promise id: {}",
+            finding.message
+        );
+        assert!(
+            finding.message.contains("update_promise_status"),
+            "message must point at the write tool: {}",
+            finding.message
+        );
+    }
+
+    /// Shallow-silent: the same setup without `deep_check` yields nothing.
+    #[tokio::test]
+    async fn shallow_check_has_no_promise_payoff_finding() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project_id, _promise_id) = seed_promise_payoff_project(
+            &svc,
+            "promise-payoff-shallow",
+            "At last the reclaimed crown settled on her brow. MOCK_PROMISE_PAYOFF.",
+        )
+        .await;
+
+        let shallow = svc
+            .check_consistency(promise_payoff_input(&project_id, false))
+            .await
+            .unwrap();
+        assert!(
+            !shallow
+                .issues
+                .iter()
+                .any(|i| i.check_type == "promise_payoff_detection"),
+            "the deep-only check must be silent without deep_check: {:?}",
+            shallow.issues
+        );
+    }
+
+    /// Cap + no silent cap: 12 unresolved promises, at most 10 scanned, and a
+    /// single summary info finding reports the 2 that were not scanned. Prose
+    /// carries no sentinel, so the model returns empty for the scanned promises.
+    #[tokio::test]
+    async fn deep_check_caps_promise_scan_and_reports_unscanned() {
+        use spindle_core::models::{CreateNarrativePromiseInput, StoryPlacement};
+        let (_tmp, svc) = fresh_service_local().await;
+        // One scoped scene, no sentinel -> model returns empty findings.
+        let (project_id, _first) =
+            seed_promise_payoff_project(&svc, "promise-payoff-cap", "A quiet, unresolved scene.")
+                .await;
+
+        // The seed already created promise #1; add 11 more for 12 total.
+        for i in 0..11 {
+            svc.create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: project_id.clone(),
+                promise_type: "setup".into(),
+                description: format!("dangling thread {i}"),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(0),
+                    note: None,
+                },
+                planned_payoff: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 2,
+                    scene_order: Some(0),
+                    note: None,
+                }),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let deep = svc
+            .check_consistency(promise_payoff_input(&project_id, true))
+            .await
+            .unwrap();
+
+        let summary = deep
+            .issues
+            .iter()
+            .find(|i| {
+                i.check_type == "promise_payoff_detection"
+                    && i.severity == "info"
+                    && i.message.contains("not scanned")
+            })
+            .expect("a summary finding must report the unscanned overflow");
+        assert!(
+            summary.message.contains('2'),
+            "12 candidates - 10 scanned = 2 unscanned: {}",
+            summary.message
+        );
+    }
+
+    /// No-writes: the deep run must not mutate any promise row.
+    #[tokio::test]
+    async fn deep_check_does_not_write_promise_rows() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project_id, promise_id) = seed_promise_payoff_project(
+            &svc,
+            "promise-payoff-nowrite",
+            "At last the reclaimed crown settled on her brow. MOCK_PROMISE_PAYOFF.",
+        )
+        .await;
+
+        let before = svc
+            .repository
+            .get_narrative_promise(&promise_id)
+            .await
+            .unwrap();
+        svc.check_consistency(promise_payoff_input(&project_id, true))
+            .await
+            .unwrap();
+        let after = svc
+            .repository
+            .get_narrative_promise(&promise_id)
+            .await
+            .unwrap();
+
+        assert_eq!(before.status, after.status, "status must be untouched");
+        assert_eq!(
+            before.updated_at, after.updated_at,
+            "updated_at must be byte-identical"
+        );
+    }
+
+    /// Honest-skip: when the `review` route errors (unroutable HTTP endpoint,
+    /// no real egress), the check emits exactly one info finding that reads as
+    /// SKIPPED rather than clean.
+    #[tokio::test]
+    async fn deep_check_honest_skips_when_review_route_unreachable() {
+        use spindle_core::models::ConfigureAgentsInput;
+        let (tmp, svc) = fresh_service_local().await;
+        // Point the `review` route at an unroutable localhost port (reserved
+        // port 1). No real network egress; the connection fails fast.
+        let config_path = tmp.path().join("unreachable-review.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-http"
+name = "Review HTTP"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:1/v1"
+model = "unreachable"
+
+[[routing]]
+route = "review"
+agent = "review-http"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let (project_id, _promise_id) = seed_promise_payoff_project(
+            &svc,
+            "promise-payoff-skip",
+            "At last the reclaimed crown settled on her brow. MOCK_PROMISE_PAYOFF.",
+        )
+        .await;
+
+        let deep = svc
+            .check_consistency(promise_payoff_input(&project_id, true))
+            .await
+            .unwrap();
+
+        let findings: Vec<_> = deep
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "promise_payoff_detection")
+            .collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "an unreachable review route must yield exactly one skip finding: {:?}",
+            deep.issues
+        );
+        assert_eq!(findings[0].severity, "info");
+        assert!(
+            findings[0].message.to_lowercase().contains("skipped"),
+            "the finding must read as skipped, not clean: {}",
+            findings[0].message
+        );
+    }
+
+    /// Resolved-promise exclusion: a paid_off promise with sentinel prose is
+    /// never proposed.
+    #[tokio::test]
+    async fn deep_check_excludes_resolved_promise() {
+        use spindle_core::models::UpdatePromiseStatusInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project_id, promise_id) = seed_promise_payoff_project(
+            &svc,
+            "promise-payoff-resolved",
+            "At last the reclaimed crown settled on her brow. MOCK_PROMISE_PAYOFF.",
+        )
+        .await;
+        svc.update_promise_status(UpdatePromiseStatusInput {
+            narrative_promise_id: promise_id.clone(),
+            status: "paid_off".into(),
+            note: None,
+        })
+        .await
+        .unwrap();
+
+        let deep = svc
+            .check_consistency(promise_payoff_input(&project_id, true))
+            .await
+            .unwrap();
+        assert!(
+            !deep
+                .issues
+                .iter()
+                .any(|i| i.check_type == "promise_payoff_detection"),
+            "a resolved promise must never be proposed: {:?}",
+            deep.issues
+        );
+    }
+
+    #[test]
+    fn promise_payoff_parse_extracts_matches() {
+        let out = r#"{"matches":[{"paid_off":true,"scene_ref":"scene 1","evidence":"e"}]}"#;
+        let matches = super::parse_deep_promise_payoff_output(out).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].paid_off);
+        assert_eq!(matches[0].scene_ref.as_deref(), Some("scene 1"));
+    }
+
+    #[test]
+    fn promise_payoff_parse_handles_code_fence_and_prose() {
+        let out = "Here is the audit:\n```json\n{\"matches\":[{\"paid_off\":true}]}\n```";
+        let matches = super::parse_deep_promise_payoff_output(out).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].paid_off);
+    }
+
+    #[test]
+    fn promise_payoff_parse_empty_matches() {
+        let matches = super::parse_deep_promise_payoff_output(r#"{"matches":[]}"#).unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn promise_payoff_parse_rejects_non_json() {
+        // The default local `review` stub returns prose, not JSON; the caller
+        // turns this Err into no matches (never a guess).
+        assert!(
+            super::parse_deep_promise_payoff_output(
+                "Literary critic and craft technician both reviewed: ..."
+            )
+            .is_err()
+        );
     }
 }

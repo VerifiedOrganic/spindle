@@ -128,6 +128,7 @@ use rmcp::schemars::generate::SchemaSettings;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Number, Value};
+use spindle_adapters::DraftRoutePreflightProblem;
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 use spindle_core::models::*;
 use spindle_core::style::*;
@@ -269,6 +270,7 @@ impl ToolRouter {
                 "create_character_arc",
                 "create_system_overlay",
                 "preflight_book_export",
+                "compile_manuscript",
                 "get_writer_state",
                 "get_scene_context",
                 "get_entity",
@@ -782,6 +784,10 @@ impl ToolRouter {
             tool::<PreflightBookExportInput, PreflightBookExportOutput>(
                 "preflight_book_export",
                 "Validate a project, single book, or inclusive chapter range within a book for EPUB export and return blocking issues or warnings before writing a file",
+            ),
+            tool::<CompileManuscriptInput, CompileManuscriptOutput>(
+                "compile_manuscript",
+                "Assemble the committed prose of a book (or an inclusive chapter range within it) on the active branch into one Markdown read-so-far document, with per-chapter and per-scene headings; planned-but-undrafted scenes render an explicit placeholder and are reported in missing_scenes. Optionally writes the Markdown to the project's workspace artifacts directory.",
             ),
             tool::<ExportBibleInput, ExportBibleOutput>(
                 "export_bible",
@@ -1797,6 +1803,10 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.preflight_book_export(input))
                     .await
             }
+            "compile_manuscript" => {
+                self.invoke(arguments, |input| self.service.compile_manuscript(input))
+                    .await
+            }
             "export_bible" => {
                 self.invoke(arguments, |input| self.service.export_bible(input))
                     .await
@@ -2355,6 +2365,11 @@ impl ToolRouter {
 
         let mut missing_requirements = Vec::new();
         let mut details = Vec::new();
+        // Distinct content ratings of planned scenes across the requested
+        // chapter range. Keyed by the canonical lowercase rating string so the
+        // draft-route preflight below runs once per rating in a deterministic
+        // order. Populated as each scene's rating is resolved in the loop.
+        let mut planned_ratings: BTreeSet<&'static str> = BTreeSet::new();
 
         for ch_num in input.start_chapter..=end_chapter {
             let mut chapter_missing_items = Vec::new();
@@ -2426,15 +2441,20 @@ impl ToolRouter {
                                 ch_num, scene.scene_order, location_id
                             ));
                         }
-                        if rating.is_none() {
-                            chapter_missing_items.push(format!(
-                                "scene {}: missing content rating",
-                                scene.scene_order
-                            ));
-                            missing_requirements.push(format!(
-                                "Chapter {} scene {}: missing content rating",
-                                ch_num, scene.scene_order
-                            ));
+                        match rating.as_ref() {
+                            Some(rating) => {
+                                planned_ratings.insert(rating.as_str());
+                            }
+                            None => {
+                                chapter_missing_items.push(format!(
+                                    "scene {}: missing content rating",
+                                    scene.scene_order
+                                ));
+                                missing_requirements.push(format!(
+                                    "Chapter {} scene {}: missing content rating",
+                                    ch_num, scene.scene_order
+                                ));
+                            }
                         }
                     }
                 }
@@ -2448,6 +2468,37 @@ impl ToolRouter {
                 ready: chapter_missing_items.is_empty(),
                 missing_items: chapter_missing_items,
             });
+        }
+
+        // Agent-route preflight: for each distinct rating the planned scenes
+        // need, verify the `draft` route resolves to a configured, key-holding
+        // agent that covers the rating. Config-level only — no network I/O; a
+        // route that falls back to a built-in local route serves every rating
+        // and is never flagged. Any unmet requirement blocks the run so a
+        // multi-hour authoring run fails fast at `prepare` instead of hours in.
+        let model_router = self.service.repository().model_router();
+        for rating in &planned_ratings {
+            let preflight = model_router.draft_route_preflight(rating);
+            if let Some(problem) = preflight.problem {
+                let detail = match problem {
+                    DraftRoutePreflightProblem::Unresolved => {
+                        "no draft route is configured for this rating".to_string()
+                    }
+                    DraftRoutePreflightProblem::MissingApiKey { env_var } => {
+                        format!("agent is missing API key env {env_var}")
+                    }
+                    DraftRoutePreflightProblem::RatingNotCovered => {
+                        "agent does not cover this rating".to_string()
+                    }
+                };
+                let agent = preflight
+                    .agent_id
+                    .map(|id| format!(" (agent {id})"))
+                    .unwrap_or_default();
+                missing_requirements.push(format!(
+                    "Route draft cannot serve rating {rating}{agent}: {detail}"
+                ));
+            }
         }
 
         let ready_to_draft = missing_requirements.is_empty();
@@ -5952,5 +6003,104 @@ mod tests {
         assert!(tool_names.contains(&"apply_style_revision_patch"));
         assert!(tool_names.contains(&"list_style_revision_patch_audits"));
         assert!(tool_names.contains(&"rollback_style_revision_patch"));
+    }
+
+    #[tokio::test]
+    async fn compile_manuscript_tool_reads_chapters_and_flags_undrafted_scenes() {
+        let router = router().await;
+
+        let create_project_args = serde_json::to_value(CreateProjectInput {
+            name: "Compile MCP".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "read so far".to_string(),
+                style_notes: vec![],
+                boundaries: vec![],
+            },
+        })
+        .expect("create project args");
+        let create_project_args = create_project_args
+            .as_object()
+            .cloned()
+            .expect("create project object");
+        let project: CreateProjectOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("create_project", Some(&create_project_args))
+                .await
+                .expect("create project"),
+        ))
+        .expect("project output");
+
+        // One committed scene in chapter 1.
+        let save_args = serde_json::to_value(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "The tool assembles this prose.".to_string(),
+            summary: "s".to_string(),
+            content_rating: ContentRating::General,
+            tone: None,
+            source_path: None,
+            generation_id: None,
+            ..Default::default()
+        })
+        .expect("save args");
+        let save_args = save_args.as_object().cloned().expect("save args object");
+        router
+            .call_tool("save_scene_draft", Some(&save_args))
+            .await
+            .expect("save scene draft");
+
+        // Chapter 2 has a plan with an undrafted second scene.
+        let plan_args = serde_json::to_value(PlanChapterInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 2,
+            pov_character_id: None,
+            synopsis: "planned".to_string(),
+            target_theme_ids: vec![],
+            target_conflict_ids: vec![],
+            target_plot_line_ids: vec![],
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "undrafted".to_string(),
+                purpose: "establishing".to_string(),
+                ..Default::default()
+            }],
+        })
+        .expect("plan args");
+        let plan_args = plan_args.as_object().cloned().expect("plan args object");
+        router
+            .call_tool("plan_chapter", Some(&plan_args))
+            .await
+            .expect("plan chapter");
+
+        let compile_args = serde_json::to_value(CompileManuscriptInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            start_chapter: None,
+            end_chapter: None,
+            write_to_workspace: false,
+        })
+        .expect("compile args");
+        let compile_args = compile_args
+            .as_object()
+            .cloned()
+            .expect("compile args object");
+        let out: CompileManuscriptOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("compile_manuscript", Some(&compile_args))
+                .await
+                .expect("compile manuscript"),
+        ))
+        .expect("compile output");
+
+        assert_eq!(out.scene_count, 1);
+        assert!(out.markdown.contains("The tool assembles this prose."));
+        assert!(out.markdown.contains("> [scene 2.1 not yet drafted]"));
+        assert_eq!(out.missing_scenes, vec!["2.1".to_string()]);
     }
 }

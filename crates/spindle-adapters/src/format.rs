@@ -14,22 +14,23 @@ use std::collections::BTreeSet;
 
 use spindle_core::context_bundle::{estimate_json_tokens, estimate_text_tokens};
 use spindle_core::models::{
-    AgencyCheckSummary, BookOutline, BranchSummary, CanonicalFactReadModel,
+    ActiveThreadSummary, AgencyCheckSummary, BookOutline, BranchSummary, CanonicalFactReadModel,
     ChapterBriefingSceneSeed, ChapterOutline, ChapterPlanBriefing, ChapterSummaryBriefing,
     CharacterStateSummary, ConsistencyScope, ContextFormat, EconomySummary, FutureKnowledgeSummary,
     GetSceneDeleteImpactOutput, GetSceneMoveImpactOutput, HardConstraint, KnowledgeBriefingItem,
-    LocationSummary, NarrativePromiseDueSummary, PacingDirectiveSummary, ReaderContract,
-    RecentSceneSummary, RelationshipSummary, SceneContextNovelLayer, SceneContextOutput,
-    SceneContextSceneLayer, SceneDeleteImpactGroup, SceneMoveImpactGroup, SearchBibleResultItem,
-    SystemOverlaySummary, TimelineEventSummary, WorldStateSummary, WriterIntent, WriterState,
+    LocationSummary, NarrativePromiseDueSummary, PacingDirectiveSummary, PreviousSceneTail,
+    ReaderContract, RecentSceneSummary, RelationshipSummary, SceneContextNovelLayer,
+    SceneContextOutput, SceneContextSceneLayer, SceneDeleteImpactGroup, SceneMoveImpactGroup,
+    SearchBibleResultItem, SystemOverlaySummary, TimelineEventSummary, WorldStateSummary,
+    WriterIntent, WriterState,
 };
 use spindle_core::subject_snapshot::{RenderDepth, SubjectSnapshot as SnapshotSubject};
 
 use crate::sqlite::json_records::StoredStoryPlacement;
 use crate::sqlite::records::{
-    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, Economy,
-    FutureKnowledge, KnowledgeFact, Location, NarrativePromise, PacingTracker, Scene,
-    SystemOverlay, TimelineEvent, WorldRule,
+    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, Conflict, Economy,
+    FutureKnowledge, KnowledgeFact, Location, NarrativePromise, PacingTracker, PlotLine, Scene,
+    SceneBeatAnnotation, SystemOverlay, TimelineEvent, WorldRule,
 };
 
 // =============================================================================
@@ -253,6 +254,7 @@ pub fn format_chapter_briefing_markdown(
     chapter_outline: Option<&ChapterOutline>,
     book_outline: Option<&BookOutline>,
     chapter_plan: Option<&ChapterPlanBriefing>,
+    active_threads: &[ActiveThreadSummary],
     scene_context: Option<&SceneContextOutput>,
     scene_seed: &ChapterBriefingSceneSeed,
 ) -> String {
@@ -284,6 +286,10 @@ pub fn format_chapter_briefing_markdown(
     }
     if let Some(chapter_plan) = chapter_plan {
         lines.push(format_current_chapter_plan_markdown(chapter_plan));
+    }
+    let active_threads_markdown = format_chapter_briefing_active_threads_markdown(active_threads);
+    if !active_threads_markdown.is_empty() {
+        lines.push(active_threads_markdown);
     }
     lines.push(format_chapter_briefing_scene_context_markdown(
         scene_context,
@@ -1050,10 +1056,21 @@ pub fn format_scene_context_markdown(
     ));
     lines.push(format_scene_context_pacing_markdown(
         &novel.pacing_directives,
+        novel.realized_intensity_trend.as_deref(),
     ));
     lines.push(format_scene_context_promises_markdown(
         &novel.narrative_promises_due,
     ));
+    let active_threads_markdown =
+        format_scene_context_active_threads_markdown(&novel.active_threads);
+    if !active_threads_markdown.is_empty() {
+        lines.push(active_threads_markdown);
+    }
+    let previous_scene_tail_markdown =
+        format_scene_context_previous_scene_tail_markdown(novel.previous_scene_tail.as_ref());
+    if !previous_scene_tail_markdown.is_empty() {
+        lines.push(previous_scene_tail_markdown);
+    }
     lines.push(format_scene_context_characters_markdown(&scene.characters));
     lines.push(scene_context_subjects_markdown(&novel.subjects));
     lines.push(format_scene_context_semantic_references_markdown(
@@ -1299,10 +1316,18 @@ pub fn format_scene_context_system_overlays_markdown(items: &[SystemOverlaySumma
     lines.join("\n")
 }
 
-pub fn format_scene_context_pacing_markdown(items: &[PacingDirectiveSummary]) -> String {
+pub fn format_scene_context_pacing_markdown(
+    items: &[PacingDirectiveSummary],
+    realized_intensity_trend: Option<&str>,
+) -> String {
     let mut lines = vec!["\n## Pacing".to_string()];
+    if let Some(trend) = realized_intensity_trend {
+        lines.push(format!("- {trend}"));
+    }
     if items.is_empty() {
-        lines.push("- None.".to_string());
+        if realized_intensity_trend.is_none() {
+            lines.push("- None.".to_string());
+        }
     } else {
         for directive in items {
             lines.push(format!(
@@ -1359,6 +1384,110 @@ pub fn format_scene_context_promises_markdown(items: &[NarrativePromiseDueSummar
             }
             push_briefing_list(&mut lines, "  notes", &promise.notes);
         }
+    }
+    lines.join("\n")
+}
+
+/// Maximum length, in characters, of an [`ActiveThreadSummary`] statement.
+/// Statements longer than this are truncated on a char boundary.
+pub const ACTIVE_THREAD_STATEMENT_CHARS: usize = 240;
+
+/// Char-boundary-safe truncation of a targeted-thread statement so the result
+/// is at most [`ACTIVE_THREAD_STATEMENT_CHARS`] characters *including* the
+/// trailing ellipsis. The cut always lands on a char boundary, so multibyte
+/// text near the budget is never split.
+pub fn truncate_active_thread_statement(text: &str) -> String {
+    const ELLIPSIS: &str = "...";
+    if text.chars().count() <= ACTIVE_THREAD_STATEMENT_CHARS {
+        return text.trim().to_string();
+    }
+    // Reserve room for the ellipsis so the total stays within budget.
+    let keep = ACTIVE_THREAD_STATEMENT_CHARS.saturating_sub(ELLIPSIS.chars().count());
+    let end_byte = text
+        .char_indices()
+        .nth(keep)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    format!("{}{ELLIPSIS}", text[..end_byte].trim_end())
+}
+
+/// Render one active-thread line: `- [kind] name — statement (status)`, with an
+/// appended ` | next: <expectation>` when present.
+fn format_active_thread_line(thread: &ActiveThreadSummary) -> String {
+    let mut line = format!("- [{}] {} — {}", thread.kind, thread.name, thread.statement);
+    if !thread.status.is_empty() {
+        line.push_str(&format!(" ({})", thread.status));
+    }
+    if let Some(next) = thread.next_expectation.as_deref() {
+        line.push_str(&format!(" | next: {next}"));
+    }
+    line
+}
+
+/// Render the ACTIVE THREADS block for scene-context markdown. Returns an empty
+/// string when there are no threads so the block is omitted entirely.
+pub fn format_scene_context_active_threads_markdown(items: &[ActiveThreadSummary]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["\n## ACTIVE THREADS".to_string()];
+    for thread in items {
+        lines.push(format_active_thread_line(thread));
+    }
+    lines.join("\n")
+}
+
+/// Maximum length, in characters, of a previous-scene closing excerpt.
+pub const PREVIOUS_SCENE_TAIL_CHARS: usize = 1200;
+
+/// Char-boundary-safe closing excerpt: the final at most
+/// [`PREVIOUS_SCENE_TAIL_CHARS`] characters of `full_text`, taken from the END.
+/// Returns `None` when the prose is empty or whitespace-only, so an empty
+/// excerpt is never surfaced. The cut always lands on a char boundary, so
+/// multibyte text near the budget is never split.
+pub fn scene_closing_excerpt(full_text: &str) -> Option<String> {
+    if full_text.trim().is_empty() {
+        return None;
+    }
+    let char_count = full_text.chars().count();
+    if char_count <= PREVIOUS_SCENE_TAIL_CHARS {
+        return Some(full_text.to_string());
+    }
+    // Skip the leading chars beyond the budget and start the byte slice at the
+    // boundary of the first char we keep, so the tail is always valid UTF-8.
+    let skip = char_count - PREVIOUS_SCENE_TAIL_CHARS;
+    let start_byte = full_text
+        .char_indices()
+        .nth(skip)
+        .map(|(idx, _)| idx)
+        .unwrap_or(full_text.len());
+    Some(full_text[start_byte..].to_string())
+}
+
+/// Render the PREVIOUS SCENE (closing) block for scene-context markdown.
+/// Returns an empty string when there is no preceding-scene tail so the block
+/// is omitted entirely.
+pub fn format_scene_context_previous_scene_tail_markdown(
+    tail: Option<&PreviousSceneTail>,
+) -> String {
+    let Some(tail) = tail else {
+        return String::new();
+    };
+    format!(
+        "\n## PREVIOUS SCENE (closing)\nCh {}.{}: …{}",
+        tail.chapter_number, tail.scene_order, tail.excerpt
+    )
+}
+
+/// Render the ACTIVE THREADS block for chapter-briefing markdown. Returns an
+/// empty string when there are no threads so the block is omitted entirely.
+pub fn format_chapter_briefing_active_threads_markdown(items: &[ActiveThreadSummary]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["\n## ACTIVE THREADS".to_string()];
+    for thread in items {
+        lines.push(format_active_thread_line(thread));
     }
     lines.join("\n")
 }
@@ -1830,6 +1959,173 @@ fn normalize_relevance_text(text: &str) -> String {
 // Pacing / promise / agency helpers.
 // -----------------------------------------------------------------------------
 
+/// Mean realized intensity per `(book_number, chapter_number)`, computed from
+/// scene-beat annotations. Only annotations with a non-NULL intensity attached
+/// to one of `scenes` contribute; a chapter whose annotations all lack an
+/// intensity value produces no entry (it is treated as unannotated). Shared by
+/// the `pacing_drift` consistency check and the `get_scene_context` realized-
+/// intensity feed-forward so the two surfaces never disagree about the same
+/// per-chapter means. Deterministic (BTreeMap keys iterate in sorted order).
+pub(crate) fn chapter_mean_intensities(
+    scenes: &[Scene],
+    annotations: &[SceneBeatAnnotation],
+) -> std::collections::BTreeMap<(i32, i32), f64> {
+    use std::collections::BTreeMap;
+
+    let intensity_by_scene: BTreeMap<&str, f64> = annotations
+        .iter()
+        .filter_map(|annotation| {
+            annotation
+                .intensity
+                .map(|value| (annotation.scene_id.as_str(), value))
+        })
+        .collect();
+
+    let mut chapter_intensities: BTreeMap<(i32, i32), Vec<f64>> = BTreeMap::new();
+    for scene in scenes {
+        if let Some(intensity) = intensity_by_scene.get(scene.id.as_str()) {
+            chapter_intensities
+                .entry((scene.book_number, scene.chapter_number))
+                .or_default()
+                .push(*intensity);
+        }
+    }
+
+    chapter_intensities
+        .into_iter()
+        .map(|(key, values)| {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            (key, mean)
+        })
+        .collect()
+}
+
+/// Whether the trend across `values` (chronological chapter means) reads as
+/// rising, falling, or flat. Flat when the max-min spread is within
+/// `REALIZED_INTENSITY_FLAT_EPSILON`; otherwise the sign of last-minus-first
+/// decides. Only meaningful for two or more values.
+pub(crate) const REALIZED_INTENSITY_FLAT_EPSILON: f64 = 0.05;
+
+/// Number of prior annotated chapters the realized-intensity feed-forward
+/// summarizes. Fixed by T-109; not a configurable knob.
+pub(crate) const REALIZED_INTENSITY_TREND_WINDOW: usize = 3;
+
+fn realized_intensity_direction(values: &[f64]) -> &'static str {
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if max - min <= REALIZED_INTENSITY_FLAT_EPSILON {
+        "flat"
+    } else if values.last() >= values.first() {
+        "rising"
+    } else {
+        "falling"
+    }
+}
+
+/// Linearly interpolate the expected intensity at `position` (a 0..1 book
+/// fraction) from a curve's sampled `intensity_points`. Returns `None` when
+/// fewer than two points are present. Points are sorted by position; a position
+/// outside the sampled range clamps to the nearest endpoint. Deterministic.
+pub(crate) fn interpolate_expected_intensity(
+    intensity_points: &[super::sqlite::json_records::StoredIntensityPoint],
+    position: f64,
+) -> Option<f64> {
+    if intensity_points.len() < 2 {
+        return None;
+    }
+    let mut points: Vec<(f64, f64)> = intensity_points
+        .iter()
+        .map(|point| (point.position, point.intensity))
+        .collect();
+    points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Clamp outside the sampled range to the nearest endpoint.
+    if position <= points[0].0 {
+        return Some(points[0].1);
+    }
+    let last = points[points.len() - 1];
+    if position >= last.0 {
+        return Some(last.1);
+    }
+    // Find the surrounding pair and interpolate.
+    for window in points.windows(2) {
+        let (lo_pos, lo_int) = window[0];
+        let (hi_pos, hi_int) = window[1];
+        if position >= lo_pos && position <= hi_pos {
+            let span = hi_pos - lo_pos;
+            if span <= f64::EPSILON {
+                return Some(lo_int);
+            }
+            let t = (position - lo_pos) / span;
+            return Some(lo_int + t * (hi_int - lo_int));
+        }
+    }
+    // Unreachable given the clamps above, but stay total.
+    Some(last.1)
+}
+
+/// Build the realized-intensity feed-forward directive for a scene about to be
+/// drafted in `(book_number, chapter_number)`. Summarizes the last up-to-3
+/// annotated chapters strictly before `chapter_number` in the same book (a
+/// chapter with no non-NULL intensity annotation is excluded). Returns `None`
+/// when no prior chapter is annotated; a single-chapter window states the mean
+/// with no direction claim; two or three chapters state the sequence and its
+/// direction. Values are rounded to two decimals and the directive is capped at
+/// 300 chars. Deterministic.
+///
+/// When the book's pacing curve carries ≥2 `intensity_points` AND the chapter
+/// denominator (`max_chapter`) is derivable, the directive is extended with a
+/// `; curve expects {e:.2} here` clause where `e` is the linearly interpolated
+/// expected intensity at `chapter_number / max_chapter` (clamped to 0..1). With
+/// fewer than two points or an underivable denominator, the without-expectation
+/// form is emitted verbatim.
+pub(crate) fn realized_intensity_trend_directive(
+    chapter_means: &std::collections::BTreeMap<(i32, i32), f64>,
+    book_number: i32,
+    chapter_number: i32,
+    intensity_points: &[super::sqlite::json_records::StoredIntensityPoint],
+    max_chapter: Option<i32>,
+) -> Option<String> {
+    let mut prior: Vec<f64> = chapter_means
+        .iter()
+        .filter(|((book, chapter), _)| *book == book_number && *chapter < chapter_number)
+        .map(|(_, mean)| (*mean * 100.0).round() / 100.0)
+        .collect();
+    if prior.is_empty() {
+        return None;
+    }
+    // `chapter_means` iterates in ascending (book, chapter) order, so `prior` is
+    // already chronological; keep only the last `WINDOW` chapters.
+    if prior.len() > REALIZED_INTENSITY_TREND_WINDOW {
+        prior.drain(0..prior.len() - REALIZED_INTENSITY_TREND_WINDOW);
+    }
+
+    let sequence = prior
+        .iter()
+        .map(|value| format!("{value:.2}"))
+        .collect::<Vec<_>>()
+        .join(" → ");
+    let n = prior.len();
+
+    let mut directive = if n == 1 {
+        format!("Realized intensity last {n} chapter: {sequence}")
+    } else {
+        let direction = realized_intensity_direction(&prior);
+        format!("Realized intensity last {n} chapters: {sequence} ({direction})")
+    };
+
+    // Expectation clause: only when a curve with ≥2 points and a derivable
+    // chapter denominator lets us interpolate an expected intensity here.
+    if let Some(denominator) = max_chapter.filter(|max| *max > 0) {
+        let position = (chapter_number as f64 / denominator as f64).clamp(0.0, 1.0);
+        if let Some(expected) = interpolate_expected_intensity(intensity_points, position) {
+            directive.push_str(&format!("; curve expects {expected:.2} here"));
+        }
+    }
+
+    Some(truncate_at_chars(&directive, 300))
+}
+
 pub fn pacing_directives_for_characters(
     arcs: &[CharacterArc],
     trackers: &[PacingTracker],
@@ -1879,6 +2175,18 @@ impl PromiseUrgency {
             PromiseUrgency::Soon => "soon",
             PromiseUrgency::Due => "due",
             PromiseUrgency::Overdue => "overdue",
+        }
+    }
+
+    /// Least-to-most-pressing ordinal. Used to sort open threads so the most
+    /// pressing promises surface first in the persisted digest.
+    pub fn rank(self) -> u8 {
+        match self {
+            PromiseUrgency::Resolved => 0,
+            PromiseUrgency::Watch => 1,
+            PromiseUrgency::Soon => 2,
+            PromiseUrgency::Due => 3,
+            PromiseUrgency::Overdue => 4,
         }
     }
 }
@@ -2579,12 +2887,36 @@ pub fn build_scene_context_bundle(
         json!({ "novel": { "narrative_promises_due": novel.narrative_promises_due } }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
-        "pacing_directives",
-        SectionKind::Supplementary(4),
-        format_scene_context_pacing_markdown(&novel.pacing_directives)
+        "active_threads",
+        SectionKind::Supplementary(7),
+        format_scene_context_active_threads_markdown(&novel.active_threads)
             .trim_start_matches('\n')
             .to_string(),
-        json!({ "novel": { "pacing_directives": novel.pacing_directives } }),
+        json!({ "novel": { "active_threads": novel.active_threads } }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "previous_scene_tail",
+        SectionKind::Supplementary(8),
+        format_scene_context_previous_scene_tail_markdown(novel.previous_scene_tail.as_ref())
+            .trim_start_matches('\n')
+            .to_string(),
+        json!({ "novel": { "previous_scene_tail": novel.previous_scene_tail } }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "pacing_directives",
+        SectionKind::Supplementary(4),
+        format_scene_context_pacing_markdown(
+            &novel.pacing_directives,
+            novel.realized_intensity_trend.as_deref(),
+        )
+        .trim_start_matches('\n')
+        .to_string(),
+        json!({
+            "novel": {
+                "pacing_directives": novel.pacing_directives,
+                "realized_intensity_trend": novel.realized_intensity_trend,
+            }
+        }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
         "future_knowledge_briefing",
@@ -2642,8 +2974,13 @@ pub fn apply_scene_context_bundle_trims(
             "timeline_briefing" => novel.timeline_briefing.clear(),
             "economy_briefing" => novel.economy_briefing.clear(),
             "future_knowledge_briefing" => novel.future_knowledge_briefing.clear(),
-            "pacing_directives" => novel.pacing_directives.clear(),
+            "pacing_directives" => {
+                novel.pacing_directives.clear();
+                novel.realized_intensity_trend = None;
+            }
             "narrative_promises_due" => novel.narrative_promises_due.clear(),
+            "active_threads" => novel.active_threads.clear(),
+            "previous_scene_tail" => novel.previous_scene_tail = None,
             "knowledge_briefing" => novel.knowledge_briefing.clear(),
             "semantic_references" => novel.semantic_references.clear(),
             "location" => scene.location = empty_location_summary(),
@@ -2749,6 +3086,7 @@ pub fn build_chapter_briefing_bundle(
     chapter_outline: Option<&ChapterOutline>,
     book_outline: Option<&BookOutline>,
     chapter_plan: Option<&ChapterPlanBriefing>,
+    active_threads: &[ActiveThreadSummary],
     scene_context: Option<&SceneContextOutput>,
     scene_seed: &ChapterBriefingSceneSeed,
 ) -> ContextBundle {
@@ -2812,6 +3150,14 @@ pub fn build_chapter_briefing_bundle(
         json!({ "chapter_plan": chapter_plan }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "active_threads",
+        SectionKind::Supplementary(170),
+        format_chapter_briefing_active_threads_markdown(active_threads)
+            .trim_start_matches('\n')
+            .to_string(),
+        json!({ "active_threads": active_threads }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
         "book_outline",
         SectionKind::Supplementary(100),
         book_outline
@@ -2849,6 +3195,7 @@ pub fn apply_chapter_briefing_bundle_trims(
     chapter_outline: &mut Option<ChapterOutline>,
     book_outline: &mut Option<BookOutline>,
     chapter_plan: &mut Option<ChapterPlanBriefing>,
+    active_threads: &mut Vec<ActiveThreadSummary>,
     scene_context: &mut Option<SceneContextOutput>,
 ) {
     for section_id in truncated_section_ids {
@@ -2859,6 +3206,7 @@ pub fn apply_chapter_briefing_bundle_trims(
             "chapter_outline" => *chapter_outline = None,
             "book_outline" => *book_outline = None,
             "chapter_plan" => *chapter_plan = None,
+            "active_threads" => active_threads.clear(),
             "scene_context" => *scene_context = None,
             _ => {}
         }
@@ -2878,7 +3226,11 @@ fn compact_chapter_briefing_constraint_statement(statement: &str, max_chars: usi
     truncate_at_chars(&normalized, max_chars)
 }
 
-fn truncate_at_chars(text: &str, max_chars: usize) -> String {
+/// Char-boundary-safe truncation to at most `max_chars` characters, appending
+/// an ellipsis when the input is longer. The cut always lands on a char
+/// boundary so multibyte text is never split. Shared by scene-context
+/// compaction and the consistency-check message builders.
+pub fn truncate_at_chars(text: &str, max_chars: usize) -> String {
     let total = text.chars().count();
     if total <= max_chars {
         return text.trim().to_string();
@@ -3383,6 +3735,143 @@ pub fn build_book_synopsis(parts: &[(i32, String)], char_cap: usize) -> (String,
     (out, true)
 }
 
+/// Maximum number of open-thread entries persisted into a book digest.
+pub const OPEN_THREADS_MAX_ENTRIES: usize = 12;
+/// Maximum characters retained from a thread's name/description before the
+/// status/urgency suffix. Char-boundary safe (never byte-slices).
+const OPEN_THREAD_NAME_CHARS: usize = 80;
+
+/// Deterministically collect the still-open narrative threads for a book's
+/// "story so far" digest from its unresolved promises, conflicts, and plot
+/// lines. Filtering:
+///   * promises whose status is neither `paid_off` nor `abandoned`,
+///   * conflicts with at least one `stated_consequences[].delivered == false`,
+///   * plot lines whose status is not `complete`.
+///
+/// Each entry renders as `"<kind>: <name-or-description> (<status|urgency>)"`,
+/// where the name/description is truncated to [`OPEN_THREAD_NAME_CHARS`] on a
+/// char boundary. Ordering is stable: promises first by urgency rank descending
+/// then id ascending, then conflicts by id ascending, then plot lines by id
+/// ascending. Capped at [`OPEN_THREADS_MAX_ENTRIES`]. `current_index` is a
+/// [`story_index`] value used only to derive each promise's urgency label.
+pub fn build_open_threads(
+    promises: &[NarrativePromise],
+    conflicts: &[Conflict],
+    plot_lines: &[PlotLine],
+    current_index: i64,
+) -> Vec<String> {
+    let mut open_promises: Vec<(&NarrativePromise, PromiseUrgency)> = promises
+        .iter()
+        .filter(|p| p.status != "paid_off" && p.status != "abandoned")
+        .map(|p| (p, promise_timing_verdict(p, current_index).urgency))
+        .collect();
+    // Most pressing first (urgency rank desc), ties broken by id ascending.
+    open_promises
+        .sort_by(|(a, ua), (b, ub)| ub.rank().cmp(&ua.rank()).then_with(|| a.id.cmp(&b.id)));
+
+    let mut open_conflicts: Vec<&Conflict> = conflicts
+        .iter()
+        .filter(|c| c.stated_consequences.iter().any(|sc| !sc.delivered))
+        .collect();
+    open_conflicts.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut open_plots: Vec<&PlotLine> = plot_lines
+        .iter()
+        .filter(|pl| pl.status != "complete")
+        .collect();
+    open_plots.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut threads: Vec<String> = Vec::new();
+    for (promise, urgency) in open_promises {
+        threads.push(format!(
+            "promise: {} ({})",
+            truncate_open_thread_name(&promise.description),
+            urgency.as_str()
+        ));
+        if threads.len() >= OPEN_THREADS_MAX_ENTRIES {
+            return threads;
+        }
+    }
+    for conflict in open_conflicts {
+        threads.push(format!(
+            "conflict: {} ({})",
+            truncate_open_thread_name(&conflict.name),
+            conflict.conflict_type
+        ));
+        if threads.len() >= OPEN_THREADS_MAX_ENTRIES {
+            return threads;
+        }
+    }
+    for plot in open_plots {
+        threads.push(format!(
+            "plot: {} ({})",
+            truncate_open_thread_name(&plot.name),
+            plot.status
+        ));
+        if threads.len() >= OPEN_THREADS_MAX_ENTRIES {
+            return threads;
+        }
+    }
+    threads
+}
+
+/// Char-boundary-safe truncation of a thread name/description to
+/// [`OPEN_THREAD_NAME_CHARS`] characters.
+fn truncate_open_thread_name(text: &str) -> String {
+    text.chars().take(OPEN_THREAD_NAME_CHARS).collect()
+}
+
+/// Render the `Open threads: …` segment for one book's [STORY SO FAR] entry,
+/// joining thread entries with `; ` and staying within `char_cap` BYTES. Threads
+/// are dropped whole from the tail until the segment fits; the final surviving
+/// entry may itself be truncated on a char boundary if a single entry exceeds
+/// the cap. Returns an empty string when there are no threads or none fit.
+pub fn render_open_threads_segment(threads: &[String], char_cap: usize) -> String {
+    if threads.is_empty() {
+        return String::new();
+    }
+    const LABEL: &str = "Open threads: ";
+    if char_cap <= LABEL.len() {
+        return String::new();
+    }
+    let body_cap = char_cap - LABEL.len();
+    let mut body = String::new();
+    for thread in threads {
+        let candidate_extra = if body.is_empty() {
+            thread.len()
+        } else {
+            "; ".len() + thread.len()
+        };
+        if body.len() + candidate_extra <= body_cap {
+            if !body.is_empty() {
+                body.push_str("; ");
+            }
+            body.push_str(thread);
+            continue;
+        }
+        // This whole thread does not fit. If nothing has been kept yet, keep a
+        // char-boundary-safe prefix of the first entry so the segment is not
+        // empty; otherwise stop (drop remaining threads).
+        if body.is_empty() {
+            let remaining = body_cap;
+            let mut end = 0usize;
+            for (idx, ch) in thread.char_indices() {
+                let next = idx + ch.len_utf8();
+                if next > remaining {
+                    break;
+                }
+                end = next;
+            }
+            body.push_str(&thread[..end]);
+        }
+        break;
+    }
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("{LABEL}{body}")
+}
+
 #[cfg(test)]
 mod promise_timing_tests {
     use super::*;
@@ -3605,5 +4094,331 @@ mod book_digest_tests {
             "oldest chapter dropped under cap"
         );
         assert!(synopsis.len() <= 90, "synopsis stays within the char cap");
+    }
+}
+
+#[cfg(test)]
+mod open_threads_tests {
+    use super::*;
+
+    fn placement(book: i32, chapter: i32, scene: i32) -> StoredStoryPlacement {
+        StoredStoryPlacement {
+            book_number: book,
+            chapter_number: chapter,
+            scene_order: Some(scene),
+            note: None,
+        }
+    }
+
+    fn promise(id: &str, status: &str, description: &str) -> NarrativePromise {
+        let now = chrono::Utc::now();
+        NarrativePromise {
+            id: id.to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            promise_type: "setup".to_string(),
+            description: description.to_string(),
+            status: status.to_string(),
+            planted_at: placement(1, 1, 0),
+            planned_payoff: None,
+            notes: Vec::new(),
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn conflict(id: &str, name: &str, deliver_done: bool) -> Conflict {
+        let now = chrono::Utc::now();
+        Conflict {
+            id: id.to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            name: name.to_string(),
+            normalized_name: name.to_ascii_lowercase(),
+            conflict_type: "external".to_string(),
+            stakes: "everything".to_string(),
+            escalation_stages: Vec::new(),
+            expected_total_cycles: None,
+            try_fail_cycles: Vec::new(),
+            stated_consequences: vec![crate::sqlite::json_records::StoredStatedConsequence {
+                description: "a stated cost".to_string(),
+                stated_at: None,
+                must_demonstrate_by: None,
+                delivered: deliver_done,
+            }],
+            resolution_summary: None,
+            notes: None,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+            escalation_demonstrated: Vec::new(),
+        }
+    }
+
+    fn plot_line(id: &str, name: &str, status: &str) -> PlotLine {
+        let now = chrono::Utc::now();
+        PlotLine {
+            id: id.to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            name: name.to_string(),
+            normalized_name: name.to_ascii_lowercase(),
+            plot_type: "main".to_string(),
+            summary: "a plot".to_string(),
+            status: status.to_string(),
+            convergence_points: Vec::new(),
+            notes: None,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+            connected_conflict_ids: Vec::new(),
+            connected_theme_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collects_unresolved_threads_with_kind_prefixes() {
+        let threads = build_open_threads(
+            &[promise(
+                "narrative_promise:p1",
+                "active",
+                "the missing heir returns",
+            )],
+            &[conflict("conflict:c1", "Siege of Ash", false)],
+            &[plot_line("plot_line:pl1", "The Rebellion", "developing")],
+            story_index(1, 5, 0),
+        );
+        assert_eq!(threads.len(), 3, "one entry per unresolved thread");
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.starts_with("promise:") && t.contains("the missing heir returns")),
+            "promise entry present: {threads:?}"
+        );
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.starts_with("conflict:") && t.contains("Siege of Ash")),
+            "conflict entry present: {threads:?}"
+        );
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.starts_with("plot:") && t.contains("The Rebellion")),
+            "plot entry present: {threads:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_threads_are_excluded() {
+        // Paid-off/abandoned promise, delivered consequence, complete plot line.
+        let threads = build_open_threads(
+            &[
+                promise("narrative_promise:p1", "paid_off", "resolved promise"),
+                promise("narrative_promise:p2", "abandoned", "dropped promise"),
+            ],
+            &[conflict("conflict:c1", "Done Conflict", true)],
+            &[plot_line("plot_line:pl1", "Finished Line", "complete")],
+            story_index(1, 5, 0),
+        );
+        assert!(threads.is_empty(), "no open threads: {threads:?}");
+    }
+
+    #[test]
+    fn conflict_with_any_undelivered_consequence_is_open() {
+        let now = chrono::Utc::now();
+        let mut c = conflict("conflict:c1", "Mixed", true);
+        c.stated_consequences
+            .push(crate::sqlite::json_records::StoredStatedConsequence {
+                description: "an undelivered cost".to_string(),
+                stated_at: None,
+                must_demonstrate_by: None,
+                delivered: false,
+            });
+        c.updated_at = now;
+        let threads = build_open_threads(&[], &[c], &[], story_index(1, 5, 0));
+        assert_eq!(threads.len(), 1, "still open due to undelivered cost");
+    }
+
+    #[test]
+    fn deterministic_order_promises_by_urgency_then_id_then_conflicts_then_plots() {
+        // Two promises: p_overdue (overdue) should sort ahead of p_watch (watch).
+        let mut overdue = promise("narrative_promise:z_overdue", "planted", "overdue one");
+        overdue.planted_at = placement(1, 1, 0);
+        overdue.planned_payoff = Some(placement(1, 2, 0));
+        let mut watch = promise("narrative_promise:a_watch", "planted", "watch one");
+        watch.planted_at = placement(1, 1, 0);
+        watch.planned_payoff = Some(placement(1, 50, 0));
+        let current = story_index(1, 10, 0);
+
+        let a = build_open_threads(
+            &[watch.clone(), overdue.clone()],
+            &[conflict("conflict:c1", "Cee", false)],
+            &[plot_line("plot_line:pl1", "Pee", "developing")],
+            current,
+        );
+        // Reverse input order → identical output (sort is stable/deterministic).
+        let b = build_open_threads(
+            &[overdue, watch],
+            &[conflict("conflict:c1", "Cee", false)],
+            &[plot_line("plot_line:pl1", "Pee", "developing")],
+            current,
+        );
+        assert_eq!(a, b, "byte-identical regardless of input order");
+        // Overdue promise before watch promise; both before conflict; conflict before plot.
+        let idx = |needle: &str| a.iter().position(|t| t.contains(needle)).unwrap();
+        assert!(idx("overdue one") < idx("watch one"));
+        assert!(idx("watch one") < idx("Cee"));
+        assert!(idx("Cee") < idx("Pee"));
+    }
+
+    #[test]
+    fn caps_at_twelve_entries() {
+        let promises: Vec<NarrativePromise> = (0..20)
+            .map(|n| promise(&format!("narrative_promise:p{n:02}"), "active", "a promise"))
+            .collect();
+        let threads = build_open_threads(&promises, &[], &[], story_index(1, 5, 0));
+        assert_eq!(threads.len(), 12, "capped at 12 entries");
+    }
+
+    #[test]
+    fn thread_description_truncated_to_eighty_chars_char_safe() {
+        // 100 em-dashes (multibyte) — truncation must land on a char boundary.
+        let long = "—".repeat(100);
+        let threads = build_open_threads(
+            &[promise("narrative_promise:p1", "active", &long)],
+            &[],
+            &[],
+            story_index(1, 5, 0),
+        );
+        assert_eq!(threads.len(), 1);
+        // The rendered name portion holds at most 80 chars of the description.
+        let entry = &threads[0];
+        assert!(entry.is_char_boundary(0));
+        // Whole string is valid UTF-8 by construction; count em-dashes retained.
+        let dashes = entry.chars().filter(|c| *c == '—').count();
+        assert!(
+            dashes <= 80,
+            "at most 80 description chars retained: {dashes}"
+        );
+        assert!(dashes >= 1, "some description retained");
+    }
+
+    #[test]
+    fn render_segment_stays_within_cap_and_truncates_threads_first() {
+        let threads: Vec<String> = (0..15)
+            .map(|n| {
+                format!("promise: a fairly long open thread description number {n:02} (watch)")
+            })
+            .collect();
+        let segment = render_open_threads_segment(&threads, 120);
+        assert!(
+            segment.len() <= 120,
+            "segment within cap: {}",
+            segment.len()
+        );
+        assert!(segment.starts_with("Open threads:"), "labelled: {segment}");
+    }
+
+    #[test]
+    fn render_segment_empty_when_no_threads() {
+        assert!(render_open_threads_segment(&[], 700).is_empty());
+    }
+
+    #[test]
+    fn render_segment_char_boundary_safe_with_multibyte() {
+        // Force a truncation boundary inside a run of em-dashes.
+        let threads = vec![format!("promise: {} (watch)", "—".repeat(200))];
+        let segment = render_open_threads_segment(&threads, 40);
+        // Must be valid UTF-8 and within the cap.
+        assert!(segment.chars().count() <= 40 || segment.len() <= 40 * 4);
+        assert!(segment.len() <= 40, "byte cap respected: {}", segment.len());
+    }
+}
+
+#[cfg(test)]
+mod intensity_trend_expectation_tests {
+    use super::*;
+    use crate::sqlite::json_records::StoredIntensityPoint;
+
+    fn means(entries: &[((i32, i32), f64)]) -> std::collections::BTreeMap<(i32, i32), f64> {
+        entries.iter().copied().collect()
+    }
+
+    fn point(position: f64, intensity: f64) -> StoredIntensityPoint {
+        StoredIntensityPoint {
+            position,
+            intensity,
+        }
+    }
+
+    /// Interpolation correctness: points at 0.0→0.2 and 1.0→0.9, drafting
+    /// chapter 5 of 10 (position 0.5) → expected 0.55, appended to the trend.
+    #[test]
+    fn interpolates_expectation_between_two_points() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5), ((1, 3), 0.6)]);
+        let points = vec![point(0.0, 0.2), point(1.0, 0.9)];
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 5, &points, Some(10)).expect("directive");
+        assert!(
+            directive.contains("curve expects 0.55 here"),
+            "expected interpolated 0.55 clause: {directive}"
+        );
+    }
+
+    /// A single intensity point yields no expectation clause (needs ≥2).
+    #[test]
+    fn single_point_yields_no_expectation_clause() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5)]);
+        let points = vec![point(0.5, 0.5)];
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 3, &points, Some(10)).expect("directive");
+        assert!(
+            !directive.contains("curve expects"),
+            "single point must not emit an expectation clause: {directive}"
+        );
+    }
+
+    /// No intensity points → the directive is exactly the without-expectation
+    /// form (unchanged from the pre-V0022 behavior).
+    #[test]
+    fn no_points_leaves_directive_unchanged() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5)]);
+        let with_none =
+            realized_intensity_trend_directive(&m, 1, 3, &[], Some(10)).expect("directive");
+        assert!(
+            !with_none.contains("curve expects"),
+            "no points must not emit an expectation clause: {with_none}"
+        );
+        assert!(with_none.starts_with("Realized intensity last"));
+    }
+
+    /// Denominator underivable (no max chapter) → no expectation clause even
+    /// with ≥2 points.
+    #[test]
+    fn missing_denominator_yields_no_clause() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5)]);
+        let points = vec![point(0.0, 0.2), point(1.0, 0.9)];
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 3, &points, None).expect("directive");
+        assert!(
+            !directive.contains("curve expects"),
+            "no denominator must not emit an expectation clause: {directive}"
+        );
+    }
+
+    /// Position past the last point clamps to the nearest (last) point.
+    #[test]
+    fn position_clamps_to_nearest_point_outside_range() {
+        let m = means(&[((1, 8), 0.4)]);
+        let points = vec![point(0.0, 0.2), point(0.5, 0.6)];
+        // chapter 9 of 10 → position 0.9, past the last point (0.5) → clamp 0.6.
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 9, &points, Some(10)).expect("directive");
+        assert!(
+            directive.contains("curve expects 0.60 here"),
+            "position past range clamps to nearest point: {directive}"
+        );
     }
 }
