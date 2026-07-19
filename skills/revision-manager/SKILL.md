@@ -248,6 +248,34 @@ Present this to the user in a clear format. Help them decide by analyzing:
 
 ---
 
+## Subagent orchestration (Claude Code / grok)
+
+Comparing alternatives or branches (Scenario 2, Scenario 3, `diff_branches`) is
+independent read-only assessment work per candidate — a natural fan-out. If your
+harness supports subagents (Claude Code's Task/Agent tool, grok's subagents),
+assess the candidates in parallel; otherwise assess them sequentially inline —
+same evaluation, only the concurrency changes.
+
+**Write discipline (non-negotiable):** subagents research and report only. Every
+state-mutating call stays in the main context — the revision-manager decides and
+writes. Subagents read (`get_scene_context`, `diff_branches`, `search_bible`,
+`compare_alternatives`, `check_consistency`) and return an assessment. They never
+call `select_alternative`, `merge_branch`, `switch_branch`, `revise_scene`,
+`create_branch`, `restore_scene_version`, `resolve_revision_marker`, or any other
+branch/scene write, and they never run the persisted `run_dual_persona_review`.
+
+Fan-out for a comparison: dispatch **one subagent per alternative or branch**,
+each reading only its own candidate and returning an independent structured
+assessment against the same rubric — tension, theme advancement, pacing fit,
+protagonist agency, hook strength, continuity risk — with scene-anchored
+evidence and *no* peeking at the other candidates (independence prevents
+anchoring bias). The revision-manager (main context) then collates the
+independent assessments into the comparison **verdict**, presents it, and
+executes the winning `select_alternative` / `merge_branch` itself. Without
+subagents, assess each candidate one at a time before forming the verdict.
+
+---
+
 ## Skill Chains
 
 - **← scene-writer**: When a scene needs revision, the scene-writer handles the actual rewrite.

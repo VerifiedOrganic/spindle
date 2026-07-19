@@ -379,3 +379,17 @@ and `bible://skills/*`. The reference resources currently shipped are:
 
 The skill catalog includes every SKILL.md in the repo, readable via
 `bible://skills/<name>` (e.g. `bible://skills/scene-writer`).
+
+## Shared convention: subagent orchestration
+
+Several skills (authoring-supervisor, editor, continuity-editor,
+revision-manager, scene-writer) carry a `## Subagent orchestration (Claude Code
+/ grok)` section teaching the same pattern coding harnesses use: fan out
+INDEPENDENT read-only research/verification to parallel subagents when the
+harness supports them (Claude Code's Task/Agent tool, grok's subagents), and run
+the same steps sequentially inline when it does not. The rule is uniform and
+non-negotiable: subagents research and report; every state-mutating spindle tool
+call stays in the main context, where the host decides and writes. Consult the
+individual skill for its specific fan-out (per-scene review, per-dimension
+editorial passes with adversarial verification, per-chapter continuity sweeps,
+per-alternative revision assessments, pre-draft canon recon).

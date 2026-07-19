@@ -276,6 +276,100 @@ prevention side is the `[IN-WORLD TIME]` hard constraint surfaced in
 end clock **and location** forward so the writer anchors where and when the new
 scene starts. Persist the setting by passing `location_id` to `save_scene_draft`.
 
+### 19. Motif Usage Audit (`motif_usage_audit`)
+Metadata-only (beat annotations plus motif fields — never prose). For each
+non-archived motif with a `max_uses_per_chapter` limit, it counts beat-annotation
+motif links per chapter within scope and raises a **warning** when a chapter goes
+**over** the limit (exactly at the limit is clean). A motif with no limit is
+skipped for overuse. A motif declared but never linked by any beat annotation in
+scope raises an **info**, but only when the scope covers **≥3 chapters**, so small
+scopes stay quiet.
+
+**What to do when flagged**: thin the motif's links in the offending chapter (or
+raise `max_uses_per_chapter`) for overuse; annotate a scene with the motif, or
+archive it, for the unused-info case.
+
+### 20. Theme Placement Audit (`theme_placement_audit`)
+Metadata-only. When a theme's `introduction_point` or `resolution_point` resolves
+to a chapter **within scope** but no beat annotation in that chapter links the
+theme, it raises an **info** naming the theme and the chapter. Placements that are
+NULL or outside scope are silent.
+
+**What to do when flagged**: annotate a scene in that chapter with the theme
+(`annotate_scene_beats`), or move the theme's placement to a chapter where it is
+actually developed.
+
+### 21. Promise-Payoff Detection (`promise_payoff_detection`) — deep only
+Model-backed **Tier 2**, opt-in via `deep_check: true` (silent otherwise). After
+a long agent run, promises the prose has *already* paid off keep nagging as
+overdue in §4 tracking, and genuinely dropped threads hide among those false
+alarms. This check reads the scoped prose and **proposes** — it never writes —
+that an unresolved promise which appears delivered be confirmed via
+`update_promise_status`. It selects non-resolved (not `paid_off`/`abandoned`,
+not archived) promises in scope, ranks them by §4 urgency (overdue > due > soon >
+watch, tiebreak id), and audits the **10 most urgent**; if more than 10 exist,
+one summary **info** finding reports how many were **not scanned** (never a
+silent cap). Each positive match is an **info** finding naming the promise id, a
+truncated description, the scene reference, and (when supplied) a sanitized
+evidence excerpt — the message ends with `confirm with update_promise_status`.
+It reuses the `review` model route (one call per promise, the full scoped prose
+concatenated) and degrades to no proposals when the local stub is in play. If the
+review route is unreachable it emits ONE honest-skip info finding that reads as
+**SKIPPED** — a route failure never masquerades as a clean scan.
+
+**What to do when flagged**: read the cited scene; if the payoff truly landed,
+call `update_promise_status(promise_id, "paid_off")`; if it did not, reinforce
+the thread or move `planned_payoff`. For the SKIPPED finding, configure a review
+model route and re-run. For the summary "not scanned" finding, narrow the scope
+or resolve higher-urgency promises first, then re-run.
+
+### 22. Plot-Line Convergence Audit (`plot_line_convergence_audit`)
+Metadata-only (beat annotations plus plot-line fields — never prose). A plot
+line declares which conflicts/themes it expects to braid together at its
+convergence via `connected_conflict_ids` / `connected_theme_ids` (both default
+`[]`, so a plot line that declares neither is silent). When a plot line's
+`convergence_points` resolve to a chapter **within scope** but **no** beat
+annotation in that chapter links **any** of the declared connected conflicts (as
+`conflict_ids`) OR connected themes (as `theme_ids`), it raises an **info**
+naming the plot line and the chapter. Convergences outside scope, or plot lines
+with no declared connections, stay quiet.
+
+**What to do when flagged**: annotate a scene in the convergence chapter with a
+connected conflict/theme (`annotate_scene_beats`), or revise the plot line's
+`convergence_points` / connected-id declarations so the braid lands where it is
+actually written.
+
+### 23. Arc Milestone Audit (`arc_milestone_audit`)
+Metadata-only. A character-arc milestone carries a `placement` (where it is due)
+and, once demonstrated, a `reached_at` marker. For each milestone placed at a
+chapter **P** in or before the scope end that is **not** marked reached: if the
+manuscript already runs past P (max scoped chapter **≥ P+1**) it raises a
+**warning** naming the arc and milestone label and the number of chapters
+overdue (`max_scoped_chapter − P`); if the scope has only reached P (max **== P**)
+it raises an **info** "due now". A milestone with a `reached_at` marker is silent
+regardless, and a milestone with no `placement` is silent. Mark a milestone
+reached by resending the arc's `milestones` array through `update_entity` with
+`reached_at` set.
+
+**What to do when flagged**: demonstrate the milestone in the prose and set its
+`reached_at` (via `update_entity` on the `character_arc`), or move the
+milestone's `placement` if the arc has legitimately slipped.
+
+### 24. Conflict Escalation Audit (`conflict_escalation_audit`)
+Metadata-only. A conflict's `escalation_demonstrated` array is index-aligned
+with `escalation_stages`: each entry is the placement where that stage was
+demonstrated, or `null`/absent for not-yet-demonstrated (a shorter-than-stages
+vector reads as all-`null` beyond its length). When any pair of stages **(i < j)**
+has a later stage **j demonstrated** while an earlier stage **i is not**, it
+raises a **warning** naming the conflict and the out-of-order stage labels. All
+demonstrated stages in order, or a conflict with no demonstration markers at all,
+is silent.
+
+**What to do when flagged**: demonstrate the earlier escalation stage before the
+later one (or reorder the writing), or correct the `escalation_demonstrated`
+markers (via `update_entity` on the `conflict`) if the demonstrations are
+mislabeled.
+
 ---
 
 ## Running a Full Audit
@@ -352,6 +446,12 @@ use those alias names when calling live checks; use the concrete IDs above.
 | Quantity drift (`quantity_drift`) | → scene-writer / worldbuilder (re-commit with a `change_reason`, or stage the change) |
 | Currency consistency (`currency_consistency`) | → worldbuilder (reconcile prices / fix the denomination) |
 | Affordability (`affordability`) | → scene-writer (confirm the purchase or update tracked wealth) |
+| Motif usage (`motif_usage_audit`) | → scene-writer (thin/annotate the motif) or → plot-architect (raise `max_uses_per_chapter` or archive) |
+| Theme placement (`theme_placement_audit`) | → scene-writer (annotate the theme in that chapter) or → plot-architect (move the placement) |
+| Promise-payoff candidate (`promise_payoff_detection`, deep) | → plot-architect / bible-librarian (confirm with `update_promise_status("paid_off")`, or reinforce the thread if not actually landed) |
+| Plot-line convergence (`plot_line_convergence_audit`) | → scene-writer (annotate a connected conflict/theme in the convergence chapter) or → plot-architect (revise `convergence_points` / connected-id declarations) |
+| Arc milestone (`arc_milestone_audit`) | → scene-writer (demonstrate the milestone and set `reached_at`) or → plot-architect (move the milestone `placement`) |
+| Conflict escalation (`conflict_escalation_audit`) | → scene-writer (demonstrate the earlier stage first) or → plot-architect (correct the `escalation_demonstrated` markers) |
 
 If a world rule has a legitimate exception, encode it as a separate
 `world_rule` (e.g. with `relevance_tags: ["exception"]` and a
@@ -402,6 +502,34 @@ character thinness, pacing drag, thematic incoherence.
    ("this is a minor stylistic preference") rather than real problems.
 
 This loop typically takes 2-3 iterations to produce clean prose.
+
+---
+
+## Subagent orchestration (Claude Code / grok)
+
+A multi-chapter continuity sweep is naturally shardable: evidence-gathering for
+each chapter (or each tracked entity) is independent read-only work. If your
+harness supports subagents (Claude Code's Task/Agent tool, grok's subagents),
+fan the sweep out; otherwise walk the chapters/entities sequentially inline —
+the diagnosis is identical, only the concurrency changes.
+
+**Write discipline (non-negotiable):** subagents research and report only. Every
+state-mutating call stays in the main context. Subagents call read-only tools —
+`check_consistency`, `find_scenes_referencing`, `find_entity`, `get_entity`,
+`get_scene_context`, and the `bible://.../continuity/health` resource — and
+return structured findings. They never call `commit_character_state`,
+`register_canonical_fact`, `update_promise_status`, `set_arc_pacing_constraints`,
+`migrate_canonical_fact`, `commit_quantity_state`, or any `update_*`/`commit_*`
+write. The continuity-editor (main context) decides and writes.
+
+Fan-out for a sweep: dispatch **one subagent per chapter** (for a chapter-range
+audit) or **one per entity** (for a subject-scoped audit, `subjects: [...]`),
+each running its scoped `check_consistency` plus backreference lookups and
+returning findings keyed by scene id, check_type, and severity. The supervisor
+then **merges and dedupes** — the same drift often surfaces from adjacent
+chapters or from two entities that share a scene — ranks by severity, and hands
+each surviving issue to the owning skill. Without subagents, run the scoped
+checks one chapter/entity at a time and dedupe as you go.
 
 ---
 

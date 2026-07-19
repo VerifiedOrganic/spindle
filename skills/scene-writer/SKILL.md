@@ -832,6 +832,28 @@ each one. This prevents the Bible from slowly drifting out of sync with the pros
 
 ---
 
+## Subagent orchestration (Claude Code / grok)
+
+Drafting is a single focused act of authorship and this skill **never delegates
+it** — who drafts is decided by routing/mode (see Step 4), not by fanning prose
+out to a subagent. The one thing that *is* delegable is the pre-draft canon
+recon: verifying facts and knowledge-timing for the scene's present cast while
+the writer stays on the prose. If your harness supports subagents (Claude Code's
+Task/Agent tool, grok's subagents) and the recon is heavy, hand it off; a
+lighter scene just does the lookups inline — same recon, only the concurrency
+changes.
+
+**Write discipline (non-negotiable):** a recon subagent is read-only. It calls
+`get_character_snapshot`, `find_scenes_referencing`, `search_bible`,
+`get_scene_context`, and `research_pack_for_scene`, and returns a compact fact
+sheet (voice reminders, current state, what each character does/doesn't know at
+this point, overdue promises, distant canon to stay consistent with). It **never**
+drafts prose and never calls `save_scene_draft`, `commit_scene_changes`,
+`set_scene_clock`, `commit_character_state`, `register_canonical_fact`,
+`annotate_scene_beats`, or any other write — every state mutation in this loop
+stays in the writer's main context. Without a subagent, gather the same recon
+inline before Step 3.
+
 ## Common Failure Modes (and how to avoid them)
 
 ### "White Room Syndrome"

@@ -197,3 +197,37 @@ concise forward directives and continue.
 If drafting is blocked by errors (e.g., validator hard constraints or agent execution failures), the run status will be `"blocked"`.
 - To clear a scene block after operator inspection, call `authoring_resolve_block` with the exact next safe `target_phase` (`"draft_saved"`, `"changes_committed"`, or `"beats_annotated"`). Do not use it to skip checkpoint review.
 - To pause the run boundaries cleanly without losing progress, call `authoring_cancel_run`. A paused run will not advance through `authoring_execute_next`.
+
+## Subagent orchestration (Claude Code / grok)
+
+Checkpoint review (step 5) is embarrassingly parallel: each sampled scene's
+dual-persona analysis and the deep-consistency triage are independent read-only
+research. If your harness supports subagents (Claude Code's Task/Agent tool,
+grok's subagents), fan them out; otherwise run the same steps sequentially
+inline — the workflow is identical, only the concurrency changes.
+
+**Write discipline (non-negotiable):** subagents research and report only. Every
+state-mutating spindle call stays in the main context — the supervisor decides
+and writes. Subagents never call `authoring_save_scene_draft`,
+`commit_scene_changes`, `authoring_record_checkpoint_audit`,
+`run_dual_persona_review` (it persists a record), `authoring_review_checkpoint`,
+or any `revise_*`/`commit_*`/`update_*` tool. They read
+(`get_scene_context`, `search_bible`, `get_chapter_briefing`) and return
+structured findings.
+
+Fan-out for a checkpoint:
+- **One subagent per sampled scene** — dispatch each with the scene id and its
+  prose scope; the subagent runs the dual-persona *analysis* (Literary Critic +
+  Craft Technician) as pure reasoning and returns findings classified as
+  autonomous-local-fix / forward-directive / operator-decision (the step-5
+  buckets), with scene-anchored evidence. The supervisor still calls
+  `run_dual_persona_review` itself for the persisted record.
+- **One subagent to triage deep-consistency** — hand it the `check_consistency`
+  (`deep_check: true`) output and have it group findings by severity and
+  fixability, returning a ranked worklist. The supervisor runs the
+  `check_consistency` call and `authoring_record_checkpoint_audit` write itself.
+
+The supervisor then merges every report, makes ratification decisions, applies
+autonomous local fixes (saving via `authoring_save_scene_draft`), and calls
+`authoring_review_checkpoint` to resume. If no subagent mechanism is available,
+walk the sampled scenes and the triage one at a time in the main context.
