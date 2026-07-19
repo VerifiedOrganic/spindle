@@ -3718,6 +3718,14 @@ pub enum ConsistencyScope {
         end_book_number: i32,
         end_chapter_number: i32,
     },
+    /// A single scene inside one chapter (P2.1 scene-scoped verification).
+    /// Reachable only when the flat input pins a single chapter AND carries a
+    /// `scene_order`; the scoped scene set collapses to exactly this scene.
+    Scene {
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    },
 }
 
 /// Flat scope specification that survives JSON Schema sanitization.
@@ -3736,6 +3744,14 @@ pub struct ConsistencyScopeInput {
     pub end_book_number: Option<i32>,
     /// Required when scope_type is "chapter_range"
     pub end_chapter_number: Option<i32>,
+    /// Optional single-scene narrowing (P2.1). Meaningful only when the scope
+    /// already pins one chapter — a `chapter_range` whose start book+chapter
+    /// equal its end book+chapter. Any other shape (missing bounds, or
+    /// `start != end`) with a `scene_order` present is an input validation
+    /// error. Absent (the default) it deserializes as `None`, so scope
+    /// payloads authored before this field existed are unchanged.
+    #[serde(default)]
+    pub scene_order: Option<i32>,
 }
 
 impl ConsistencyScopeInput {
@@ -3747,6 +3763,7 @@ impl ConsistencyScopeInput {
             start_chapter_number: None,
             end_book_number: None,
             end_chapter_number: None,
+            scene_order: None,
         }
     }
 
@@ -3758,6 +3775,7 @@ impl ConsistencyScopeInput {
             start_chapter_number: None,
             end_book_number: None,
             end_chapter_number: None,
+            scene_order: None,
         }
     }
 
@@ -3774,13 +3792,18 @@ impl ConsistencyScopeInput {
             start_chapter_number: Some(start_chapter_number),
             end_book_number: Some(end_book_number),
             end_chapter_number: Some(end_chapter_number),
+            scene_order: None,
         }
     }
 
     pub fn to_scope(&self) -> Result<ConsistencyScope, String> {
         match self.scope_type.as_str() {
-            "full" => Ok(ConsistencyScope::Full),
+            "full" => {
+                self.reject_scene_order("full")?;
+                Ok(ConsistencyScope::Full)
+            }
             "book" => {
+                self.reject_scene_order("book")?;
                 let book_number = self
                     .book_number
                     .ok_or("book_number required for scope_type 'book'")?;
@@ -3799,6 +3822,23 @@ impl ConsistencyScopeInput {
                 let end_chapter_number = self
                     .end_chapter_number
                     .ok_or("end_chapter_number required for scope_type 'chapter_range'")?;
+                // Scene narrowing is meaningful only over a single pinned
+                // chapter: start book+chapter must equal end book+chapter.
+                if let Some(scene_order) = self.scene_order {
+                    if (start_book_number, start_chapter_number)
+                        != (end_book_number, end_chapter_number)
+                    {
+                        return Err("scene_order narrowing requires a single-chapter scope: \
+                             start_book_number/start_chapter_number must equal \
+                             end_book_number/end_chapter_number"
+                            .to_string());
+                    }
+                    return Ok(ConsistencyScope::Scene {
+                        book_number: start_book_number,
+                        chapter_number: start_chapter_number,
+                        scene_order,
+                    });
+                }
                 Ok(ConsistencyScope::ChapterRange {
                     start_book_number,
                     start_chapter_number,
@@ -3811,7 +3851,54 @@ impl ConsistencyScopeInput {
             )),
         }
     }
+
+    /// A `scene_order` is only ever meaningful with a single-chapter
+    /// `chapter_range`; pairing it with `full`/`book` is a caller mistake.
+    fn reject_scene_order(&self, scope_type: &str) -> Result<(), String> {
+        if self.scene_order.is_some() {
+            return Err(format!(
+                "scene_order narrowing requires a single-chapter 'chapter_range' scope, \
+                 not scope_type '{scope_type}'"
+            ));
+        }
+        Ok(())
+    }
 }
+
+/// The deterministic, fast, scene-relevant check subset that in-run
+/// scene-scoped verification runs immediately after a draft is saved
+/// (evolution design §3.2). Every entry is a check that (a) needs no model
+/// router when `deep_check = false`, and (b) attributes findings to a scene or
+/// runs cleanly over a single-chapter window. Deep-only and cross-chapter-trend
+/// checks are deliberately excluded — they stay checkpoint-scoped for cost.
+///
+/// The trailing four names are Phase-4 validator **request** names (identical to
+/// their finding `check_type` strings): they trigger the deterministic
+/// `run_phase_four_validator_checks_for_scenes` fan-out under the non-deep path.
+pub const SCENE_VERIFY_CHECKS: &[&str] = &[
+    // ── Deterministic, scene-attributed continuity checks ──
+    "knowledge_timing",            // premature-knowledge scan, per scene
+    "chronology",                  // story-time ordering, over the scoped window
+    "temporal_coherence",          // intra-scene time-jump lexical scan (Tier 1)
+    "quantity_drift",              // unexplained multi-band jumps (branch-wide feed)
+    "currency_consistency",        // price facts disagreeing once converted
+    "affordability",               // priced purchase vs a present character's wealth
+    "tone_consistency",            // scene tone vs declared reader-contract boundary
+    "content_boundary_compliance", // explicit-scene review flag, per scene
+    "secret_leak",                 // out-of-circle speaker leaks a secret (Tier 1)
+    "canonical_fact_consistency",  // conflicting active canonical-fact values
+    // ── Phase-4 validator request names (deterministic, prose-drift) ──
+    "canonical_fact_prose_drift", // prose contradicts a registered canonical fact
+    "world_rule_semantic_drift",  // prose trips a world-rule scan pattern
+    "voice_drift",                // dialogue drifts from a character's voice profile
+    "style_compliance",           // prose drifts from an applied style profile
+                                  // ── Deliberately EXCLUDED (deep-only or cross-chapter trend) ──
+                                  // "promise_payoff_detection" — deep-only (model tier)
+                                  // "pacing_drift"             — multi-chapter intensity trend
+                                  // "research_accuracy"        — corpus-wide provenance audit, not scene-local
+                                  // "scene_divergence"         — source-vs-draft, separate bridge
+                                  // "retcon_reachability"      — cross-scene retcon graph, checkpoint-scoped
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckConsistencyInput {
@@ -6726,6 +6813,76 @@ pub struct DecideCanonDeltasOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_verify_checks_is_deduped_and_excludes_deep_only_checks() {
+        // No duplicates.
+        let mut seen = std::collections::BTreeSet::new();
+        for check in SCENE_VERIFY_CHECKS {
+            assert!(seen.insert(*check), "duplicate scene-verify check: {check}");
+        }
+        assert!(!SCENE_VERIFY_CHECKS.is_empty());
+        // The deliberately-excluded deep-only / cross-chapter-trend checks must
+        // never leak into the fast scene-verify subset (design §3.2).
+        for excluded in [
+            "promise_payoff_detection",
+            "pacing_drift",
+            "research_accuracy",
+            "scene_divergence",
+            "retcon_reachability",
+        ] {
+            assert!(
+                !SCENE_VERIFY_CHECKS.contains(&excluded),
+                "scene-verify subset must exclude {excluded}"
+            );
+        }
+    }
+
+    #[test]
+    fn scene_order_requires_single_chapter_chapter_range_scope() {
+        // Legacy shape: no scene_order → ChapterRange, unchanged.
+        let plain = ConsistencyScopeInput::chapter_range(1, 1, 1, 1);
+        assert!(matches!(
+            plain.to_scope(),
+            Ok(ConsistencyScope::ChapterRange { .. })
+        ));
+
+        // Single-chapter range + scene_order → Scene.
+        let scene = ConsistencyScopeInput {
+            scene_order: Some(2),
+            ..ConsistencyScopeInput::chapter_range(1, 1, 1, 1)
+        };
+        assert!(matches!(
+            scene.to_scope(),
+            Ok(ConsistencyScope::Scene {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 2
+            })
+        ));
+
+        // Multi-chapter range + scene_order → error naming the constraint.
+        let multi = ConsistencyScopeInput {
+            scene_order: Some(1),
+            ..ConsistencyScopeInput::chapter_range(1, 1, 1, 2)
+        };
+        let err = multi
+            .to_scope()
+            .expect_err("multi-chapter scene_order rejected");
+        assert!(err.contains("single-chapter"), "constraint named: {err}");
+
+        // scene_order paired with full/book is a caller mistake.
+        let full = ConsistencyScopeInput {
+            scene_order: Some(1),
+            ..ConsistencyScopeInput::full()
+        };
+        assert!(full.to_scope().is_err(), "scene_order + full is rejected");
+        let book = ConsistencyScopeInput {
+            scene_order: Some(1),
+            ..ConsistencyScopeInput::book(1)
+        };
+        assert!(book.to_scope().is_err(), "scene_order + book is rejected");
+    }
 
     #[test]
     fn validate_mining_policy_accepts_known_and_rejects_unknown() {

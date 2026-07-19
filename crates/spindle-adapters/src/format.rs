@@ -860,6 +860,13 @@ pub fn scope_contains_chapter(
             chapter_key >= (*start_book_number, *start_chapter_number)
                 && chapter_key <= (*end_book_number, *end_chapter_number)
         }
+        // A scene scope is chapter-level for chapter-keyed data (rules,
+        // summaries, plans): the containing chapter is in scope.
+        ConsistencyScope::Scene {
+            book_number: scoped_book,
+            chapter_number: scoped_chapter,
+            ..
+        } => book_number == *scoped_book && chapter_number == *scoped_chapter,
     }
 }
 
@@ -883,6 +890,17 @@ pub fn scope_contains_position(
             let position = (book_number, chapter_number, scene_order);
             position >= (*start_book_number, *start_chapter_number, i32::MIN)
                 && position <= (*end_book_number, *end_chapter_number, i32::MAX)
+        }
+        // Scene scope: exactly one (book, chapter, scene_order). This is what
+        // collapses `scoped_scenes` (and every per-scene check that iterates
+        // it) to a single scene.
+        ConsistencyScope::Scene {
+            book_number: scoped_book,
+            chapter_number: scoped_chapter,
+            scene_order: scoped_scene_order,
+        } => {
+            (book_number, chapter_number, scene_order)
+                == (*scoped_book, *scoped_chapter, *scoped_scene_order)
         }
     }
 }
@@ -966,6 +984,15 @@ pub fn end_scope_index(scope: &ConsistencyScope, scenes: &[Scene]) -> Option<i64
                 end_chapter_number,
                 ..
             } => Some(pack_story_index(*end_book_number, *end_chapter_number, 0)),
+            ConsistencyScope::Scene {
+                book_number,
+                chapter_number,
+                scene_order,
+            } => Some(pack_story_index(
+                *book_number,
+                *chapter_number,
+                *scene_order,
+            )),
         })
 }
 
