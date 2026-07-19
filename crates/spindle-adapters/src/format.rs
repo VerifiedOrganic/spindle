@@ -27,9 +27,9 @@ use spindle_core::subject_snapshot::{RenderDepth, SubjectSnapshot as SnapshotSub
 
 use crate::sqlite::json_records::StoredStoryPlacement;
 use crate::sqlite::records::{
-    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, Economy, FutureKnowledge,
-    KnowledgeFact, Location, NarrativePromise, PacingTracker, Scene, SystemOverlay, TimelineEvent,
-    WorldRule,
+    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, Economy,
+    FutureKnowledge, KnowledgeFact, Location, NarrativePromise, PacingTracker, Scene,
+    SystemOverlay, TimelineEvent, WorldRule,
 };
 
 // =============================================================================
@@ -1914,7 +1914,10 @@ pub const PROMISE_REINFORCED_OVERDUE_CHAPTERS: i64 = 20;
 /// value). Honors the author's declared `planned_payoff` when present and falls
 /// back to chapter-scaled aging otherwise. Resolved/abandoned promises always
 /// return [`PromiseUrgency::Resolved`].
-pub fn promise_timing_verdict(promise: &NarrativePromise, current_index: i64) -> PromiseTimingVerdict {
+pub fn promise_timing_verdict(
+    promise: &NarrativePromise,
+    current_index: i64,
+) -> PromiseTimingVerdict {
     let planted_index = story_index_from_placement(&promise.planted_at);
     let chapters_since_plant = (current_index - planted_index).max(0) / SCENE_RADIX;
 
@@ -3467,8 +3470,11 @@ mod promise_timing_tests {
             PromiseUrgency::Watch
         );
         assert_eq!(
-            promise_timing_verdict(&p, story_index(1, 1 + PROMISE_PLANTED_SOON_CHAPTERS as i32, 0))
-                .urgency,
+            promise_timing_verdict(
+                &p,
+                story_index(1, 1 + PROMISE_PLANTED_SOON_CHAPTERS as i32, 0)
+            )
+            .urgency,
             PromiseUrgency::Soon
         );
         assert_eq!(
@@ -3594,7 +3600,10 @@ mod book_digest_tests {
         assert!(truncated, "should report truncation");
         assert!(synopsis.contains("condensed"), "should mark condensation");
         assert!(synopsis.contains("Ch 10:"), "most recent chapter retained");
-        assert!(!synopsis.contains("Ch 1:"), "oldest chapter dropped under cap");
+        assert!(
+            !synopsis.contains("Ch 1:"),
+            "oldest chapter dropped under cap"
+        );
         assert!(synopsis.len() <= 90, "synopsis stays within the char cap");
     }
 }

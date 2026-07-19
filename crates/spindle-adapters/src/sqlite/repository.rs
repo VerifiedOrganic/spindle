@@ -1314,10 +1314,9 @@ impl Repository {
                     crate::sqlite::records::PROJECT_QUANTITY_SCHEME_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(
-                    rusqlite::params![&project_id, &branch_id, &measure],
-                    |r| crate::sqlite::records::StoredQuantityScheme::try_from(r),
-                )
+                stmt.query_row(rusqlite::params![&project_id, &branch_id, &measure], |r| {
+                    crate::sqlite::records::StoredQuantityScheme::try_from(r)
+                })
                 .optional_inner()
             })
             .await
@@ -2025,7 +2024,10 @@ impl Repository {
         // chapter past the radix would silently transpose scenes across the next
         // book boundary at exactly the hundreds-of-chapters scale we target.
         if input.book_number < 0 {
-            anyhow::bail!("book_number must be non-negative (got {})", input.book_number);
+            anyhow::bail!(
+                "book_number must be non-negative (got {})",
+                input.book_number
+            );
         }
         if !(0..crate::format::CHAPTER_RADIX as i32).contains(&input.chapter_number) {
             anyhow::bail!(

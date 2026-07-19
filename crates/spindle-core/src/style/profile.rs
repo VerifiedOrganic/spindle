@@ -431,7 +431,6 @@ pub enum StyleProfileQualityClassification {
     Inconsistent,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct StyleProfileQualityReport {
     pub corpus_size_words: usize,

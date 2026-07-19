@@ -23,12 +23,13 @@ pub fn normalize_markdown(input: &str) -> String {
 
     // 2. Strip YAML frontmatter delimited by `---` at the start of the file.
     if s.starts_with("---")
-        && let Some(next_idx) = s[3..].find("\n---") {
-            let after_frontmatter = &s[3 + next_idx..];
-            if let Some(rest) = after_frontmatter.strip_prefix("\n---") {
-                s = rest.to_string();
-            }
+        && let Some(next_idx) = s[3..].find("\n---")
+    {
+        let after_frontmatter = &s[3 + next_idx..];
+        if let Some(rest) = after_frontmatter.strip_prefix("\n---") {
+            s = rest.to_string();
         }
+    }
 
     // 3. Strip HTML comments: `<!-- ... -->`
     while let Some(start_idx) = s.find("<!--") {
@@ -542,10 +543,11 @@ pub fn resolve_and_verify_path(path_str: &str, allowed_roots: &[PathBuf]) -> Res
     let mut allowed = false;
     for root in allowed_roots {
         if let Ok(root_canonical) = fs::canonicalize(root)
-            && canonical.starts_with(root_canonical) {
-                allowed = true;
-                break;
-            }
+            && canonical.starts_with(root_canonical)
+        {
+            allowed = true;
+            break;
+        }
     }
 
     if !allowed {
@@ -609,9 +611,10 @@ pub fn collect_markdown_files(
                         && let Ok(c) = resolve_and_verify_path(
                             entry_path.to_str().unwrap_or(""),
                             allowed_roots,
-                        ) {
-                            pending.push(c);
-                        }
+                        )
+                    {
+                        pending.push(c);
+                    }
                 }
             }
         }

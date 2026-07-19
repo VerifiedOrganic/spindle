@@ -223,7 +223,10 @@ impl CalendarDef {
         if !self.months.is_empty() {
             for month in &self.months {
                 if month.days < 1 {
-                    return Err(format!("calendar month '{}' must have >= 1 day", month.name));
+                    return Err(format!(
+                        "calendar month '{}' must have >= 1 day",
+                        month.name
+                    ));
                 }
             }
             let total: i32 = self.months.iter().map(|month| month.days).sum();
@@ -234,8 +237,7 @@ impl CalendarDef {
                 ));
             }
         }
-        if !self.week_day_names.is_empty()
-            && self.week_day_names.len() as i32 != self.days_per_week
+        if !self.week_day_names.is_empty() && self.week_day_names.len() as i32 != self.days_per_week
         {
             return Err(format!(
                 "week_day_names has {} entries but days_per_week is {}",
@@ -642,7 +644,10 @@ mod quantity_tests {
         // trailing plural + punctuation tolerated
         let plural = extract_price_mentions("He paid 12 silvers.", &units);
         assert_eq!(plural.len(), 1);
-        assert_eq!((plural[0].amount, plural[0].unit.as_str()), (12.0, "silver"));
+        assert_eq!(
+            (plural[0].amount, plural[0].unit.as_str()),
+            (12.0, "silver")
+        );
         // unknown unit and empty vocabulary yield nothing
         assert!(extract_price_mentions("10 apples", &units).is_empty());
         assert!(extract_price_mentions("5 silver", &[]).is_empty());

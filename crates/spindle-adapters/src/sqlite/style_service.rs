@@ -1397,15 +1397,17 @@ impl SqliteSpindleService {
                 .await?;
             let mut previous_active = None;
             for a in apps {
-                if a.id != app.id && a.rollback_status != "rolled_back"
+                if a.id != app.id
+                    && a.rollback_status != "rolled_back"
                     && let Ok(Some(prof)) = self
                         .repository()
                         .get_style_profile(&input.project_id, &a.profile_id)
                         .await
-                        && prof.archived_at.is_none() {
-                            previous_active = Some(a.profile_id);
-                            break;
-                        }
+                    && prof.archived_at.is_none()
+                {
+                    previous_active = Some(a.profile_id);
+                    break;
+                }
             }
             self.repository()
                 .set_active_style_profile_id(&input.project_id, previous_active)
@@ -2027,11 +2029,13 @@ impl SqliteSpindleService {
     ) -> Result<spindle_core::style::ArchiveStyleProfileOutput> {
         let project = self.repository().get_project(&input.project_id).await?;
         if let Some(active_id) = &project.active_style_profile_id
-            && active_id == &input.profile_id && !input.force.unwrap_or(false) {
-                return Err(anyhow!(
-                    "Cannot archive the active style profile unless force=true is provided"
-                ));
-            }
+            && active_id == &input.profile_id
+            && !input.force.unwrap_or(false)
+        {
+            return Err(anyhow!(
+                "Cannot archive the active style profile unless force=true is provided"
+            ));
+        }
 
         let archived_at = self
             .repository()
@@ -2039,11 +2043,12 @@ impl SqliteSpindleService {
             .await?;
 
         if let Some(active_id) = &project.active_style_profile_id
-            && active_id == &input.profile_id {
-                self.repository()
-                    .set_active_style_profile_id(&input.project_id, None)
-                    .await?;
-            }
+            && active_id == &input.profile_id
+        {
+            self.repository()
+                .set_active_style_profile_id(&input.project_id, None)
+                .await?;
+        }
 
         Ok(spindle_core::style::ArchiveStyleProfileOutput {
             project_id: input.project_id,
@@ -2478,8 +2483,9 @@ impl SqliteSpindleService {
         };
 
         if let Some(min_score) = input.minimum_improvement_score
-            && total_improvement < min_score {
-                aggregate_risks.push(spindle_core::style::StyleRevisionPatchRisk {
+            && total_improvement < min_score
+        {
+            aggregate_risks.push(spindle_core::style::StyleRevisionPatchRisk {
                     risk_type: "minimum_improvement_score_failed".to_string(),
                     severity: "error".to_string(),
                     description: format!(
@@ -2487,7 +2493,7 @@ impl SqliteSpindleService {
                         total_improvement, min_score
                     ),
                 });
-            }
+        }
 
         Ok(spindle_core::style::EvaluateStyleRevisionPatchOutput {
             project_id: input.project_id,
@@ -2531,13 +2537,14 @@ impl SqliteSpindleService {
                 return Err(anyhow!("style revision patch evaluation regressed"));
             }
             if let Some(min_score) = input.minimum_improvement_score
-                && eval_output.aggregate_score.improvement_score < min_score {
-                    return Err(anyhow!(
-                        "style revision patch evaluation failed minimum threshold: score {:.2} < required {:.2}",
-                        eval_output.aggregate_score.improvement_score,
-                        min_score
-                    ));
-                }
+                && eval_output.aggregate_score.improvement_score < min_score
+            {
+                return Err(anyhow!(
+                    "style revision patch evaluation failed minimum threshold: score {:.2} < required {:.2}",
+                    eval_output.aggregate_score.improvement_score,
+                    min_score
+                ));
+            }
         }
 
         // 2. Validate all scene targets for project ownership and stale hashes

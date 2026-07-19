@@ -1280,10 +1280,8 @@ impl ToolRouter {
                     .await
             }
             "set_project_calendar" => {
-                self.invoke(arguments, |input| {
-                    self.service.set_project_calendar(input)
-                })
-                .await
+                self.invoke(arguments, |input| self.service.set_project_calendar(input))
+                    .await
             }
             "set_scene_clock" => {
                 self.invoke(arguments, |input| self.service.set_scene_clock(input))
@@ -1306,10 +1304,8 @@ impl ToolRouter {
                 .await
             }
             "commit_quantity_state" => {
-                self.invoke(arguments, |input| {
-                    self.service.commit_quantity_state(input)
-                })
-                .await
+                self.invoke(arguments, |input| self.service.commit_quantity_state(input))
+                    .await
             }
             "derive_quantity_scheme_from_system_overlay" => {
                 self.invoke(arguments, |input| {

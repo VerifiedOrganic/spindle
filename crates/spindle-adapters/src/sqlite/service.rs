@@ -1016,7 +1016,11 @@ impl SqliteSpindleService {
         let summary = self.repository.save_summary(&input).await?;
         // Recompute realized arc pacing for the affected book so the previously
         // inert pacing_budget_audit reflects actual chapter throughput.
-        let branch_id = self.repository.get_active_branch(&input.project_id).await?.id;
+        let branch_id = self
+            .repository
+            .get_active_branch(&input.project_id)
+            .await?
+            .id;
         self.repository
             .recompute_pacing_for_book(&input.project_id, &branch_id, input.book_number)
             .await?;
@@ -6315,9 +6319,8 @@ impl SqliteSpindleService {
             WorldRuleContextCharacter, agency_check_from_scene_history,
             apply_scene_context_bundle_trims, build_scene_context_bundle,
             canonical_fact_hard_constraint, canonical_fact_read_model, economy_summary,
-            empty_agency_check_summary,
-            empty_location_summary, empty_reader_contract, empty_world_state_summary,
-            estimate_scene_context_tokens, filter_relevant_world_rules,
+            empty_agency_check_summary, empty_location_summary, empty_reader_contract,
+            empty_world_state_summary, estimate_scene_context_tokens, filter_relevant_world_rules,
             future_knowledge_briefing_item, future_knowledge_summary, knowledge_fact_briefing_item,
             narrative_promise_due_summary, non_truncatable_prefix_tokens_scene_context,
             pacing_directives_for_characters, story_index, story_index_from_placement,
@@ -6728,15 +6731,17 @@ impl SqliteSpindleService {
                     hits.into_iter()
                         .filter(|(se, _)| !present.contains(se.entity_id.as_str()))
                         .take(SEMANTIC_REFERENCE_LIMIT)
-                        .map(|(se, distance)| spindle_core::models::SearchBibleResultItem {
-                            entity_type: se.entity_table,
-                            entity_id: se.entity_id,
-                            title: se.title,
-                            excerpt: se.excerpt,
-                            // Lower distance = more similar; report as a [0, 1]
-                            // score where higher is better, mirroring search_bible.
-                            score: 1.0 / (1.0 + distance),
-                        })
+                        .map(
+                            |(se, distance)| spindle_core::models::SearchBibleResultItem {
+                                entity_type: se.entity_table,
+                                entity_id: se.entity_id,
+                                title: se.title,
+                                excerpt: se.excerpt,
+                                // Lower distance = more similar; report as a [0, 1]
+                                // score where higher is better, mirroring search_bible.
+                                score: 1.0 / (1.0 + distance),
+                            },
+                        )
                         .collect()
                 }
             } else {
@@ -7492,7 +7497,8 @@ impl SqliteSpindleService {
                                 promise.description, verdict.overdue_by_chapters
                             ),
                             Some(
-                                "pay it off, reinforce it, or call update_promise_status".to_string(),
+                                "pay it off, reinforce it, or call update_promise_status"
+                                    .to_string(),
                             ),
                         ),
                         crate::format::PromiseUrgency::Due => (
@@ -8191,7 +8197,9 @@ impl SqliteSpindleService {
                     .await?
                     .into_iter()
                     .filter_map(|annotation| {
-                        annotation.intensity.map(|value| (annotation.scene_id, value))
+                        annotation
+                            .intensity
+                            .map(|value| (annotation.scene_id, value))
                     })
                     .collect();
                 let mut chapter_intensities: BTreeMap<(i32, i32), Vec<f64>> = BTreeMap::new();
@@ -10185,27 +10193,28 @@ impl SqliteSpindleService {
         let continuity_gate = input
             .continuity_gate
             .unwrap_or(spindle_core::models::CommitContinuityGate::BlockErrors);
-        let (blocking_continuity_findings, retcon_findings) =
-            if continuity_gate == spindle_core::models::CommitContinuityGate::Off {
-                (Vec::new(), Vec::new())
-            } else {
-                let active_facts = self
-                    .repository
-                    .list_active_canonical_facts_by_project(&project_id)
-                    .await?;
-                let mut candidates: Vec<crate::format::ContradictionCandidate> = active_facts
-                    .iter()
-                    .map(crate::format::candidate_from_canonical_fact)
-                    .collect();
-                for (idx, entry) in input.canonical_facts.iter().enumerate() {
-                    if let Some(candidate) = crate::format::candidate_from_commit_entry(
-                        entry,
-                        format!("(pending fact {idx})"),
-                    ) {
-                        candidates.push(candidate);
-                    }
+        let (blocking_continuity_findings, retcon_findings) = if continuity_gate
+            == spindle_core::models::CommitContinuityGate::Off
+        {
+            (Vec::new(), Vec::new())
+        } else {
+            let active_facts = self
+                .repository
+                .list_active_canonical_facts_by_project(&project_id)
+                .await?;
+            let mut candidates: Vec<crate::format::ContradictionCandidate> = active_facts
+                .iter()
+                .map(crate::format::candidate_from_canonical_fact)
+                .collect();
+            for (idx, entry) in input.canonical_facts.iter().enumerate() {
+                if let Some(candidate) = crate::format::candidate_from_commit_entry(
+                    entry,
+                    format!("(pending fact {idx})"),
+                ) {
+                    candidates.push(candidate);
                 }
-                let mut findings: Vec<spindle_core::models::ConsistencyIssue> =
+            }
+            let mut findings: Vec<spindle_core::models::ConsistencyIssue> =
                     crate::format::detect_fact_contradictions(&candidates)
                         .into_iter()
                         .map(|contradiction| spindle_core::models::ConsistencyIssue {
@@ -10227,10 +10236,10 @@ impl SqliteSpindleService {
                             ),
                         })
                         .collect();
-                let retcons = self.scan_retcon_findings(&project_id, &scene).await?;
-                findings.extend(retcons.iter().map(retcon_finding_to_consistency_issue));
-                (findings, retcons)
-            };
+            let retcons = self.scan_retcon_findings(&project_id, &scene).await?;
+            findings.extend(retcons.iter().map(retcon_finding_to_consistency_issue));
+            (findings, retcons)
+        };
 
         // Intra-scene temporal coherence — advisory only. Held in its own field
         // (never `blocking_continuity_findings`) and always `severity: "warning"`,
@@ -10248,10 +10257,11 @@ impl SqliteSpindleService {
         if continuity_gate == spindle_core::models::CommitContinuityGate::BlockErrors
             && !input.accept_continuity_risks
         {
-            let blocking: Vec<&spindle_core::models::ConsistencyIssue> = blocking_continuity_findings
-                .iter()
-                .filter(|issue| issue.severity == "error")
-                .collect();
+            let blocking: Vec<&spindle_core::models::ConsistencyIssue> =
+                blocking_continuity_findings
+                    .iter()
+                    .filter(|issue| issue.severity == "error")
+                    .collect();
             if !blocking.is_empty() {
                 anyhow::bail!(
                     "commit_scene_changes blocked by {} continuity error(s); \
@@ -26869,7 +26879,9 @@ rating = "explicit"
             out.temporal_findings
         );
         assert!(
-            out.temporal_findings.iter().all(|i| i.severity == "warning"),
+            out.temporal_findings
+                .iter()
+                .all(|i| i.severity == "warning"),
             "temporal findings are advisory warnings only: {:?}",
             out.temporal_findings
         );
@@ -26950,8 +26962,7 @@ rating = "explicit"
                 chapter_number: 1,
                 chapter_id: None,
                 scene_order: 1,
-                full_text: "He sat at the long table in the grey morning and ate his bread."
-                    .into(),
+                full_text: "He sat at the long table in the grey morning and ate his bread.".into(),
                 summary: "clean".into(),
                 content_rating: ContentRating::General,
                 tone: None,
@@ -27277,7 +27288,9 @@ rating = "explicit"
             CheckConsistencyInput, ConsistencyScopeInput, ContentRating, SaveSceneDraftInput,
         };
 
-        let (_tmp, svc) = fresh_service().await;
+        // fresh_service_local: this test drives `model_router.complete` and must
+        // never resolve the `review` route through a dev machine's agent config.
+        let (_tmp, svc) = fresh_service_local().await;
         let proj = svc
             .create_project(CreateProjectInput {
                 name: "deep-temporal".into(),
@@ -27412,7 +27425,8 @@ rating = "explicit"
 
     #[test]
     fn temporal_deep_parse_extracts_findings() {
-        let out = r#"{"findings":[{"severity":"warning","message":"jumps to night","evidence":"e"}]}"#;
+        let out =
+            r#"{"findings":[{"severity":"warning","message":"jumps to night","evidence":"e"}]}"#;
         let findings = super::parse_deep_temporal_check_output(out).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].message, "jumps to night");
@@ -27739,7 +27753,9 @@ rating = "explicit"
             chapter_number: chapter,
             scene_order: 1,
         };
-        repo.append_quantity_state(mk(1, "destitute")).await.unwrap();
+        repo.append_quantity_state(mk(1, "destitute"))
+            .await
+            .unwrap();
         repo.append_quantity_state(mk(5, "comfortable"))
             .await
             .unwrap();
@@ -27856,7 +27872,10 @@ rating = "explicit"
         );
 
         // A valid reading persists and returns a stamped id.
-        let ok = svc.commit_quantity_state(commit("destitute")).await.unwrap();
+        let ok = svc
+            .commit_quantity_state(commit("destitute"))
+            .await
+            .unwrap();
         assert!(ok.quantity_state_id.starts_with("quantity_state:"));
     }
 
@@ -27981,7 +28000,10 @@ rating = "explicit"
             "unexplained band jump should warn at commit"
         );
 
-        let out = svc.check_consistency(quantity_drift_input(&project_id)).await.unwrap();
+        let out = svc
+            .check_consistency(quantity_drift_input(&project_id))
+            .await
+            .unwrap();
         assert!(
             out.issues.iter().any(|i| i.check_type == "quantity_drift"),
             "check_consistency should flag the unexplained band jump: {:?}",
@@ -28009,7 +28031,10 @@ rating = "explicit"
             .unwrap();
         assert!(ok.warnings.is_empty(), "an explained jump must not warn");
 
-        let out = svc.check_consistency(quantity_drift_input(&project_id)).await.unwrap();
+        let out = svc
+            .check_consistency(quantity_drift_input(&project_id))
+            .await
+            .unwrap();
         assert!(
             !out.issues.iter().any(|i| i.check_type == "quantity_drift"),
             "an explained jump must not be flagged: {:?}",
@@ -28139,8 +28164,12 @@ rating = "explicit"
             },
         };
         // Climbs one tier (destitute -> comfortable): a clean arc, no drift.
-        svc.commit_quantity_state(commit(1, "destitute")).await.unwrap();
-        svc.commit_quantity_state(commit(3, "comfortable")).await.unwrap();
+        svc.commit_quantity_state(commit(1, "destitute"))
+            .await
+            .unwrap();
+        svc.commit_quantity_state(commit(3, "comfortable"))
+            .await
+            .unwrap();
 
         let location = svc
             .create_location(CreateLocationInput {
@@ -28231,12 +28260,18 @@ rating = "explicit"
                 ..Default::default()
             },
         };
-        svc.commit_quantity_state(commit(1, "Mortal")).await.unwrap();
+        svc.commit_quantity_state(commit(1, "Mortal"))
+            .await
+            .unwrap();
         // Mortal -> Core skips Foundation (a 2-tier jump): warned by the derived scheme.
         let jumped = svc.commit_quantity_state(commit(2, "Core")).await.unwrap();
         assert!(!jumped.warnings.is_empty(), "skipping a tier should warn");
         // A tier the overlay never declared is hard-rejected.
-        assert!(svc.commit_quantity_state(commit(3, "Immortal")).await.is_err());
+        assert!(
+            svc.commit_quantity_state(commit(3, "Immortal"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -28285,8 +28320,16 @@ rating = "explicit"
             .await
             .unwrap();
         assert_eq!(out.mentions.len(), 2, "mentions: {:?}", out.mentions);
-        assert!(out.mentions.iter().any(|m| m.amount == 5.0 && m.unit == "silver"));
-        assert!(out.mentions.iter().any(|m| m.amount == 2.0 && m.unit == "gold"));
+        assert!(
+            out.mentions
+                .iter()
+                .any(|m| m.amount == 5.0 && m.unit == "silver")
+        );
+        assert!(
+            out.mentions
+                .iter()
+                .any(|m| m.amount == 2.0 && m.unit == "gold")
+        );
     }
 
     #[tokio::test]
@@ -28476,8 +28519,8 @@ rating = "explicit"
     #[tokio::test]
     async fn set_clock_tools_validate_and_persist() {
         use spindle_core::models::{
-            CalendarDef, CalendarMonth, ContentRating, SaveSceneDraftInput, SetProjectCalendarInput,
-            SetSceneClockInput, StoryClock,
+            CalendarDef, CalendarMonth, ContentRating, SaveSceneDraftInput,
+            SetProjectCalendarInput, SetSceneClockInput, StoryClock,
         };
 
         let (_tmp, svc) = fresh_service().await;
@@ -28886,8 +28929,9 @@ rating = "explicit"
                     entity_table: "world_rule".into(),
                     title: "Oath Wardens".into(),
                     excerpt: "the order that holds the gate".into(),
-                    content: "The Oath Wardens are oathbound to hold the Ash Gate against the dark."
-                        .into(),
+                    content:
+                        "The Oath Wardens are oathbound to hold the Ash Gate against the dark."
+                            .into(),
                 },
             ),
             (
@@ -29446,9 +29490,10 @@ rating = "explicit"
             .await
             .unwrap();
         assert!(
-            main_facts.iter().any(
-                |f| f.predicate == "eye_color" && f.subject_id.as_deref() == Some("character:mara")
-            ),
+            main_facts
+                .iter()
+                .any(|f| f.predicate == "eye_color"
+                    && f.subject_id.as_deref() == Some("character:mara")),
             "branch-local canonical fact must survive merge into main (count={})",
             main_facts.len()
         );
