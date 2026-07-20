@@ -16510,6 +16510,124 @@ impl SqliteSpindleService {
         })
     }
 
+    /// Run the cumulative reader-simulation pass for a single chapter (evolution
+    /// §3.6, P3.4). Concatenates the given scenes' prose in spine order, derives
+    /// the reader persona from the project's reader contract, folds in the prior
+    /// notes (the reader's rolling memory), dispatches through the
+    /// `reader_sim` → `review` fallback ladder (§2.3, mirroring the mine ladder)
+    /// gated at `rating`, and parses strict JSON out. Never mutates canon — this
+    /// is enrichment, not a gate. Honest outcomes (I8): `skipped` on no cleared
+    /// route / transport error / no prose (never fakes a clean read), `unparsed`
+    /// on malformed output (prior notes preserved so the reader loses no memory),
+    /// `read` otherwise.
+    pub async fn reader_sim_chapter(
+        &self,
+        input: spindle_core::models::ReaderSimChapterInput,
+    ) -> Result<spindle_core::models::ReaderSimChapterOutcome> {
+        use crate::ai::{ModelRequest, RouteClearanceError};
+        use spindle_core::models::ReaderSimChapterOutcome;
+
+        let project = self.repository.get_project(&input.project_id).await?;
+
+        // Gather the chapter's scenes IN SPINE ORDER. The caller supplies the
+        // ordered scene ids; we fetch each and drop empty prose. No scenes / all
+        // empty ⇒ honest skip before any model call (I8).
+        let mut prose_blocks: Vec<String> = Vec::new();
+        for scene_id in &input.scene_ids {
+            let scene = self.repository.get_scene(scene_id).await?;
+            if scene.project_id != input.project_id {
+                anyhow::bail!(
+                    "scene {} does not belong to project {}",
+                    scene_id,
+                    input.project_id
+                );
+            }
+            if scene.full_text.trim().is_empty() {
+                continue;
+            }
+            prose_blocks.push(format!(
+                "[chapter {} scene {}]\n{}",
+                scene.chapter_number, scene.scene_order, scene.full_text
+            ));
+        }
+        if prose_blocks.is_empty() {
+            return Ok(ReaderSimChapterOutcome {
+                status: "skipped".to_string(),
+                engagement: "skipped".to_string(),
+                notes: String::new(),
+                concerns: Vec::new(),
+                skip_reason: Some("no prose".to_string()),
+            });
+        }
+
+        let contract = project.reader_contract.clone().into_core();
+        let prompt =
+            build_reader_sim_prompt(&contract, &input.prior_notes, &prose_blocks.join("\n\n"));
+
+        // Fallback ladder (§2.3): reader_sim → review (on NoRoute) → skip. The
+        // chokepoint inside complete() gates the rating for the uncleared case,
+        // so no prose leaves for an uncleared agent.
+        let response = match self
+            .repository
+            .model_router()
+            .complete(&ModelRequest {
+                route: "reader_sim".to_string(),
+                prompt: prompt.clone(),
+                rating: input.rating.clone(),
+                context: None,
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let is_no_route = matches!(
+                    err.downcast_ref::<RouteClearanceError>(),
+                    Some(RouteClearanceError::NoRoute { .. })
+                );
+                if is_no_route {
+                    // Retry via the review route (same rating).
+                    match self
+                        .repository
+                        .model_router()
+                        .complete(&ModelRequest {
+                            route: "review".to_string(),
+                            prompt: prompt.clone(),
+                            rating: input.rating.clone(),
+                            context: None,
+                        })
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(review_err) => {
+                            return Ok(reader_sim_skip_outcome(&review_err, "review"));
+                        }
+                    }
+                } else {
+                    return Ok(reader_sim_skip_outcome(&err, "reader_sim"));
+                }
+            }
+        };
+
+        // Strict parse; malformed → keep prior notes, engagement "unparsed",
+        // never guess (I8). The reader loses no memory.
+        match parse_reader_sim_output(&response.output) {
+            Some(parsed) => Ok(ReaderSimChapterOutcome {
+                status: "read".to_string(),
+                engagement: parsed.engagement,
+                notes: parsed.notes,
+                concerns: parsed.concerns,
+                skip_reason: None,
+            }),
+            None => Ok(ReaderSimChapterOutcome {
+                status: "unparsed".to_string(),
+                engagement: "unparsed".to_string(),
+                notes: input.prior_notes.clone(),
+                concerns: Vec::new(),
+                skip_reason: None,
+            }),
+        }
+    }
+
     // ── Canon-delta ratification (list + decide/apply dispatcher, ADR 0001 D3) ─
 
     /// List staged/decided canon deltas on a project's active branch (ADR 0001).
@@ -23095,6 +23213,161 @@ fn mine_skip_output(
         discarded_count: 0,
         superseded_count: 0,
         status: "skipped".to_string(),
+        skip_reason: Some(skip_reason),
+    }
+}
+
+/// Distinctive header for the cumulative reader-simulation prompt (evolution
+/// §3.6). Doubles as the marker the local `review` stub keys on to return
+/// deterministic reader-sim JSON in tests / local-only runs, exactly like the
+/// temporal / promise-payoff / secret-leak / scene-purpose headers.
+const READER_SIM_HEADER: &str = "cumulative reader simulation";
+
+/// The first-N-chars of the prior-notes block that a reader-sim prompt exposes
+/// to the memory-echo test sentinel. Keeping this a named constant lets the
+/// local stub and the test agree on exactly how much the `PRIOR:` marker echoes.
+pub const READER_SIM_PRIOR_ECHO_CHARS: usize = 40;
+
+/// Build the cumulative reader-simulation prompt (evolution §3.6). The header is
+/// the deterministic marker the local `review` stub keys on. The persona derives
+/// from the project's reader contract ("you are the reader this book
+/// promises…"); the prior notes carry the reader's rolling memory; the prose
+/// block is the chapter's scenes in spine order. Strict JSON out.
+fn build_reader_sim_prompt(
+    contract: &spindle_core::models::ReaderContract,
+    prior_notes: &str,
+    prose: &str,
+) -> String {
+    let style = if contract.style_notes.is_empty() {
+        "(none stated)".to_string()
+    } else {
+        contract.style_notes.join("; ")
+    };
+    let boundaries = if contract.boundaries.is_empty() {
+        "(none stated)".to_string()
+    } else {
+        contract.boundaries.join("; ")
+    };
+    let prior = if prior_notes.trim().is_empty() {
+        "(no prior notes — this is the first chapter you have read)".to_string()
+    } else {
+        prior_notes.to_string()
+    };
+    format!(
+        "You are performing a {header}.\n\
+         You are the reader this book promises: {promise}\n\
+         Style you were promised: {style}\n\
+         Boundaries you were promised: {boundaries}\n\
+         You read chapters IN ORDER and you REMEMBER. Below are your cumulative \
+         notes from everything you have read so far, then the next chapter's prose \
+         in spine order. Read the new chapter as this reader, update your memory, \
+         and report your engagement and any craft concerns.\n\n\
+         YOUR PRIOR NOTES:\n{prior}\n\n\
+         NEXT CHAPTER (scenes in spine order):\n{prose}\n\n\
+         Return strict JSON only, this exact shape:\n\
+         {{\"engagement\":\"high|steady|dipping\",\"notes\":\"<your cumulative, \
+         self-contained replacement notes — compress if long>\",\"concerns\":\
+         [{{\"severity\":\"info|warning\",\"description\":\"<a craft observation>\"}}]}}\n\
+         `notes` REPLACES your prior notes (self-contained, not a diff). Raise a \
+         concern only for a real craft signal (engagement dip, retread, unpaid \
+         setup); an empty concerns array is fine.",
+        header = READER_SIM_HEADER,
+        promise = contract.promise,
+        style = style,
+        boundaries = boundaries,
+        prior = prior,
+        prose = prose,
+    )
+}
+
+/// Parsed reader-sim model output (evolution §3.6). Only the fields the contract
+/// spells out; unknown extras are ignored.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawReaderSimOutput {
+    engagement: String,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    concerns: Vec<RawReaderSimConcern>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawReaderSimConcern {
+    severity: String,
+    #[serde(default)]
+    description: String,
+}
+
+/// The normalized reader-sim read (engagement + notes + validated concerns).
+struct ParsedReaderSim {
+    engagement: String,
+    notes: String,
+    concerns: Vec<spindle_core::models::ReaderSimConcern>,
+}
+
+/// Strict-parse the reader-sim model output (evolution §3.6). Tolerates code
+/// fences / surrounding prose via [`extract_json_object`], normalizes the
+/// engagement to one of `high`/`steady`/`dipping` and each concern severity to
+/// `info`/`warning` (an out-of-vocabulary value is coerced to the safe end:
+/// unknown engagement → `dipping`, unknown severity → `info`). Returns `None`
+/// on unparseable output so the caller keeps prior notes and never guesses (I8).
+fn parse_reader_sim_output(output: &str) -> Option<ParsedReaderSim> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else {
+        extract_json_object(output)?
+    };
+    let raw: RawReaderSimOutput = serde_json::from_str(&candidate).ok()?;
+    let engagement = match raw.engagement.trim().to_ascii_lowercase().as_str() {
+        "high" => "high",
+        "steady" => "steady",
+        // Any other value reads as the reader disengaging — coerce to the
+        // signal-bearing end so an odd label never silently reads as fine.
+        _ => "dipping",
+    }
+    .to_string();
+    let concerns = raw
+        .concerns
+        .into_iter()
+        .map(|c| spindle_core::models::ReaderSimConcern {
+            severity: match c.severity.trim().to_ascii_lowercase().as_str() {
+                "warning" => "warning".to_string(),
+                _ => "info".to_string(),
+            },
+            description: c.description,
+        })
+        .collect();
+    Some(ParsedReaderSim {
+        engagement,
+        notes: raw.notes,
+        concerns,
+    })
+}
+
+/// Honest reader-sim skip (evolution §3.6, I8). Names the route+rating that was
+/// uncleared, or the transport failure — never any prose. A skip never reads as
+/// a clean pass.
+fn reader_sim_skip_outcome(
+    err: &anyhow::Error,
+    attempted_route: &str,
+) -> spindle_core::models::ReaderSimChapterOutcome {
+    let skip_reason = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "reader simulation SKIPPED: the `{route}` route is not cleared for rating `{rating}`"
+        ),
+        _ => format!(
+            "reader simulation SKIPPED: no usable `{attempted_route}` route (the model call failed)"
+        ),
+    };
+    spindle_core::models::ReaderSimChapterOutcome {
+        status: "skipped".to_string(),
+        engagement: "skipped".to_string(),
+        notes: String::new(),
+        concerns: Vec::new(),
         skip_reason: Some(skip_reason),
     }
 }
@@ -42855,6 +43128,266 @@ agent = "review-rated"
         })
         .await
         .unwrap();
+    }
+
+    // ── Reader-simulation chapter pass (evolution §3.6, P3.4) ───────────────
+
+    #[tokio::test]
+    async fn reader_sim_chapter_reads_prose_and_carries_prior_notes() {
+        // Test 1 (memory flows, service half): prior notes flow INTO the prompt.
+        // The local `review` stub (reader_sim falls back to review) echoes a
+        // PRIOR:<first 40 chars> marker into its notes when the prompt carries
+        // MOCK_READER_NOTES_ECHO, so a landed PRIOR: proves the prior-notes block
+        // reached the model.
+        use spindle_core::models::ReaderSimChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Reader Echo").await;
+        set_scene_prose(
+            &svc,
+            &scene_id,
+            "The market woke slowly. MOCK_READER_NOTES_ECHO drifted through the stalls.",
+        )
+        .await;
+
+        let prior = "Chapter 1 landed well; the reader trusts the narrator.";
+        let out = svc
+            .reader_sim_chapter(ReaderSimChapterInput {
+                project_id: project.project_id.clone(),
+                scene_ids: vec![scene_id.clone()],
+                rating: Some("general".to_string()),
+                prior_notes: prior.to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.status, "read", "parseable read: {out:?}");
+        assert_eq!(out.engagement, "steady");
+        assert!(
+            out.notes.contains("PRIOR:"),
+            "notes must echo the prior-notes marker so memory flow is provable: {}",
+            out.notes
+        );
+        // The echoed prefix is the first 40 chars of the prior notes.
+        let expected: String = prior.chars().take(40).collect();
+        assert!(
+            out.notes.contains(&expected),
+            "echoed PRIOR must carry the first 40 chars of prior notes: {}",
+            out.notes
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_sim_chapter_dip_surfaces_warning_concern() {
+        // Test 2 (dip, service half): MOCK_READER_DIP → dipping + one warning
+        // concern about the retread.
+        use spindle_core::models::ReaderSimChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _) = project_with_scene(&svc, "Reader Dip").await;
+        set_scene_prose(
+            &svc,
+            &scene_id,
+            "Back to the market. MOCK_READER_DIP and the same haggling as before.",
+        )
+        .await;
+
+        let out = svc
+            .reader_sim_chapter(ReaderSimChapterInput {
+                project_id: project.project_id.clone(),
+                scene_ids: vec![scene_id.clone()],
+                rating: Some("general".to_string()),
+                prior_notes: String::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.status, "read");
+        assert_eq!(out.engagement, "dipping");
+        assert_eq!(out.concerns.len(), 1, "one warning concern: {out:?}");
+        assert_eq!(out.concerns[0].severity, "warning");
+        assert!(
+            out.concerns[0].description.contains("market"),
+            "concern names the retread: {:?}",
+            out.concerns[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_sim_chapter_skips_when_rating_uncovered() {
+        // Test 3 (clearance skip, service half): the review agent covers only
+        // non-explicit ratings, the chapter's rating is explicit → the pass is
+        // skipped with a route+rating reason, and NO prose is dispatched.
+        use spindle_core::models::{ConfigureAgentsInput, ContentRating, ReaderSimChapterInput};
+        let (tmp, svc) = fresh_service_local().await;
+        let config_path = tmp.path().join("reader-routes.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-safe"
+name = "Review Safe"
+provider = "local"
+endpoint = "local"
+model = "review-safe"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "review"
+agent = "review-safe"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let (project, scene_id, _) = project_with_scene(&svc, "Reader Explicit").await;
+        let scene = svc.repository().get_scene(&scene_id).await.unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: scene.book_number,
+            chapter_number: scene.chapter_number,
+            chapter_id: None,
+            scene_order: scene.scene_order,
+            full_text: "MOCK_READER_DIP explicit prose here.".to_string(),
+            summary: "explicit".to_string(),
+            content_rating: ContentRating::Explicit,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+        let out = svc
+            .reader_sim_chapter(ReaderSimChapterInput {
+                project_id: project.project_id.clone(),
+                scene_ids: vec![scene_id.clone()],
+                rating: Some("explicit".to_string()),
+                prior_notes: String::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.status, "skipped");
+        assert!(out.concerns.is_empty());
+        let reason = out.skip_reason.expect("skip reason present");
+        assert!(
+            reason.contains("explicit"),
+            "reason names the uncovered rating: {reason}"
+        );
+        // No dispatch carried the prose (the chokepoint rejected before any call).
+        let records = dispatch_log.lock().unwrap();
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, crate::ai::DispatchRecord::Dispatch { .. })),
+            "no prose may be dispatched on a rating-skip: {records:?}"
+        );
+    }
+
+    #[test]
+    fn reader_sim_parse_rejects_malformed_and_normalizes_valid() {
+        // Test 5 (malformed, parse half): a non-JSON stub (the default review
+        // block) parses to None so the caller keeps prior notes; valid JSON
+        // normalizes engagement + concern severities to the vocabulary.
+        // Malformed / non-JSON → None (caller preserves prior notes).
+        assert!(super::parse_reader_sim_output("STRENGTHS:\n- ok\nCONCERNS:\n- none").is_none());
+        assert!(super::parse_reader_sim_output("").is_none());
+        assert!(super::parse_reader_sim_output("{not json").is_none());
+
+        // Valid JSON normalizes.
+        let parsed = super::parse_reader_sim_output(
+            r#"{"engagement":"DIPPING","notes":"n","concerns":[{"severity":"WARNING","description":"d"},{"severity":"chatty","description":"e"}]}"#,
+        )
+        .expect("valid reader-sim JSON parses");
+        assert_eq!(parsed.engagement, "dipping");
+        assert_eq!(parsed.notes, "n");
+        assert_eq!(parsed.concerns.len(), 2);
+        assert_eq!(parsed.concerns[0].severity, "warning");
+        // Out-of-vocabulary severity coerces to the safe (info) end.
+        assert_eq!(parsed.concerns[1].severity, "info");
+
+        // Unknown engagement coerces to the signal-bearing (dipping) end.
+        let odd =
+            super::parse_reader_sim_output(r#"{"engagement":"meh","notes":""}"#).expect("parses");
+        assert_eq!(odd.engagement, "dipping");
+    }
+
+    #[tokio::test]
+    async fn reader_sim_chapter_transport_error_skips_honestly() {
+        // Test 5 companion: a transport failure (dead HTTP review agent) is an
+        // honest skip, never a fake clean read; prior notes are not fabricated.
+        use spindle_core::models::{ConfigureAgentsInput, ReaderSimChapterInput};
+        let (tmp, svc) = fresh_service_local().await;
+        let config_path = tmp.path().join("reader-dead.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-dead"
+name = "Dead Review"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:1/v1"
+model = "model"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-dead"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+        let (project, scene_id, _) = project_with_scene(&svc, "Reader Transport").await;
+        set_scene_prose(&svc, &scene_id, "A plain chapter, nothing special.").await;
+
+        let out = svc
+            .reader_sim_chapter(ReaderSimChapterInput {
+                project_id: project.project_id.clone(),
+                scene_ids: vec![scene_id.clone()],
+                rating: Some("general".to_string()),
+                prior_notes: String::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "skipped", "transport error must skip: {out:?}");
+        assert!(out.skip_reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn reader_sim_chapter_skips_empty_prose_without_model_call() {
+        // No prose across the chapter's scenes → honest skip, no model call.
+        use spindle_core::models::ReaderSimChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, _scene_id, _) = project_with_scene(&svc, "Reader Empty").await;
+
+        let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+        let out = svc
+            .reader_sim_chapter(ReaderSimChapterInput {
+                project_id: project.project_id.clone(),
+                scene_ids: Vec::new(),
+                rating: Some("general".to_string()),
+                prior_notes: String::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "skipped");
+        assert!(
+            dispatch_log.lock().unwrap().is_empty(),
+            "no dispatch on empty scenes"
+        );
     }
 
     #[tokio::test]

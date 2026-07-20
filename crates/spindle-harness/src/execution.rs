@@ -976,6 +976,11 @@ async fn run_checkpoint(
             chapter_summaries,
             narrative_promises,
             sampled_scene_ids,
+            // Reader-sim runs later, inside the auto-checkpoint automation
+            // (evolution §3.6). The report is created with no section; the
+            // automation adds it after the sampled reviews and before the
+            // verdict. A manual-policy run never populates it.
+            reader_sim: None,
         },
     )?;
 

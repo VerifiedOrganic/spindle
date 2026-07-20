@@ -135,6 +135,18 @@ and the deep audit still completed. A blocked auto-checkpoint stays
 Canon-steward ratification (`list_canon_deltas` / `decide_canon_deltas`) still
 happens between checkpoints regardless of policy.
 
+**Reader simulation (auto policies only):** each auto-checkpoint also runs a
+cumulative reader — a persona from the reader contract that reads the range's
+chapters in order with rolling memory (`reader-sim-notes.json` per run) and
+reports engagement per chapter. `authoring_status` surfaces
+`reader_sim_engagement` (per-chapter `high` | `steady` | `dipping`); the report's
+`reader_sim` section carries the concerns. This is **enrichment, not a gate** —
+concerns never block the checkpoint (the verdict stays deep-consistency-only), and
+an uncleared-rating or transport skip records an honest entry and moves on. At
+triage, read a **dipping** engagement or a concern as a craft signal: fold it into
+a revision directive (e.g. "chapter 13 retreads 12 — vary the beat") when it
+matters, or accept it and approve when it doesn't.
+
 #### When a pass skips
 
 A `mine_status` of `skipped` (detail: `"…SKIPPED: the mine route is not cleared

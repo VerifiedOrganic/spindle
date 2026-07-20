@@ -6408,6 +6408,25 @@ pub struct AuthoringStatusCheckpoint {
     /// the prose of those scenes was never dispatched anywhere. Additive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_manual_scene_ids: Vec<String>,
+    /// Per-chapter cumulative reader-simulation engagement summary for this
+    /// checkpoint (evolution §3.6), read from the checkpoint report's
+    /// `reader_sim` section. Each entry is `{chapter, engagement}` — engagement
+    /// is `high` | `steady` | `dipping` | `unparsed` | `skipped`. Empty when the
+    /// run's policy is manual (reader-sim runs only under an auto policy) or the
+    /// report has no reader-sim section yet. Enums/ids only, never prose (I8).
+    /// Additive, serde-default so pre-reader-sim clients ignore it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reader_sim_engagement: Vec<ReaderSimEngagementSummary>,
+}
+
+/// A compact per-chapter reader-sim engagement summary surfaced on
+/// `authoring_status` (evolution §3.6, R3). Enums/ids only — the reader's notes
+/// and concern text stay in the report artifact, never on the status surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ReaderSimEngagementSummary {
+    pub chapter: i32,
+    /// `high` | `steady` | `dipping` | `unparsed` | `skipped`.
+    pub engagement: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6823,6 +6842,73 @@ pub struct MineSceneCanonOutput {
     pub status: String,
     /// Present only when `status == "skipped"`; names the route+rating that was
     /// uncleared, or "empty scene". Never carries prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+/// A single reader-simulation concern (evolution §3.6 cumulative reader-sim).
+/// `severity` is `info` | `warning` — a craft signal only, never a hard gate:
+/// reader-sim concerns are report-only, matching the sampled-review outcomes
+/// which never fold into the auto-checkpoint verdict counts. `description` is
+/// the model's own concern text (a craft observation, not committed prose).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ReaderSimConcern {
+    /// `info` | `warning`. A `warning` is a stronger craft signal but does NOT
+    /// block the checkpoint (report-only, per the studied verdict semantics).
+    pub severity: String,
+    /// The model's concern text (a craft observation).
+    pub description: String,
+}
+
+/// Input to the per-chapter cumulative reader-simulation pass (evolution §3.6).
+/// The service resolves the ordered scenes by id, concatenates their prose in
+/// spine order, builds the persona + prior-notes prompt, dispatches through the
+/// `reader_sim` → `review` fallback ladder gated at `rating`, and parses strict
+/// JSON out. Prior notes flow in so the reader accumulates memory chapter to
+/// chapter across a checkpoint range.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderSimChapterInput {
+    pub project_id: String,
+    /// Active-branch scene ids for this chapter, already ordered by scene spine
+    /// (the caller resolves the order from run state). Empty ⇒ nothing to read.
+    #[serde(default)]
+    pub scene_ids: Vec<String>,
+    /// The batch content rating for this chapter (the strictest across its
+    /// scenes — `max_scene_rating`). Gates the prose-bearing dispatch. `None`
+    /// leaves the request unrated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
+    /// The reader's cumulative notes carried in from the prior chapter (already
+    /// char-capped by the caller). Empty on the first chapter of a range.
+    #[serde(default)]
+    pub prior_notes: String,
+}
+
+/// Outcome of one chapter's reader-simulation pass (evolution §3.6). `status` is
+/// one of `read` (the model returned parseable JSON — `engagement`/`notes`/
+/// `concerns` are populated), `unparsed` (the model output was malformed;
+/// `engagement` is `"unparsed"`, `notes` echoes the caller's prior notes so the
+/// reader loses no memory, and `concerns` is empty), or `skipped` (no cleared
+/// route / transport error / no prose — `skip_reason` names why, never prose).
+/// A skip or an unparsed read never reads as a clean pass (evolution I8).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderSimChapterOutcome {
+    /// `read` | `unparsed` | `skipped`.
+    pub status: String,
+    /// The reader's engagement verdict: `high` | `steady` | `dipping` on a
+    /// parsed read; `"unparsed"` when the output was malformed; `"skipped"` when
+    /// the pass was skipped.
+    pub engagement: String,
+    /// The cumulative, self-contained replacement notes the reader emitted (on
+    /// `read`), or the preserved prior notes (on `unparsed`), or empty (on
+    /// `skipped`). This is the reader's own craft memory, not committed prose.
+    #[serde(default)]
+    pub notes: String,
+    /// Concerns the reader raised this chapter (empty unless `status == "read"`).
+    #[serde(default)]
+    pub concerns: Vec<ReaderSimConcern>,
+    /// Present only when `status == "skipped"`; names the route+rating that was
+    /// uncleared, the transport failure, or "no prose". Never carries prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
 }

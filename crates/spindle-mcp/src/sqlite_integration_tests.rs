@@ -2378,9 +2378,13 @@ if [ "$ROUTE" = "draft" ]; then
       TONE="solemn"
     fi
   fi
+  # Copy any reader-sim sentinel the chapter synopsis carries into the prose, so
+  # a reader-sim fixture steers each chapter's committed prose purely via data in
+  # the DB (this shared script is the single process-stable CLI command).
+  READER=$(echo "$PROMPT" | grep -oE 'MOCK_READER_[A-Z_]+' | head -1)
   cat <<EOF
 {
-  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE as the door swung wide.",
+  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE $READER as the door swung wide.",
   "summary": "Stranger crosses",
   "tone": "$TONE",
   "character_states": [],
@@ -2390,6 +2394,26 @@ if [ "$ROUTE" = "draft" ]; then
   "continuity_notes": []
 }
 EOF
+elif echo "$PROMPT" | grep -q "cumulative reader simulation"; then
+  # The reader-sim pass rides the review route (reader_sim falls back to review).
+  # MOCK_READER_DIP -> dipping + one warning concern (retread).
+  # MOCK_READER_NOTES_ECHO -> steady + notes echoing the first 40 chars of the
+  # prior-notes block with a PRIOR: marker, proving memory flow.
+  # Otherwise -> high/steady, no concerns.
+  if echo "$PROMPT" | grep -q "MOCK_READER_MALFORMED"; then
+    # A non-JSON reply the strict parser rejects -> the pass records "unparsed"
+    # and preserves prior notes (test-only sentinel, not part of R4's contract).
+    echo 'the reader shrugs; no structured verdict today'
+  elif echo "$PROMPT" | grep -q "MOCK_READER_DIP"; then
+    echo '{"engagement":"dipping","notes":"The reader felt the second market scene retread the first.","concerns":[{"severity":"warning","description":"the second market scene retreads the first"}]}'
+  elif echo "$PROMPT" | grep -q "MOCK_READER_NOTES_ECHO"; then
+    # Extract the prior-notes block: everything after "YOUR PRIOR NOTES:" up to
+    # the blank line, then the first 40 chars.
+    ECHO=$(echo "$PROMPT" | sed -n '/YOUR PRIOR NOTES:/,/^$/p' | sed '1d;/^$/d' | head -c 40)
+    echo "{\"engagement\":\"steady\",\"notes\":\"The reader stays with the story. PRIOR:${ECHO}\",\"concerns\":[]}"
+  else
+    echo '{"engagement":"high","notes":"The reader is fully engaged.","concerns":[]}'
+  fi
 else
   cat <<EOF
 STRENGTHS:
@@ -4683,6 +4707,616 @@ async fn auto_advisory_transport_failure_blocks_without_crashing() {
     // The dispatch log is inspected only for absence of a leak (there is none:
     // the general scene's review may dispatch, but nothing crashed the run).
     let _ = &fx.dispatch_log;
+
+    auto_shutdown(fx).await;
+}
+
+// =============================================================================
+// Cumulative reader-simulation pass (evolution §3.6, P3.4)
+// =============================================================================
+
+/// Build a reader-sim auto-checkpoint fixture: `chapters` chapters (one general
+/// scene each unless `explicit` is set, then the single chapter's scene is
+/// explicit), an `auto_advisory`/`manual` policy, and per-chapter draft
+/// sentinels the reader-sim pass then keys on. `review_ratings` controls the
+/// review agent's declared coverage (so a test can strand an explicit chapter).
+/// Returns an `AutoCheckpointFixture`; drive it with the shared `auto_*` helpers.
+#[allow(clippy::too_many_arguments)]
+async fn reader_sim_fixture(
+    checkpoint_policy: &str,
+    chapters: i32,
+    ch1_sentinel: &str,
+    ch2_sentinel: &str,
+    explicit: bool,
+    review_ratings: &[&str],
+    // When Some, the review agent is hot-reloaded to these ratings right after
+    // the run starts (start preflight still saw `review_ratings`). Lets a test
+    // start an explicit auto policy that passes preflight, then strand the
+    // explicit chapter at checkpoint time.
+    swap_review_to: Option<&[&str]>,
+) -> AutoCheckpointFixture {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("reader_sim.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Reuse the single process-stable universal mock (SPINDLE_MODEL_CLI_COMMAND
+    // is process-global; a per-fixture script would race parallel tests). The
+    // universal draft branch copies any MOCK_READER_* sentinel from the synopsis
+    // into the prose, and its review branch handles the reader-sim JSON.
+    let script_path = universal_mock_agent_path();
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let review_ratings_toml = review_ratings
+        .iter()
+        .map(|r| format!("\"{r}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let draft_ratings = if explicit {
+        r#""general", "explicit""#
+    } else {
+        r#""general""#
+    };
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = [{draft_ratings}]
+
+[[agents]]
+id = "cli-agent-review"
+name = "CLI Agent Review"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = [{review_ratings_toml}]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review"
+"#,
+        script = script_path.display(),
+    );
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(&config_path, config_content).unwrap();
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Reader Sim".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "A reader who reads in order and remembers.".into(),
+                style_notes: vec!["taut, grounded".into()],
+                boundaries: vec!["tone: solemn".into()],
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("solemn".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    for chapter_number in 1..=chapters {
+        let rating = if explicit {
+            ContentRating::Explicit
+        } else {
+            ContentRating::General
+        };
+        // The per-chapter reader sentinel rides the synopsis into the draft
+        // prompt; the mock copies it into the committed prose (hermetic, no env).
+        let sentinel = match chapter_number {
+            1 => ch1_sentinel,
+            2 => ch2_sentinel,
+            _ => "",
+        };
+        let synopsis = format!("First watch. {sentinel}");
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number,
+            pov_character_id: Some(mara.character_id.clone()),
+            synopsis: synopsis.clone(),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara takes the watch".into(),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(rating),
+                purpose: "establishing".into(),
+                research_required: Some(false),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+    }
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": chapters,
+        // One checkpoint spanning the whole range, so a multi-chapter reader-sim
+        // pass runs inside a single auto-checkpoint (memory accumulates c→c).
+        "checkpoint_interval": chapters,
+        "checkpoint_policy": checkpoint_policy,
+        "max_revise_attempts": 1,
+    });
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let start_val = start_res.structured_content.unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "reader-sim run should start active: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    // Optional mid-run hot-reload: strand a rating at checkpoint time (start
+    // preflight already passed with the wider coverage).
+    if let Some(new_ratings) = swap_review_to {
+        let new_toml = new_ratings
+            .iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let swapped = format!(
+            r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = [{draft_ratings}]
+
+[[agents]]
+id = "cli-agent-review"
+name = "CLI Agent Review"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = [{new_toml}]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review"
+"#,
+            script = script_path.display(),
+        );
+        std::fs::write(&config_path, swapped).unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+        })
+        .unwrap();
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    AutoCheckpointFixture {
+        _tmp: tmp,
+        svc,
+        router,
+        project_id: project.project_id,
+        run_id,
+        ct,
+        server_handle,
+        data_dir,
+        dispatch_log,
+    }
+}
+
+/// Read the checkpoint report artifact's `reader_sim` section for a fixture's
+/// single checkpoint (chapters 1..=`end`).
+fn reader_sim_report_section(fx: &AutoCheckpointFixture, report_rel: &str) -> serde_json::Value {
+    let report_path = fx.data_dir.join("artifacts").join(report_rel);
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    report["reader_sim"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_sim_memory_flows_across_two_chapters() {
+    // Test 1: a two-chapter checkpoint range. Chapter 1's read produces notes;
+    // chapter 2's prose carries MOCK_READER_NOTES_ECHO, so the model echoes the
+    // first 40 chars of chapter-1's notes as PRIOR:<...> into chapter 2's notes —
+    // proving the prior notes flowed into chapter 2's prompt. The rolling notes
+    // artifact ends at updated_through_chapter == 2.
+    let fx = reader_sim_fixture(
+        "auto_advisory",
+        2,
+        "MOCK_READER_NOTES_ECHO",
+        "MOCK_READER_NOTES_ECHO",
+        false,
+        &["general"],
+        None,
+    )
+    .await;
+
+    let final_res = auto_drive_to_block_or_complete(&fx).await;
+    assert_eq!(
+        final_res["status"].as_str(),
+        Some("completed"),
+        "clean two-chapter auto_advisory run completes: {final_res:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let section = reader_sim_report_section(&fx, report_rel);
+    let chs = section["chapters"].as_array().expect("reader_sim chapters");
+    assert_eq!(chs.len(), 2, "one entry per chapter in range: {section:?}");
+    assert_eq!(chs[0]["chapter"].as_i64(), Some(1));
+    assert_eq!(chs[1]["chapter"].as_i64(), Some(2));
+
+    // The rolling notes artifact reached chapter 2 and carries chapter 2's notes,
+    // which echo chapter 1's notes (PRIOR: proves memory flow).
+    let notes_rel = section["notes_artifact_path"].as_str().unwrap();
+    let notes_path = fx.data_dir.join("artifacts").join(notes_rel);
+    let notes: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&notes_path).unwrap()).unwrap();
+    assert_eq!(
+        notes["updated_through_chapter"].as_i64(),
+        Some(2),
+        "memory advanced through chapter 2: {notes:?}"
+    );
+    assert!(
+        notes["notes"].as_str().unwrap().contains("PRIOR:"),
+        "chapter 2's notes echo the prior notes → memory flowed: {notes:?}"
+    );
+    // history has both ranges.
+    let history = notes["history"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[1]["range"].as_str(), Some("2..2"));
+
+    // authoring_status surfaces per-chapter engagement additively.
+    let engagement = cp["reader_sim_engagement"].as_array().expect("engagement");
+    assert_eq!(engagement.len(), 2);
+    assert_eq!(engagement[0]["chapter"].as_i64(), Some(1));
+    assert_eq!(engagement[0]["engagement"].as_str(), Some("steady"));
+
+    auto_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_sim_dip_surfaces_in_report_without_blocking() {
+    // Test 2: MOCK_READER_DIP in the chapter prose → the report section carries
+    // dipping + the warning concern. Per the STUDIED verdict semantics
+    // (deep-consistency-only; sampled-review outcomes are report-only), the
+    // reader-sim concern is REPORT-ONLY and does NOT block: the clean range still
+    // auto-approves and completes.
+    let fx = reader_sim_fixture(
+        "auto_advisory",
+        1,
+        "MOCK_READER_DIP",
+        "",
+        false,
+        &["general"],
+        None,
+    )
+    .await;
+
+    let final_res = auto_drive_to_block_or_complete(&fx).await;
+    assert_eq!(
+        final_res["status"].as_str(),
+        Some("completed"),
+        "a reader-sim warning concern is report-only and must NOT block: {final_res:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    assert_eq!(
+        cp["auto_outcome"].as_str(),
+        Some("approved"),
+        "the range auto-approves despite the reader-sim dip: {cp:?}"
+    );
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let section = reader_sim_report_section(&fx, report_rel);
+    let ch = &section["chapters"][0];
+    assert_eq!(ch["engagement"].as_str(), Some("dipping"));
+    let concerns = ch["concerns"].as_array().expect("concerns");
+    assert_eq!(concerns.len(), 1, "the warning concern is recorded: {ch:?}");
+    assert_eq!(concerns[0]["severity"].as_str(), Some("warning"));
+    assert!(
+        concerns[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("market")
+    );
+
+    auto_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_sim_rating_uncovered_chapter_skips_without_dispatching_prose() {
+    // Test 3: an explicit chapter whose review agent covers only non-explicit
+    // ratings. The reader-sim pass for that chapter is SKIPPED with an honest
+    // report entry naming the rating; zero reader-sim dispatches carry the prose
+    // (the chokepoint rejects before any call); the checkpoint still reaches a
+    // verdict (the deep audit + sampled reviews are the verdict inputs, and a
+    // reader-sim skip never marks scenes pending-manual).
+    //
+    // The sampled dual-persona review of the explicit scene ALSO falls back to
+    // manual (same uncovered rating), so the checkpoint blocks pending-manual —
+    // but that is the sampled-review fallback, NOT the reader-sim skip. What we
+    // assert here is the reader-sim skip entry and the absence of any prose
+    // dispatch, plus that the automation reached a decision (didn't crash).
+    let fx = reader_sim_fixture(
+        "auto_advisory",
+        1,
+        "MOCK_READER_DIP",
+        "",
+        true,                     // explicit scene
+        &["general", "explicit"], // review covers explicit AT START (preflight passes)
+        // …then hot-reloaded to drop explicit before the checkpoint fires, so
+        // the explicit chapter's reader-sim (and sampled review) hit
+        // RatingNotCovered at the chokepoint (evolution §3.3/§3.6 I3).
+        Some(&["general", "teen", "mature"]),
+    )
+    .await;
+
+    // Clear the dispatch log up to the checkpoint so we inspect only the
+    // checkpoint-phase dispatches (draft dispatched the explicit prose to the
+    // explicit-cleared DRAFT agent legitimately; that is not a leak).
+    let drained_before = fx.dispatch_log.lock().unwrap().len();
+
+    let final_res = auto_drive_to_block_or_complete(&fx).await;
+    // The explicit sampled review falls back to manual → the checkpoint blocks
+    // pending-manual. The run did not crash and remains addressable.
+    assert_eq!(
+        final_res["run_id"].as_str(),
+        Some(fx.run_id.as_str()),
+        "run survives the uncovered-rating checkpoint: {final_res:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let section = reader_sim_report_section(&fx, report_rel);
+    assert!(!section.is_null(), "reader-sim section present: {st:?}");
+    let ch = &section["chapters"][0];
+    assert_eq!(
+        ch["engagement"].as_str(),
+        Some("skipped"),
+        "the uncovered chapter's reader-sim is skipped: {ch:?}"
+    );
+    let reason = ch["skipped_reason"].as_str().expect("skip reason");
+    assert!(
+        reason.contains("explicit"),
+        "skip reason names the uncovered rating (no prose): {reason}"
+    );
+
+    // No reader-sim dispatch carried the explicit prose past the chokepoint. The
+    // reader-sim prompt is the only one keyed on "cumulative reader simulation",
+    // so we assert no such prompt was ever DISPATCHED (only rejected). Scope the
+    // guard so it never crosses the await in auto_shutdown.
+    let leaked = {
+        let records = fx.dispatch_log.lock().unwrap();
+        records.iter().skip(drained_before).any(|r| match r {
+            spindle_adapters::ai::DispatchRecord::Dispatch { prompt, .. } => {
+                prompt.contains("cumulative reader simulation")
+            }
+            _ => false,
+        })
+    };
+    assert!(
+        !leaked,
+        "no reader-sim prose may be dispatched on a rating skip"
+    );
+
+    auto_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_sim_never_runs_under_manual_policy() {
+    // Test 4: a manual-policy run — the auto-checkpoint automation never fires,
+    // so reader-sim never runs: no reader-sim dispatch, no notes artifact, and
+    // the report carries no reader_sim section.
+    let fx = reader_sim_fixture(
+        "manual",
+        1,
+        "MOCK_READER_DIP",
+        "",
+        false,
+        &["general"],
+        None,
+    )
+    .await;
+
+    // Drive to the checkpoint block (manual policy surfaces await_checkpoint_review).
+    let _ = auto_drive_to_block_or_complete(&fx).await;
+
+    // No reader-sim prompt was ever dispatched.
+    {
+        let records = fx.dispatch_log.lock().unwrap();
+        assert!(
+            !records.iter().any(|r| matches!(
+                r,
+                spindle_adapters::ai::DispatchRecord::Dispatch { prompt, .. }
+                    if prompt.contains("cumulative reader simulation")
+            )),
+            "manual policy must never dispatch a reader-sim prompt: {records:?}"
+        );
+    }
+
+    // No rolling notes artifact was written.
+    let notes_path = fx.data_dir.join("artifacts").join("reader-sim-notes.json");
+    assert!(
+        !notes_path.exists(),
+        "manual policy must not write a reader-sim notes artifact"
+    );
+
+    // The report (if created) carries no reader_sim section.
+    let st = auto_status(&fx).await;
+    if let Some(cp) = st["checkpoint_reports"].as_array().and_then(|a| a.first()) {
+        if let Some(report_rel) = cp["report_artifact_path"].as_str() {
+            let section = reader_sim_report_section(&fx, report_rel);
+            assert!(
+                section.is_null(),
+                "manual report has no reader_sim section: {section:?}"
+            );
+        }
+        assert!(
+            cp["reader_sim_engagement"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true),
+            "manual status surfaces no reader-sim engagement: {cp:?}"
+        );
+    }
+
+    auto_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_sim_malformed_chapter_preserves_notes_and_next_chapter_runs() {
+    // Test 5: chapter 1's reader-sim output is malformed (MOCK_READER_MALFORMED)
+    // → prior notes preserved (empty here), "unparsed" recorded in history, and
+    // chapter 2 still runs (its NOTES_ECHO landing proves the loop continued).
+    let fx = reader_sim_fixture(
+        "auto_advisory",
+        2,
+        "MOCK_READER_MALFORMED",
+        "MOCK_READER_NOTES_ECHO",
+        false,
+        &["general"],
+        None,
+    )
+    .await;
+
+    let final_res = auto_drive_to_block_or_complete(&fx).await;
+    assert_eq!(
+        final_res["status"].as_str(),
+        Some("completed"),
+        "a malformed reader-sim read never blocks: {final_res:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let section = reader_sim_report_section(&fx, report_rel);
+    let chs = section["chapters"].as_array().unwrap();
+    assert_eq!(chs.len(), 2);
+    assert_eq!(
+        chs[0]["engagement"].as_str(),
+        Some("unparsed"),
+        "the malformed chapter records unparsed: {section:?}"
+    );
+    // Chapter 2 still ran (the loop continued past the unparsed chapter).
+    assert_eq!(chs[1]["chapter"].as_i64(), Some(2));
+    assert!(
+        chs[1]["engagement"].as_str() == Some("steady")
+            || chs[1]["engagement"].as_str() == Some("high"),
+        "chapter 2 read after the unparsed chapter: {section:?}"
+    );
+
+    // The rolling notes artifact recorded the unparsed history entry and only
+    // advanced its watermark on the chapter-2 read (chapter 1 kept prior notes).
+    let notes_path = fx.data_dir.join("artifacts").join("reader-sim-notes.json");
+    let notes: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&notes_path).unwrap()).unwrap();
+    let history = notes["history"].as_array().unwrap();
+    assert_eq!(history[0]["engagement"].as_str(), Some("unparsed"));
+    assert_eq!(
+        notes["updated_through_chapter"].as_i64(),
+        Some(2),
+        "watermark advances only on the chapter-2 read: {notes:?}"
+    );
 
     auto_shutdown(fx).await;
 }

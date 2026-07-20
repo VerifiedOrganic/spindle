@@ -112,6 +112,38 @@ auto-checkpoint stays `pending_review`, so the manual escape hatch
 model-cost ceiling in v1. Canon-steward ratification (`list_canon_deltas` /
 `decide_canon_deltas`) still happens between checkpoints regardless of policy.
 
+### Reader simulation
+
+Under an auto policy (only — v1 does not run reader-sim on the manual flow), the
+auto-checkpoint automation runs a **cumulative reader simulation** after the
+sampled dual-persona reviews and before the verdict. It reads the checkpoint
+range's chapters **in order, with memory**: a persona derived from the project's
+reader contract (promise + style notes + boundaries — "you are the reader this
+book promises…") reads each chapter's committed prose in spine order, reports its
+engagement (`high` | `steady` | `dipping`) and any craft concerns, and writes a
+self-contained set of cumulative notes that carry forward to the next chapter. So
+engagement drift ("chapter 13 retreads chapter 12") becomes visible.
+
+The reader's rolling memory lives in one `reader-sim-notes.json` per run (the run
+artifacts dir), carrying `updated_through_chapter`, the current `notes`, and a
+per-range `history`. The notes we feed into the next chapter's prompt are capped
+char-safe at 4000 (a tail truncation keeping the newest content). Each chapter's
+result lands additively in the checkpoint report's `reader_sim` section
+(`{chapter, engagement, concerns[], skipped_reason?}` + `notes_artifact_path`),
+and `authoring_status` surfaces a compact per-chapter engagement summary
+(`reader_sim_engagement`).
+
+Reader simulation is **enrichment, not a gate**: it rides the `reader_sim` route,
+falling back to `review` when no `reader_sim` route is configured, and is fully
+rating-gated at the dispatch chokepoint. A chapter whose rating the route cannot
+serve, or a transport failure, is **skipped honestly** — an entry that names the
+route + rating (never prose) — and the pass continues; a reader-sim skip never
+marks scenes pending-manual. Its concerns are **report-only** and never fold into
+the approve/block verdict (which is computed from the deep-consistency severity
+counts alone, exactly as the sampled-review outcomes are report-only). A dipping
+engagement or a warning concern is a craft signal for the supervisor to weigh at
+triage, not an automatic block.
+
 ## Interactive Drafting Workflow
 
 An agent driving the drafting run executes the following loop:

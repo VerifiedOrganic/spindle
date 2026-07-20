@@ -1989,6 +1989,23 @@ fn extract_mock_canon_mine_promise(prompt: &str) -> Option<String> {
     }
 }
 
+/// Extract the first 40 characters of the prior-notes block from a reader-sim
+/// prompt (evolution §3.6), for the `MOCK_READER_NOTES_ECHO` memory-flow test
+/// sentinel. The service prompt frames the prior notes between the
+/// `YOUR PRIOR NOTES:\n` marker and the blank line before `NEXT CHAPTER`; the
+/// echo is the first 40 chars of that block (char-safe). Returns an empty string
+/// when the marker is absent, so the stub still emits valid JSON.
+fn extract_reader_sim_prior_echo(prompt: &str) -> String {
+    const MARKER: &str = "YOUR PRIOR NOTES:\n";
+    let Some(start) = prompt.find(MARKER) else {
+        return String::new();
+    };
+    let rest = &prompt[start + MARKER.len()..];
+    // The prior-notes block ends at the blank line before the next section.
+    let block = rest.split("\n\n").next().unwrap_or(rest);
+    block.chars().take(40).collect()
+}
+
 fn local_completion(route: &ModelRoute, prompt: &str) -> String {
     let compact_prompt = prompt
         .split_whitespace()
@@ -2075,6 +2092,31 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
                         .to_string()
                 } else {
                     r#"{"fulfilled":true,"assessment":"the scene delivers its planned purpose","evidence":""}"#
+                        .to_string()
+                }
+            } else if prompt.contains("cumulative reader simulation") {
+                // The cumulative reader-sim pass (evolution §3.6) rides the
+                // `review` route in local-only deployments (`reader_sim` is not
+                // in default_routes, so the ladder falls to this stub). Two test
+                // sentinels drive deterministic outcomes; everything else reads
+                // as an engaged reader with no concerns.
+                if prompt.contains("MOCK_READER_DIP") {
+                    // Engagement dip + one warning concern about a retread — the
+                    // craft signal the reader-sim is designed to surface.
+                    r#"{"engagement":"dipping","notes":"The reader felt the second market scene retread the first.","concerns":[{"severity":"warning","description":"the second market scene retreads the first"}]}"#
+                        .to_string()
+                } else if prompt.contains("MOCK_READER_NOTES_ECHO") {
+                    // Prove memory flow: echo the first 40 chars of the prior-
+                    // notes block back inside the reader's new notes with a
+                    // `PRIOR:` marker. A test that finds PRIOR:<first 40 chars>
+                    // in the landed notes has proven the prior notes reached the
+                    // model.
+                    let echo = extract_reader_sim_prior_echo(prompt);
+                    format!(
+                        r#"{{"engagement":"steady","notes":"The reader stays with the story. PRIOR:{echo}","concerns":[]}}"#
+                    )
+                } else {
+                    r#"{"engagement":"high","notes":"The reader is fully engaged.","concerns":[]}"#
                         .to_string()
                 }
             } else {
@@ -2326,6 +2368,87 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&no_promise.output).expect("stub emits valid JSON");
         assert_eq!(parsed["deltas"].as_array().expect("deltas").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reader_sim_local_stub_honors_sentinels_and_echoes_prior_notes() {
+        // R4: reader_sim falls back to the `review` route's local stub (it is not
+        // in default_routes). MOCK_READER_DIP → dipping + one warning concern;
+        // MOCK_READER_NOTES_ECHO → steady + notes echoing the first 40 chars of
+        // the prior-notes block (proving memory flow); neither → high, no
+        // concerns.
+        let router = ModelRouter::local_only();
+
+        // Neither sentinel: high engagement, no concerns.
+        let plain = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "cumulative reader simulation\nYOUR PRIOR NOTES:\n(none)\n\nNEXT CHAPTER:\nplain prose"
+                    .to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value = serde_json::from_str(&plain.output).unwrap();
+        assert_eq!(parsed["engagement"], "high");
+        assert_eq!(parsed["concerns"].as_array().unwrap().len(), 0);
+
+        // DIP sentinel: dipping + one warning concern about the retread.
+        let dip = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "cumulative reader simulation\nYOUR PRIOR NOTES:\n(none)\n\nNEXT CHAPTER:\nMOCK_READER_DIP the market again"
+                    .to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value = serde_json::from_str(&dip.output).unwrap();
+        assert_eq!(parsed["engagement"], "dipping");
+        let concerns = parsed["concerns"].as_array().unwrap();
+        assert_eq!(concerns.len(), 1);
+        assert_eq!(concerns[0]["severity"], "warning");
+        assert_eq!(
+            concerns[0]["description"],
+            "the second market scene retreads the first"
+        );
+
+        // NOTES_ECHO sentinel: steady + notes echo the first 40 chars of the
+        // prior-notes block with a PRIOR: marker.
+        let prior = "Chapter 1 landed; the reader trusts the narrator fully.";
+        let echo = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: format!(
+                    "cumulative reader simulation\nYOUR PRIOR NOTES:\n{prior}\n\nNEXT CHAPTER:\nMOCK_READER_NOTES_ECHO more prose"
+                ),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value = serde_json::from_str(&echo.output).unwrap();
+        assert_eq!(parsed["engagement"], "steady");
+        let notes = parsed["notes"].as_str().unwrap();
+        let expected: String = prior.chars().take(40).collect();
+        assert!(
+            notes.contains(&format!("PRIOR:{expected}")),
+            "notes must echo PRIOR:<first 40 chars of prior notes>: {notes}"
+        );
+    }
+
+    #[test]
+    fn reader_sim_prior_echo_extracts_first_40_chars_and_tolerates_missing_marker() {
+        // The echo is the first 40 chars of the prior-notes block; absence of the
+        // marker yields an empty string (the stub still emits valid JSON).
+        let prompt = "cumulative reader simulation\nYOUR PRIOR NOTES:\nabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH\n\nNEXT CHAPTER:\nx";
+        assert_eq!(
+            extract_reader_sim_prior_echo(prompt),
+            "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        );
+        assert_eq!(extract_reader_sim_prior_echo("no marker here"), "");
     }
 
     #[test]

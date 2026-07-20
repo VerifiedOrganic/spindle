@@ -2969,12 +2969,23 @@ impl ToolRouter {
             });
         }
 
+        let status_state_path = authoring_state_path(repo.data_dir(), &run_id);
+        let status_artifacts_root = authoring_artifacts_root(&status_state_path, &outcome.state);
         let mut cp_reports = Vec::new();
         for cp in &outcome.state.checkpoint_history {
             let cp_status_str = match cp.status {
                 spindle_harness::state::CheckpointStatus::PendingReview => "pending_review",
                 spindle_harness::state::CheckpointStatus::Reviewed => "reviewed",
             };
+            // Additive reader-sim engagement surfacing (evolution §3.6, R3):
+            // read the compact per-chapter engagement enums from this
+            // checkpoint's report `reader_sim` section, if present. Enums/ids
+            // only — the reader's notes and concern text stay in the artifact.
+            let reader_sim_engagement = cp
+                .report_artifact_path
+                .as_deref()
+                .map(|rel| read_reader_sim_engagement(&status_artifacts_root, rel))
+                .unwrap_or_default();
             cp_reports.push(AuthoringStatusCheckpoint {
                 start_chapter: cp.start_chapter,
                 end_chapter: cp.end_chapter,
@@ -2988,6 +2999,7 @@ impl ToolRouter {
                 checkpoint_policy: outcome.state.checkpoint_policy.clone(),
                 auto_outcome: cp.auto_outcome.clone(),
                 pending_manual_scene_ids: cp.pending_manual_scene_ids.clone(),
+                reader_sim_engagement,
             });
         }
 
@@ -4153,6 +4165,9 @@ impl ToolRouter {
                 chapter_summaries,
                 narrative_promises,
                 sampled_scene_ids,
+                // Reader-sim runs later, inside the auto-checkpoint automation
+                // (evolution §3.6); the report is created with no section.
+                reader_sim: None,
             },
         )?;
 
@@ -4566,6 +4581,39 @@ impl ToolRouter {
             }
         }
 
+        // ── Step 2.5: cumulative reader-simulation pass (evolution §3.6) ──
+        // Enrichment, not a gate: it reads each chapter in the range in order
+        // with rolling memory, writes a `reader_sim` section into the report and
+        // a per-run rolling notes artifact, and NEVER alters the verdict (its
+        // concerns are report-only, matching the sampled-review outcomes, which
+        // also never fold into the finding counts). A transport error or an
+        // uncleared rating skips that chapter honestly and the pass continues;
+        // reader-sim skips never mark scenes pending-manual. It runs BEFORE the
+        // pending-manual early-return so its enrichment section is always
+        // recorded even when a sampled review fell back to manual (a
+        // pending-manual block still short-circuits the verdict below). Box::pin
+        // keeps this grown path off the auto-checkpoint stack frame
+        // (decide_canon_deltas precedent).
+        if let Err(error) = Box::pin(self.run_reader_sim_pass(
+            run_id,
+            &state_path,
+            harness_state,
+            start_chapter,
+            end_chapter,
+        ))
+        .await
+        {
+            // A failure to WRITE the report/notes artifact is not a leak and is
+            // not a verdict input; log and continue so reader-sim enrichment can
+            // never itself block or fabricate a checkpoint outcome (I8).
+            tracing::warn!(
+                run_id,
+                step = "reader_sim",
+                error = format!("{error:#}"),
+                "auto-checkpoint reader-sim pass failed to record; continuing (enrichment, not a gate)"
+            );
+        }
+
         // Any scene awaiting manual review blocks the checkpoint (partial
         // automation, zero leakage): the completed reviews + deep audit are
         // recorded, but the checkpoint stays pending_review listing exactly the
@@ -4634,6 +4682,153 @@ impl ToolRouter {
                 Vec::new(),
             ))
         }
+    }
+
+    /// Cumulative reader-simulation pass over a checkpoint range (evolution
+    /// §3.6, P3.4). For each chapter start_chapter..=end_chapter IN ORDER, gather
+    /// its scenes in spine order, derive the batch rating (the strictest across
+    /// the chapter's scenes — `max_scene_rating`), load the reader's prior notes
+    /// (rolling memory, updated BETWEEN chapters so memory accumulates chapter to
+    /// chapter within this checkpoint), and call the service reader-sim pass
+    /// (route `reader_sim` → `review` fallback, rating-gated). The rolling notes
+    /// artifact (`reader-sim-notes.json`, one per run) is updated after each
+    /// chapter; a `reader_sim` section is written into the checkpoint report.
+    ///
+    /// Enrichment, not a gate (I8): a skip (uncleared rating / transport error /
+    /// no prose) or an unparsed read records an honest entry and the pass
+    /// continues; reader-sim never marks scenes pending-manual and never alters
+    /// the verdict.
+    async fn run_reader_sim_pass(
+        &self,
+        run_id: &str,
+        state_path: &Path,
+        harness_state: &HarnessState,
+        start_chapter: i32,
+        end_chapter: i32,
+    ) -> anyhow::Result<()> {
+        use spindle_harness::artifacts::{
+            CheckpointReaderSimChapter, CheckpointReaderSimSection, READER_SIM_NOTES_PATH,
+            ReaderSimConcernEntry, ReaderSimHistoryEntry, ReaderSimNotesArtifact,
+            cap_reader_sim_notes,
+        };
+
+        let artifacts_root = authoring_artifacts_root(state_path, harness_state);
+        let artifact_store = ArtifactStore::new(artifacts_root);
+
+        // Load (or start) the run's rolling reader-sim notes artifact.
+        let mut notes_artifact = artifact_store
+            .load_json::<ReaderSimNotesArtifact>(READER_SIM_NOTES_PATH)
+            .unwrap_or_default();
+
+        let mut report_chapters: Vec<CheckpointReaderSimChapter> = Vec::new();
+
+        for chapter_number in start_chapter..=end_chapter {
+            let Some(chapter) = harness_state
+                .chapters
+                .iter()
+                .find(|ch| ch.chapter_number == chapter_number)
+            else {
+                continue;
+            };
+
+            // Scenes in spine order (scene_order), with resolvable ids only.
+            let mut scenes: Vec<&spindle_harness::state::SceneState> =
+                chapter.scenes.iter().collect();
+            scenes.sort_by_key(|sc| sc.scene_order);
+            let scene_ids: Vec<String> =
+                scenes.iter().filter_map(|sc| sc.scene_id.clone()).collect();
+            let rating = reader_sim_chapter_rating(&scenes);
+
+            // Prior notes (rolling memory), char-capped to what WE include.
+            let prior_notes = cap_reader_sim_notes(&notes_artifact.notes);
+
+            let outcome = self
+                .service
+                .reader_sim_chapter(spindle_core::models::ReaderSimChapterInput {
+                    project_id: harness_state.project_id.clone(),
+                    scene_ids,
+                    rating,
+                    prior_notes: prior_notes.clone(),
+                })
+                .await?;
+
+            let concerns_count = outcome.concerns.len();
+            let skipped_reason = if outcome.status == "skipped" {
+                outcome.skip_reason.clone()
+            } else {
+                None
+            };
+
+            // Update the rolling notes artifact after THIS chapter so the next
+            // chapter's prompt carries the accumulated memory. On a read, adopt
+            // the model's replacement notes and advance the watermark; on an
+            // unparsed read or a skip, keep the prior notes (the reader loses no
+            // memory) and do NOT advance the watermark.
+            if outcome.status == "read" {
+                notes_artifact.notes = outcome.notes.clone();
+                notes_artifact.updated_through_chapter = chapter_number;
+            }
+            notes_artifact.history.push(ReaderSimHistoryEntry {
+                range: format!("{chapter_number}..{chapter_number}"),
+                engagement: outcome.engagement.clone(),
+                concerns_count,
+            });
+            // Persist the rolling artifact each chapter (crash-safe memory).
+            artifact_store.save_json(READER_SIM_NOTES_PATH, &notes_artifact)?;
+
+            report_chapters.push(CheckpointReaderSimChapter {
+                chapter: chapter_number,
+                engagement: outcome.engagement.clone(),
+                concerns: outcome
+                    .concerns
+                    .iter()
+                    .map(|c| ReaderSimConcernEntry {
+                        severity: c.severity.clone(),
+                        description: c.description.clone(),
+                    })
+                    .collect(),
+                skipped_reason,
+            });
+
+            tracing::debug!(
+                run_id,
+                chapter = chapter_number,
+                engagement = outcome.engagement.as_str(),
+                status = outcome.status.as_str(),
+                concerns = concerns_count,
+                "reader-sim chapter recorded"
+            );
+        }
+
+        // Fold the section into the checkpoint report (additive; report-only).
+        let report_path =
+            checkpoint_report_path(harness_state, state_path, start_chapter, end_chapter)?;
+        let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+            format!(
+                "failed to read checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+        let mut report: CheckpointReportArtifact =
+            serde_json::from_str(&raw_report).with_context(|| {
+                format!(
+                    "failed to parse checkpoint report artifact {}",
+                    report_path.display()
+                )
+            })?;
+        report.reader_sim = Some(CheckpointReaderSimSection {
+            chapters: report_chapters,
+            notes_artifact_path: READER_SIM_NOTES_PATH.to_string(),
+        });
+        let report_json = serde_json::to_string_pretty(&report)?;
+        std::fs::write(&report_path, report_json).with_context(|| {
+            format!(
+                "failed to update checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+
+        Ok(())
     }
 
     async fn handle_authoring_resolve_block(
@@ -5552,6 +5747,57 @@ fn auto_checkpoint_severity_counts(
     counts.insert("warning".to_string(), output.summary.warning_count as i64);
     counts.insert("info".to_string(), output.summary.info_count as i64);
     counts
+}
+
+/// Read the compact per-chapter reader-sim engagement summary from a checkpoint
+/// report's `reader_sim` section (evolution §3.6, R3), for `authoring_status`.
+/// Returns an empty vec when the report is missing/unreadable or carries no
+/// reader-sim section (manual policy, or an older report) — a best-effort read
+/// that never fails status. Enums/ids only, never prose (I8).
+fn read_reader_sim_engagement(
+    artifacts_root: &Path,
+    report_rel: &str,
+) -> Vec<spindle_core::models::ReaderSimEngagementSummary> {
+    let report_path = artifacts_root.join(report_rel);
+    let Ok(raw) = std::fs::read_to_string(&report_path) else {
+        return Vec::new();
+    };
+    let Ok(report) = serde_json::from_str::<CheckpointReportArtifact>(&raw) else {
+        return Vec::new();
+    };
+    report
+        .reader_sim
+        .map(|section| {
+            section
+                .chapters
+                .into_iter()
+                .map(|ch| spindle_core::models::ReaderSimEngagementSummary {
+                    chapter: ch.chapter,
+                    engagement: ch.engagement,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The batch content rating for a reader-sim chapter pass (evolution §3.6): the
+/// STRICTEST rating across the chapter's scenes, since the reader-sim prompt
+/// concatenates every scene's prose. Mirrors the service-side `max_scene_rating`
+/// ordering (explicit > mature > teen > general). `None` when the chapter has no
+/// scenes (nothing to rate — the pass skips on empty prose anyway).
+fn reader_sim_chapter_rating(scenes: &[&spindle_harness::state::SceneState]) -> Option<String> {
+    fn rank(rating: &str) -> u8 {
+        match rating.trim().to_ascii_lowercase().as_str() {
+            "explicit" => 3,
+            "mature" => 2,
+            "teen" => 1,
+            _ => 0,
+        }
+    }
+    scenes
+        .iter()
+        .max_by_key(|sc| rank(sc.content_rating.as_str()))
+        .map(|sc| sc.content_rating.as_str().to_ascii_lowercase())
 }
 
 /// Is `error` a rating-not-covered rejection from the dispatch chokepoint
