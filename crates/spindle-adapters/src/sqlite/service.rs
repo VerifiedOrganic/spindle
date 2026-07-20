@@ -11104,6 +11104,17 @@ impl SqliteSpindleService {
         use spindle_core::models::ConsistencyIssue;
 
         let mut issues = Vec::new();
+        // Emission-cadence asymmetry, by design (mirrors the temporal tier):
+        //   - a rating-clearance rejection (RatingNotCovered) is PER-SCENE and
+        //     stops the run — ratings can differ per scene, so each uncleared
+        //     scene emits its own honest skip; landed behavior, unchanged.
+        //   - a generic TRANSPORT error is ONCE-PER-RUN: on the first transport
+        //     failure we emit ONE degradation finding and set `model_route_dead`,
+        //     then STOP attempting model calls for remaining scenes. The heuristic
+        //     fallback STAYS — it is real coverage; the finding just makes the
+        //     degradation visible instead of silent. (Previously this arm silently
+        //     fell back to the heuristic, so a dead route degraded invisibly.)
+        let mut model_route_dead = false;
         for scene in scenes {
             let applicable_rules = rules
                 .iter()
@@ -11113,43 +11124,58 @@ impl SqliteSpindleService {
                 continue;
             }
 
-            // This pass carries scene prose, so it MUST stamp the scene's content
-            // rating (lowercased) — the rating-gated chokepoint then routes an
-            // explicit-rated scene only to an explicit-cleared agent (evolution
-            // §4). Previously `rating: None` bypassed clearance entirely.
-            let model_violations = match self
-                .repository
-                .model_router()
-                .complete(&ModelRequest {
-                    route: "review".to_string(),
-                    prompt: build_world_rule_deep_check_prompt(scene, &applicable_rules),
-                    rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
-                    context: None,
-                })
-                .await
-            {
-                Ok(response) if response.adapter_kind != "local" => {
-                    parse_deep_world_rule_check_output(&response.output).unwrap_or_else(|_| {
-                        heuristic_world_rule_violations(scene, &applicable_rules)
+            // Once the model route is known dead this run, skip the call entirely
+            // (a dead route won't heal mid-run) and use the heuristic directly.
+            let model_violations = if model_route_dead {
+                heuristic_world_rule_violations(scene, &applicable_rules)
+            } else {
+                // This pass carries scene prose, so it MUST stamp the scene's
+                // content rating (lowercased) — the rating-gated chokepoint then
+                // routes an explicit-rated scene only to an explicit-cleared agent
+                // (evolution §4). Previously `rating: None` bypassed clearance.
+                match self
+                    .repository
+                    .model_router()
+                    .complete(&ModelRequest {
+                        route: "review".to_string(),
+                        prompt: build_world_rule_deep_check_prompt(scene, &applicable_rules),
+                        rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
+                        context: None,
                     })
-                }
-                Ok(_) => heuristic_world_rule_violations(scene, &applicable_rules),
-                // Honest skip on a rating-clearance rejection: the `review` agent
-                // is not cleared for this scene's rating, so the prose never left.
-                // Emit one info finding that reads as SKIPPED (route + rating, no
-                // prose) and stop — every remaining scene of this rating would hit
-                // the same wall. Any OTHER error keeps the legacy heuristic
-                // fallback (transport-error behavior unchanged in this ticket).
-                Err(err)
-                    if matches!(
-                        err.downcast_ref::<crate::ai::RouteClearanceError>(),
-                        Some(crate::ai::RouteClearanceError::RatingNotCovered { .. })
-                    ) =>
+                    .await
                 {
-                    issues.push(world_rule_deep_skip_issue(&err));
-                    return Ok(issues);
+                    Ok(response) if response.adapter_kind != "local" => {
+                        parse_deep_world_rule_check_output(&response.output).unwrap_or_else(|_| {
+                            heuristic_world_rule_violations(scene, &applicable_rules)
+                        })
+                    }
+                    Ok(_) => heuristic_world_rule_violations(scene, &applicable_rules),
+                    // Honest skip on a rating-clearance rejection: the `review`
+                    // agent is not cleared for this scene's rating, so the prose
+                    // never left. Emit one info finding that reads as SKIPPED
+                    // (route + rating, no prose) and stop — every remaining scene
+                    // of this rating would hit the same wall. PER-SCENE cadence.
+                    Err(err)
+                        if matches!(
+                            err.downcast_ref::<crate::ai::RouteClearanceError>(),
+                            Some(crate::ai::RouteClearanceError::RatingNotCovered { .. })
+                        ) =>
+                    {
+                        issues.push(world_rule_deep_skip_issue(&err));
+                        return Ok(issues);
+                    }
+                    // Generic transport error (dead/unreachable route): emit ONE
+                    // degradation finding, mark the route dead so no further model
+                    // calls are attempted this run, and fall through to the
+                    // heuristic for THIS scene (and every remaining scene). The
+                    // heuristic coverage is preserved; the finding makes the
+                    // silent degradation visible.
+                    Err(err) => {
+                        issues.push(world_rule_deep_skip_issue(&err));
+                        model_route_dead = true;
+                        heuristic_world_rule_violations(scene, &applicable_rules)
+                    }
                 }
-                Err(_) => heuristic_world_rule_violations(scene, &applicable_rules),
             };
 
             for violation in model_violations {
@@ -11202,6 +11228,16 @@ impl SqliteSpindleService {
         use spindle_core::models::ConsistencyIssue;
 
         let mut issues = Vec::new();
+        // Emission-cadence asymmetry, by design:
+        //   - a rating-clearance rejection (RatingNotCovered) is PER-SCENE:
+        //     ratings can differ per scene, so each uncleared scene emits its own
+        //     honest skip. It also stops the run (every remaining scene of that
+        //     rating would hit the same wall), matching the landed behavior.
+        //   - a generic TRANSPORT error is ONCE-PER-RUN: a dead route won't heal
+        //     mid-run, so on the first transport failure we emit ONE deep-tier
+        //     skip finding and STOP calling the model for remaining scenes rather
+        //     than emitting a duplicate finding per scene. (Previously this arm
+        //     silently returned Vec::new(), so a dead route read as a clean scan.)
         for scene in scenes {
             if scene.full_text.trim().is_empty() {
                 continue;
@@ -11231,9 +11267,7 @@ impl SqliteSpindleService {
                 // is not cleared for this scene's rating, so the prose never left.
                 // Emit one info finding that reads as SKIPPED (route + rating, no
                 // prose) and stop — every remaining scene of this rating would hit
-                // the same wall. Any OTHER error (transport failure, missing
-                // route) stays SILENT: the legacy `Err(_) => Vec::new()` behavior
-                // is intentionally unchanged in this ticket.
+                // the same wall. PER-SCENE cadence (ratings can differ per scene).
                 Err(err)
                     if matches!(
                         err.downcast_ref::<crate::ai::RouteClearanceError>(),
@@ -11243,7 +11277,16 @@ impl SqliteSpindleService {
                     issues.push(temporal_deep_skip_issue(&err));
                     return Ok(issues);
                 }
-                Err(_) => Vec::new(),
+                // Generic transport error (dead/unreachable route): a dead route
+                // won't heal mid-run, so emit ONE deep-tier skip finding and STOP
+                // calling the model for remaining scenes. This replaces the legacy
+                // silent `Err(_) => Vec::new()` that let a dead route read as a
+                // clean scan. Deterministic Tier-1 findings (produced by the
+                // caller) are unaffected.
+                Err(err) => {
+                    issues.push(temporal_deep_skip_issue(&err));
+                    return Ok(issues);
+                }
             };
 
             for finding in findings {
@@ -23765,11 +23808,18 @@ fn secret_leak_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consiste
 }
 
 /// Build the honest-skip `ConsistencyIssue` for the intra-scene temporal-
-/// coherence deep tier when the `review` route is refused by the rating-clearance
-/// gate. Same shape as [`secret_leak_skip_issue`]: names route + rating (ids
-/// only, never prose). This helper is ONLY used for the clearance-rejection case;
-/// a non-clearance transport error stays silent (the legacy `Err(_) => Vec::new()`
-/// behavior for the temporal tier is intentionally unchanged in this ticket).
+/// coherence deep tier. Two branches, two emission cadences:
+///
+/// - `RatingNotCovered` (rating-clearance rejection): per-scene granularity —
+///   different scenes can carry different ratings, so each uncleared scene emits
+///   its own skip naming route + rating (ids only, never prose). "This scene".
+/// - any OTHER error (transport failure / dead route): the whole deep TIER is
+///   skipped ONCE per run — a dead route won't heal mid-run, so the caller emits
+///   this once and stops calling the model for remaining scenes. Frames the
+///   deep TIER (not a single scene).
+///
+/// This asymmetry (per-scene for clearance, once-per-run for transport) is
+/// deliberate; see the caller in `deep_temporal_coherence_issues`.
 fn temporal_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
     use spindle_core::models::ConsistencyIssue;
     let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
@@ -23777,8 +23827,9 @@ fn temporal_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consis
             "temporal coherence deep check was SKIPPED: the `{route}` route is not cleared for \
              rating `{rating}`. This scene was NOT audited for intra-scene time jumps."
         ),
-        _ => "temporal coherence deep check was SKIPPED: no usable review route (the model call \
-              failed). This scene was NOT audited for intra-scene time jumps."
+        _ => "temporal coherence deep tier was SKIPPED: no usable review route (the model call \
+              failed / transport error). No scenes were audited for intra-scene time jumps by \
+              the model-backed tier this run; the deterministic Tier-1 scan is unaffected."
             .to_string(),
     };
     ConsistencyIssue {
@@ -23794,10 +23845,18 @@ fn temporal_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consis
 }
 
 /// Build the honest-skip `ConsistencyIssue` for the semantic world-rule deep
-/// tier when the `review` route is refused by the rating-clearance gate. Same
-/// shape as [`secret_leak_skip_issue`]: names route + rating (ids only, never
-/// prose). ONLY used for the clearance-rejection case; a non-clearance error
-/// keeps the legacy heuristic fallback (unchanged in this ticket).
+/// tier. Two branches, two emission cadences (mirrors
+/// [`temporal_deep_skip_issue`]):
+///
+/// - `RatingNotCovered` (rating-clearance rejection): per-scene granularity —
+///   ratings can differ per scene, so each uncleared scene emits its own skip
+///   naming route + rating (ids only, never prose). "This scene".
+/// - any OTHER error (transport failure / dead route): emitted ONCE per run.
+///   The model tier degraded to the deterministic HEURISTIC tier only — the
+///   heuristic path is real coverage and KEEPS running; this finding makes the
+///   degradation visible instead of silent. Frames the whole deep TIER.
+///
+/// See the caller in `deep_world_rule_compliance_issues` for the asymmetry.
 fn world_rule_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
     use spindle_core::models::ConsistencyIssue;
     let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
@@ -23805,8 +23864,9 @@ fn world_rule_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::Cons
             "world rule semantic deep check was SKIPPED: the `{route}` route is not cleared for \
              rating `{rating}`. This scene was NOT audited for semantic world-rule violations."
         ),
-        _ => "world rule semantic deep check was SKIPPED: no usable review route (the model call \
-              failed). This scene was NOT audited for semantic world-rule violations."
+        _ => "world rule semantic deep tier DEGRADED to the deterministic heuristic tier only: \
+              no usable review route (the model call failed / transport error). Heuristic \
+              world-rule coverage still ran for every scene; the model-backed deep tier did not."
             .to_string(),
     };
     ConsistencyIssue {
@@ -32646,6 +32706,53 @@ agent = "review-rated"
             .unwrap();
         }
 
+        /// A `review` agent that resolves cleanly (rating clearance passes for
+        /// every listed rating) but whose HTTP endpoint is a dead port (9,
+        /// discard) — every model call fails with a TRANSPORT error, never a
+        /// clearance rejection. This is the "dead route" fixture: the agent is
+        /// configured, so `resolve_cleared_route` succeeds and a Dispatch is
+        /// recorded, but `run_http` then fails to connect. Used to prove the
+        /// legacy silent/degraded behavior now emits one honest transport-skip
+        /// finding and stops calling the model for remaining scenes.
+        fn install_unreachable_review_agent(
+            tmp: &TempDir,
+            svc: &SqliteSpindleService,
+            ratings: &[&str],
+        ) {
+            let ratings_toml = ratings
+                .iter()
+                .map(|r| format!("\"{r}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let config_path = tmp.path().join("dead-review-agent.toml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-dead"
+name = "Review Dead"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:9/v1"
+model = "review-dead"
+ratings = [{ratings_toml}]
+
+[[routing]]
+route = "review"
+agent = "review-dead"
+"#
+                ),
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+        }
+
         async fn seed_project(svc: &SqliteSpindleService, name: &str) -> String {
             svc.create_project(CreateProjectInput {
                 name: name.into(),
@@ -32668,12 +32775,22 @@ agent = "review-rated"
             full_text: &str,
             rating: ContentRating,
         ) {
+            save_rated_scene_ordered(svc, project_id, full_text, rating, 1).await;
+        }
+
+        async fn save_rated_scene_ordered(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            full_text: &str,
+            rating: ContentRating,
+            scene_order: i32,
+        ) {
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project_id.to_string(),
                 book_number: 1,
                 chapter_number: 1,
                 chapter_id: None,
-                scene_order: 1,
+                scene_order,
                 full_text: full_text.into(),
                 summary: "s".into(),
                 content_rating: rating,
@@ -32976,6 +33093,198 @@ agent = "review-rated"
                     .any(|i| i.check_type == "temporal_coherence" && i.severity == "warning"),
                 "the general deep temporal tier must still surface findings: {:?}",
                 temporal.issues
+            );
+        }
+
+        // Two general scenes, so a general-only agent CLEARS the rating gate —
+        // every failure below is a TRANSPORT error (dead port 9), never a
+        // clearance rejection. Both scenes carry MOCK_TEMPORAL_JUMP so, on a
+        // live route, both would yield a deep temporal finding; here the route
+        // is dead. Distinct scene_order keeps the two rows separate. Magic +
+        // remote-action prose so the world-rule HEURISTIC fallback still fires.
+        const DEAD_ROUTE_SCENE_A: &str = "He sat at the long table. MOCK_TEMPORAL_JUMP. \
+             She cast the spell from across the room without touching him. \
+             The lamps were lit and the room had gone cold.";
+        const DEAD_ROUTE_SCENE_B: &str = "The next morning. MOCK_TEMPORAL_JUMP. \
+             He worked the sigil at a distance, without contact. \
+             The fire had burned down to ash.";
+
+        fn dispatch_count(records: &[DispatchRecord]) -> usize {
+            records
+                .iter()
+                .filter(|r| matches!(r, DispatchRecord::Dispatch { .. }))
+                .count()
+        }
+
+        // ── (e) temporal deep tier: TRANSPORT error emits ONE skip, stops ──
+        /// A dead `review` route over TWO cleared scenes: the temporal deep tier
+        /// must emit exactly ONE info skip finding (not one per scene) and must
+        /// NOT dispatch the model for the second scene once the first transport
+        /// failure lands — a dead route won't heal mid-run. Deterministic Tier-1
+        /// temporal findings are unaffected.
+        #[tokio::test]
+        async fn temporal_deep_transport_error_emits_one_skip_and_stops() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "temporal-dead-route").await;
+            install_unreachable_review_agent(&tmp, &svc, &["general"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+
+            save_rated_scene_ordered(
+                &svc,
+                &project_id,
+                DEAD_ROUTE_SCENE_A,
+                ContentRating::General,
+                1,
+            )
+            .await;
+            save_rated_scene_ordered(
+                &svc,
+                &project_id,
+                DEAD_ROUTE_SCENE_B,
+                ContentRating::General,
+                2,
+            )
+            .await;
+
+            let out = svc
+                .check_consistency(temporal_input(&project_id))
+                .await
+                .unwrap();
+
+            // Exactly ONE dispatch attempt: the first scene fails on transport,
+            // the run stops calling the model for the second scene.
+            let records = log.lock().unwrap().clone();
+            assert_eq!(
+                dispatch_count(&records),
+                1,
+                "emit-once-and-stop: only the first scene's model call is attempted: {records:?}"
+            );
+
+            // Exactly ONE info skip finding for the whole tier, not per-scene.
+            let skips = skip_findings(&out.issues, "temporal_coherence");
+            assert_eq!(
+                skips.len(),
+                1,
+                "exactly one temporal transport-skip finding: {:?}",
+                out.issues
+            );
+            assert!(
+                skips[0].message.to_lowercase().contains("temporal"),
+                "the skip finding must name the temporal tier: {}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.contains("no usable review route"),
+                "the skip finding must read as a dead-route/transport skip: {}",
+                skips[0].message
+            );
+            // Deterministic Tier-1 temporal findings are unaffected: the scan
+            // still runs. (There may be zero, but the tier must not error out.)
+            assert!(
+                out.issues
+                    .iter()
+                    .all(|i| i.check_type == "temporal_coherence"),
+                "only temporal findings for a temporal-only check: {:?}",
+                out.issues
+            );
+        }
+
+        // ── (f) world-rule deep tier: TRANSPORT error emits ONE degradation ─
+        /// A dead `review` route over TWO cleared scenes: the world-rule deep
+        /// tier must emit exactly ONE info degradation finding, KEEP the
+        /// deterministic heuristic coverage (real findings still produced), and
+        /// stop attempting model calls after the first transport failure.
+        #[tokio::test]
+        async fn world_rule_deep_transport_error_emits_one_degradation_and_keeps_heuristic() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "world-rule-dead-route").await;
+            seed_world_rule(&svc, &project_id).await;
+            install_unreachable_review_agent(&tmp, &svc, &["general"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+
+            save_rated_scene_ordered(
+                &svc,
+                &project_id,
+                DEAD_ROUTE_SCENE_A,
+                ContentRating::General,
+                1,
+            )
+            .await;
+            save_rated_scene_ordered(
+                &svc,
+                &project_id,
+                DEAD_ROUTE_SCENE_B,
+                ContentRating::General,
+                2,
+            )
+            .await;
+
+            let out = svc
+                .check_consistency(world_rule_input(&project_id))
+                .await
+                .unwrap();
+
+            // Only the first scene's model call is attempted before the run
+            // stops calling the model (heuristic still runs for both scenes).
+            let records = log.lock().unwrap().clone();
+            assert_eq!(
+                dispatch_count(&records),
+                1,
+                "emit-once-and-stop: only the first scene's model call is attempted: {records:?}"
+            );
+
+            // Exactly ONE info DEGRADATION finding for the whole tier. It reads
+            // as a degradation (not a skip) because the heuristic tier still ran.
+            let degradations: Vec<_> = out
+                .issues
+                .iter()
+                .filter(|i| {
+                    i.check_type == "world_rule_compliance"
+                        && i.severity == "info"
+                        && i.message.to_lowercase().contains("degraded")
+                })
+                .collect();
+            assert_eq!(
+                degradations.len(),
+                1,
+                "exactly one world-rule degradation finding: {:?}",
+                out.issues
+            );
+            assert!(
+                degradations[0]
+                    .message
+                    .to_lowercase()
+                    .contains("world rule"),
+                "the finding must name the world-rule tier: {}",
+                degradations[0].message
+            );
+            assert!(
+                degradations[0].message.contains("no usable review route"),
+                "the finding must read as a dead-route/transport degradation: {}",
+                degradations[0].message
+            );
+            assert!(
+                degradations[0].message.to_lowercase().contains("heuristic"),
+                "the finding must name the heuristic fallback that stays: {}",
+                degradations[0].message
+            );
+
+            // The heuristic fallback STAYS: both scenes describe remote magic
+            // against a contact-required rule, so real heuristic warnings are
+            // still produced despite the dead model route.
+            let heuristic_hits = out
+                .issues
+                .iter()
+                .filter(|i| {
+                    i.check_type == "world_rule_compliance"
+                        && i.severity == "warning"
+                        && i.message.contains("may violate world rule")
+                })
+                .count();
+            assert!(
+                heuristic_hits >= 1,
+                "heuristic world-rule coverage must survive the dead model route: {:?}",
+                out.issues
             );
         }
     }
@@ -41189,8 +41498,63 @@ agent = "review-safe"
     fn world_rule_deep_skip_issue_generic_message_for_non_clearance_error() {
         let err = anyhow::anyhow!("timeout");
         let issue = super::world_rule_deep_skip_issue(&err);
-        assert!(issue.message.contains("SKIPPED"));
+        // The world-rule transport branch reads as a DEGRADATION (the heuristic
+        // tier still runs), not a bare skip — coverage was not lost, just the
+        // model-backed tier. See `..._states_heuristic_degradation` for the full
+        // contract.
+        assert!(issue.message.contains("DEGRADED"));
         assert!(issue.message.contains("no usable review route"));
+    }
+
+    /// The generic (non-clearance / transport) branch of the temporal helper is
+    /// emitted ONCE for the whole deep run, so its message must frame the deep
+    /// TIER (not one scene) as skipped.
+    #[test]
+    fn temporal_deep_skip_issue_generic_message_frames_the_deep_tier() {
+        let err = anyhow::anyhow!("connection refused");
+        let issue = super::temporal_deep_skip_issue(&err);
+        assert_eq!(issue.check_type, "temporal_coherence");
+        assert_eq!(issue.severity, "info");
+        assert!(issue.message.contains("no usable review route"));
+        assert!(
+            issue.message.to_lowercase().contains("deep tier"),
+            "transport-skip must frame the whole deep tier: {}",
+            issue.message
+        );
+        // Never scoped to a single scene — one finding covers the tier.
+        assert!(
+            !issue.message.contains("This scene"),
+            "transport-skip is once-per-run, not per-scene: {}",
+            issue.message
+        );
+    }
+
+    /// The generic (non-clearance / transport) branch of the world-rule helper
+    /// is emitted ONCE per run and must state that the deep tier DEGRADED to the
+    /// deterministic/heuristic tier (which keeps running), not that coverage was
+    /// lost entirely.
+    #[test]
+    fn world_rule_deep_skip_issue_generic_message_states_heuristic_degradation() {
+        let err = anyhow::anyhow!("timeout");
+        let issue = super::world_rule_deep_skip_issue(&err);
+        assert_eq!(issue.check_type, "world_rule_compliance");
+        assert_eq!(issue.severity, "info");
+        assert!(issue.message.contains("no usable review route"));
+        assert!(
+            issue.message.to_lowercase().contains("deep tier"),
+            "transport-degradation must frame the whole deep tier: {}",
+            issue.message
+        );
+        assert!(
+            issue.message.to_lowercase().contains("heuristic"),
+            "the degradation finding must name the heuristic fallback that stays: {}",
+            issue.message
+        );
+        assert!(
+            !issue.message.contains("This scene"),
+            "transport-degradation is once-per-run, not per-scene: {}",
+            issue.message
+        );
     }
 
     // ── P3.3: scene_purpose_fulfillment deep-check ────────────────────────

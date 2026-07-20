@@ -32,7 +32,38 @@ voice, and story tone.";
 /// pure-metadata passes like `research`). The explicit-content rating gate and
 /// the explicit system-prompt appendixes apply uniformly to these routes
 /// (evolution §4 rule 1 — prose-bearing is a route property, not a name check).
+///
+/// # Import routes are deliberately EXEMPT
+///
+/// The manuscript-import routes (`import_extract`, `import_synthesize`) carry the
+/// operator's full manuscript prose yet are intentionally NOT listed here, so the
+/// rating-gated chokepoint never engages for them (their `.complete` sites also
+/// dispatch `rating: None`). This is a decided, documented boundary, not an
+/// oversight:
+///
+/// - **Ratings do not exist yet.** Content ratings are assigned by *analysis*,
+///   which runs during/after import. At import time there is no rating to gate
+///   on, so structural rating-gating is impossible — gating an unrated request
+///   would either block everything or nothing.
+/// - **Import is a direct operator action on their own manuscript.** The operator
+///   deliberately points Spindle at their own text and chooses which agents run
+///   the import; there is no third-party prose crossing a trust boundary.
+/// - **Trust context is the operator's own configuration.** The import chair the
+///   operator configures sees the full manuscript by construction. The obligation
+///   here is *informed configuration* (pick an agent you trust with the whole
+///   manuscript), not gating. See `docs/spindle-agent-config.md` ("Import routes
+///   and content") and `docs/spindle-evolution-design.md` §4. The config lint in
+///   [`configuration_warnings`] nudges the operator when their import agent is not
+///   cleared for explicit content while another configured agent is.
 pub const PROSE_BEARING_ROUTES: &[&str] = &["draft", "mine", "line_edit", "reader_sim", "review"];
+
+/// Manuscript-import routes. Prose-bearing (they carry the operator's full
+/// manuscript) but deliberately NOT in [`PROSE_BEARING_ROUTES`] — see that
+/// constant's docs for why rating-gating is structurally impossible at import
+/// time. The config lint in [`configuration_warnings`] uses this list to nudge
+/// the operator when their import chair is not cleared for explicit content that
+/// they clearly work with elsewhere.
+const IMPORT_ROUTES: &[&str] = &["import_extract", "import_synthesize"];
 
 /// System-prompt appendix for prose-bearing ANALYSIS passes (mine/review/…) on
 /// explicit-rated material — distinct from [`EXPLICIT_DRAFT_SYSTEM_APPENDIX`].
@@ -1817,7 +1848,70 @@ fn configuration_warnings(config: &LoadedAgentConfig) -> Vec<String> {
     if health_checks_enabled(config) {
         warnings.push("endpoint health checks are enabled during configuration reload".to_string());
     }
+
+    warnings.extend(import_chair_clearance_advisories(config));
+
     warnings
+}
+
+/// Advisory nudge for the import chair (Item 2). Import routes are NOT rating-
+/// gated — content ratings do not exist until analysis runs, and import is a
+/// direct operator action on their own manuscript (see [`PROSE_BEARING_ROUTES`]
+/// and [`IMPORT_ROUTES`]). So there is nothing to gate; the guard is INFORMED
+/// CONFIGURATION.
+///
+/// Heuristic: when the operator clearly works with explicit content somewhere
+/// (ANY configured agent declares the "explicit" rating) but their configured
+/// import chair does NOT, warn — advisorily, never an error — that the import
+/// chair sees the full manuscript ungated and should be one the operator trusts
+/// with explicit content. One warning per distinct uncleared import agent,
+/// emitted deterministically.
+fn import_chair_clearance_advisories(config: &LoadedAgentConfig) -> Vec<String> {
+    use std::collections::BTreeSet;
+
+    let declares_explicit = |agent: &ConfiguredAgent| -> bool {
+        agent
+            .ratings
+            .iter()
+            .any(|r| r.trim().eq_ignore_ascii_case("explicit"))
+    };
+
+    // Is there explicit work anywhere in this config? If not, a tame import
+    // chair is fine — no nudge.
+    let any_explicit_agent = config.agents.iter().any(declares_explicit);
+    if !any_explicit_agent {
+        return Vec::new();
+    }
+
+    // Distinct agents wired to an import route, in a deterministic order.
+    let import_agent_ids: BTreeSet<&str> = config
+        .routing
+        .iter()
+        .filter(|rule| IMPORT_ROUTES.contains(&rule.route.as_str()))
+        .map(|rule| rule.agent.as_str())
+        .collect();
+
+    import_agent_ids
+        .into_iter()
+        .filter(|agent_id| {
+            // Warn only when the wired import agent exists and is NOT itself
+            // explicit-cleared. An unresolvable agent id is a separate config
+            // error, not this advisory's concern.
+            config
+                .agents
+                .iter()
+                .find(|a| a.id == *agent_id)
+                .is_some_and(|a| !declares_explicit(a))
+        })
+        .map(|agent_id| {
+            format!(
+                "agent '{agent_id}' serves an import route but is not cleared for explicit \
+                 content, while another configured agent is. import routes are not rating-gated \
+                 (ratings do not exist until analysis runs); ensure this agent may see your full \
+                 manuscript, or route import to an explicit-cleared agent you trust with it"
+            )
+        })
+        .collect()
 }
 
 fn agent_statuses(runtime: &RuntimeConfig) -> Vec<AgentStatusSummary> {
@@ -3931,6 +4025,170 @@ rating = "explicit"
                 .iter()
                 .any(|w| w.contains("duplicate routing rule")),
             "base rule + rated override must not warn, got {:?}",
+            output.warnings
+        );
+    }
+
+    // ── Item 2: import-chair clearance advisory ────────────────────────────
+    // Import routes are NOT rating-gated (ratings don't exist pre-import), so the
+    // guard is INFORMED CONFIGURATION, not gating. Heuristic nudge: the operator
+    // works with explicit content SOMEWHERE (another configured agent declares
+    // "explicit") but their import chair does NOT — warn (advisory, not error)
+    // that the import agent may need to see the full explicit manuscript.
+
+    #[test]
+    fn configure_warns_when_import_agent_not_explicit_but_another_agent_is() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        let import_advisories: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.contains("import routes are not rating-gated"))
+            .collect();
+        assert_eq!(
+            import_advisories.len(),
+            1,
+            "expected one import-chair advisory naming the boundary, got {:?}",
+            output.warnings
+        );
+        let msg = import_advisories[0];
+        assert!(
+            msg.contains("import-tame"),
+            "advisory must name the uncleared import agent: {msg}"
+        );
+        assert!(
+            msg.contains("full manuscript"),
+            "advisory must name the trust boundary (full manuscript): {msg}"
+        );
+    }
+
+    #[test]
+    fn configure_does_not_warn_when_import_agent_is_explicit_cleared() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-explicit"
+name = "Import Explicit"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_synthesize"
+agent = "import-explicit"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("import routes are not rating-gated")),
+            "an explicit-cleared import chair must not warn, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn configure_does_not_warn_when_no_agent_works_with_explicit() {
+        // No configured agent declares "explicit", so there is no explicit work
+        // anywhere — the import chair being tame is fine; no nudge.
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "mature-drafter"
+name = "Mature Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "draft"
+agent = "mature-drafter"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("import routes are not rating-gated")),
+            "no explicit work anywhere means no import advisory, got {:?}",
             output.warnings
         );
     }

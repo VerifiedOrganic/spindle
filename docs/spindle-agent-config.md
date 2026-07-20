@@ -193,6 +193,28 @@ Validation rules enforced by the loader:
 Inspect the loaded rules through the `bible://config/routing` resource. The
 `rating` and `system_prompt` fields are surfaced on each rule when configured.
 
+## Import routes and content
+
+The manuscript-import routes (`import_extract`, `import_synthesize`) carry your
+full manuscript prose, but they are **not rating-gated**. The rating gate cannot
+protect you here: content ratings are assigned by *analysis*, which runs during
+and after import, so at import time there is no rating to gate on. Import is also
+a direct operator action on your own manuscript — you point Spindle at your text
+and choose which agents run the import.
+
+Because the gate does not apply, the obligation is **informed configuration**: if
+your manuscript contains explicit content, configure `import_extract` and
+`import_synthesize` agents you trust with it end to end — for example, the same
+explicit-cleared local agents you use for drafting. An import agent that is not
+cleared for explicit content will still see your full explicit manuscript; the
+gate will not stop it.
+
+As a nudge, `configure_agents` emits an advisory warning when an import route's
+agent does **not** declare the `explicit` rating while another configured agent
+does — a heuristic sign that you work with explicit content somewhere but your
+import chair is not cleared for it. It is advisory, not an error: import routes
+are not rating-gated, so ensure the agent may see your full manuscript.
+
 ## Research routing
 
 `route = "research"` is the first-class route for agent-assisted factual
