@@ -8477,6 +8477,56 @@ impl SqliteSpindleService {
             );
         }
 
+        // ── Scene-purpose fulfillment (P3.3, deep tier) ─────────────────
+        // Deep-only, opt-in advisory: did the drafted scene accomplish its
+        // chapter-plan `purpose`? For each scoped persisted scene that has BOTH
+        // non-empty prose AND a plan scene entry with a non-empty `purpose`, one
+        // model call on `review` carries THAT scene's rating (per-scene pattern,
+        // mirroring the behavioral secret-leak audit). A `fulfilled:false`
+        // verdict emits one `info` finding; silence is the pass. Skipped
+        // silently for scenes with no plan/purpose (nothing to audit).
+        if deep_check && should_run_check(&requested_checks_set, "scene_purpose_fulfillment") {
+            // Story order is preserved by `scenes`; join each to its planned
+            // purpose (find the plan by (book, chapter), then the planned scene
+            // by scene_order — the same join agency_tracking / research use).
+            let mut units: Vec<ScenePurposeScanUnit> = Vec::new();
+            for scene in &scenes {
+                if scene.full_text.trim().is_empty() {
+                    continue;
+                }
+                let Some(purpose) = scoped_plans
+                    .iter()
+                    .find(|plan| {
+                        plan.book_number == scene.book_number
+                            && plan.chapter_number == scene.chapter_number
+                    })
+                    .and_then(|plan| {
+                        plan.scenes
+                            .iter()
+                            .find(|s| s.scene_order == scene.scene_order)
+                    })
+                    .map(|planned| planned.purpose.trim())
+                    .filter(|purpose| !purpose.is_empty())
+                else {
+                    continue;
+                };
+                units.push(ScenePurposeScanUnit {
+                    scene_id: scene.id.clone(),
+                    scene_ref: format!(
+                        "book {}, chapter {} scene {}",
+                        scene.book_number, scene.chapter_number, scene.scene_order
+                    ),
+                    scene_rating: scene.content_rating.clone(),
+                    scene_text: scene.full_text.clone(),
+                    purpose: purpose.to_string(),
+                });
+            }
+
+            let unscanned = units.len().saturating_sub(SCENE_PURPOSE_SCAN_CAP);
+            units.truncate(SCENE_PURPOSE_SCAN_CAP);
+            issues.extend(self.deep_scene_purpose_issues(&units, unscanned).await?);
+        }
+
         // ── Quantity drift: an unexplained multi-band jump ──────────────
         // For subjects with a declared scheme, flag when a measure's band moves
         // more than `max_band_jump` ordered tiers between consecutive stamps with
@@ -11329,6 +11379,100 @@ impl SqliteSpindleService {
                     ),
                 });
             }
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-backed scene-purpose fulfillment audit (evolution design §3.6):
+    /// did the drafted scene accomplish its chapter-plan `purpose`?
+    ///
+    /// `units` arrives in scene story order, already capped to the first
+    /// [`SCENE_PURPOSE_SCAN_CAP`]; `unscanned` is the overflow surfaced as one
+    /// summary info finding so a silent cap never hides an unaudited scene. One
+    /// model call per unit carries that scene's prose, stamped with the scene's
+    /// rating so the router applies the `(review, rating)` override (evolution
+    /// §4: an explicit-rated scene's audit never reaches an uncleared model) —
+    /// the same per-scene pattern as the behavioral secret-leak audit.
+    ///
+    /// Findings are ADVISORY (`info`, design §3.6: purpose drift is editorial
+    /// judgment, not an error). `fulfilled:true` yields no finding — silence is
+    /// the pass. A verdict whose `fulfilled` field is missing is DISCARDED (the
+    /// model does not get to leave the verdict ambiguous), and a malformed
+    /// payload yields no finding for that scene (never a guess). A route failure
+    /// emits one honest-skip info finding (never reads as clean) and stops.
+    async fn deep_scene_purpose_issues(
+        &self,
+        units: &[ScenePurposeScanUnit],
+        unscanned: usize,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+
+        if unscanned > 0 {
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "scene_purpose_fulfillment".to_string(),
+                message: format!(
+                    "{unscanned} additional scene(s) with a planned purpose were not scanned for \
+                     purpose fulfillment (only the {SCENE_PURPOSE_SCAN_CAP} earliest scenes in \
+                     scope are audited per run)"
+                ),
+                entity_ids: Vec::new(),
+                suggested_action: Some(
+                    "narrow the scope to the scenes you want audited, then re-run".to_string(),
+                ),
+            });
+        }
+
+        for unit in units {
+            let prompt = build_scene_purpose_prompt(&unit.purpose, &unit.scene_text);
+            let request = build_scene_purpose_request(&unit.scene_rating, prompt);
+            let verdict = match self.repository.model_router().complete(&request).await {
+                // A non-JSON local stub (the default `review` route) parses to
+                // an error the caller treats as no finding rather than a guess.
+                Ok(response) => match parse_scene_purpose_output(&response.output) {
+                    Ok(verdict) => verdict,
+                    Err(_) => continue,
+                },
+                // Honest skip: the review route is unreachable/missing or not
+                // cleared for the scene rating. Emit one info finding that reads
+                // as SKIPPED rather than clean, then stop (every unit hits the
+                // same route). A rating-clearance failure names route+rating —
+                // never any prose.
+                Err(err) => {
+                    issues.push(scene_purpose_skip_issue(&err));
+                    return Ok(issues);
+                }
+            };
+
+            // Discard a verdict with no `fulfilled` field (never guess); a
+            // `fulfilled:true` verdict is the silent pass.
+            match verdict.fulfilled {
+                Some(false) => {}
+                Some(true) | None => continue,
+            }
+
+            let purpose = crate::format::truncate_at_chars(&unit.purpose, 120);
+            let mut message = format!(
+                "scene {} did not appear to accomplish its planned purpose (\"{}\")",
+                unit.scene_ref, purpose
+            );
+            if let Some(assessment) = unit.assessment(&verdict) {
+                message.push_str(&format!(" — {assessment}"));
+            }
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "scene_purpose_fulfillment".to_string(),
+                message,
+                entity_ids: vec![unit.scene_id.clone()],
+                suggested_action: Some(
+                    "if the scene drifted from its purpose, revise it or replan the beat; if the \
+                     divergence improves the story, update the plan's purpose to match"
+                        .to_string(),
+                ),
+            });
         }
 
         Ok(issues)
@@ -23581,6 +23725,138 @@ fn parse_deep_secret_leak_output(output: &str) -> anyhow::Result<Vec<DeepSecretL
     };
     let parsed: DeepSecretLeakOutput = serde_json::from_str(&candidate)?;
     Ok(parsed.findings)
+}
+
+/// Distinctive header line for the model-backed scene-purpose fulfillment audit
+/// (evolution design §3.6). Doubles as the marker the local `review` stub keys
+/// on to return deterministic JSON in tests / local-only runs, exactly like the
+/// temporal, promise-payoff, and secret-leak headers.
+const SCENE_PURPOSE_AUDIT_HEADER: &str = "scene purpose fulfillment audit";
+
+/// At most this many scenes per scene-purpose fulfillment run, ranked by scene
+/// story order; the remainder is reported as one summary info finding. Mirrors
+/// `PROMISE_PAYOFF_SCAN_CAP` / `SECRET_LEAK_DEEP_SCAN_CAP`.
+const SCENE_PURPOSE_SCAN_CAP: usize = 10;
+
+/// One scene's worth of work for the scene-purpose fulfillment audit: the scene
+/// ref/id/rating, its prose, and the planned purpose it is measured against.
+struct ScenePurposeScanUnit {
+    scene_id: String,
+    scene_ref: String,
+    scene_rating: String,
+    scene_text: String,
+    purpose: String,
+}
+
+impl ScenePurposeScanUnit {
+    /// The model's one-sentence assessment, sanitized for a finding message:
+    /// newlines/runs of whitespace collapsed to single spaces and char-safe
+    /// truncated to 200 chars. `None` when the model returned no assessment.
+    fn assessment(&self, verdict: &ScenePurposeVerdict) -> Option<String> {
+        let raw = verdict.assessment.as_deref()?;
+        let cleaned = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if cleaned.is_empty() {
+            return None;
+        }
+        Some(crate::format::truncate_at_chars(&cleaned, 200))
+    }
+}
+
+/// Strict-parse output contract for the scene-purpose fulfillment audit. A
+/// non-JSON local stub (the default `review` route) parses to an error the
+/// caller treats as no finding. `fulfilled` is `Option<bool>` so a payload that
+/// omits the field is DISCARDED rather than defaulted (never guess a verdict).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ScenePurposeVerdict {
+    #[serde(default)]
+    fulfilled: Option<bool>,
+    #[serde(default)]
+    assessment: Option<String>,
+    // The model reports `evidence` per the contract, but the finding message
+    // carries the assessment, not the raw quote — serde ignores the extra field.
+    #[serde(default)]
+    #[allow(dead_code)]
+    evidence: Option<String>,
+}
+
+/// Build the model-backed scene-purpose fulfillment prompt for one scene. Ships
+/// the planned purpose and the whole scene prose (one call per scene, no
+/// character cap — mirroring the temporal/secret-leak prose budgeting). The
+/// [`SCENE_PURPOSE_AUDIT_HEADER`] line is also the marker the local stub keys on.
+fn build_scene_purpose_prompt(purpose: &str, scene_text: &str) -> String {
+    format!(
+        "You are performing a {SCENE_PURPOSE_AUDIT_HEADER} for a single novel scene.\n\
+         The chapter plan assigned this scene a purpose. Read the scene prose and decide whether the drafted scene ACTUALLY accomplishes that purpose on the page.\n\
+         Judge by what the prose renders, not by what the summary claims or the plan intends. A scene may be well written yet fail to do the job the plan asked of it.\n\
+         Return strict JSON only.\n\n\
+         Planned purpose: {purpose}\n\n\
+         Scene prose:\n{scene_text}\n\n\
+         Return this exact shape:\n\
+         {{\"fulfilled\":true,\"assessment\":\"<one sentence>\",\"evidence\":\"<short quote or empty>\"}}\n\
+         Set fulfilled true only when the scene clearly delivers the planned purpose; set it false when the scene drifts from or fails that purpose.",
+    )
+}
+
+/// Construct the outgoing [`ModelRequest`] for the scene-purpose fulfillment
+/// audit. Rating discipline (evolution §4): this pass carries scene prose, so it
+/// MUST stamp the scene's content rating (lowercased) on the request so the
+/// router applies any `(review, rating)` override. Pure so the rating carriage
+/// is unit-testable without a live router.
+fn build_scene_purpose_request(scene_rating: &str, prompt: String) -> crate::ai::ModelRequest {
+    crate::ai::ModelRequest {
+        route: "review".to_string(),
+        prompt,
+        rating: Some(scene_rating.to_ascii_lowercase()),
+        context: None,
+    }
+}
+
+/// Parse the scene-purpose fulfillment audit output. Tolerates code fences and
+/// surrounding prose via [`extract_json_object`]; an unparseable response is an
+/// error the caller treats as no finding rather than a guess. A payload missing
+/// the `fulfilled` field parses with `fulfilled: None` and is discarded upstream.
+fn parse_scene_purpose_output(output: &str) -> anyhow::Result<ScenePurposeVerdict> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("empty scene-purpose audit output");
+    }
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else if let Some(fenced) = extract_json_object(output) {
+        fenced
+    } else {
+        trimmed.to_string()
+    };
+    let parsed: ScenePurposeVerdict = serde_json::from_str(&candidate)?;
+    Ok(parsed)
+}
+
+/// Build the honest-skip `ConsistencyIssue` for a scene-purpose fulfillment
+/// deep-check route failure. Same shape as [`secret_leak_skip_issue`]: a
+/// rating-clearance failure names route+rating (ids only, never prose); any
+/// other error reads as a generic dead-route skip. Either way the finding reads
+/// as SKIPPED, never clean.
+fn scene_purpose_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
+    use spindle_core::models::ConsistencyIssue;
+    let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "scene purpose fulfillment audit was SKIPPED: the `{route}` route is not cleared for \
+             rating `{rating}`. Scenes were NOT audited for purpose fulfillment."
+        ),
+        _ => "scene purpose fulfillment audit was SKIPPED: no usable review route (the model call \
+              failed). Scenes were NOT audited for purpose fulfillment."
+            .to_string(),
+    };
+    ConsistencyIssue {
+        severity: "info".to_string(),
+        check_type: "scene_purpose_fulfillment".to_string(),
+        message,
+        entity_ids: Vec::new(),
+        suggested_action: Some(
+            "configure a review model route cleared for the scene rating, then re-run this check"
+                .to_string(),
+        ),
+    }
 }
 
 /// Render a canonical-fact value to its display string. Order of
@@ -40642,6 +40918,550 @@ agent = "review-safe"
         let issue = super::world_rule_deep_skip_issue(&err);
         assert!(issue.message.contains("SKIPPED"));
         assert!(issue.message.contains("no usable review route"));
+    }
+
+    // ── P3.3: scene_purpose_fulfillment deep-check ────────────────────────
+    // Model-backed, deep-only advisory check (evolution design §3.6): did the
+    // drafted scene accomplish the plan's `purpose`? For each scoped persisted
+    // scene that has BOTH non-empty prose AND a chapter-plan scene entry with a
+    // non-empty `purpose`, one `review` call carries the scene's own rating
+    // (per-scene pattern, mirroring the behavioral secret-leak audit). A
+    // `fulfilled:false` verdict yields one `info` finding; silence is the pass.
+    // All tests hermetic (`fresh_service_local` + TempDir configs).
+    mod scene_purpose_fulfillment {
+        use super::*;
+        use crate::ai::DispatchRecord;
+        use spindle_core::models::{
+            CheckConsistencyInput, ConfigureAgentsInput, ConsistencyScopeInput, ContentRating,
+            PlanChapterInput, PlanChapterSceneInput, SaveSceneDraftInput,
+        };
+
+        async fn seed_project(svc: &SqliteSpindleService, name: &str) -> String {
+            svc.create_project(CreateProjectInput {
+                name: name.into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap()
+            .project_id
+        }
+
+        /// Plan chapter `chapter` with a single planned scene at `scene_order`
+        /// carrying `purpose` (pass an empty string for the no-purpose case).
+        async fn plan_scene_purpose(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            chapter: i32,
+            scene_order: i32,
+            purpose: &str,
+        ) {
+            svc.plan_chapter(PlanChapterInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                pov_character_id: None,
+                synopsis: "s".into(),
+                target_theme_ids: Vec::new(),
+                target_conflict_ids: Vec::new(),
+                target_plot_line_ids: Vec::new(),
+                scenes: vec![PlanChapterSceneInput {
+                    scene_order,
+                    summary: "planned".into(),
+                    purpose: purpose.into(),
+                    ..Default::default()
+                }],
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn save_scene(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            chapter: i32,
+            scene_order: i32,
+            full_text: &str,
+            rating: ContentRating,
+        ) {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: chapter,
+                chapter_id: None,
+                scene_order,
+                full_text: full_text.into(),
+                summary: "s".into(),
+                content_rating: rating,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        fn purpose_input(project_id: &str, deep: bool) -> CheckConsistencyInput {
+            CheckConsistencyInput {
+                project_id: project_id.to_string(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["scene_purpose_fulfillment".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(deep),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            }
+        }
+
+        /// A `review` agent declaring exactly `ratings`, written to a TempDir and
+        /// installed. A rated agent (not a built-in local route) makes the
+        /// clearance gate actually engage.
+        fn install_review_agent(tmp: &TempDir, svc: &SqliteSpindleService, ratings: &[&str]) {
+            let ratings_toml = ratings
+                .iter()
+                .map(|r| format!("\"{r}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let config_path = tmp.path().join("review-agent.toml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-rated"
+name = "Review Rated"
+provider = "local"
+endpoint = "local"
+model = "review-rated"
+ratings = [{ratings_toml}]
+
+[[routing]]
+route = "review"
+agent = "review-rated"
+"#
+                ),
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+        }
+
+        fn purpose_findings(
+            out: &spindle_core::models::CheckConsistencyOutput,
+        ) -> Vec<&spindle_core::models::ConsistencyIssue> {
+            out.issues
+                .iter()
+                .filter(|i| i.check_type == "scene_purpose_fulfillment")
+                .collect()
+        }
+
+        // ── (a) unfulfilled sentinel → one info finding ────────────────────
+        /// A planned-purpose scene whose prose carries `MOCK_PURPOSE_UNFULFILLED`
+        /// yields exactly one info finding naming the scene ref, the planned
+        /// purpose, and the model's assessment fragment.
+        #[tokio::test]
+        async fn unfulfilled_scene_yields_one_info_finding() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-unfulfilled").await;
+            plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "They shared a warm supper and parted friends. MOCK_PURPOSE_UNFULFILLED.",
+                ContentRating::General,
+            )
+            .await;
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            let findings = purpose_findings(&deep);
+            assert_eq!(
+                findings.len(),
+                1,
+                "exactly one unfulfilled finding expected: {:?}",
+                deep.issues
+            );
+            let f = findings[0];
+            assert_eq!(f.severity, "info");
+            assert!(
+                f.message.contains("rupture the alliance"),
+                "message names the planned purpose: {}",
+                f.message
+            );
+            assert!(
+                f.message
+                    .contains("comfort where the plan demanded rupture"),
+                "message carries the model's assessment: {}",
+                f.message
+            );
+        }
+
+        // ── (b) fulfilled (no sentinel) → zero findings ────────────────────
+        #[tokio::test]
+        async fn fulfilled_scene_yields_no_finding() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-fulfilled").await;
+            plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "The knives came out and the pact shattered on the table.",
+                ContentRating::General,
+            )
+            .await;
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            assert!(
+                purpose_findings(&deep).is_empty(),
+                "a fulfilled scene must yield no finding (silence is the pass): {:?}",
+                deep.issues
+            );
+        }
+
+        // ── (c) no plan entry / empty purpose → silent skip, no dispatch ───
+        /// A scene with prose but NO chapter-plan purpose entry is silently
+        /// skipped: zero findings and zero model dispatches (nothing to audit).
+        #[tokio::test]
+        async fn scene_without_planned_purpose_is_silently_skipped() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-noplan").await;
+            // No plan at all for chapter 1.
+            let log = svc.repository.model_router().install_dispatch_recorder();
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "A scene with prose but no planned purpose. MOCK_PURPOSE_UNFULFILLED.",
+                ContentRating::General,
+            )
+            .await;
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            assert!(
+                purpose_findings(&deep).is_empty(),
+                "no planned purpose → no finding: {:?}",
+                deep.issues
+            );
+            let dispatched = log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, DispatchRecord::Dispatch { .. }))
+                .count();
+            assert_eq!(
+                dispatched,
+                0,
+                "no planned purpose → no model dispatch: {:?}",
+                log.lock().unwrap()
+            );
+        }
+
+        /// An EMPTY planned purpose is treated identically to no plan: silently
+        /// skipped even with the unfulfilled sentinel present.
+        #[tokio::test]
+        async fn scene_with_empty_planned_purpose_is_silently_skipped() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-empty").await;
+            plan_scene_purpose(&svc, &project_id, 1, 1, "   ").await;
+            let log = svc.repository.model_router().install_dispatch_recorder();
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "Prose here. MOCK_PURPOSE_UNFULFILLED.",
+                ContentRating::General,
+            )
+            .await;
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            assert!(
+                purpose_findings(&deep).is_empty(),
+                "empty planned purpose → no finding: {:?}",
+                deep.issues
+            );
+            let dispatched = log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, DispatchRecord::Dispatch { .. }))
+                .count();
+            assert_eq!(dispatched, 0, "empty purpose → no model dispatch");
+        }
+
+        // ── (d) shallow run → zero (deep-only) ─────────────────────────────
+        #[tokio::test]
+        async fn shallow_run_yields_no_finding() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-shallow").await;
+            plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "Warm supper. MOCK_PURPOSE_UNFULFILLED.",
+                ContentRating::General,
+            )
+            .await;
+
+            let shallow = svc
+                .check_consistency(purpose_input(&project_id, false))
+                .await
+                .unwrap();
+            assert!(
+                purpose_findings(&shallow).is_empty(),
+                "the deep-only check must be silent without deep_check: {:?}",
+                shallow.issues
+            );
+        }
+
+        // ── (e) explicit + general-only agent → skip finding, no prose dispatch
+        /// An EXPLICIT scene routed to a `review` agent that declares only
+        /// `general` must NOT dispatch the prose. The check emits one skip
+        /// finding naming route + rating, and the recorder shows zero prose
+        /// dispatches past the gate.
+        #[tokio::test]
+        async fn uncleared_explicit_skips_and_never_dispatches_prose() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-uncleared").await;
+            plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
+            install_review_agent(&tmp, &svc, &["general"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "UNIQUE_PURPOSE_PROSE_SENTINEL warm supper. MOCK_PURPOSE_UNFULFILLED.",
+                ContentRating::Explicit,
+            )
+            .await;
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            let records = log.lock().unwrap().clone();
+            for record in &records {
+                if let DispatchRecord::Dispatch { prompt, .. } = record {
+                    assert!(
+                        !prompt.contains("UNIQUE_PURPOSE_PROSE_SENTINEL"),
+                        "explicit prose must never dispatch to an uncleared agent: {records:?}"
+                    );
+                }
+            }
+            let skips: Vec<_> = purpose_findings(&deep)
+                .into_iter()
+                .filter(|i| i.severity == "info" && i.message.to_lowercase().contains("skipped"))
+                .collect();
+            assert_eq!(
+                skips.len(),
+                1,
+                "an uncleared review route must yield exactly one skip finding: {:?}",
+                deep.issues
+            );
+            assert!(
+                skips[0].message.contains("`review`"),
+                "{}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.contains("`explicit`"),
+                "{}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.contains("not cleared for rating"),
+                "{}",
+                skips[0].message
+            );
+        }
+
+        // ── (f) cleared explicit → dispatch carries rating Some("explicit") ─
+        #[tokio::test]
+        async fn cleared_explicit_dispatches_with_explicit_rating() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-cleared").await;
+            plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
+            install_review_agent(&tmp, &svc, &["general", "explicit"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+            save_scene(
+                &svc,
+                &project_id,
+                1,
+                1,
+                "UNIQUE_PURPOSE_PROSE_SENTINEL warm supper. MOCK_PURPOSE_UNFULFILLED.",
+                ContentRating::Explicit,
+            )
+            .await;
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            // No skip finding fired — the agent covers explicit.
+            assert!(
+                !purpose_findings(&deep)
+                    .iter()
+                    .any(|i| i.message.to_lowercase().contains("skipped")),
+                "a cleared explicit route must not skip: {:?}",
+                deep.issues
+            );
+            let records = log.lock().unwrap().clone();
+            let explicit_dispatch = records.iter().any(|r| {
+                matches!(
+                    r,
+                    DispatchRecord::Dispatch { rating, prompt, .. }
+                        if rating.as_deref() == Some("explicit")
+                            && prompt.contains("UNIQUE_PURPOSE_PROSE_SENTINEL")
+                )
+            });
+            assert!(
+                explicit_dispatch,
+                "a cleared purpose audit must dispatch with rating=explicit: {records:?}"
+            );
+            assert!(
+                !records
+                    .iter()
+                    .any(|r| matches!(r, DispatchRecord::Rejection { .. })),
+                "no clearance rejection when the agent covers the rating: {records:?}"
+            );
+        }
+
+        // ── (g) 12 eligible scenes → 10 scanned + summary reports 2 ─────────
+        #[tokio::test]
+        async fn caps_at_ten_scenes_and_reports_unscanned() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "purpose-cap").await;
+            // 12 eligible scenes across chapters 1..=12, each with a planned
+            // purpose and the unfulfilled sentinel, so every one would flag.
+            for ch in 1..=12 {
+                plan_scene_purpose(&svc, &project_id, ch, 1, &format!("purpose {ch}")).await;
+                save_scene(
+                    &svc,
+                    &project_id,
+                    ch,
+                    1,
+                    "Off-plan prose. MOCK_PURPOSE_UNFULFILLED.",
+                    ContentRating::General,
+                )
+                .await;
+            }
+
+            let deep = svc
+                .check_consistency(purpose_input(&project_id, true))
+                .await
+                .unwrap();
+            let findings = purpose_findings(&deep);
+            // 10 unfulfilled findings + 1 summary = 11 total.
+            let unfulfilled: Vec<_> = findings
+                .iter()
+                .filter(|i| !i.message.contains("not scanned"))
+                .collect();
+            assert_eq!(
+                unfulfilled.len(),
+                10,
+                "at most 10 scenes scanned per run: {:?}",
+                deep.issues
+            );
+            let summary = findings
+                .iter()
+                .find(|i| i.severity == "info" && i.message.contains("not scanned"))
+                .expect("a summary finding must report the unscanned overflow");
+            assert!(
+                summary.message.contains('2'),
+                "12 eligible - 10 scanned = 2 unscanned: {}",
+                summary.message
+            );
+        }
+
+        // ── (h) parser units ───────────────────────────────────────────────
+        #[test]
+        fn purpose_parse_extracts_verdict() {
+            let out = r#"{"fulfilled":false,"assessment":"drifted","evidence":"quote"}"#;
+            let verdict = super::parse_scene_purpose_output(out).unwrap();
+            assert_eq!(verdict.fulfilled, Some(false));
+            assert_eq!(verdict.assessment.as_deref(), Some("drifted"));
+        }
+
+        #[test]
+        fn purpose_parse_handles_code_fence_and_prose() {
+            let out = "Audit:\n```json\n{\"fulfilled\":true,\"assessment\":\"landed\"}\n```";
+            let verdict = super::parse_scene_purpose_output(out).unwrap();
+            assert_eq!(verdict.fulfilled, Some(true));
+        }
+
+        #[test]
+        fn purpose_parse_rejects_non_json() {
+            assert!(
+                super::parse_scene_purpose_output(
+                    "Literary critic and craft technician both reviewed: ..."
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn purpose_parse_missing_fulfilled_is_discarded() {
+            // A payload with no `fulfilled` field parses, but the caller must
+            // discard it (never guess a verdict): `fulfilled` is None.
+            let out = r#"{"assessment":"ambiguous","evidence":"q"}"#;
+            let verdict = super::parse_scene_purpose_output(out).unwrap();
+            assert_eq!(verdict.fulfilled, None);
+        }
+
+        #[test]
+        fn purpose_skip_issue_names_route_and_rating_on_rating_not_covered() {
+            let err = anyhow::Error::new(crate::ai::RouteClearanceError::RatingNotCovered {
+                route: "review".to_string(),
+                rating: "explicit".to_string(),
+                agent_id: "reviewer".to_string(),
+            });
+            let issue = super::scene_purpose_skip_issue(&err);
+            assert_eq!(issue.check_type, "scene_purpose_fulfillment");
+            assert_eq!(issue.severity, "info");
+            assert!(issue.message.contains("SKIPPED"));
+            assert!(issue.message.contains("`review`"));
+            assert!(issue.message.contains("`explicit`"));
+            assert!(issue.message.contains("not cleared for rating"));
+        }
+
+        #[test]
+        fn purpose_skip_issue_generic_message_for_non_clearance_error() {
+            let err = anyhow::anyhow!("connection refused");
+            let issue = super::scene_purpose_skip_issue(&err);
+            assert!(issue.message.contains("SKIPPED"));
+            assert!(issue.message.contains("no usable review route"));
+        }
     }
 
     // =========================================================================

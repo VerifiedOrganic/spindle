@@ -117,8 +117,9 @@ up in `issues` by `check_type`: `chronology` (between-scene clock rewinds),
 time-of-day drift, unrendered declared spans), `knowledge_timing`,
 `quantity_drift`, and others. Pass `deep_check: true` to add the model-backed
 semantic passes, including a Tier 2 `temporal_coherence` pass that catches the
-idiomatic time jumps a fixed lexicon misses — use it for a thorough editorial
-sweep.
+idiomatic time jumps a fixed lexicon misses and a `scene_purpose_fulfillment`
+pass (advisory `info`) that flags a drafted scene which fails to accomplish its
+chapter-plan `purpose` — use it for a thorough editorial sweep.
 
 Treat these outputs as authoritative technical evidence. If editorial instinct
 conflicts with validator findings, inspect canon records and either revise prose

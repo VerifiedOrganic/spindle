@@ -2064,6 +2064,19 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
                 } else {
                     r#"{"findings":[]}"#.to_string()
                 }
+            } else if prompt.contains("scene purpose fulfillment audit") {
+                // The scene-purpose fulfillment deep check (evolution §3.6) also
+                // rides the `review` route. Report the scene as NOT fulfilling
+                // its planned purpose only when the prose carries the sentinel;
+                // otherwise report it as fulfilled, so a local-only deployment
+                // degrades to no findings rather than fabricating drift.
+                if prompt.contains("MOCK_PURPOSE_UNFULFILLED") {
+                    r#"{"fulfilled":false,"assessment":"the scene establishes comfort where the plan demanded rupture","evidence":"MOCK_PURPOSE_UNFULFILLED"}"#
+                        .to_string()
+                } else {
+                    r#"{"fulfilled":true,"assessment":"the scene delivers its planned purpose","evidence":""}"#
+                        .to_string()
+                }
             } else {
                 format!("Literary critic and craft technician both reviewed: {compact_prompt}")
             }

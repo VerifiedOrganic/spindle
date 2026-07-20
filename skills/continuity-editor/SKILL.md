@@ -401,6 +401,39 @@ dialogue genuinely leaks: route to scene-writer to revise it out. Mark a reviewe
 false positive by recording the reveal or dismissing it with a note, mirroring how
 other findings are triaged at checkpoints.
 
+### 26. Scene-Purpose Fulfillment (`scene_purpose_fulfillment`) — deep only
+Model-backed **Tier 2**, opt-in via `deep_check: true` (silent otherwise). The
+chapter plan assigns each planned scene a `purpose`; this check asks whether the
+*drafted* scene actually accomplishes that purpose on the page. For each scoped
+persisted scene that has BOTH non-empty prose AND a chapter-plan scene entry with
+a non-empty `purpose`, it makes one `review` call carrying the scene's prose and
+its planned purpose (a scene with no plan entry or an empty purpose is skipped
+silently — there is nothing to audit). It audits the **10 earliest scenes in
+story order**; if more exist, one summary **info** finding reports how many were
+**not scanned** (never a silent cap). A `fulfilled:false` verdict raises ONE
+**info** finding (advisory — purpose drift is editorial judgment, not an error)
+naming the scene reference, the planned purpose, and the model's one-sentence
+assessment; a `fulfilled:true` verdict is silent (silence is the pass). The parse
+is strict: a malformed payload yields no finding for that scene, and a verdict
+that omits the `fulfilled` field is discarded — the check never guesses. Each
+call carries the scene's own content rating, so an explicit scene's audit only
+reaches an explicit-cleared route; if the route is unreachable or uncleared it
+emits ONE honest-skip info finding that reads as **SKIPPED**, never a clean scan.
+Degrades to no findings when the local stub is in play.
+
+**What to do when flagged — false-positive triage first**: purpose drift is often
+the story *improving*, not breaking. Read the cited scene against its planned
+purpose and decide which of three cases applies: (a) the scene genuinely fails or
+wanders from a purpose it still owes the plan → route to scene-writer to revise
+it toward that purpose (or replan the beat); (b) the scene diverges *deliberately*
+and the divergence is better than the plan → this is not a defect: leave a replan
+note and update the plan's `purpose` (re-`plan_chapter`) so the plan matches what
+the prose actually does; (c) the verdict is a plain false positive (the purpose
+did land, the model missed it) → dismiss with a note. Only case (a) is a real
+revision. For the SKIPPED finding, configure a review model route cleared for the
+scene's rating and re-run; for the summary "not scanned" finding, narrow the scope
+and re-run.
+
 ---
 
 ## Running a Full Audit
@@ -487,6 +520,7 @@ use those alias names when calling live checks; use the concrete IDs above.
 | Arc milestone (`arc_milestone_audit`) | → scene-writer (demonstrate the milestone and set `reached_at`) or → plot-architect (move the milestone `placement`) |
 | Conflict escalation (`conflict_escalation_audit`) | → scene-writer (demonstrate the earlier stage first) or → plot-architect (correct the `escalation_demonstrated` markers) |
 | Secret leak (`secret_leak`) | → scene-writer (revise the leaking dialogue) or, if the reveal is intended, `record_knowledge` with `secret_of_fact_id` to expand the circle |
+| Scene-purpose drift (`scene_purpose_fulfillment`, deep) | → scene-writer (revise the scene toward its planned purpose) if it genuinely wandered, or → plot-architect (`plan_chapter` to update the scene's `purpose`) if the divergence improves the story; dismiss with a note if the purpose actually landed |
 
 If a world rule has a legitimate exception, encode it as a separate
 `world_rule` (e.g. with `relevance_tags: ["exception"]` and a

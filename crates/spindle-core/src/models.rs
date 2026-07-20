@@ -3893,7 +3893,8 @@ pub const SCENE_VERIFY_CHECKS: &[&str] = &[
     "voice_drift",                // dialogue drifts from a character's voice profile
     "style_compliance",           // prose drifts from an applied style profile
                                   // ── Deliberately EXCLUDED (deep-only or cross-chapter trend) ──
-                                  // "promise_payoff_detection" — deep-only (model tier)
+                                  // "promise_payoff_detection"   — deep-only (model tier)
+                                  // "scene_purpose_fulfillment"  — deep-only (model tier)
                                   // "pacing_drift"             — multi-chapter intensity trend
                                   // "research_accuracy"        — corpus-wide provenance audit, not scene-local
                                   // "scene_divergence"         — source-vs-draft, separate bridge
@@ -6953,6 +6954,7 @@ mod tests {
         // never leak into the fast scene-verify subset (design §3.2).
         for excluded in [
             "promise_payoff_detection",
+            "scene_purpose_fulfillment",
             "pacing_drift",
             "research_accuracy",
             "scene_divergence",
