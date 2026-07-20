@@ -20863,18 +20863,22 @@ impl SqliteSpindleService {
         &self,
         input: SaveSceneDraftInput,
     ) -> Result<SaveSceneDraftOutput> {
-        let mut save_input = input.clone();
+        // The caller's prose is authoritative at every rating; `save_input` is a
+        // clone of the request used verbatim for the persist (no field is ever
+        // rewritten from a receipt — see the explicit branch below).
+        let save_input = input.clone();
         // Provenance vocabulary (see the `draft_origin` field on
         // `crate::sqlite::records::Scene` for the canonical definition):
         //   * `agent:<agent-id>` — the run's draft agent authored this prose.
         //     Stamped for EVERY agent-origin save regardless of rating: the
         //     agent-draft seam always passes a valid `draft`-route
-        //     `generation_id`. Explicit drafts additionally rewrite `full_text`
-        //     from the server-held receipt (that prose is never client-supplied);
-        //     non-explicit drafts persist the client prose but still carry agent
-        //     provenance. This uniform stamp is what unlocks style-edit capture
-        //     for the non-explicit agent-draft majority (a NULL origin was never
-        //     recognized as an agent draft).
+        //     `generation_id`. At every rating (explicit and non-explicit alike)
+        //     the caller's `full_text` is authoritative and is what persists; the
+        //     receipt is provenance only (rating clearance + agent identity). See
+        //     the explicit-branch comment below for why the receipt output is
+        //     never substituted for the prose. This uniform stamp is what unlocks
+        //     style-edit capture for the non-explicit agent-draft majority (a
+        //     NULL origin was never recognized as an agent draft).
         //   * `host` — a hybrid host draft through `authoring_save_scene_draft`
         //     (stamped by that handler after the save). The operator's own prose,
         //     not an agent style signal.
@@ -20893,9 +20897,34 @@ impl SqliteSpindleService {
                 .as_deref()
                 .is_some_and(|id| !id.trim().is_empty())
             {
+                // The receipt is PROVENANCE ONLY: it proves the save was
+                // authorized by a cleared, explicit-capable draft-route
+                // generation and identifies the producing agent. It is NOT the
+                // source of prose. The caller's `full_text` is authoritative and
+                // is what gets persisted.
+                //
+                // Data-loss regression (bugs 1 + 6b): the original code rewrote
+                // `save_input.full_text = receipt.output_text` to "guarantee the
+                // persisted explicit prose is byte-for-byte what the cleared
+                // agent generated" (introduced in e6f6395). In production the
+                // receipt is `prior_output + continuation` (see
+                // register_generation_receipt) and carries agent narration +
+                // truncated turn fragments, so it is NOT clean prose — the
+                // rewrite silently stored receipt stubs (e.g. `{"ok":I'll
+                // bootstrap Spindle…`) while reporting `status: saved`, throwing
+                // away the real 15KB prose.
+                //
+                // Policy (v1): NO content-equality requirement against the
+                // receipt. Because the companion adapter bug means receipts
+                // routinely contain narration, an equality check would
+                // false-reject every legitimate save. So the receipt validates
+                // clearance + provenance only; `full_text` is left untouched.
+                // If a future adapter fix makes receipt.output_text a faithful
+                // copy of the prose, a mismatch check may be reintroduced — but
+                // it MUST reject loudly (a structured error naming the mismatch),
+                // never silently substitute the receipt.
                 let receipt =
                     self.verified_explicit_save_receipt(input.generation_id.as_deref())?;
-                save_input.full_text = receipt.output_text.clone();
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             } else if crate::sqlite::import_service::contains_explicit_sexual_prose(
                 &input.full_text,
@@ -31131,8 +31160,19 @@ rating = "explicit"
         );
     }
 
+    /// Data-loss regression (bugs 1 + 6b): an explicit save whose receipt
+    /// output DIFFERS from the caller's `full_text` must persist the caller's
+    /// `full_text` byte-for-byte — the receipt is provenance only (rating
+    /// clearance + agent identity), never a source of prose. The prior contract
+    /// (`save_scene_draft_uses_server_held_explicit_generation_output`) rewrote
+    /// `full_text` from `receipt.output_text`, silently discarding the caller's
+    /// prose; in production the receipt carries agent narration + truncated turn
+    /// fragments (concat at register_generation_receipt), so the rewrite stored
+    /// receipt stubs while reporting `status: saved`. This test pins the honest
+    /// contract: full_text persisted, receipt NOT persisted, `chars_added`
+    /// computed from the persisted prose.
     #[tokio::test]
-    async fn save_scene_draft_uses_server_held_explicit_generation_output() {
+    async fn save_scene_draft_persists_caller_full_text_not_receipt_output() {
         let (_tmp, svc) = fresh_service_local().await;
         let project = svc
             .create_project(CreateProjectInput {
@@ -31147,11 +31187,15 @@ rating = "explicit"
             })
             .await
             .unwrap();
+        // Receipt output stands in for the production reality: agent narration
+        // ("I'll bootstrap Spindle…") + a truncated turn fragment. It is NOT the
+        // prose and must never be persisted.
+        let receipt_output = "{\"ok\":I'll bootstrap Spindle then draft… [truncated turn fragment]";
         let receipt = svc.register_generation_receipt(
             "draft",
             Some("explicit"),
             "explicit-agent",
-            "Server-held explicit route output.",
+            receipt_output,
         );
         {
             let mut receipts = svc.generation_receipts.write().unwrap();
@@ -31160,6 +31204,11 @@ rating = "explicit"
                 .expect("seeded receipt")
                 .explicit_capable_agent = true;
         }
+        // The real 15KB-class prose the caller authored (abbreviated here). This
+        // is authoritative — it is what the operator/cleared agent produced and
+        // what must survive the save.
+        let caller_full_text =
+            "The heat between them was undeniable as the storm broke over the harbor.";
 
         let out = svc
             .save_scene_draft(SaveSceneDraftInput {
@@ -31168,8 +31217,8 @@ rating = "explicit"
                 chapter_number: 1,
                 chapter_id: None,
                 scene_order: 1,
-                full_text: "CLIENT PLACEHOLDER SHOULD NOT PERSIST".to_string(),
-                summary: "Explicit receipt output should win.".to_string(),
+                full_text: caller_full_text.to_string(),
+                summary: "Caller prose must win over the receipt.".to_string(),
                 content_rating: spindle_core::models::ContentRating::Explicit,
                 tone: None,
                 generation_id: Some(receipt.id.clone()),
@@ -31180,8 +31229,168 @@ rating = "explicit"
             .unwrap();
 
         let scene = svc.repository.get_scene(&out.scene_id).await.unwrap();
-        assert_eq!(scene.full_text, "Server-held explicit route output.");
+        // 1. Persisted prose is the caller's full_text, byte-for-byte.
+        assert_eq!(
+            scene.full_text, caller_full_text,
+            "explicit save must persist the caller's full_text, not the receipt output"
+        );
+        // 2. The receipt output was NOT persisted (this is the data-loss guard).
+        assert_ne!(
+            scene.full_text, receipt.output_text,
+            "receipt output (narration/fragments) must never be persisted as prose"
+        );
+        // 3. Provenance still stamps agent:<id> from the receipt.
         assert_eq!(out.draft_origin, "agent:explicit-agent");
+        // 4. chars_added reflects the persisted prose, not the receipt (bug 6b).
+        assert_eq!(
+            out.chars_added,
+            caller_full_text.len(),
+            "chars_added must reflect the persisted prose, not the receipt stub"
+        );
+    }
+
+    /// Bug-4 guard: the NON-explicit agent-draft path (a valid `draft`-route
+    /// receipt at a lower rating) must also treat the caller's `full_text` as
+    /// authoritative — it only stamps `agent:<id>` provenance and never rewrites
+    /// prose. This is the pre-existing contract; the test pins it so a future
+    /// change cannot regress the non-explicit path into a rewrite.
+    #[tokio::test]
+    async fn save_scene_draft_non_explicit_receipt_persists_caller_full_text() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "mature-receipt-save".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-stamped drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let receipt = svc.register_generation_receipt(
+            "draft",
+            Some("mature"),
+            "mature-agent",
+            "Receipt narration that is NOT the prose.",
+        );
+        let caller_full_text = "The mist rolled off the cliffs as she climbed the last switchback.";
+
+        let out = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: caller_full_text.to_string(),
+                summary: "Non-explicit caller prose must win.".to_string(),
+                content_rating: spindle_core::models::ContentRating::Mature,
+                tone: None,
+                generation_id: Some(receipt.id.clone()),
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let scene = svc.repository.get_scene(&out.scene_id).await.unwrap();
+        assert_eq!(
+            scene.full_text, caller_full_text,
+            "non-explicit save must persist the caller's full_text"
+        );
+        assert_ne!(scene.full_text, receipt.output_text);
+        // Provenance still stamps the agent from the receipt.
+        assert_eq!(out.draft_origin, "agent:mature-agent");
+        // chars_added honest on the non-explicit path too (bug 6b).
+        assert_eq!(out.chars_added, caller_full_text.len());
+    }
+
+    /// Bug-5 guard: the revise loop re-saves through `save_scene_draft`. A
+    /// second explicit save (the revised prose, referencing a fresh receipt)
+    /// must persist the REVISED full_text, not any receipt output.
+    #[tokio::test]
+    async fn save_scene_draft_re_save_persists_revised_full_text() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "explicit-revise-resave".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-gated drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let seed_receipt = |svc: &SqliteSpindleService, output: &str| {
+            let receipt = svc.register_generation_receipt(
+                "draft",
+                Some("explicit"),
+                "explicit-agent",
+                output,
+            );
+            let mut receipts = svc.generation_receipts.write().unwrap();
+            receipts
+                .get_mut(&receipt.id)
+                .expect("seeded receipt")
+                .explicit_capable_agent = true;
+            receipt.id
+        };
+
+        let first_receipt = seed_receipt(&svc, "first receipt narration");
+        let first_text = "First-pass prose for the scene.";
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: first_text.to_string(),
+            summary: "First pass.".to_string(),
+            content_rating: spindle_core::models::ContentRating::Explicit,
+            tone: None,
+            generation_id: Some(first_receipt),
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let revised_receipt = seed_receipt(&svc, "revised receipt narration");
+        let revised_text = "Revised prose after a surgical edit pass.";
+        let out = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: revised_text.to_string(),
+                summary: "Revised pass.".to_string(),
+                content_rating: spindle_core::models::ContentRating::Explicit,
+                tone: None,
+                generation_id: Some(revised_receipt),
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            out.status, "updated",
+            "second save to same scene is an update"
+        );
+        let scene = svc.repository.get_scene(&out.scene_id).await.unwrap();
+        assert_eq!(
+            scene.full_text, revised_text,
+            "re-save must persist the revised full_text"
+        );
+        assert_eq!(out.chars_added, revised_text.len());
     }
 
     #[tokio::test]

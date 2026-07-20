@@ -2382,9 +2382,15 @@ if [ "$ROUTE" = "draft" ]; then
   # a reader-sim fixture steers each chapter's committed prose purely via data in
   # the DB (this shared script is the single process-stable CLI command).
   READER=$(echo "$PROMPT" | grep -oE 'MOCK_READER_[A-Z_]+' | head -1)
+  # Copy any per-scene sentinel the chapter synopsis carries into the prose. This
+  # lets a fixture give one chapter DISTINCT committed prose (e.g. to prove an
+  # explicit scene's prose is never dispatched to a review route) without the
+  # otherwise-identical mock literal aliasing two scenes together. Inert unless a
+  # synopsis carries a MOCK_SCENE_* marker.
+  SCENE=$(echo "$PROMPT" | grep -oE 'MOCK_SCENE_[A-Z_]+' | head -1)
   cat <<EOF
 {
-  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE $READER as the door swung wide.",
+  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE $READER $SCENE as the door swung wide.",
   "summary": "Stranger crosses",
   "tone": "$TONE",
   "character_states": [],
@@ -5203,12 +5209,26 @@ agent = "cli-agent-review"
         (1, ContentRating::General, "General watch"),
         (2, ContentRating::Explicit, "Explicit watch"),
     ] {
+        // The explicit chapter carries a MOCK_SCENE_* marker so the mock draft
+        // agent stamps DISTINCT committed prose into it. Without this the mock
+        // emits one identical literal for every scene, so the general scene's
+        // prose (legitimately dispatched to review) would be byte-identical to
+        // the explicit scene's persisted prose and the leak-sweep below could not
+        // tell the two apart. (Historically the explicit save rewrote full_text
+        // from the receipt, which made the explicit prose incidentally distinct;
+        // that rewrite was the data-loss bug now fixed — the caller's full_text
+        // is authoritative — so the fixture must create the distinction itself.)
+        let synopsis = if matches!(rating, ContentRating::Explicit) {
+            format!("Chapter {chapter_number}. MOCK_SCENE_EXPLICIT")
+        } else {
+            format!("Chapter {chapter_number}.")
+        };
         svc.plan_chapter(PlanChapterInput {
             project_id: project.project_id.clone(),
             book_number: 1,
             chapter_number,
             pov_character_id: Some(mara.character_id.clone()),
-            synopsis: format!("Chapter {chapter_number}."),
+            synopsis,
             target_theme_ids: Vec::new(),
             target_conflict_ids: Vec::new(),
             target_plot_line_ids: Vec::new(),

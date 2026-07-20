@@ -2139,8 +2139,11 @@ pub struct SaveSceneDraftInput {
     pub tone: Option<String>,
     /// Optional server-side receipt id returned by `continue_generation`.
     /// Required when saving explicit sexual prose with `content_rating:
-    /// "explicit"`. When provided for an explicit-rated save, Spindle persists
-    /// the server-held generation output as `full_text`.
+    /// "explicit"`. The receipt is provenance only: it proves the save was
+    /// authorized by a cleared, explicit-capable draft-route generation and
+    /// stamps `draft_origin: agent:<id>`. The caller-supplied `full_text` is
+    /// authoritative and is what Spindle persists — the receipt output is never
+    /// substituted for the prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_id: Option<String>,
     /// Optional path to the local source file this scene was written from.

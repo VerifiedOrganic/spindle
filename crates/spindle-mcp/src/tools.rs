@@ -3814,7 +3814,8 @@ impl ToolRouter {
         // record field) is uniform and an operator re-save over a host draft is
         // never mistaken for an agent-draft contrast pair. An explicit hybrid
         // draft carries a valid `draft` `generation_id`, which `save_scene_draft`
-        // already stamped as `agent:*` (server-held prose); leave that intact.
+        // already stamped as `agent:*` (receipt-verified provenance; the caller's
+        // full_text is what persisted); leave that stamp intact.
         let host_authored = input
             .generation_id
             .as_deref()
