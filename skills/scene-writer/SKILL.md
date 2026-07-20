@@ -751,6 +751,15 @@ separate:
 After the quality gate passes, update the Bible to reflect what happened. This is
 CRITICAL — skipping this step means future scenes will have stale context.
 
+The manual tools below (`commit_character_state`, `update_relationship`,
+`update_promise_status`, `annotate_scene_beats`, `record_knowledge`, …) are the
+direct path and always valid. Inside an authoring run with `mining_policy`
+enabled, the post-commit `mine canon` step stages these same changes as proposed
+canon deltas the operator ratifies instead of hand-authoring them — hand off to
+the **canon-steward** skill for that reviewed-diff flow. Whether you write canon
+by hand here or ratify mined deltas, the applied changes go through these same
+tools; nothing about them is removed.
+
 If you have several post-scene updates to apply at once, prefer
 `commit_scene_changes`. It batches character state commits, canonical fact
 registration, and relationship updates while returning per-item errors instead

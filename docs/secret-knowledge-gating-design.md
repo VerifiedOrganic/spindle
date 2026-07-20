@@ -1,7 +1,26 @@
 # Secret knowledge gating — circle-of-trust design
 
-**Status:** design draft (no implementation yet). Every code reference verified on branch
-`feat/automated` during the P0 evolution build (post-`eb3f92f` working tree).
+**Status:** IMPLEMENTED (NOW + NEXT-5/6) — the circle-of-trust gate has landed on
+`feat/automated`; `spindle-architecture.md` describes the current shipped behavior and is the
+source of truth. What shipped, per §4's roadmap:
+- **NOW (1–4):** DONE. Migration `V0023` (`canonical_fact.secret` / `concealment_note`,
+  `knowledge_fact.secret_of_fact_id` + index); `SecrecyScope` on `register_canonical_fact`; the
+  `SecretVisibility` resolver + `[SECRETS IN PLAY]` context gate (`format.rs`, `service.rs`); the
+  `secret_leak` deterministic dialogue tier and its scene-writer/supervisor/continuity-editor
+  skill guidance.
+- **NEXT-5 (deep tier):** DONE — the model-backed behavioral `secret_leak` tier
+  (`deep_secret_behavioral_leak_issues` in `service.rs`), rating-gated with honest-skip.
+- **NEXT-6 (save-package reveal linking):** DONE — `save_scene_draft` / `authoring_save_scene_draft`
+  carry `knowledge_learned` entries with `secret_of_fact_id`, pre-flight-validated before write.
+- **NEXT-7 (reveal-aware briefing):** NOT BUILT. No plan-targeted "this scene MAY reveal X to Y —
+  write the reveal" envelope flip exists; the shipped envelope only lists the *current* circle at
+  the cursor (withhold / present-and-unaware / POV-only variants) and expands the circle *after* a
+  reveal is recorded. This remains open.
+- **LATER (8–9):** NOT BUILT. Mining-suggested secrecy, secrecy on world rules / relationship
+  facts, and belief/deception modeling are all still open.
+
+Original code references verified on branch `feat/automated` during the P0 evolution build
+(post-`eb3f92f` working tree).
 **Mandate:** a fact held in confidence by some characters must not leak into other characters'
 dialogue, behavior, or non-POV narration until the **circle of trust** expands to include them —
 and expansion happens only through an explicit, recorded reveal.

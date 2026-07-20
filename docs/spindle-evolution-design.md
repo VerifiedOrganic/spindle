@@ -1,7 +1,13 @@
 # Spindle evolution — the editorial loop: design & implementation plan
 
-**Status:** design draft (no implementation yet). Every code reference below was verified on
-branch `feat/automated` @ `eb3f92f`.
+**Status:** IMPLEMENTED — phases P0–P6 have all landed on `feat/automated`. This document is now
+the historical design record and rationale for the editorial loop; **`spindle-architecture.md`
+describes the current, shipped behavior** and is the source of truth. Migration numbers, tool
+descriptions, and route names in the sections below are the *design-time* sketch and some diverge
+from what shipped (e.g. the illustrative `canon_delta = V0022` became `V0024`; `revise_policy`
+became `max_revise_attempts`; a `disabled` mining default was chosen over `propose_all`); trust
+the architecture doc, the ADRs under `docs/adr/`, and the migration ledger for exact shipped
+contracts. Original design-time verification was against branch `feat/automated` @ `eb3f92f`.
 **Mandate:** evolve Spindle from *a story bible the operator feeds* into *an editorial system
 that runs the room* — machine-proposed bookkeeping, in-run revision, self-clearing checkpoints,
 a living outline, and an operator console — **without losing a single capability that works

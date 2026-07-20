@@ -439,7 +439,7 @@ impl ToolRouter {
             ),
             tool::<CommitQuantityStateInput, CommitQuantityStateOutput>(
                 "commit_quantity_state",
-                "Record a stamped quantity reading for a subject's measure at a story position (band is the primary signal; amount/unit are optional). A change_reason marks a deliberate large jump as legitimate. Validated against the declared scheme when one exists.",
+                "Record a stamped quantity reading for a subject's measure at a story position (band is the primary signal; amount/unit are optional). A change_reason marks a deliberate large jump as legitimate. Validated against the declared scheme when one exists. Manual path; authoring runs with a mining_policy stage quantity_change deltas that apply through this tool after ratification via decide_canon_deltas.",
             ),
             tool::<DeriveQuantitySchemeFromOverlayInput, DeriveQuantitySchemeFromOverlayOutput>(
                 "derive_quantity_scheme_from_system_overlay",
@@ -638,7 +638,7 @@ impl ToolRouter {
             ),
             tool::<UpdatePromiseStatusInput, UpdatePromiseStatusOutput>(
                 "update_promise_status",
-                "Advance a narrative promise lifecycle",
+                "Advance a narrative promise lifecycle. Manual path; authoring runs with a mining_policy stage promise_payoff_candidate/promise_reinforced deltas that apply through this tool after ratification via decide_canon_deltas.",
             ),
             tool::<CreateCharacterArcInput, CreateCharacterArcOutput>(
                 "create_character_arc",
@@ -679,7 +679,7 @@ impl ToolRouter {
             tool::<PlanChapterInput, PlanChapterOutput>("plan_chapter", "Create a chapter plan"),
             tool::<AnnotateSceneBeatsInput, AnnotateSceneBeatsOutput>(
                 "annotate_scene_beats",
-                "Annotate structural beats for a scene",
+                "Annotate structural beats for a scene. Manual path; authoring runs with a mining_policy stage beat_annotation deltas that apply through this tool after ratification via decide_canon_deltas.",
             ),
             tool::<SaveSummaryInput, SaveSummaryOutput>(
                 "save_summary",
@@ -907,11 +907,11 @@ impl ToolRouter {
             ),
             tool::<CommitCharacterStateInput, CommitCharacterStateOutput>(
                 "commit_character_state",
-                "Append a character state snapshot from a saved scene",
+                "Append a character state snapshot from a saved scene. Manual path; authoring runs with a mining_policy stage character_state deltas that apply through this tool after ratification via decide_canon_deltas.",
             ),
             tool::<UpdateRelationshipInput, UpdateRelationshipOutput>(
                 "update_relationship",
-                "Update trust and tension for one directed relationship",
+                "Update trust and tension for one directed relationship. Manual path; authoring runs with a mining_policy stage relationship_shift deltas that apply through this tool after ratification via decide_canon_deltas.",
             ),
             tool::<ImportManuscriptInput, ImportManuscriptOutput>(
                 "import_manuscript",
@@ -955,7 +955,7 @@ impl ToolRouter {
             ),
             tool::<RecordKnowledgeInput, RecordKnowledgeOutput>(
                 "record_knowledge",
-                "Record canonical knowledge for a character",
+                "Record canonical knowledge for a character. Remains the direct reveal path for circle-of-trust expansion (with secret_of_fact_id + learned_at) alongside the save-draft continuity package and the mined knowledge_learned delta — it is not superseded; those flows apply through this same tool.",
             ),
             tool::<RecordNoteInput, RecordNoteOutput>(
                 "record_note",

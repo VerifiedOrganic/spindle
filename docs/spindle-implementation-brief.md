@@ -133,6 +133,12 @@ the model significantly.
   reports.
 - Canonical knowledge now covers `knowledge_fact` records plus `knows`
   relations, with `future_knowledge` reserved for time-displaced knowledge.
+  `canonical_fact.secret` / `concealment_note` and `knowledge_fact.secret_of_fact_id`
+  (V0023) add the circle-of-trust secret gate.
+- Editorial-loop records (V0024–V0031) add canon-delta and plan-amendment
+  staging queues, authoring-run mining/verify-revise/checkpoint/replan policy
+  columns, the append-only authoring-run event journal, and style-learning
+  edit candidates. See the migration ledger in `docs/spindle-architecture.md`.
 
 Typed contracts remain preferred over loose JSON blobs, even when the model has
 expanded beyond the original v0.1 set.
@@ -174,6 +180,14 @@ currently exposed by the default server profile fall into these groups.
 - drafting loop: `get_scene_context`, `get_chapter_briefing`,
   `save_scene_draft`, `move_scene`, `delete_scene`, `operator_delete_scene`,
   `commit_scene_changes`, `commit_character_state`, `update_relationship`
+- authoring supervisor: `authoring_prepare_run`, `authoring_start_run`,
+  `authoring_status`, `authoring_execute_next`, `authoring_save_scene_draft`,
+  `authoring_record_checkpoint_audit`, `authoring_review_checkpoint`,
+  `authoring_resolve_block`, `authoring_cancel_run`
+- editorial loop (canon mining, living outline, reader artifacts):
+  `mine_scene_canon`, `list_canon_deltas`, `decide_canon_deltas`,
+  `replan_chapter`, `list_plan_amendments`, `decide_plan_amendments`,
+  `compile_manuscript`, `export_recap`, `export_series_bible`
 - writer state and lookup: `get_writer_state`, `get_entity`, `find_entity`,
   `get_character_snapshot`, `list_chapter_scenes`, `list_book_chapters`,
   `record_note`, `update_writer_position`
@@ -215,7 +229,12 @@ for lightweight monitoring.
 - `GET /health` returns server status, the `/mcp` endpoint, and the read-only
   operational endpoint list.
 - `GET /model-routes` returns the current model-route snapshot.
-- `GET /events` streams SSE snapshot events for model-route data only.
+- `GET /events` streams SSE. With no `topic` it streams the model-route
+  snapshot (unchanged); with `?topic=run:<authoring_run_id>` it streams that
+  authoring run's append-only event journal, `seq`-resumable via `Last-Event-ID`
+  (ADR 0002).
+- `/console` serves a read-only operator console (a single embedded HTML page)
+  backed by localhost-only `GET /console/api/*` reads over the service layer.
 
 ## Current cleanup direction
 

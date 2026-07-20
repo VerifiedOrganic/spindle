@@ -155,6 +155,213 @@ but connected:
 `check_consistency` remains the broad audit surface for branch-scoped
 consistency review.
 
+## The authoring-run editorial loop
+
+The authoring supervisor (`spindle-harness`, driven through the `authoring_*`
+MCP tools) runs a bounded per-scene editorial loop, one `authoring_execute_next`
+call per step. The full spine is **draft → verify → revise → commit → mine →
+annotate beats → chapter summary → replan → checkpoint**. The state machine
+lives in `spindle-harness/src/plan.rs` (`NextAction` / `determine_next_action`);
+it only grows — existing phase semantics
+(`pending → draft_saved → changes_committed → beats_annotated`) are unchanged and
+pre-upgrade runs resume unaffected. The current run flow, tool-by-tool, is
+documented in `docs/authoring-supervisor.md`; this section states the shipped
+shape.
+
+The loop's default posture is **hybrid**: for General/Teen/Mature scenes
+`authoring_execute_next` returns a host-draft instruction and the active
+assistant drafts in-chat and saves via `authoring_save_scene_draft` (with its
+required continuity package); `mode: "agent"` opts into full route offload.
+Every automated pass has a host fallback, so a project that configures no routes
+behaves as pure hybrid.
+
+Four of the loop's steps beyond the classic draft/commit/annotate/summary spine
+are **opt-in per run**, each defaulting to off so a run that opts into nothing is
+byte-identical to the pre-evolution flow:
+
+| Run knob (`authoring_start_run`) | Default | Enabled behavior |
+| --- | --- | --- |
+| `mining_policy` | `disabled` | `propose_all` inserts a `mine canon` step between commit and annotate; each committed scene is mined into staged canon deltas (§ staging below). |
+| `max_revise_attempts` | `0` | `1` or `2` inserts a deterministic `verify scene` step after each draft; a finding ≥ `warning` sends the scene back to the same draft route (or the host, in hybrid) as a bounded `revise` before commit. |
+| `checkpoint_policy` | `manual` | `auto_advisory` / `auto_strict` let the harness self-clear a checkpoint in-process on a severity threshold instead of blocking on `await_checkpoint_review`. |
+| `replan_policy` | `disabled` | `propose_all` inserts a `replan future plans` step after each chapter summary; staged plan amendments chase the outline to realized reality (§ staging below). |
+
+Verify is deterministic: it runs the scene-scoped subset
+`spindle_core::models::SCENE_VERIFY_CHECKS` (knowledge_timing, chronology,
+temporal_coherence Tier 1, quantity/currency/affordability, tone,
+content-boundary, secret_leak, canonical-fact consistency, and the prose-drift /
+world-rule / voice / style Phase-4 validators — no model calls; deep/model tiers
+stay checkpoint-scoped for cost). The loop converges or stops: the same finding
+set is never revised twice (an unchanged re-verify parks the scene), and parked
+findings inherit to the checkpoint. Every pass records an **honest** per-scene /
+per-chapter outcome in `authoring_status` (`mine_status`, `verify_status`,
+`replan_status`, `auto_outcome`, …): a skip or error never reads as a clean pass,
+and mining/verify/replan never block the run.
+
+The auto checkpoint policies run the deep `check_consistency`, record the audit,
+run sampled dual-persona reviews via the `review` route, and (under an auto
+policy only) a cumulative reader simulation, then approve iff the deep-consistency
+severity clears the policy threshold (`auto_advisory`: nothing ≥ `warning`;
+`auto_strict`: zero findings). A blocked auto-checkpoint stays `pending_review`,
+so the manual 4-step escape hatch still clears it. Preconditions are enforced at
+`authoring_prepare_run`: an auto policy requires the `review` route resolve
+rating-cleared for every rating in the run's range, and `mining_policy` requires
+the mine-or-review ladder cover every planned rating — an offload gap fails at
+prepare, not mid-run.
+
+## The rating-clearance chokepoint (explicit-content offload)
+
+Every model pass that carries scene prose is dispatched through **one** gate,
+`resolve_cleared_route` in `crates/spindle-adapters/src/ai.rs`, which wraps route
+resolution and additionally verifies the resolved agent's declared `ratings`
+cover the scene's content rating (normalized compare) before any prose leaves the
+process. No call site resolves a prose-bearing route directly. The prose-bearing
+set is the `PROSE_BEARING_ROUTES` constant — `{draft, mine, line_edit,
+reader_sim, review}`. When a route cannot serve a rating the pass **skips
+honestly** (a `pass_skipped` journal event + an honest status/finding), falls back
+to the host, or degrades per the pass's ladder — it is never silently downgraded
+to an uncleared model, and Spindle never rewrites explicit prose to make it
+routable.
+
+Two documented refinements the code carries beyond the naïve "gate by route
+name":
+
+- **Split appendix.** The explicit gate is uniform across all prose-bearing
+  routes, but the *system-prompt appendix* is not: `draft` receives
+  `EXPLICIT_DRAFT_SYSTEM_APPENDIX` (which instructs on-page adult prose), while
+  every other prose-bearing route (miner, auditor, reviewer) receives
+  `EXPLICIT_ANALYSIS_SYSTEM_APPENDIX` instead — the invariant is uniform *gating*,
+  not a uniform prompt (instructing a miner to write adult prose would be wrong).
+- **Two exemptions.** The manuscript-import routes (`IMPORT_ROUTES` =
+  `{import_extract, import_synthesize}`) are deliberately **not** in
+  `PROSE_BEARING_ROUTES`: content ratings do not exist until analysis runs, and
+  import is a direct operator action on the operator's own manuscript, so the
+  guard is an advisory nudge (`import_chair_clearance_advisories`), not gating.
+  The **replan** differ is non-prose-bearing (summaries + metadata only), so no
+  rating clearance applies to it either. The two pre-existing model-backed deep
+  tiers that predate the chokepoint (intra-scene `deep_temporal_coherence_issues`,
+  semantic `deep_world_rule_compliance_issues`) now stamp each scene's rating on
+  their `review` dispatch and honest-skip on `RatingNotCovered`, closing the
+  former `rating: None` bypass.
+
+The normative specification is `docs/spindle-evolution-design.md` §4; a recording
+fake-router contract test pins that no request carrying an explicit scene's prose
+ever reaches an uncleared agent.
+
+## Staging & ratification (canon deltas + plan amendments)
+
+Machine-derived canon never reaches the bible directly — it lands in a staging
+table and is applied only through an explicit operator decision. Two staging
+classes share one lifecycle:
+
+- **Canon deltas** (`canon_delta`, migration V0024; ADR 0001). Each committed
+  scene can be mined (`mine_scene_canon`, or the run's `mine canon` step) into
+  proposed, per-class, evidence-quoted deltas across fourteen classes. Each class
+  maps to **exactly one existing write tool** on apply — mining opens no new write
+  path. The operator lists the ratify queue (`list_canon_deltas`) and decides a
+  batch (`decide_canon_deltas`: apply/reject, optional edit-before-apply, all-or-
+  nothing pre-flight, apply dispatched per class to `register_canonical_fact` /
+  `update_promise_status` / `update_relationship` / `commit_character_state` /
+  `record_knowledge` / `annotate_scene_beats` / `commit_quantity_state` /
+  `update_entity` / the `create_*` tools). Re-mining supersedes a scene's prior
+  `staged` rows; decided rows are history.
+- **Plan amendments** (`plan_amendment`, migration V0029; ADR 0003). After each
+  chapter summary the replan differ compares realized reality against the
+  not-yet-drafted chapters' plans and stages amendment proposals across eight
+  classes, applied through the existing plan write paths
+  (`plan_chapter` / `create_narrative_promise`). The lifecycle mirrors
+  `canon_delta` exactly (`list_plan_amendments` / `decide_plan_amendments`); an
+  **immutability guard** rejects any amendment whose target chapter already has a
+  drafted scene at apply time (the outline chases the story, never the reverse),
+  and applying snapshots the prior plan into `prior_state` and bumps
+  `chapter_plan.plan_revision` so the outline keeps recoverable history.
+
+Default policy for both is **propose-only** — nothing auto-applies. Canon deltas
+support an opt-in per-class `auto_accept`, but `entity_candidate` and any delta
+carrying `secret_of_fact_id` are excluded unconditionally (circle expansion is
+always a human decision). Plan amendments have **no** auto-accept at all, not even
+as policy. Both class vocabularies are **one-way doors** fixed by their ADRs
+(0001, 0003) — renames/reshapes strand staged rows and break decided-audit replay.
+The `canon-steward` skill teaches both ratification workflows.
+
+## Circle-of-trust secrets
+
+A canonical fact can be declared **secret** (`register_canonical_fact { secrecy:
+{ holder_ids, concealment_note? } }`, migration V0023): `canonical_fact.secret`
+plus one `knowledge_fact` row per holder linked back via
+`knowledge_fact.secret_of_fact_id`. The circle of trust is thereafter **derived,
+never duplicated** — `circle(fact)` is the set of characters with a linked
+knowledge row — and is cursor-aware via each row's `learned_at`. Full design and
+non-goals: `docs/secret-knowledge-gating-design.md`.
+
+Three enforcement surfaces:
+
+- **Context gate.** A single `SecretVisibility` resolver (`format.rs`, called by
+  the assemblers in `service.rs`) enforces one rule per scene: if no circle member
+  is present the fact is **withheld** from every context carrier (hard
+  constraints, subject snapshots, knowledge briefing, semantic recall, digest
+  open-threads); if a circle member is present it renders in a non-truncatable
+  `[SECRETS IN PLAY]` hard-constraint block naming who knows, who is present and
+  unaware, and (POV-only variant) that narration may carry private awareness while
+  dialogue and others' behavior must not. A reveal is `record_knowledge` (or a
+  `knowledge_learned` save-package entry / mined delta) with `secret_of_fact_id`
+  set; it expands the circle from that placement forward and never leaks backward.
+- **`secret_leak` audit** — the audience-direction complement to
+  `knowledge_timing`. A deterministic dialogue-attribution tier always runs; a
+  model-backed behavioral tier (`deep_secret_behavioral_leak_issues`) runs under
+  `deep_check`, rating-gated through the chokepoint with honest-skip.
+- **Reader-visibility rule for reader artifacts** (below) is deliberately stricter
+  than the character-facing context gate.
+
+## Run journal, SSE & operator console
+
+Each authoring run appends an **append-only event journal** (`authoring_run_event`,
+migration V0027; ADR 0002): one row per observable transition, written *after* the
+state change commits (a journal-write error logs at `warn` and never fails the run
+step). Payloads carry **ids, artifact paths, counts, and enums only — never prose,
+fact text, evidence, or model output** — so the stream is safe to leave open on a
+shared screen. The kind vocabulary and payload shapes are a **one-way door** fixed
+by ADR 0002; consumers must ignore unknown kinds/keys. `authoring_status` (the run
+tables) remains the source of truth; the journal is the timeline view.
+
+The journal streams over the existing HTTP surface at
+`GET /events?topic=run:<authoring_run_id>` (SSE `id` = `seq`, `event` = kind,
+`data` = payload JSON), replayed from `Last-Event-ID`+1 then followed live;
+`/events` with no topic is the unchanged model-routes snapshot.
+
+The **read-only operator console v1** (evolution §3.7) is served at `/console`
+when HTTP mode is on (`SPINDLE_HTTP_ADDR`): a single embedded HTML page (no build
+step, no external requests) that reads run status, the compiled manuscript, and
+the staged canon-delta / plan-amendment ratify queues through localhost-only
+`GET /console/api/*` service reads, and follows a run's journal live over the SSE
+topic above. It never mutates (I5); ratification stays in the `decide_*` tools.
+
+## Craft evaluation layer
+
+Two deep, checkpoint-scoped craft passes ride the same deep-check / honest-skip
+pattern as `promise_payoff_detection`:
+
+- **`scene_purpose_fulfillment`** (`check_consistency` deep tier) asks whether a
+  drafted scene accomplishes its chapter-plan `purpose` field; a `fulfilled:false`
+  verdict is one advisory `info` finding (purpose drift is often the story
+  improving, not breaking), rating-gated per scene with honest-skip.
+- **Cumulative reader simulation** runs under an auto checkpoint policy: a persona
+  derived from the reader contract reads the checkpoint range's chapters in order
+  with rolling memory (`reader-sim-notes.json` per run) and reports per-chapter
+  engagement. It is **enrichment, not a gate** — concerns never fold into the
+  approve/block verdict — and is fully rating-gated via the `reader_sim` route
+  (falling back to `review`) with honest-skip.
+
+**Style learning from operator edits** (migration V0031, opt-in per project via
+`project.style_learning`) captures the before/after pair when an operator re-saves
+an agent-drafted scene with changed prose as a *style-edit candidate* feeding the
+existing `preview_refresh_style_profile` → `refresh_style_profile` review flow —
+no new tools, nothing enters a profile without an explicit refresh, and
+explicit-rated candidates are withheld unless the `style_analyze` route is
+explicit-cleared. Provenance across the domain is modeled by the
+`spindle_core::provenance::Provenance` vocabulary (scene / chapter / book / file /
+asserted-by-author / imported / derived), which records where a value came from.
+
 ## Canonical fact model in practice
 
 Canonical facts are active architecture work. Treat the canonical-fact
@@ -246,9 +453,34 @@ layer is in `docs/continuity-timing-design.md`.
 
 ## Voice drift and retcon checks
 
-Voice-drift and retcon/reachability checks are planned continuity domains.
-Treat these as target architecture unless your current branch explicitly ships
-the corresponding DTOs and tool outputs.
+Voice-drift (`voice_drift`) and retcon/reachability (`retcon_reachability`) are
+shipped Phase-4 validators (`crates/spindle-adapters/src/sqlite/validators.rs`),
+cached per `scene_text_hash` + context hash like the other Phase-4 validators and
+run by default in `check_consistency`. `voice_drift` is also in the scene-scoped
+`SCENE_VERIFY_CHECKS` subset the in-run verify step uses. The `continuity-editor`
+skill documents both alongside the rest of the check catalog.
+
+## Migration ledger
+
+SQLite migrations are the source of truth for the schema
+(`crates/spindle-adapters/migrations/`, applied in order; every column added by
+the evolution work is nullable or defaulted so pre-upgrade databases and runs
+resume unchanged). The continuity and editorial-loop migrations:
+
+| Migration | Adds |
+| --- | --- |
+| V0020 | `project_quantity_scheme` + append-only `quantity_state` (money/progression bands) |
+| V0021 | `scene.location_id` (spatial + temporal grounding) |
+| V0022 | narrative-convergence audit fields (plot-line connected ids, conflict `escalation_demonstrated`, pacing-curve `intensity_points`) |
+| V0023 | circle-of-trust secrets (`canonical_fact.secret` / `concealment_note`, `knowledge_fact.secret_of_fact_id`) |
+| V0024 | `canon_delta` staging queue (ADR 0001) |
+| V0025 | authoring-run `mining_policy` + per-scene `mine_status`/`mine_detail` |
+| V0026 | authoring-run `max_revise_attempts` + per-scene `verify_status`/`revise_attempts` |
+| V0027 | `authoring_run_event` append-only journal (ADR 0002) |
+| V0028 | authoring-run `checkpoint_policy` + per-checkpoint auto outcome |
+| V0029 | `plan_amendment` staging queue + `chapter_plan.plan_revision` (ADR 0003) |
+| V0030 | authoring-run `replan_policy` + per-chapter `replan_status`/`replan_detail` |
+| V0031 | style-learning-from-edits (`project.style_learning` + edit candidates) |
 
 ## Where to make changes
 
@@ -295,3 +527,15 @@ Run this sequence when you start a new implementation task.
 ## Related docs
 
 - `docs/spindle-implementation-brief.md`: broader implementation snapshot.
+- `docs/authoring-supervisor.md`: the current authoring-run flow, tool-by-tool
+  (policies, staging hand-offs, journal, reader-sim).
+- `docs/spindle-evolution-design.md`: the historical design record and rationale
+  for the editorial loop (P0–P6, all landed) — this architecture doc supersedes
+  it for current behavior.
+- `docs/secret-knowledge-gating-design.md`: the circle-of-trust design (NOW +
+  NEXT-5/6 landed; NEXT-7 reveal-aware briefing and LATER items still open).
+- `docs/adr/0001-canon-delta-classes.md`, `0002-authoring-run-event-journal.md`,
+  `0003-plan-amendment-classes.md`: the one-way-door contracts (delta/amendment
+  class vocabularies, journal kinds/payloads) referenced above.
+- `docs/continuity-quantity-design.md`, `docs/continuity-timing-design.md`: the
+  quantity and temporal continuity spine the editorial loop builds on.

@@ -122,6 +122,44 @@ underlying tool calls for you.
 Drive that loop across chapters and Spindle keeps the story bible
 consistent.
 
+## The authoring supervisor
+
+Once you've planned a stretch of chapters, the `authoring-supervisor` skill can
+run the whole editorial loop for you — one bounded step at a time, with the run
+state persisted in SQLite so it resumes cleanly after any interruption. The full
+spine is **draft → verify → revise → commit → mine → annotate → summarize →
+replan → checkpoint**, and everything past the classic draft/commit loop is
+opt-in per run, off by default:
+
+- **Canon mining** (`mining_policy`) turns each committed scene's prose into
+  *proposed* canon deltas — evidence-quoted, per-class change proposals you
+  ratify as a reviewed diff instead of hand-authoring bookkeeping. The
+  `canon-steward` skill runs that ratify queue.
+- **In-run verify/revise** (`max_revise_attempts`) runs deterministic
+  scene-scoped continuity checks right after a draft and bounces warnings back to
+  the drafter while the context is hot, instead of letting them pile up as
+  checkpoint debt.
+- **Self-clearing checkpoints** (`checkpoint_policy`) let the supervisor run the
+  deep consistency check, sampled dual-persona reviews, and a cumulative reader
+  simulation, then clear a clean checkpoint unattended — or block with the full
+  report otherwise. `manual` stays the default.
+- **A living outline** (`replan_policy`) compares what actually got drafted
+  against the not-yet-drafted chapters' plans and stages plan amendments you
+  ratify — the outline chases the story, never the reverse.
+
+Every model pass that touches your prose is dispatched through a single
+rating-clearance gate: a scene's prose is never sent to a model whose configured
+agent hasn't declared that scene's content rating — it skips honestly instead.
+Nothing machine-derived reaches your bible without an explicit ratification step.
+
+**Operator console.** In HTTP mode (`SPINDLE_HTTP_ADDR`), Spindle serves a
+read-only console at `/console` — a single embedded page that shows run status,
+the compiled manuscript, and the staged ratify queues, and follows a run's
+event journal live. It reads only; ratification stays in the tools.
+
+See [`docs/authoring-supervisor.md`](docs/authoring-supervisor.md) for the full
+flow.
+
 ## Embedded skills
 
 Spindle ships writing skills your AI client can load directly:
@@ -134,6 +172,7 @@ Spindle ships writing skills your AI client can load directly:
 - `worldbuilder` — develop locations, factions, rules, lore
 - `plot-architect` — structure, pacing, conflicts, narrative promises
 - `continuity-editor` — catch contradictions
+- `canon-steward` — ratify the canon deltas and plan amendments mined from drafted scenes
 - `revision-manager` — branch, compare, and revise
 - `editor` — developmental and line edits
 - `manuscript-importer` — ingest an existing draft
@@ -158,6 +197,9 @@ Spindle's MCP surface gives your AI client tools for:
   alternatives, diffs, merges
 - **Analysis** — consistency checks, bible search, dual-persona editorial
   review, canonical fact extraction
+- **Authoring supervisor** — resumable multi-chapter drafting runs with opt-in
+  canon mining, in-run verify/revise, self-clearing checkpoints, and a living
+  outline, plus a staged canon-delta / plan-amendment ratification flow
 - **Import** — full manuscript ingestion with entity extraction and bible
   hydration
 - **Export** — EPUB output, bible export, preflight checks
@@ -192,7 +234,8 @@ Both render as styled XHTML `div` elements in exported EPUB files.
   Bible search. See [`docs/spindle-agent-config.md`](docs/spindle-agent-config.md).
 - **HTTP mode.** For multi-client or networked setups, run with
   `SPINDLE_HTTP_ADDR=127.0.0.1:8787` to expose the streamable HTTP MCP
-  transport at `/mcp`. Currently experimental.
+  transport at `/mcp`, a run event stream at `/events`, and the read-only
+  operator console at `/console`. Currently experimental.
 
 ## Under the hood
 
