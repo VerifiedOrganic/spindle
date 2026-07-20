@@ -136,6 +136,7 @@ use spindle_core::subject_snapshot::SubjectSnapshot as EntitySubjectSnapshot;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::json_utils::flatten_record_ids;
+use crate::run_journal::{self, RunJournal};
 use spindle_harness::artifacts::{
     ArtifactStore, ChapterSummaryArtifact, CheckpointReportArtifact,
     GeneratedChapterSummaryPackage, GeneratedScenePackage, SceneGenerationArtifact,
@@ -1721,8 +1722,11 @@ impl ToolRouter {
                 .await
             }
             "authoring_save_scene_draft" => {
+                // Box::pin: grown by the journal emitters; keep call_tool below
+                // the 2MB tokio worker stack (same precedent as the other
+                // authoring handlers).
                 self.invoke(arguments, |input| {
-                    self.handle_authoring_save_scene_draft(input)
+                    Box::pin(self.handle_authoring_save_scene_draft(input))
                 })
                 .await
             }
@@ -1733,8 +1737,9 @@ impl ToolRouter {
                 .await
             }
             "authoring_review_checkpoint" => {
+                // Box::pin: grown by the journal emitters (see above).
                 self.invoke(arguments, |input| {
-                    self.handle_authoring_review_checkpoint(input)
+                    Box::pin(self.handle_authoring_review_checkpoint(input))
                 })
                 .await
             }
@@ -1745,8 +1750,11 @@ impl ToolRouter {
                 .await
             }
             "authoring_cancel_run" => {
-                self.invoke(arguments, |input| self.handle_authoring_cancel_run(input))
-                    .await
+                // Box::pin: grown by the journal emitter (see above).
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_authoring_cancel_run(input))
+                })
+                .await
             }
             "configure_agents" => match parse_arguments::<ConfigureAgentsInput>(arguments) {
                 Ok(input) => match self.service.configure_agents(input) {
@@ -2740,6 +2748,23 @@ impl ToolRouter {
         repo.save_authoring_run(run, chapters, scenes, checkpoints)
             .await?;
 
+        // Journal: the run persisted (ADR D2 `run_started`). Emitted AFTER the
+        // state change commits; a journal error never fails start_run (D3.3).
+        RunJournal::new(repo)
+            .emit(
+                &run_id,
+                "run_started",
+                run_journal::run_started_payload(
+                    input.book_number,
+                    input.start_chapter,
+                    end_chapter,
+                    None,
+                    harness_state.mining_policy.as_deref(),
+                    harness_state.max_revise_attempts,
+                ),
+            )
+            .await;
+
         Ok(AuthoringStartRunOutput {
             run_id: run_id.clone(),
             status: "active".to_string(),
@@ -2982,6 +3007,55 @@ impl ToolRouter {
                     );
                     repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
                         .await?;
+
+                    // Journal (ADR D2): a genuine run-status transition persisted
+                    // WITHOUT executing a step. Diff-derived from prev vs new
+                    // status; emitted AFTER the save commits (D3.3). An
+                    // AwaitCheckpointReview block is a `checkpoint_blocked`;
+                    // Complete is `run_completed`; any other block is
+                    // `run_blocked`.
+                    let journal = RunJournal::new(repo);
+                    match &outcome.next_action {
+                        NextAction::AwaitCheckpointReview {
+                            start_chapter,
+                            end_chapter,
+                            ..
+                        } => {
+                            journal
+                                .emit(
+                                    &run_id,
+                                    "checkpoint_blocked",
+                                    run_journal::checkpoint_blocked_payload(
+                                        *start_chapter,
+                                        *end_chapter,
+                                        "await_checkpoint_review",
+                                    ),
+                                )
+                                .await;
+                        }
+                        NextAction::Complete => {
+                            journal
+                                .emit(
+                                    &run_id,
+                                    "run_completed",
+                                    run_journal::run_status_payload(None),
+                                )
+                                .await;
+                        }
+                        _ => {
+                            let reason = match &outcome.next_action {
+                                NextAction::AwaitResearch { .. } => "await_research",
+                                _ => "blocked",
+                            };
+                            journal
+                                .emit(
+                                    &run_id,
+                                    "run_blocked",
+                                    run_journal::run_status_payload(Some(reason)),
+                                )
+                                .await;
+                        }
+                    }
                 }
                 return Ok(AuthoringExecuteNextOutput {
                     run_id: run_id.clone(),
@@ -3185,6 +3259,19 @@ impl ToolRouter {
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
 
+        // Journal (ADR D2): step events derived from the executed action + the
+        // committed after-state, plus any run-status transition. Emitted AFTER
+        // the save commits (D3.3); a journal error never fails the step.
+        authoring_emit_step_events(
+            repo,
+            &run_id,
+            &action_to_execute,
+            &exec_res.state,
+            &run.status,
+            &final_status,
+        )
+        .await;
+
         Ok(AuthoringExecuteNextOutput {
             run_id: run_id.clone(),
             next_action: updated_outcome.next_action.to_string(),
@@ -3334,11 +3421,14 @@ impl ToolRouter {
         // so the bounded budget is honored. Any other prior verify state (clean,
         // parked, error, or none) leaves the counters untouched — a first save,
         // or a save after the loop already converged, must not spend budget.
-        if live_scene.verify_status.as_deref() == Some("findings") {
+        let host_revision_attempt = if live_scene.verify_status.as_deref() == Some("findings") {
             live_scene.revise_attempts += 1;
             live_scene.verify_status = None;
             live_scene.verify_detail = None;
-        }
+            Some(live_scene.revise_attempts)
+        } else {
+            None
+        };
         live_scene.phase = ScenePhase::DraftSaved;
         live_scene.scene_id = Some(save_output.scene_id.clone());
         live_scene.scene_artifact_path = Some(artifact_rel.clone());
@@ -3350,6 +3440,42 @@ impl ToolRouter {
             map_harness_to_records(&run_id, &harness_state, &run.status, Some(run.created_at));
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
+
+        // Journal (ADR D2, emitted AFTER the save commits — D3.3). The host path
+        // always persists a draft; a re-save after a `findings` verify is ALSO
+        // the host's revision, so emit `scene_revised` in that case. Ordering:
+        // draft first, then revised (the revision is a property of this save).
+        let journal = RunJournal::new(repo);
+        journal
+            .emit(
+                &run_id,
+                "scene_drafted",
+                run_journal::scene_drafted_payload(
+                    input.chapter_number,
+                    input.scene_order,
+                    &save_output.scene_id,
+                    "host",
+                ),
+            )
+            .await;
+        if let Some(attempt) = host_revision_attempt {
+            journal
+                .emit(
+                    &run_id,
+                    "scene_revised",
+                    run_journal::scene_revised_payload(
+                        input.chapter_number,
+                        input.scene_order,
+                        &save_output.scene_id,
+                        attempt,
+                        // The host authored the revision off the listed findings;
+                        // the directive count is not re-plumbed here (0 = "count
+                        // not recorded on the host path" — additive, prose-free).
+                        0,
+                    ),
+                )
+                .await;
+        }
 
         Ok(AuthoringSaveSceneDraftOutput {
             run_id,
@@ -3997,6 +4123,47 @@ impl ToolRouter {
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
 
+        // Journal (ADR D2): the operator review completed and persisted. Emit
+        // `checkpoint_reviewed`, then the actual run-status transition it caused
+        // (diff prev vs final): review of the final checkpoint drives the run
+        // straight to `completed`; a mid-run checkpoint review unblocks it to
+        // `active` (`run_resumed`). Emitted AFTER the save commits (D3.3).
+        let journal = RunJournal::new(repo);
+        journal
+            .emit(
+                &run_id,
+                "checkpoint_reviewed",
+                run_journal::checkpoint_reviewed_payload(
+                    input.start_chapter,
+                    input.end_chapter,
+                    input.directives.len(),
+                ),
+            )
+            .await;
+        if run.status != final_status {
+            match final_status {
+                "completed" => {
+                    journal
+                        .emit(
+                            &run_id,
+                            "run_completed",
+                            run_journal::run_status_payload(None),
+                        )
+                        .await;
+                }
+                "active" if run.status == "blocked" || run.status == "paused" => {
+                    journal
+                        .emit(
+                            &run_id,
+                            "run_resumed",
+                            run_journal::run_status_payload(None),
+                        )
+                        .await;
+                }
+                _ => {}
+            }
+        }
+
         Ok(AuthoringReviewCheckpointOutput {
             run_id,
             message,
@@ -4110,6 +4277,15 @@ impl ToolRouter {
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
 
+        // Journal (ADR D2): a genuine status transition into `paused`. Only emit
+        // when the status actually changed (diff prev vs new — not on a no-op
+        // re-pause). Emitted AFTER the save commits (D3.3).
+        if run.status != status {
+            RunJournal::new(repo)
+                .emit(&run_id, "run_paused", run_journal::run_status_payload(None))
+                .await;
+        }
+
         let message = format!("Successfully paused authoring run {}", run_id);
         Ok(AuthoringCancelRunOutput {
             run_id,
@@ -4202,6 +4378,267 @@ fn find_harness_scene(
         .scenes
         .iter()
         .find(|scene| scene.scene_order == scene_order)
+}
+
+/// Emit the ADR 0002 D2 journal events for one executed `authoring_execute_next`
+/// step, derived from the executed action + the committed after-state, plus any
+/// run-status transition (prev → new). Called AFTER the run state is persisted
+/// (ADR D3.3); every append goes through [`RunJournal`], so a journaling error
+/// never fails the step.
+///
+/// The step event is keyed off the typed `action` (never a rendered string) and
+/// reads the scene's post-execute status fields (`scene_id`, `verify_status`,
+/// `mine_status`, …) from `after_state`. The run-status event is diff-derived:
+/// it fires only when `prev_status != new_status`, so a run that stays `active`
+/// across a step emits no spurious transition.
+async fn authoring_emit_step_events(
+    repo: &spindle_adapters::sqlite::Repository,
+    run_id: &str,
+    action: &NextAction,
+    after_state: &spindle_harness::state::HarnessState,
+    prev_status: &str,
+    new_status: &str,
+) {
+    let journal = RunJournal::new(repo);
+
+    match action {
+        NextAction::DraftScene {
+            chapter_number,
+            scene_order,
+        } => {
+            // Reaching the executor for a DraftScene means the agent path drafted
+            // it (the host path returns early before executing). Emit the agent
+            // origin; the host origin is emitted from save_scene_draft.
+            if let Some(scene) = find_harness_scene(after_state, *chapter_number, *scene_order)
+                && let Some(scene_id) = scene.scene_id.as_deref()
+            {
+                journal
+                    .emit(
+                        run_id,
+                        "scene_drafted",
+                        run_journal::scene_drafted_payload(
+                            *chapter_number,
+                            *scene_order,
+                            scene_id,
+                            "agent",
+                        ),
+                    )
+                    .await;
+            }
+        }
+        NextAction::VerifyScene {
+            chapter_number,
+            scene_order,
+        } => {
+            if let Some(scene) = find_harness_scene(after_state, *chapter_number, *scene_order)
+                && let Some(scene_id) = scene.scene_id.as_deref()
+                && let Some(status) = scene.verify_status.as_deref()
+            {
+                journal
+                    .emit(
+                        run_id,
+                        "scene_verify_completed",
+                        run_journal::verify_completed_payload(
+                            *chapter_number,
+                            *scene_order,
+                            scene_id,
+                            status,
+                            scene.verify_detail.as_deref(),
+                        ),
+                    )
+                    .await;
+                // A parked/error verify is a skipped revision pass (ADR D2
+                // `pass_skipped`): the detail carries the prose-free reason.
+                if matches!(status, "parked_findings" | "error") {
+                    journal
+                        .emit(
+                            run_id,
+                            "pass_skipped",
+                            run_journal::pass_skipped_payload(
+                                "verify",
+                                Some(*chapter_number),
+                                Some(*scene_order),
+                                scene.verify_detail.as_deref().unwrap_or(status),
+                            ),
+                        )
+                        .await;
+                }
+            }
+        }
+        NextAction::ReviseScene {
+            chapter_number,
+            scene_order,
+            attempt,
+        } => {
+            if let Some(scene) = find_harness_scene(after_state, *chapter_number, *scene_order)
+                && let Some(scene_id) = scene.scene_id.as_deref()
+            {
+                journal
+                    .emit(
+                        run_id,
+                        "scene_revised",
+                        run_journal::scene_revised_payload(
+                            *chapter_number,
+                            *scene_order,
+                            scene_id,
+                            *attempt,
+                            // Post-revise the directives are cleared; the attempt
+                            // count is the durable signal. Directive count is not
+                            // recovered here (0 = not recorded on this path).
+                            0,
+                        ),
+                    )
+                    .await;
+            }
+        }
+        NextAction::CommitSceneChanges {
+            chapter_number,
+            scene_order,
+            scene_id,
+        } => {
+            journal
+                .emit(
+                    run_id,
+                    "scene_committed",
+                    run_journal::scene_ref_payload(*chapter_number, *scene_order, scene_id),
+                )
+                .await;
+        }
+        NextAction::MineScene {
+            chapter_number,
+            scene_order,
+        } => {
+            if let Some(scene) = find_harness_scene(after_state, *chapter_number, *scene_order)
+                && let Some(scene_id) = scene.scene_id.as_deref()
+                && let Some(status) = scene.mine_status.as_deref()
+            {
+                journal
+                    .emit(
+                        run_id,
+                        "scene_mined",
+                        run_journal::scene_mined_payload(
+                            *chapter_number,
+                            *scene_order,
+                            scene_id,
+                            status,
+                            scene.mine_detail.as_deref(),
+                        ),
+                    )
+                    .await;
+                // A skipped/error mine is a skipped pass (ADR D2 `pass_skipped`).
+                if matches!(status, "skipped" | "model_output_rejected" | "error") {
+                    journal
+                        .emit(
+                            run_id,
+                            "pass_skipped",
+                            run_journal::pass_skipped_payload(
+                                "mine",
+                                Some(*chapter_number),
+                                Some(*scene_order),
+                                scene.mine_detail.as_deref().unwrap_or(status),
+                            ),
+                        )
+                        .await;
+                }
+            }
+        }
+        NextAction::AnnotateSceneBeats {
+            chapter_number,
+            scene_order,
+            scene_id,
+        } => {
+            journal
+                .emit(
+                    run_id,
+                    "beats_annotated",
+                    run_journal::scene_ref_payload(*chapter_number, *scene_order, scene_id),
+                )
+                .await;
+        }
+        NextAction::SaveChapterSummary { chapter_number } => {
+            let artifact_path = after_state
+                .chapters
+                .iter()
+                .find(|chapter| chapter.chapter_number == *chapter_number)
+                .and_then(|chapter| chapter.summary_artifact_path.as_deref());
+            journal
+                .emit(
+                    run_id,
+                    "chapter_summarized",
+                    run_journal::chapter_summarized_payload(*chapter_number, artifact_path),
+                )
+                .await;
+        }
+        NextAction::RunCheckpoint {
+            start_chapter,
+            end_chapter,
+        } => {
+            if let Some(checkpoint) = after_state
+                .checkpoint_history
+                .iter()
+                .rev()
+                .find(|cp| cp.start_chapter == *start_chapter && cp.end_chapter == *end_chapter)
+            {
+                let sampled = authoring_checkpoint_sampled_scene_ids(after_state, checkpoint);
+                journal
+                    .emit(
+                        run_id,
+                        "checkpoint_created",
+                        run_journal::checkpoint_created_payload(
+                            *start_chapter,
+                            *end_chapter,
+                            &checkpoint.save_point_id,
+                            &sampled,
+                        ),
+                    )
+                    .await;
+            }
+        }
+        // Non-step actions (Blocked / Await* / Complete) never reach the
+        // executor path that calls this helper — they early-return above.
+        _ => {}
+    }
+
+    // Run-status transition (ADR D2). Diff-derived: only on an actual change.
+    if prev_status != new_status {
+        match new_status {
+            "completed" => {
+                journal
+                    .emit(
+                        run_id,
+                        "run_completed",
+                        run_journal::run_status_payload(None),
+                    )
+                    .await;
+            }
+            "blocked" => {
+                journal
+                    .emit(
+                        run_id,
+                        "run_blocked",
+                        run_journal::run_status_payload(Some("blocked")),
+                    )
+                    .await;
+            }
+            "active" if prev_status == "blocked" || prev_status == "paused" => {
+                journal
+                    .emit(run_id, "run_resumed", run_journal::run_status_payload(None))
+                    .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The sampled scene ids recorded on a checkpoint, for the `checkpoint_created`
+/// payload. Recomputed from the after-state the same way the checkpoint report
+/// samples them (ids only — no prose).
+fn authoring_checkpoint_sampled_scene_ids(
+    state: &spindle_harness::state::HarnessState,
+    checkpoint: &spindle_harness::state::CheckpointRecord,
+) -> Vec<String> {
+    authoring_sample_checkpoint_scene_ids(state, checkpoint.start_chapter, checkpoint.end_chapter)
+        .unwrap_or_default()
 }
 
 fn authoring_scene_indices(
@@ -5393,6 +5830,299 @@ mod tests {
             None,
             Arc::new(ToolSerializationState::default()),
         )
+    }
+
+    /// A fresh repository + a persisted `active` authoring run, for driving the
+    /// journal emitter directly (deterministic step-event trace tests).
+    async fn repo_with_run() -> (tempfile::TempDir, SpindleRepository, String) {
+        use spindle_core::models::{CreateProjectInput, ReaderContract};
+        let temp = tempdir().expect("temp dir");
+        let db = SqlitePool::open(&temp.path().join("trace.db"))
+            .await
+            .expect("db init");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = SpindleRepository::with_model_router(db, data_dir, ModelRouter::local_only());
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "Trace".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let run_id = format!(
+            "authoring_run:{}",
+            ulid::Ulid::new().to_string().to_lowercase()
+        );
+        let now = chrono::Utc::now();
+        repo.save_authoring_run(
+            spindle_adapters::sqlite::records::AuthoringRun {
+                id: run_id.clone(),
+                project_id: project.id.clone(),
+                active_branch_id: branch.id,
+                book_number: 1,
+                start_chapter: 1,
+                end_chapter: 1,
+                checkpoint_interval: 1,
+                last_checkpoint_end_chapter: 0,
+                artifacts_dir: "../artifacts".into(),
+                editorial_directives: Vec::new(),
+                status: "active".into(),
+                created_at: now,
+                updated_at: now,
+                mining_policy: Some("propose_all".into()),
+                max_revise_attempts: Some(1),
+            },
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        (temp, repo, run_id)
+    }
+
+    /// Build a single-scene [`HarnessState`] snapshot with the given per-scene
+    /// status fields, for driving `authoring_emit_step_events`.
+    fn trace_state(
+        scene_id: &str,
+        phase: ScenePhase,
+        verify_status: Option<&str>,
+        verify_detail: Option<&str>,
+        mine_status: Option<&str>,
+        mine_detail: Option<&str>,
+        revise_attempts: i32,
+    ) -> HarnessState {
+        use spindle_harness::state::{ChapterState, ChapterStatus, SceneState};
+        let scene = SceneState {
+            scene_order: 1,
+            location_id: "location:x".into(),
+            phase,
+            scene_id: Some(scene_id.into()),
+            verify_status: verify_status.map(str::to_string),
+            verify_detail: verify_detail.map(str::to_string),
+            mine_status: mine_status.map(str::to_string),
+            mine_detail: mine_detail.map(str::to_string),
+            revise_attempts,
+            ..SceneState::default()
+        };
+        let mut state = HarnessState::from_seed(
+            spindle_harness::state::HarnessSeed {
+                project_id: "project:x".into(),
+                book_number: 1,
+                range: spindle_harness::state::ChapterRange {
+                    start_chapter: 1,
+                    end_chapter: 1,
+                },
+                checkpoint_interval: 1,
+                editorial_directives: Vec::new(),
+                chapters: Vec::new(),
+            },
+            "bible_branch:x".into(),
+        );
+        state.chapters = vec![ChapterState {
+            chapter_number: 1,
+            planned: true,
+            synopsis: "s".into(),
+            pov_character_id: None,
+            status: ChapterStatus::InProgress,
+            scenes: vec![scene],
+            summary_saved: false,
+            summary_artifact_path: None,
+        }];
+        state
+    }
+
+    /// Deterministic full per-scene step-event trace (J3 test 3, revise arm
+    /// included). Drives `authoring_emit_step_events` for the exact NextAction
+    /// sequence a verify+revise+mine scene walks, then asserts the emitted kind
+    /// order — including `scene_verify_completed(findings)` → `scene_revised` →
+    /// `scene_verify_completed(clean)` — and that no step event double-emits.
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_event_trace_covers_verify_revise_mine_sequence() {
+        let (_tmp, repo, run_id) = repo_with_run().await;
+        let scene_id = "scene:trace1";
+
+        // draft (agent)
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::DraftScene {
+                chapter_number: 1,
+                scene_order: 1,
+            },
+            &trace_state(scene_id, ScenePhase::DraftSaved, None, None, None, None, 0),
+            "active",
+            "active",
+        )
+        .await;
+        // verify → findings
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::VerifyScene {
+                chapter_number: 1,
+                scene_order: 1,
+            },
+            &trace_state(
+                scene_id,
+                ScenePhase::DraftSaved,
+                Some("findings"),
+                Some("2 finding(s) at or above warning"),
+                None,
+                None,
+                0,
+            ),
+            "active",
+            "active",
+        )
+        .await;
+        // revise
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::ReviseScene {
+                chapter_number: 1,
+                scene_order: 1,
+                attempt: 1,
+            },
+            &trace_state(scene_id, ScenePhase::DraftSaved, None, None, None, None, 1),
+            "active",
+            "active",
+        )
+        .await;
+        // verify → clean
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::VerifyScene {
+                chapter_number: 1,
+                scene_order: 1,
+            },
+            &trace_state(
+                scene_id,
+                ScenePhase::DraftSaved,
+                Some("clean"),
+                Some("0 finding(s) at or above warning"),
+                None,
+                None,
+                1,
+            ),
+            "active",
+            "active",
+        )
+        .await;
+        // commit
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: scene_id.into(),
+            },
+            &trace_state(
+                scene_id,
+                ScenePhase::ChangesCommitted,
+                Some("clean"),
+                None,
+                None,
+                None,
+                1,
+            ),
+            "active",
+            "active",
+        )
+        .await;
+        // mine → staged
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::MineScene {
+                chapter_number: 1,
+                scene_order: 1,
+            },
+            &trace_state(
+                scene_id,
+                ScenePhase::ChangesCommitted,
+                Some("clean"),
+                None,
+                Some("staged"),
+                Some("staged 1 delta(s)"),
+                1,
+            ),
+            "active",
+            "active",
+        )
+        .await;
+        // annotate
+        authoring_emit_step_events(
+            &repo,
+            &run_id,
+            &NextAction::AnnotateSceneBeats {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: scene_id.into(),
+            },
+            &trace_state(
+                scene_id,
+                ScenePhase::BeatsAnnotated,
+                Some("clean"),
+                None,
+                Some("staged"),
+                None,
+                1,
+            ),
+            "active",
+            "active",
+        )
+        .await;
+
+        let events = repo.list_run_events(&run_id, None, None).await.unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "scene_drafted",
+                "scene_verify_completed",
+                "scene_revised",
+                "scene_verify_completed",
+                "scene_committed",
+                "scene_mined",
+                "beats_annotated",
+            ],
+            "full per-scene step trace, revise arm included, no duplicates"
+        );
+
+        // Verdict discipline: first verify is findings, second is clean.
+        let verifies: Vec<&serde_json::Value> = events
+            .iter()
+            .filter(|e| e.kind == "scene_verify_completed")
+            .map(|e| &e.payload)
+            .collect();
+        assert_eq!(verifies[0]["verdict"], serde_json::json!("findings"));
+        assert_eq!(
+            verifies[0]["finding_counts"]["actionable"],
+            serde_json::json!(2)
+        );
+        assert_eq!(verifies[1]["verdict"], serde_json::json!("clean"));
+
+        // scene_revised carries the attempt; scene_mined the staged count.
+        let revised = events.iter().find(|e| e.kind == "scene_revised").unwrap();
+        assert_eq!(revised.payload["attempt"], serde_json::json!(1));
+        let mined = events.iter().find(|e| e.kind == "scene_mined").unwrap();
+        assert_eq!(mined.payload["mine_status"], serde_json::json!("staged"));
+        assert_eq!(mined.payload["staged_count"], serde_json::json!(1));
+
+        // Dense seqs 1..=N (resume-token integrity).
+        let seqs: Vec<i64> = events.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, (1..=events.len() as i64).collect::<Vec<_>>());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -3254,6 +3254,38 @@ impl<'a> TryFrom<&Row<'a>> for StoredQuantityState {
     }
 }
 
+pub const AUTHORING_RUN_EVENT_COLUMNS: &str =
+    "id, authoring_run_id, seq, kind, payload, created_at";
+
+/// One appended row of the authoring-run event journal (ADR 0002, migration
+/// V0027). Append-only: there is no update/delete path. `payload` carries
+/// ids/paths/counts/enums only — never prose (ADR D3.1). `created_at` is the
+/// stored microsecond [`Timestamp`]; consumers that need ISO-8601 map it at the
+/// boundary (mirrors [`StoredCanonDelta`]).
+#[derive(Debug, Clone)]
+pub struct StoredRunEvent {
+    pub id: String,
+    pub authoring_run_id: String,
+    pub seq: i64,
+    pub kind: String,
+    pub payload: Value,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredRunEvent {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            authoring_run_id: row::text(r, 1)?,
+            seq: row::int(r, 2)?,
+            kind: row::text(r, 3)?,
+            payload: row::json(r, 4)?,
+            created_at: row::time(r, 5)?,
+        })
+    }
+}
+
 pub const CANON_DELTA_COLUMNS: &str = "id, project_id, branch_id, scene_id, \
      authoring_run_id, delta_class, target_id, payload, evidence, confidence, \
      status, decided_at, decided_by, created_at, updated_at";

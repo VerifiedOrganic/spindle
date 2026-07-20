@@ -2,6 +2,7 @@ mod http;
 mod json_utils;
 mod proxy;
 mod resources;
+mod run_journal;
 mod server;
 mod tools;
 

@@ -37,6 +37,43 @@ async fn fresh_service() -> (TempDir, SqliteSpindleService) {
 }
 
 #[tokio::test]
+async fn run_journal_emit_never_fails_the_step_on_journal_error() {
+    // ADR 0002 D3.3: a journal write error logs at warn and returns unit — it
+    // never fails the run step. Injected failure: emit against a run_id that
+    // does not exist, so the FK (authoring_run_event.authoring_run_id REFERENCES
+    // authoring_run(id)) rejects the insert. `emit` must swallow it.
+    use crate::run_journal::{RunJournal, run_started_payload};
+
+    let (_tmp, svc) = fresh_service().await;
+    let journal = RunJournal::new(svc.repository());
+
+    // No panic, no error propagation — emit returns unit even though the
+    // underlying append fails on the missing FK target.
+    journal
+        .emit(
+            "authoring_run:does-not-exist",
+            "run_started",
+            run_started_payload(1, 1, 1, None, None, None),
+        )
+        .await;
+
+    // Sanity: the append itself genuinely fails for this run_id (proving the
+    // emitter swallowed a real error, not a silently-succeeding write).
+    let direct = svc
+        .repository()
+        .append_run_event(
+            "authoring_run:does-not-exist",
+            "run_started",
+            serde_json::json!({}),
+        )
+        .await;
+    assert!(
+        direct.is_err(),
+        "append against a missing run must error (FK); emit must swallow it"
+    );
+}
+
+#[tokio::test]
 async fn mcp_priority_flow_create_project_through_save_scene_draft() {
     let (_tmp, svc) = fresh_service().await;
     let project = svc
@@ -1321,6 +1358,402 @@ agent = "cli-agent-review"
     ct2.cancel();
     server_handle2.await.unwrap();
     crate::remove_addr_file(&data_dir);
+}
+
+/// End-to-end run-event journal (ADR 0002) trace + payload-discipline pin (J3
+/// test 3 + J4). Drives a full run (host draft + mining + in-run verify) to
+/// completion, then:
+///  - asserts the expected per-scene kind order is present with no duplicate
+///    step events, `chapter_summarized` + `checkpoint_created`/`_reviewed`
+///    present, and `run_completed` last;
+///  - asserts a distinctive sentinel embedded in scene prose AND canonical-fact
+///    values appears in ZERO journal payloads (D3.1 no-prose contract);
+///  - asserts every emitted kind is in the ADR D2 vocabulary and seqs are dense
+///    1..=N (D3.4 resume-token integrity).
+///
+/// Env-var free: the one scene is drafted via the host path
+/// (`authoring_save_scene_draft`) so this test does not touch the
+/// process-global `SPINDLE_MODEL_CLI_COMMAND` (which parallel CLI-agent tests
+/// mutate). Mining and the checkpoint dual-persona review run through the
+/// built-in local `review` route (deterministic mock miner), no agent config.
+/// The agent-draft emission and the revise arm (findings -> scene_revised ->
+/// clean) are covered deterministically by
+/// `tools::tests::step_event_trace_covers_verify_revise_mine_sequence`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_journal_full_trace_and_payload_discipline_pin() {
+    use crate::run_journal::is_run_event_kind;
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    // Distinctive sentinel present in prose AND a canonical-fact value; it must
+    // never surface in any journal payload (ADR D3.1). `MOCK_CANON_MINE` in the
+    // prose triggers the built-in local mock miner to stage a canonical_fact.
+    const SENTINEL: &str = "ZZ_PROSE_SENTINEL_QWX";
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("journal.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Journal Trace".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Mara holds the gate.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    // One general scene.
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: "First watch.".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara takes the watch".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::General),
+            purpose: "establishing".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    // Start the run with mining AND in-run verify enabled.
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+        "mining_policy": "propose_all",
+        "max_revise_attempts": 1
+    });
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let run_id = start_res.structured_content.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(run_id.starts_with("authoring_run:"));
+
+    // Background HTTP MCP server for the harness executor (verify/mine ride the
+    // running server's tools).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct1 = ct.clone();
+    let ct2 = ct.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct1))
+            .with_graceful_shutdown(async move { ct2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    let exec_args = serde_json::json!({ "project_id": project.project_id, "run_id": run_id });
+
+    // Host-draft scene 1.1 (prose + a canonical fact carry the sentinel;
+    // MOCK_CANON_MINE triggers the local mock miner).
+    let host_exec = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(host_exec.is_error, Some(false));
+    let host_exec_val = host_exec.structured_content.unwrap();
+    assert!(
+        host_exec_val["message"]
+            .as_str()
+            .unwrap()
+            .contains("Host draft required"),
+        "expected host-draft handoff, got {host_exec_val:?}"
+    );
+    let save_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "Mara stood watch. MOCK_CANON_MINE ZZ_PROSE_SENTINEL_QWX marked the gate.",
+        "summary": "Mara watch",
+        "content_rating": "general",
+        "tone": "grim",
+        "canonical_facts": [{
+            "fact_type": "scene_event",
+            "key": "mara_watch",
+            "value": "Mara watched. ZZ_PROSE_SENTINEL_QWX",
+            "context": "c1s1"
+        }],
+        "beats": [{ "beat_type": "setup", "summary": "Mara keeps watch." }],
+        "continuity_notes": ["No durable canon changes beyond the watch."]
+    });
+    let saved = router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(save_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.is_error, Some(false));
+
+    // Drive execute_next until the run blocks (checkpoint) or completes.
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        assert!(guard < 40, "run did not reach checkpoint/complete in time");
+        let res = router
+            .call_tool(
+                "authoring_execute_next",
+                Some(exec_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap();
+        let val = res.structured_content.unwrap();
+        let status = val["status"].as_str().unwrap();
+        if status == "blocked" || status == "completed" {
+            break;
+        }
+    }
+
+    // Clear the checkpoint gates, then review.
+    let status_args = serde_json::json!({ "project_id": project.project_id, "run_id": run_id });
+    let status_val = router
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let report_rel = status_val["checkpoint_reports"][0]["report_artifact_path"]
+        .as_str()
+        .unwrap();
+    let report_path = data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let sampled_scene_ids: Vec<String> = report_json["sampled_scene_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+
+    let deep_args = serde_json::json!({
+        "project_id": project.project_id,
+        "scope": {
+            "scope_type": "chapter_range",
+            "start_book_number": 1, "start_chapter_number": 1,
+            "end_book_number": 1, "end_chapter_number": 1
+        },
+        "checks": [], "severity_filter": [], "deep_check": true, "subjects": []
+    });
+    let deep = router
+        .call_tool("check_consistency", Some(deep_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let audit_args = serde_json::json!({
+        "project_id": project.project_id, "run_id": run_id,
+        "start_chapter": 1, "end_chapter": 1, "deep_consistency": deep
+    });
+    router
+        .call_tool(
+            "authoring_record_checkpoint_audit",
+            Some(audit_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    for scene_id in &sampled_scene_ids {
+        let review_args = serde_json::json!({ "project_id": project.project_id, "scene_id": scene_id, "rounds": 2 });
+        router
+            .call_tool(
+                "run_dual_persona_review",
+                Some(review_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap();
+    }
+    let review_args = serde_json::json!({
+        "project_id": project.project_id, "run_id": run_id,
+        "start_chapter": 1, "end_chapter": 1, "directives": ["Keep it dark."]
+    });
+    router
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    // Final execute_next confirms completion.
+    let final_res = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        final_res.structured_content.unwrap()["next_action"].as_str(),
+        Some("complete")
+    );
+
+    ct.cancel();
+    server.await.unwrap();
+    crate::remove_addr_file(&data_dir);
+
+    // -- Assert on the journal --------------------------------------------------
+    let events = svc
+        .repository()
+        .list_run_events(&run_id, None, None)
+        .await
+        .unwrap();
+    assert!(!events.is_empty(), "run must have journalled events");
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+
+    // Vocabulary pin (ADR D2): every emitted kind is a known kind.
+    for kind in &kinds {
+        assert!(
+            is_run_event_kind(kind),
+            "unknown journal kind emitted: {kind}"
+        );
+    }
+    // Dense seqs 1..=N (ADR D3.4 resume-token integrity).
+    let seqs: Vec<i64> = events.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, (1..=events.len() as i64).collect::<Vec<_>>());
+
+    // Expected kinds present, in order, no duplicate step events for the scene.
+    let idx = |k: &str| kinds.iter().position(|x| *x == k);
+    assert_eq!(kinds.first(), Some(&"run_started"));
+    assert_eq!(
+        kinds.last(),
+        Some(&"run_completed"),
+        "run_completed is last"
+    );
+    for k in [
+        "scene_drafted",
+        "scene_verify_completed",
+        "scene_committed",
+        "scene_mined",
+        "beats_annotated",
+        "chapter_summarized",
+        "checkpoint_created",
+        "checkpoint_reviewed",
+    ] {
+        assert!(idx(k).is_some(), "missing expected kind {k}: {kinds:?}");
+    }
+    // Ordering within the scene lifecycle.
+    assert!(idx("scene_drafted") < idx("scene_verify_completed"));
+    assert!(idx("scene_verify_completed") < idx("scene_committed"));
+    assert!(idx("scene_committed") < idx("scene_mined"));
+    assert!(idx("scene_mined") < idx("beats_annotated"));
+    assert!(idx("beats_annotated") < idx("chapter_summarized"));
+    assert!(idx("chapter_summarized") < idx("checkpoint_created"));
+    // No duplicate one-per-scene step events.
+    for k in [
+        "scene_drafted",
+        "scene_committed",
+        "scene_mined",
+        "beats_annotated",
+    ] {
+        assert_eq!(
+            kinds.iter().filter(|x| **x == k).count(),
+            1,
+            "step event {k} must emit exactly once for the single scene: {kinds:?}"
+        );
+    }
+
+    // Payload-discipline pin (ADR D3.1): the sentinel appears in ZERO payloads.
+    for event in &events {
+        let payload = serde_json::to_string(&event.payload).unwrap();
+        assert!(
+            !payload.contains(SENTINEL),
+            "sentinel leaked into {} payload: {payload}",
+            event.kind
+        );
+        assert!(
+            !payload.contains("MOCK_CANON_MINE"),
+            "mine evidence leaked into {} payload: {payload}",
+            event.kind
+        );
+    }
+
+    // The mined delta genuinely staged (proving mining ran and the sentinel/
+    // evidence it carries was excluded from the journal, not merely never mined).
+    let mined = events.iter().find(|e| e.kind == "scene_mined").unwrap();
+    assert_eq!(mined.payload["mine_status"], serde_json::json!("staged"));
+    assert_eq!(mined.payload["staged_count"], serde_json::json!(1));
 }
 
 #[tokio::test]

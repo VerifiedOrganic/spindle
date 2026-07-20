@@ -156,3 +156,36 @@ that explicitly in `continuity_notes`.
 In that mode, Spindle routes non-explicit scenes through the configured `draft`
 route too. Do not use it for normal interactive writing unless the operator
 asks for full offload.
+
+## Run journal (observability)
+
+Each authoring run appends an **append-only event journal** as it advances —
+one row per observable transition (draft, verify, revise, commit, mine, annotate,
+chapter summary, checkpoint create/block/review, and run status changes). The
+journal is the *timeline view*; `authoring_status` (the run tables) remains the
+source of truth. A journaling error never fails a run step — it logs at `warn`
+and the run proceeds — so the journal is an honest-but-not-guaranteed-complete
+record.
+
+The kind vocabulary and payload shapes are a one-way door, fixed by
+[ADR 0002](adr/0002-authoring-run-event-journal.md) (§D2 lists every kind and its
+payload keys). Payloads carry **ids, artifact paths, counts, and enums only —
+never prose, fact text, evidence, or model output** (ADR §D3.1), so the stream
+is safe to leave open on a shared screen. Consumers must ignore unknown kinds and
+unknown payload keys (additive-evolution rule, ADR §D3.2); the P3/P4 kinds in the
+ADR table are reserved and do not occur until those phases land.
+
+### Streaming over SSE
+
+The journal streams over the existing HTTP surface at
+`GET /events?topic=run:<authoring_run_id>`:
+
+- Each SSE frame carries `id` = the event `seq`, `event` = the kind, and `data`
+  = the payload JSON.
+- Replay resumes exactly from `Last-Event-ID`: the server replays rows with
+  `seq > Last-Event-ID`, then follows live appends (polled on the snapshot
+  cadence). `seq` is dense and 1-based per run, so resume is exact.
+- `GET /events` with **no** `topic` param is unchanged: it streams the existing
+  model-routes snapshot. A malformed topic (unknown scheme or an id that is not a
+  well-formed `authoring_run:` id) returns `400`. A well-formed run id with no
+  events is a valid empty stream (no existence check).
