@@ -304,6 +304,7 @@ mod tests {
             updated_at: now,
             mining_policy: None,
             max_revise_attempts: None,
+            checkpoint_policy: None,
         };
         service
             .repository()

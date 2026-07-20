@@ -248,6 +248,30 @@ pub fn checkpoint_created_payload(
     })
 }
 
+/// `checkpoint_auto_approved` payload (ADR D2, reserved kind activated in P3).
+/// Keys: `start_chapter, end_chapter, policy, finding_counts` — the policy under
+/// which the automation self-cleared, and the deep-consistency severity counts
+/// that satisfied the threshold (all zero at or above the policy's floor, by
+/// construction — auto_advisory tolerates `info`, auto_strict tolerates none).
+/// `finding_counts` is a `{severity: n}` map, ids/counts only (ADR D3.1).
+pub fn checkpoint_auto_approved_payload(
+    start_chapter: i32,
+    end_chapter: i32,
+    policy: &str,
+    finding_counts: &std::collections::BTreeMap<String, i64>,
+) -> Value {
+    let mut counts = Map::new();
+    for (severity, count) in finding_counts {
+        counts.insert(severity.clone(), json!(count));
+    }
+    json!({
+        "start_chapter": start_chapter,
+        "end_chapter": end_chapter,
+        "policy": policy,
+        "finding_counts": Value::Object(counts),
+    })
+}
+
 /// `checkpoint_blocked` payload (ADR D2). `reason` reuses a prose-free
 /// enum/status word (e.g. `"await_checkpoint_review"`).
 pub fn checkpoint_blocked_payload(start_chapter: i32, end_chapter: i32, reason: &str) -> Value {
@@ -363,6 +387,24 @@ mod tests {
         );
         assert_eq!(parked["verdict"], json!("findings"));
         assert_eq!(parked["finding_counts"]["actionable"], json!(2));
+    }
+
+    #[test]
+    fn checkpoint_auto_approved_carries_policy_and_severity_counts() {
+        let mut counts = std::collections::BTreeMap::new();
+        counts.insert("error".to_string(), 0);
+        counts.insert("warning".to_string(), 0);
+        counts.insert("info".to_string(), 2);
+        let payload = checkpoint_auto_approved_payload(1, 3, "auto_advisory", &counts);
+        let obj = payload.as_object().unwrap();
+        assert_eq!(obj["start_chapter"], json!(1));
+        assert_eq!(obj["end_chapter"], json!(3));
+        assert_eq!(obj["policy"], json!("auto_advisory"));
+        assert_eq!(obj["finding_counts"]["error"], json!(0));
+        assert_eq!(obj["finding_counts"]["warning"], json!(0));
+        assert_eq!(obj["finding_counts"]["info"], json!(2));
+        // The kind is a member of the ADR D2 vocabulary (activated reserved kind).
+        assert!(is_run_event_kind("checkpoint_auto_approved"));
     }
 
     #[test]

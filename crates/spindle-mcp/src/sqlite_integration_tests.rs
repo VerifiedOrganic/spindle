@@ -2205,6 +2205,150 @@ agent = "tame-mine"
     );
 }
 
+/// Like [`call_prepare`] but threads a `checkpoint_policy` so the review-route
+/// preflight (evolution §3.3 K2) runs.
+async fn call_prepare_with_checkpoint_policy(
+    router: &crate::tools::ToolRouter,
+    project_id: &str,
+    checkpoint_policy: &str,
+) -> serde_json::Value {
+    let prep_args = serde_json::json!({
+        "project_id": project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_policy": checkpoint_policy,
+    });
+    let res = router
+        .call_tool(
+            "authoring_prepare_run",
+            Some(prep_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.is_error, Some(false));
+    res.structured_content.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_with_auto_advisory_blocks_when_review_route_lacks_explicit_coverage() {
+    // K2 test 2: the draft agent covers explicit (draft preflight passes), but
+    // the `review` route is overridden by an external agent that covers only
+    // general — so an auto_advisory run's checkpoint automation (which runs its
+    // sampled dual-persona reviews AND deep pass through `review`) cannot serve
+    // the planned explicit scene. prepare must push a missing_requirements entry
+    // naming policy + route review + rating explicit (I8: fail at prepare, not
+    // at 2am). The policy-less prepare must still pass; auto_strict blocks too.
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "bold-draft"
+name = "Bold Draft"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "tame-review"
+name = "Tame Review"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general"]
+
+[[routing]]
+route = "draft"
+agent = "bold-draft"
+
+[[routing]]
+route = "review"
+agent = "tame-review"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture(config).await;
+
+    // Policy-less prepare skips the review preflight and passes.
+    let baseline = call_prepare(&router, &project_id).await;
+    assert_eq!(
+        baseline["ready_to_draft"].as_bool(),
+        Some(true),
+        "policy-less prepare must not run the review preflight: {baseline:?}"
+    );
+
+    // auto_advisory: the explicit scene has no cleared review route → block.
+    let val = call_prepare_with_checkpoint_policy(&router, &project_id, "auto_advisory").await;
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(false),
+        "auto_advisory with uncovered explicit review must block: {val:?}"
+    );
+    let reqs = val["missing_requirements"].as_array().unwrap();
+    assert!(
+        reqs.iter().any(|r| {
+            let s = r.as_str().unwrap();
+            s.contains("auto_advisory") && s.contains("review") && s.contains("explicit")
+        }),
+        "expected a missing_requirements entry naming policy auto_advisory + route review + rating explicit, got {reqs:?}"
+    );
+
+    // auto_strict is gated identically.
+    let strict = call_prepare_with_checkpoint_policy(&router, &project_id, "auto_strict").await;
+    assert_eq!(strict["ready_to_draft"].as_bool(), Some(false));
+    assert!(
+        strict["missing_requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str().unwrap().contains("auto_strict")),
+        "auto_strict must block with a policy-named entry too: {strict:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_with_auto_advisory_passes_when_review_covers_explicit() {
+    // K2 positive control: a `review` agent covering explicit clears the auto
+    // policy precondition. (No `review` override at all also passes, since the
+    // built-in local review route serves every rating — asserted implicitly by
+    // the blocking test's need to override review to fail.)
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "bold-draft"
+name = "Bold Draft"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "bold-review"
+name = "Bold Review"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "bold-draft"
+
+[[routing]]
+route = "review"
+agent = "bold-review"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture(config).await;
+    let val = call_prepare_with_checkpoint_policy(&router, &project_id, "auto_advisory").await;
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(true),
+        "explicit-covering review agent must clear the auto_advisory precondition: {val:?}"
+    );
+}
+
 // =============================================================================
 // Canon-mining run integration (evolution §3.1 — P1 run integration)
 // =============================================================================
@@ -3304,6 +3448,89 @@ async fn start_run_rejects_out_of_bounds_max_revise_attempts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_run_rejects_unknown_checkpoint_policy() {
+    // K1 test 1: an unknown checkpoint_policy string is an input error at start
+    // (blocked, no run created); the message names the offending input.
+    let fx = verify_run_fixture(false, None).await;
+    let start_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+        "checkpoint_policy": "auto",
+    });
+    let res = fx
+        .router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        res["status"].as_str(),
+        Some("blocked"),
+        "an unknown checkpoint_policy must block, got {res:?}"
+    );
+    assert!(
+        res["message"]
+            .as_str()
+            .unwrap()
+            .contains("checkpoint_policy"),
+        "message must name the offending input, got {res:?}"
+    );
+    assert!(res["run_id"].as_str().unwrap_or("").is_empty());
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_run_manual_checkpoint_policy_persists_null_byte_identical() {
+    // K1 test 1 (continued): an explicit "manual" checkpoint_policy canonicalizes
+    // to NULL so the persisted run row is byte-identical to a pre-policy run
+    // (manual/NULL is the default — I1). The run starts active and its persisted
+    // checkpoint_policy is None.
+    let fx = verify_run_fixture(false, None).await;
+    for policy in ["manual", "  Manual "] {
+        let start_args = serde_json::json!({
+            "project_id": fx.project_id,
+            "book_number": 1,
+            "start_chapter": 1,
+            "end_chapter": 1,
+            "checkpoint_interval": 1,
+            "checkpoint_policy": policy,
+        });
+        let res = fx
+            .router
+            .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert_eq!(
+            res["status"].as_str(),
+            Some("active"),
+            "manual policy must start active: {res:?}"
+        );
+        let run_id = res["run_id"].as_str().unwrap().to_string();
+        let (run, _, _, _) = fx
+            .router
+            .service()
+            .repository()
+            .get_authoring_run(&run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            run.checkpoint_policy, None,
+            "manual/{policy:?} must persist a NULL checkpoint_policy (byte-identical to today)"
+        );
+    }
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hybrid_run_surfaces_findings_and_host_resave_resets_verify_state() {
     // Test 6: an enabled run in HYBRID mode. The host drafts a general scene
     // whose tone trips the tone violation. execute_next verifies (findings),
@@ -3461,6 +3688,1003 @@ async fn hybrid_run_surfaces_findings_and_host_resave_resets_verify_state() {
     );
 
     verify_shutdown(fx).await;
+}
+
+// =============================================================================
+// Auto-checkpoint policy integration (evolution §3.3 — P3.1/P3.2)
+// =============================================================================
+
+/// Shared setup for the auto-checkpoint policy tests. Mirrors the verify
+/// fixture (CLI draft agent, `tone: solemn` boundary so a `grim` draft trips a
+/// deterministic `tone_consistency` warning, an HTTP MCP server the harness
+/// connects to, one general chapter/scene, agent mode). Adds a
+/// `checkpoint_policy` and lets a test append extra routing (e.g. override the
+/// `review` route). Also installs a dispatch recorder so a test can prove which
+/// prose was (and was NOT) dispatched. `revision_fixes`/`max_revise_attempts`
+/// steer whether the committed scene ends `solemn` (clean range) or `grim`
+/// (a parked ≥ warning finding).
+struct AutoCheckpointFixture {
+    _tmp: TempDir,
+    svc: SqliteSpindleService,
+    router: crate::tools::ToolRouter,
+    project_id: String,
+    run_id: String,
+    ct: tokio_util::sync::CancellationToken,
+    server_handle: tokio::task::JoinHandle<()>,
+    data_dir: std::path::PathBuf,
+    dispatch_log: std::sync::Arc<std::sync::Mutex<Vec<spindle_adapters::ai::DispatchRecord>>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn auto_checkpoint_fixture(
+    checkpoint_policy: &str,
+    revision_fixes: bool,
+    max_revise_attempts: Option<i32>,
+    review_agent_ratings: &[&str],
+    // When true, the review agent is an `openai-compatible` (HTTP) agent pointing
+    // at a dead port, so its config-level preflight passes (the run starts) but
+    // the actual review dispatch fails with a connection-refused transport error
+    // at checkpoint time. When false, review uses the working mock CLI agent.
+    review_http_dead: bool,
+    expect_start_ok: bool,
+) -> Option<AutoCheckpointFixture> {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_auto_checkpoint.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let script_path = universal_mock_agent_path();
+    let config_path = tmp.path().join("config.toml");
+    // Base config: draft agent (general+explicit) plus a `review` agent whose
+    // declared ratings the test controls (so a test can make review NOT cover
+    // the scene's rating and force the explicit-manual-fallback). The review
+    // route resolves to it. Extra routing may override further.
+    let review_ratings_toml = review_agent_ratings
+        .iter()
+        .map(|r| format!("\"{r}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let review_agent_block = if review_http_dead {
+        // Config-level preflight passes (an http agent covering the ratings),
+        // but the dispatch fails at a dead port (connection refused).
+        format!(
+            r#"
+[[agents]]
+id = "cli-agent-review"
+name = "Dead Review"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:1/v1"
+model = "model"
+ratings = [{review_ratings}]
+"#,
+            review_ratings = review_ratings_toml,
+        )
+    } else {
+        format!(
+            r#"
+[[agents]]
+id = "cli-agent-review"
+name = "CLI Agent Review"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = [{review_ratings}]
+"#,
+            script = script_path.display(),
+            review_ratings = review_ratings_toml,
+        )
+    };
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+{review_agent_block}
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review"
+"#,
+        script = script_path.display(),
+        review_agent_block = review_agent_block,
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Auto Checkpoint".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Self-clearing checkpoints.".into(),
+                style_notes: Vec::new(),
+                boundaries: vec!["tone: solemn".into()],
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("solemn".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    let synopsis = if revision_fixes {
+        "First watch."
+    } else {
+        "First watch. STUBBORN_SCENE"
+    };
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: synopsis.into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara takes the watch".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::General),
+            purpose: "establishing".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    let mut start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+        "checkpoint_policy": checkpoint_policy,
+    });
+    if let Some(budget) = max_revise_attempts {
+        start_args["max_revise_attempts"] = serde_json::Value::from(budget);
+    }
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let start_val = start_res.structured_content.unwrap();
+    if !expect_start_ok {
+        // Caller expects a start block (K2 precondition failure). Return None so
+        // the test asserts on the start result it already has; no server spun up.
+        assert_eq!(
+            start_val["status"].as_str(),
+            Some("blocked"),
+            "expected start to block: {start_val:?}"
+        );
+        return None;
+    }
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "run should start active: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    Some(AutoCheckpointFixture {
+        _tmp: tmp,
+        svc,
+        router,
+        project_id: project.project_id,
+        run_id,
+        ct,
+        server_handle,
+        data_dir: data_dir.clone(),
+        dispatch_log,
+    })
+}
+
+/// Drive `authoring_execute_next` in AGENT mode for an auto-checkpoint fixture.
+async fn auto_execute_next(fx: &AutoCheckpointFixture) -> serde_json::Value {
+    let exec_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "mode": "agent",
+    });
+    fx.router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+async fn auto_status(fx: &AutoCheckpointFixture) -> serde_json::Value {
+    let status_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+    fx.router
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+/// Drive execute_next in agent mode until the run reaches a STABLE terminal
+/// state (completed, or blocked with the automation having already had its
+/// chance to run). Returns the final execute_next response.
+///
+/// The auto-checkpoint automation fires at the TOP of execute_next when the run
+/// is already at a pending checkpoint — i.e. on the call AFTER `RunCheckpoint`
+/// creates it (mirroring the manual flow: one call creates, the next surfaces
+/// the await). So a single "blocked" is not terminal: the driver calls once
+/// more to let the automation run, and only stops when a "blocked"/"completed"
+/// REPEATS (a genuine fixed point) or the run completes.
+async fn auto_drive_to_block_or_complete(fx: &AutoCheckpointFixture) -> serde_json::Value {
+    let mut last = serde_json::Value::Null;
+    let mut prev_key: Option<(String, String)> = None;
+    for _ in 0..40 {
+        last = auto_execute_next(fx).await;
+        let status = last["status"].as_str().unwrap_or("").to_string();
+        let next = last["next_action"].as_str().unwrap_or("").to_string();
+        if status == "completed" {
+            break;
+        }
+        if status == "blocked" {
+            // Stop only when the same blocked (next_action) repeats — the
+            // automation has run and the block is stable.
+            if prev_key.as_ref() == Some(&(status.clone(), next.clone())) {
+                break;
+            }
+        }
+        prev_key = Some((status, next));
+    }
+    last
+}
+
+async fn auto_run_events(fx: &AutoCheckpointFixture) -> Vec<String> {
+    fx.svc
+        .repository()
+        .list_run_events(&fx.run_id, None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect()
+}
+
+async fn auto_shutdown(fx: AutoCheckpointFixture) {
+    fx.ct.cancel();
+    fx.server_handle.await.unwrap();
+    crate::remove_addr_file(&fx.data_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_advisory_clean_range_self_clears_checkpoint() {
+    // K3 test 3: an auto_advisory run over a clean checkpoint range. The scene
+    // starts "grim" (would trip tone_consistency) but a revise budget lets the
+    // agent fix the tone to "solemn", so the committed scene — and therefore the
+    // checkpoint's deep consistency — is genuinely clean. The checkpoint
+    // auto-approves WITHOUT any manual review_checkpoint / record_audit /
+    // run_dual_persona_review tool calls; status shows approved-under-policy; the
+    // journal has checkpoint_created then checkpoint_auto_approved; the run
+    // proceeds past the checkpoint to completion.
+    let fx = auto_checkpoint_fixture("auto_advisory", true, Some(1), &["general"], false, true)
+        .await
+        .expect("run should start");
+
+    let final_res = auto_drive_to_block_or_complete(&fx).await;
+    assert_eq!(
+        final_res["status"].as_str(),
+        Some("completed"),
+        "clean auto_advisory run must complete without manual intervention: {final_res:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    assert_eq!(
+        cp["auto_outcome"].as_str(),
+        Some("approved"),
+        "checkpoint must show approved-under-policy, got {cp:?}"
+    );
+    assert_eq!(cp["checkpoint_policy"].as_str(), Some("auto_advisory"));
+    assert_eq!(cp["status"].as_str(), Some("reviewed"));
+
+    let kinds = auto_run_events(&fx).await;
+    let idx = |k: &str| kinds.iter().position(|x| x == k);
+    assert!(
+        idx("checkpoint_created").is_some(),
+        "expected checkpoint_created: {kinds:?}"
+    );
+    assert!(
+        idx("checkpoint_auto_approved").is_some(),
+        "expected checkpoint_auto_approved: {kinds:?}"
+    );
+    assert!(
+        idx("checkpoint_created") < idx("checkpoint_auto_approved"),
+        "created must precede auto_approved: {kinds:?}"
+    );
+    // No manual review event was needed.
+    assert!(
+        idx("checkpoint_reviewed").is_none(),
+        "auto approval must not emit checkpoint_reviewed: {kinds:?}"
+    );
+
+    auto_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_advisory_blocking_finding_holds_checkpoint_then_manual_clears() {
+    // K3 test 4: an auto_advisory run whose scene keeps a deterministic
+    // tone_consistency warning (no revise budget → the "grim" tone is committed
+    // and parked). The checkpoint deep consistency then carries a ≥ warning
+    // finding, so the automation BLOCKS: the checkpoint stays pending_review,
+    // the journal has checkpoint_blocked, and the manual escape hatch
+    // (authoring_review_checkpoint) still clears it afterward.
+    let fx = auto_checkpoint_fixture("auto_advisory", false, None, &["general"], false, true)
+        .await
+        .expect("run should start");
+
+    let blocked = auto_drive_to_block_or_complete(&fx).await;
+    assert_eq!(
+        blocked["status"].as_str(),
+        Some("blocked"),
+        "a ≥ warning finding must block the auto_advisory checkpoint: {blocked:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    assert_eq!(cp["status"].as_str(), Some("pending_review"));
+    assert_eq!(
+        cp["auto_outcome"].as_str(),
+        Some("blocked"),
+        "checkpoint must record the auto-block outcome, got {cp:?}"
+    );
+    assert_eq!(
+        st["blocked_reason"].as_str(),
+        Some("await_checkpoint_review"),
+        "run blocked_reason names the pending checkpoint: {st:?}"
+    );
+
+    let kinds = auto_run_events(&fx).await;
+    assert!(
+        kinds.iter().any(|k| k == "checkpoint_blocked"),
+        "expected checkpoint_blocked: {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|k| k == "checkpoint_auto_approved"),
+        "a blocked checkpoint must not emit auto_approved: {kinds:?}"
+    );
+
+    // The manual escape hatch works under an auto policy: clear the deep audit +
+    // sampled reviews by hand, then review_checkpoint.
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let report_path = fx.data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let sampled_scene_ids: Vec<String> = report_json["sampled_scene_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    let deep_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "scope": {
+            "scope_type": "chapter_range",
+            "start_book_number": 1, "start_chapter_number": 1,
+            "end_book_number": 1, "end_chapter_number": 1
+        },
+        "checks": [], "severity_filter": [], "deep_check": true, "subjects": []
+    });
+    let deep = fx
+        .router
+        .call_tool("check_consistency", Some(deep_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let audit_args = serde_json::json!({
+        "project_id": fx.project_id, "run_id": fx.run_id,
+        "start_chapter": 1, "end_chapter": 1, "deep_consistency": deep
+    });
+    fx.router
+        .call_tool(
+            "authoring_record_checkpoint_audit",
+            Some(audit_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    for scene_id in &sampled_scene_ids {
+        let review_args =
+            serde_json::json!({ "project_id": fx.project_id, "scene_id": scene_id, "rounds": 2 });
+        fx.router
+            .call_tool(
+                "run_dual_persona_review",
+                Some(review_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap();
+    }
+    let review_args = serde_json::json!({
+        "project_id": fx.project_id, "run_id": fx.run_id,
+        "start_chapter": 1, "end_chapter": 1, "directives": ["Operator override: tone acceptable."]
+    });
+    let reviewed = fx
+        .router
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_ne!(
+        reviewed["status"].as_str(),
+        Some("blocked"),
+        "manual review must clear the auto-blocked checkpoint: {reviewed:?}"
+    );
+
+    auto_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_strict_blocks_where_advisory_approves_on_info_only_findings() {
+    // K3 test 5: an info-only finding set. auto_advisory approves (info is
+    // allowed); auto_strict blocks (zero findings of ANY severity required). The
+    // clean range (revision fixes tone → no ≥ warning finding) may still carry
+    // info-severity findings from the deep pass; the two policies must diverge on
+    // exactly that set. Assert both directions.
+    let advisory =
+        auto_checkpoint_fixture("auto_advisory", true, Some(1), &["general"], false, true)
+            .await
+            .expect("advisory run starts");
+    let advisory_final = auto_drive_to_block_or_complete(&advisory).await;
+    let advisory_cp = auto_status(&advisory).await["checkpoint_reports"][0].clone();
+    let advisory_approved = advisory_cp["auto_outcome"].as_str() == Some("approved");
+    let advisory_info = advisory_cp["report_artifact_path"]
+        .as_str()
+        .map(|rel| {
+            let path = advisory.data_dir.join("artifacts").join(rel);
+            let report: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            report["deep_consistency"]["summary"]["info_count"]
+                .as_i64()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    assert!(
+        advisory_approved,
+        "auto_advisory must approve the clean-of-warnings range: {advisory_final:?} / {advisory_cp:?}"
+    );
+    // The clean range (tone fixed to solemn → 0 warnings/errors) still carries
+    // info-severity findings from the deep pass; the local stubs deterministically
+    // produce them, so the advisory-vs-strict divergence is load-bearing, not
+    // vacuous. Pin that the finding set is info-only.
+    assert!(
+        advisory_info > 0,
+        "the clean range must carry info-only findings so the divergence is real, got {advisory_info}"
+    );
+    auto_shutdown(advisory).await;
+
+    // Same range under auto_strict: info findings are NOT tolerated → block.
+    let strict = auto_checkpoint_fixture("auto_strict", true, Some(1), &["general"], false, true)
+        .await
+        .expect("strict run starts");
+    let strict_final = auto_drive_to_block_or_complete(&strict).await;
+    let strict_cp = auto_status(&strict).await["checkpoint_reports"][0].clone();
+    assert_eq!(
+        strict_final["status"].as_str(),
+        Some("blocked"),
+        "auto_strict must block on the info-only finding set advisory approved: {strict_final:?}"
+    );
+    assert_eq!(
+        strict_cp["auto_outcome"].as_str(),
+        Some("blocked"),
+        "auto_strict records an auto-block on info-only findings: {strict_cp:?}"
+    );
+    auto_shutdown(strict).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_advisory_explicit_scene_falls_back_to_manual_no_dispatch() {
+    // K3 test 6: explicit-manual-fallback (I3). Review covers explicit at START
+    // (so the run starts), but configure_agents hot-reloads to a review config
+    // that does NOT cover explicit between draft and checkpoint. The explicit
+    // sampled scene's review dispatch hits RatingNotCovered at the chokepoint →
+    // pending-manual; the checkpoint blocks listing that scene; and the dispatch
+    // recorder shows ZERO review dispatches carrying the explicit scene's prose.
+    //
+    // Two scenes in one chapter (explicit = 1, general = 2) so both the explicit
+    // (first) and general (last) scenes are sampled — proving the general scene's
+    // review still runs while the explicit one falls back.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_fallback.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let script_path = universal_mock_agent_path();
+
+    // START config: review agent covers explicit (so start_run preflight passes).
+    let config_path = tmp.path().join("config.toml");
+    let start_config = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "cli-agent-review"
+name = "CLI Agent Review"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review"
+"#,
+        script = script_path.display(),
+    );
+    std::fs::write(&config_path, &start_config).unwrap();
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(spindle_core::models::ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Fallback".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Explicit prose never leaves uncleared.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+    // Two chapters so BOTH chapters' scenes are sampled at the single
+    // end-of-range checkpoint: `sample_checkpoint_scene_ids` takes the FIRST
+    // scene of the start chapter and the LAST scene of the end chapter. Chapter
+    // 1 = general (its review completes); chapter 2 = explicit (its review falls
+    // back to manual once review no longer covers explicit).
+    for (chapter_number, rating, label) in [
+        (1, ContentRating::General, "General watch"),
+        (2, ContentRating::Explicit, "Explicit watch"),
+    ] {
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number,
+            pov_character_id: Some(mara.character_id.clone()),
+            synopsis: format!("Chapter {chapter_number}."),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: label.into(),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(rating),
+                purpose: "establishing".into(),
+                research_required: Some(false),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+    }
+
+    let router = crate::tools::ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        std::sync::Arc::new(crate::tools::ToolSerializationState::default()),
+    );
+
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 2,
+        "checkpoint_interval": 2,
+        "checkpoint_policy": "auto_advisory",
+    });
+    let start_val = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "start must pass with explicit-covering review: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = tokio_util::sync::CancellationToken::new();
+    let ct1 = ct.clone();
+    let ct2 = ct.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct1))
+            .with_graceful_shutdown(async move { ct2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    let exec_args =
+        serde_json::json!({ "project_id": project.project_id, "run_id": run_id, "mode": "agent" });
+
+    // Drive drafting for BOTH scenes, but hot-swap the review config to NOT
+    // cover explicit before the checkpoint fires. Draft/commit/beats/summary for
+    // both scenes first; then swap; then the checkpoint runs.
+    let mut swapped = false;
+    for _ in 0..40 {
+        // Once both scenes are committed and we are about to hit the checkpoint,
+        // swap the review config so explicit is uncovered.
+        if !swapped {
+            let st = router
+                .call_tool(
+                    "authoring_status",
+                    Some(
+                        serde_json::json!({ "project_id": project.project_id, "run_id": run_id })
+                            .as_object()
+                            .unwrap(),
+                    ),
+                )
+                .await
+                .unwrap()
+                .structured_content
+                .unwrap();
+            let next = st["next_action"].as_str().unwrap_or("");
+            if next.contains("checkpoint") {
+                // Hot-reload (configure_agents) to a review config that no longer
+                // covers explicit — the mid-run config change the fallback rule
+                // is defense-in-depth against (evolution §3.3 I3).
+                let swapped_config = format!(
+                    r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "cli-agent-review"
+name = "CLI Agent Review"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review"
+"#,
+                    script = script_path.display(),
+                );
+                std::fs::write(&config_path, swapped_config).unwrap();
+                svc.configure_agents(spindle_core::models::ConfigureAgentsInput {
+                    config_path: Some(config_path.to_string_lossy().to_string()),
+                })
+                .unwrap();
+                swapped = true;
+            }
+        }
+        let res = router
+            .call_tool(
+                "authoring_execute_next",
+                Some(exec_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let status = res["status"].as_str().unwrap_or("");
+        let executed = res["executed_action"].as_str().unwrap_or("");
+        // Stop only once the automation has run (an auto-checkpoint executed
+        // action) or the run completes. A plain "blocked" right after
+        // RunCheckpoint is NOT terminal — the automation fires on the next call
+        // (the top-of-execute_next interception), so keep going until the
+        // executed_action names the auto-checkpoint or the run completes.
+        if status == "completed" || executed.contains("auto-checkpoint") {
+            break;
+        }
+    }
+
+    // The checkpoint blocked on pending-manual for the explicit scene.
+    let st = router
+        .call_tool(
+            "authoring_status",
+            Some(
+                serde_json::json!({ "project_id": project.project_id, "run_id": run_id })
+                    .as_object()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let cp = &st["checkpoint_reports"][0];
+    assert_eq!(
+        cp["status"].as_str(),
+        Some("pending_review"),
+        "pending-manual must leave the checkpoint pending_review: {cp:?}"
+    );
+    assert_eq!(
+        cp["auto_outcome"].as_str(),
+        Some("manual"),
+        "checkpoint must record the manual-fallback outcome: {cp:?}"
+    );
+    let pending = cp["pending_manual_scene_ids"].as_array().unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "exactly the explicit scene falls back to manual: {cp:?}"
+    );
+    // Explicit scene is chapter 2 scene 1; general scene is chapter 1 scene 1.
+    let explicit_scene_id = st["chapters"][1]["scenes"][0]["scene_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let general_scene_id = st["chapters"][0]["scenes"][0]["scene_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        pending[0].as_str(),
+        Some(explicit_scene_id.as_str()),
+        "the pending-manual scene must be the explicit one: {cp:?}"
+    );
+    assert_ne!(
+        pending[0].as_str(),
+        Some(general_scene_id.as_str()),
+        "the general scene's review must have COMPLETED, not fallen back: {cp:?}"
+    );
+
+    ct.cancel();
+    server.await.unwrap();
+    crate::remove_addr_file(&data_dir);
+
+    // Fetch the explicit scene's prose to sweep the dispatch log for leakage.
+    let explicit_scene = svc
+        .repository()
+        .get_scene(&explicit_scene_id)
+        .await
+        .unwrap();
+    let explicit_prose = explicit_scene.full_text.clone();
+    let dispatches = dispatch_log.lock().expect("dispatch log lock").clone();
+    // Zero REVIEW dispatches carry the explicit scene's prose (the fallback
+    // never routed it anywhere).
+    for record in &dispatches {
+        if let spindle_adapters::ai::DispatchRecord::Dispatch { route, prompt, .. } = record
+            && route == "review"
+        {
+            assert!(
+                !prompt.contains(explicit_prose.trim()) || explicit_prose.trim().is_empty(),
+                "explicit prose must never be dispatched to a review route: {record:?}"
+            );
+        }
+    }
+
+    drop(router);
+    drop(svc);
+    drop(tmp);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_advisory_transport_failure_blocks_without_crashing() {
+    // K3 test 7: an unroutable review endpoint at checkpoint time. The review
+    // agent is an HTTP agent covering the ratings (so config-level preflight
+    // passes and the run starts) but pointing at a dead port, so the actual
+    // review dispatch fails with a NON-clearance connection-refused transport
+    // error. The automation blocks naming the failed step — the run is not
+    // crashed and stays resumable.
+    let fx = auto_checkpoint_fixture(
+        "auto_advisory",
+        true,
+        Some(1),
+        &["general", "explicit"],
+        /* review_http_dead */ true,
+        true,
+    )
+    .await
+    .expect("run should start (config-level preflight passes for the dead HTTP agent)");
+
+    let blocked = auto_drive_to_block_or_complete(&fx).await;
+    assert_eq!(
+        blocked["status"].as_str(),
+        Some("blocked"),
+        "a transport failure at checkpoint must block, not crash: {blocked:?}"
+    );
+    assert_eq!(
+        blocked["run_id"].as_str(),
+        Some(fx.run_id.as_str()),
+        "the run must survive the failure and remain addressable: {blocked:?}"
+    );
+
+    let st = auto_status(&fx).await;
+    let cp = &st["checkpoint_reports"][0];
+    assert_eq!(cp["status"].as_str(), Some("pending_review"));
+    assert_eq!(
+        cp["auto_outcome"].as_str(),
+        Some("blocked"),
+        "transport failure records an auto-block outcome: {cp:?}"
+    );
+
+    let kinds = auto_run_events(&fx).await;
+    assert!(
+        kinds.iter().any(|k| k == "checkpoint_blocked"),
+        "transport-failed checkpoint must emit checkpoint_blocked: {kinds:?}"
+    );
+
+    // The dispatch log is inspected only for absence of a leak (there is none:
+    // the general scene's review may dispatch, but nothing crashed the run).
+    let _ = &fx.dispatch_log;
+
+    auto_shutdown(fx).await;
 }
 
 // =============================================================================

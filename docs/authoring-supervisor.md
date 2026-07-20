@@ -28,7 +28,7 @@ The supervisor exposes 9 MCP tools through the `spindle-mcp` server:
 | Tool Name | Description | Key Input Fields | Key Output Fields |
 |---|---|---|---|
 | `authoring_prepare_run` | Verifies plans and resources are ready before drafting. | `project_id`, `book_number`, `start_chapter`, `end_chapter` | `ready_to_draft`, `missing_requirements` |
-| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`), `max_revise_attempts` (optional; `0` default, `1` or `2` to enable in-run verify/revise) | `run_id`, `status` |
+| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`), `max_revise_attempts` (optional; `0` default, `1` or `2` to enable in-run verify/revise), `checkpoint_policy` (optional; `manual` default, `auto_advisory` or `auto_strict` to self-clear checkpoints) | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
 | `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
 | `authoring_save_scene_draft` | Saves host-drafted prose plus its required structured continuity package. | `project_id`, `run_id`, scene placement, `full_text`, `summary`, `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes` | `run_id`, `scene_id`, `scene_artifact_path`, `structured_update_count` |
@@ -76,6 +76,41 @@ after revision") rather than re-revising the same findings, and any parked
 findings inherit to the checkpoint. Verify is deterministic and revision reuses
 the already-preflighted draft route, so `authoring_prepare_run` adds **no** extra
 coverage check for this policy; verify never blocks the run.
+
+`checkpoint_policy` on `authoring_start_run` is optional and defaults to
+`manual` (a run that never opts in runs the classic 4-step operator checkpoint
+flow, byte-identical to before). The two auto policies let the supervisor
+self-clear a checkpoint in-process instead of surfacing `await_checkpoint_review`:
+
+| Policy | Checkpoint behavior |
+|---|---|
+| `manual` (default) | The classic flow: run `check_consistency(deep_check=true)`, `authoring_record_checkpoint_audit`, sampled `run_dual_persona_review` (rounds 2), then `authoring_review_checkpoint`. |
+| `auto_advisory` | The harness runs the deep consistency check, records the audit, runs the sampled dual-persona reviews via the `review` route, then **auto-approves iff no finding is `warning`-or-worse** (`info` is allowed). Otherwise it blocks with the full report exactly like `manual`. |
+| `auto_strict` | Same automation, but auto-approves **only on zero findings of any severity**. An `info`-only finding set that `auto_advisory` approves, `auto_strict` blocks. |
+
+An auto policy requires — enforced at `authoring_start_run` via
+`authoring_prepare_run`'s preflight — that the `review` route resolves
+rating-cleared for **every** distinct content rating in the run's range;
+otherwise start is blocked with a `missing_requirements` entry naming the policy,
+the `review` route, and the uncovered rating (fail at prepare, not mid-run). The
+deep-check-capable review-route requirement collapses into this same check today
+because the same `review` route serves the checkpoint's deep dual-persona pass.
+
+**Explicit-manual-fallback:** if a sampled scene's dual-persona review dispatch
+is rejected at the offload chokepoint because the `review` agent is not cleared
+for that scene's rating (e.g. a mid-run `configure_agents` change dropped
+explicit coverage), that scene is marked **pending-manual** and is dispatched
+nowhere else — its prose never reaches an uncleared model. The checkpoint then
+blocks listing exactly which scenes await manual review; the cleared scenes'
+reviews and the deep audit still completed and are recorded. `authoring_status`
+surfaces the outcome per checkpoint as `checkpoint_policy`, `auto_outcome`
+(`approved` | `blocked` | `manual`), and `pending_manual_scene_ids`. On approval
+the run journal emits `checkpoint_auto_approved` (start/end chapter, policy,
+finding counts); on a block it emits `checkpoint_blocked` (reason). A blocked
+auto-checkpoint stays `pending_review`, so the manual escape hatch
+(`authoring_review_checkpoint`) still clears it. There is no per-checkpoint
+model-cost ceiling in v1. Canon-steward ratification (`list_canon_deltas` /
+`decide_canon_deltas`) still happens between checkpoints regardless of policy.
 
 ## Interactive Drafting Workflow
 

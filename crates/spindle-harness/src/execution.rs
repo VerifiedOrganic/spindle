@@ -938,6 +938,8 @@ async fn run_checkpoint(
         save_point_id: save_point.save_point_id.clone(),
         status: CheckpointStatus::PendingReview,
         report_artifact_path: Some(report_path.clone()),
+        auto_outcome: None,
+        pending_manual_scene_ids: Vec::new(),
     });
     state.last_checkpoint_end_chapter = end_chapter;
     state.save(state_path)?;
@@ -2105,6 +2107,7 @@ mod tests {
             editorial_directives: vec!["Keep the voice sharp.".to_string()],
             mining_policy: None,
             max_revise_attempts: None,
+            checkpoint_policy: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         }
@@ -2475,6 +2478,7 @@ mod tests {
             editorial_directives: vec!["Keep the voice sharp.".to_string()],
             mining_policy: None,
             max_revise_attempts: None,
+            checkpoint_policy: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         };

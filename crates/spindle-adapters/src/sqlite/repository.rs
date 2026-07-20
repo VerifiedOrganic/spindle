@@ -13980,8 +13980,8 @@ impl Repository {
                     id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
                     checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
                     editorial_directives, status, created_at, updated_at, mining_policy,
-                    max_revise_attempts
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    max_revise_attempts, checkpoint_policy
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 ON CONFLICT(id) DO UPDATE SET
                     project_id = excluded.project_id,
                     active_branch_id = excluded.active_branch_id,
@@ -13995,7 +13995,8 @@ impl Repository {
                     status = excluded.status,
                     updated_at = excluded.updated_at,
                     mining_policy = excluded.mining_policy,
-                    max_revise_attempts = excluded.max_revise_attempts",
+                    max_revise_attempts = excluded.max_revise_attempts,
+                    checkpoint_policy = excluded.checkpoint_policy",
                     rusqlite::params![
                         run.id,
                         run.project_id,
@@ -14012,6 +14013,7 @@ impl Repository {
                         updated_at_micros,
                         run.mining_policy,
                         run.max_revise_attempts,
+                        run.checkpoint_policy,
                     ],
                 )?;
 
@@ -14080,11 +14082,22 @@ impl Repository {
                 }
 
                 for cp in checkpoints {
+                    // Persist the pending-manual scene ids as a JSON array, or
+                    // NULL when there are none (NULL reads back as the empty
+                    // list — the no-fallback / pre-upgrade case). Ids only.
+                    let pending_manual_json = if cp.pending_manual_scene_ids.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            serde_json::to_string(&cp.pending_manual_scene_ids)
+                                .expect("serializing pending_manual_scene_ids"),
+                        )
+                    };
                     tx.execute(
                         "INSERT INTO authoring_checkpoint (
                         authoring_run_id, start_chapter, end_chapter, save_point_id, status,
-                        report_artifact_path
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        report_artifact_path, auto_outcome, pending_manual_scene_ids
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                         rusqlite::params![
                             cp.authoring_run_id,
                             cp.start_chapter,
@@ -14092,6 +14105,8 @@ impl Repository {
                             cp.save_point_id,
                             cp.status,
                             cp.report_artifact_path,
+                            cp.auto_outcome,
+                            pending_manual_json,
                         ],
                     )?;
                 }
@@ -16900,6 +16915,7 @@ mod tests {
             updated_at: now,
             mining_policy: None,
             max_revise_attempts: None,
+            checkpoint_policy: None,
         };
         repo.save_authoring_run(run, Vec::new(), Vec::new(), Vec::new())
             .await
@@ -17008,6 +17024,7 @@ mod tests {
             updated_at: now,
             mining_policy: None,
             max_revise_attempts: None,
+            checkpoint_policy: None,
         };
         repo.save_authoring_run(run, Vec::new(), Vec::new(), Vec::new())
             .await

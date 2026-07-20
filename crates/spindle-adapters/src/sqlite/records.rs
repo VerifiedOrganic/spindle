@@ -2538,7 +2538,7 @@ impl<'a> TryFrom<&Row<'a>> for ImportReviewItem {
 // Authoring Runs
 // =============================================================================
 
-pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy, max_revise_attempts";
+pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy, max_revise_attempts, checkpoint_policy";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringRun {
@@ -2562,6 +2562,10 @@ pub struct AuthoringRun {
     /// (pre-upgrade + default = 0); `Some(1..=2)` inserts the VerifyScene step
     /// after each draft and bounds the revise loop.
     pub max_revise_attempts: Option<i32>,
+    /// Checkpoint policy (V0028). `None` = manual (pre-upgrade + default): the
+    /// classic 4-step operator checkpoint flow. `Some("auto_advisory")` /
+    /// `Some("auto_strict")` opt into the in-process auto-checkpoint automation.
+    pub checkpoint_policy: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
@@ -2583,6 +2587,7 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
             updated_at: row::time(r, 12)?,
             mining_policy: row::opt_text(r, 13)?,
             max_revise_attempts: row::opt_int(r, 14)?.map(|value| value as i32),
+            checkpoint_policy: row::opt_text(r, 15)?,
         })
     }
 }
@@ -2684,8 +2689,7 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
     }
 }
 
-pub const AUTHORING_CHECKPOINT_COLUMNS: &str =
-    "authoring_run_id, start_chapter, end_chapter, save_point_id, status, report_artifact_path";
+pub const AUTHORING_CHECKPOINT_COLUMNS: &str = "authoring_run_id, start_chapter, end_chapter, save_point_id, status, report_artifact_path, auto_outcome, pending_manual_scene_ids";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringCheckpoint {
@@ -2695,6 +2699,12 @@ pub struct AuthoringCheckpoint {
     pub save_point_id: String,
     pub status: String,
     pub report_artifact_path: Option<String>,
+    /// In-process auto-checkpoint outcome (V0028). `None` = manual policy or
+    /// automation not run; otherwise `approved` | `blocked` | `manual`.
+    pub auto_outcome: Option<String>,
+    /// Scene ids whose sampled review fell back to manual (rating not covered —
+    /// evolution §3.3 I3). Empty when none. Ids only, never prose.
+    pub pending_manual_scene_ids: Vec<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringCheckpoint {
@@ -2707,6 +2717,10 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringCheckpoint {
             save_point_id: row::text(r, 3)?,
             status: row::text(r, 4)?,
             report_artifact_path: row::opt_text(r, 5)?,
+            auto_outcome: row::opt_text(r, 6)?,
+            // NULL/absent reads as the empty list (pre-upgrade rows and the
+            // no-fallback case).
+            pending_manual_scene_ids: row::opt_json(r, 7)?.unwrap_or_default(),
         })
     }
 }

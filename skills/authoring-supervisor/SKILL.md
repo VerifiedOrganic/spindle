@@ -63,7 +63,8 @@ authoring_start_run({
   "checkpoint_interval": 1,
   "editorial_directives": ["Keep the prose dark."],
   "mining_policy": "disabled",
-  "max_revise_attempts": 0
+  "max_revise_attempts": 0,
+  "checkpoint_policy": "manual"
 })
 ```
 
@@ -96,6 +97,43 @@ scene's `verify_status` (`clean` | `findings` | `parked_findings` | `error`),
 findings are never revised twice (a re-verify with an unchanged finding set parks
 the scene as `parked_findings` "unchanged after revision"), and parked findings
 inherit to the checkpoint exactly as today. Verify never blocks a run.
+
+`checkpoint_policy` is optional and defaults to `manual` (omit it for the exact
+classic 4-step operator checkpoint flow). Choose a policy by how much checkpoint
+judgment you want to delegate:
+
+- **`manual`** — you drive every checkpoint yourself (deep audit → record →
+  sampled dual-persona reviews → `authoring_review_checkpoint`). Use when an
+  editor is in the loop for each checkpoint, or the material is high-stakes.
+- **`auto_advisory`** — the harness self-clears a checkpoint when the deep
+  consistency check finds **nothing at or above `warning`** (`info` advisories
+  are allowed through). It blocks with the full report otherwise, exactly like
+  `manual`. Use for a mostly-unattended run where you still want to be stopped by
+  genuine continuity/craft warnings but not by cosmetic `info` notes. (This is the
+  recommended agent-mode policy per the design's D-1 record; `manual` stays the
+  default.)
+- **`auto_strict`** — self-clears only on **zero findings of any severity**. Any
+  `info` note blocks. Use when even advisory findings must be operator-reviewed.
+
+An auto policy has a start-time precondition: the `review` route must resolve
+rating-cleared for **every** content rating in the run's range (the automation
+runs its sampled dual-persona reviews and deep pass through `review`). Run
+`authoring_prepare_run` with the same `checkpoint_policy` first; an uncovered
+rating returns a `missing_requirements` entry naming the policy, the `review`
+route, and the rating, so an offload gap fails at prepare rather than at 2am.
+
+**Explicit-manual-fallback (offload-critical):** if a sampled scene's review is
+rejected at the offload chokepoint because the `review` agent is not cleared for
+that scene's rating (e.g. a mid-run `configure_agents` swap dropped explicit
+coverage), that scene is marked **pending-manual** and its prose is dispatched
+nowhere else. The checkpoint blocks listing exactly those scenes
+(`pending_manual_scene_ids` in `authoring_status`); the cleared scenes' reviews
+and the deep audit still completed. A blocked auto-checkpoint stays
+`pending_review`, so you can still clear it by hand with the manual 4-step flow.
+`authoring_status` reports each checkpoint's `checkpoint_policy`, `auto_outcome`
+(`approved` | `blocked` | `manual`), and `pending_manual_scene_ids`.
+Canon-steward ratification (`list_canon_deltas` / `decide_canon_deltas`) still
+happens between checkpoints regardless of policy.
 
 #### When a pass skips
 

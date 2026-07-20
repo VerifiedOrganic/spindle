@@ -84,6 +84,13 @@ pub struct HarnessState {
     /// serde default so pre-P2.2 state fixtures still deserialize.
     #[serde(default)]
     pub max_revise_attempts: Option<i32>,
+    /// Checkpoint policy for this run (evolution §3.3). `None` (pre-upgrade and
+    /// default) or `Some("manual")` runs the classic 4-step operator checkpoint
+    /// flow exactly as before; `Some("auto_advisory")` / `Some("auto_strict")`
+    /// let the harness self-clear a checkpoint in-process. Additive with a serde
+    /// default so pre-P3 state fixtures still deserialize.
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
     #[serde(default)]
     pub chapters: Vec<ChapterState>,
     #[serde(default)]
@@ -103,6 +110,7 @@ impl HarnessState {
             editorial_directives: seed.editorial_directives,
             mining_policy: None,
             max_revise_attempts: None,
+            checkpoint_policy: None,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -338,6 +346,18 @@ pub struct CheckpointRecord {
     pub status: CheckpointStatus,
     #[serde(default)]
     pub report_artifact_path: Option<String>,
+    /// Outcome of the in-process auto-checkpoint automation (evolution §3.3).
+    /// `None` = manual policy or automation not yet run; otherwise `"approved"`
+    /// (self-cleared under policy), `"blocked"` (findings held it
+    /// pending_review), or `"manual"` (one or more sampled scenes fell back to
+    /// manual review). Ids/enums only, never prose (I8). Additive, serde-default.
+    #[serde(default)]
+    pub auto_outcome: Option<String>,
+    /// Scene ids whose sampled dual-persona review fell back to manual because
+    /// the `review` route was not rating-cleared (evolution §3.3 I3). Empty when
+    /// none. Ids only — the prose of those scenes was never dispatched. Additive.
+    #[serde(default)]
+    pub pending_manual_scene_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

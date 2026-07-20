@@ -443,6 +443,21 @@ impl ModelRouter {
         route_preflight(&runtime, "draft", rating)
     }
 
+    /// Verify — without network I/O — that the `review` route can serve a scene
+    /// of the given content rating. Mirrors [`draft_route_preflight`] for the
+    /// checkpoint automation (evolution §3.3): an `auto_advisory` / `auto_strict`
+    /// run runs its sampled dual-persona reviews AND its deep dual-persona
+    /// consistency pass through the `review` route, so that route must be
+    /// rating-cleared for every rating in the run's range before the run starts
+    /// (§3.3 precondition (a); (b) — a deep-check-capable review route —
+    /// collapses into (a) today because the same `review` route serves the
+    /// deep pass). Config-level only; a built-in local review route serves every
+    /// rating and is never flagged.
+    pub fn review_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
+        let runtime = self.runtime.read().expect("model router read lock");
+        route_preflight(&runtime, "review", rating)
+    }
+
     /// Verify — without network I/O — that canon mining can serve a scene of
     /// the given content rating through its fallback ladder (evolution §2.3):
     /// the `mine` route, or the `review` route as fallback. Returns `None` when

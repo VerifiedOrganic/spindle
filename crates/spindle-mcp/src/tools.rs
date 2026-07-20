@@ -198,6 +198,13 @@ impl ToolRouter {
         }
     }
 
+    /// Borrow the underlying service (test-only accessor for integration tests
+    /// that need to read persisted state directly through the repository).
+    #[cfg(test)]
+    pub fn service(&self) -> &SpindleService {
+        &self.service
+    }
+
     pub fn list_tools(&self) -> Vec<Tool> {
         let all = self.all_tools();
         let Some(profile) = self.tool_profile.as_deref() else {
@@ -2577,6 +2584,47 @@ impl ToolRouter {
             }
         }
 
+        // Auto-checkpoint preflight (evolution §3.3 K2): only when the run opted
+        // into an auto policy (`auto_advisory` / `auto_strict`). The automation
+        // runs its sampled dual-persona reviews AND its deep dual-persona
+        // consistency pass through the `review` route (prose-bearing), so that
+        // route must resolve rating-cleared for EVERY distinct rating in the
+        // range (precondition (a)). Precondition (b) — a deep-check-capable
+        // review route — collapses into (a) today: the same `review` route
+        // serves the checkpoint's deep pass, so covering (a) covers (b). The
+        // runtime explicit-manual-fallback in K3 is defense-in-depth for a
+        // mid-run config change, NOT a licence to start uncovered — an auto run
+        // must be fully covered at start (I8: fail at prepare, not at 2am).
+        if matches!(
+            input.checkpoint_policy.as_deref(),
+            Some("auto_advisory") | Some("auto_strict")
+        ) {
+            let policy = input.checkpoint_policy.as_deref().unwrap_or("");
+            for rating in &planned_ratings {
+                let preflight = model_router.review_route_preflight(rating);
+                if let Some(problem) = preflight.problem {
+                    let detail = match problem {
+                        DraftRoutePreflightProblem::Unresolved => {
+                            "no review route is configured for this rating".to_string()
+                        }
+                        DraftRoutePreflightProblem::MissingApiKey { env_var } => {
+                            format!("agent is missing API key env {env_var}")
+                        }
+                        DraftRoutePreflightProblem::RatingNotCovered => {
+                            "review agent does not cover this rating".to_string()
+                        }
+                    };
+                    let agent = preflight
+                        .agent_id
+                        .map(|id| format!(" (agent {id})"))
+                        .unwrap_or_default();
+                    missing_requirements.push(format!(
+                        "Checkpoint policy {policy} requires route review to serve rating {rating}{agent}: {detail}"
+                    ));
+                }
+            }
+        }
+
         let ready_to_draft = missing_requirements.is_empty();
         Ok(AuthoringPrepareRunOutput {
             project_id,
@@ -2647,6 +2695,28 @@ impl ToolRouter {
             }
         };
 
+        // Validate the opt-in checkpoint policy (evolution §3.3). None/"manual"
+        // canonicalize to None so the run persists NULL, matching a pre-upgrade
+        // row exactly (I1: manual/NULL is byte-identical to today). An auto
+        // policy additionally requires review-route coverage across the run's
+        // ratings, enforced by prepare's preflight below (K2).
+        let checkpoint_policy = match spindle_core::models::validate_checkpoint_policy(
+            input.checkpoint_policy.as_deref(),
+        ) {
+            Ok(policy) => policy,
+            Err(rejected) => {
+                return Ok(AuthoringStartRunOutput {
+                    run_id: String::new(),
+                    status: "blocked".to_string(),
+                    message: format!(
+                        "Cannot start authoring run: checkpoint_policy must be one of {:?}, got {:?}",
+                        spindle_core::models::AUTHORING_CHECKPOINT_POLICIES,
+                        rejected
+                    ),
+                });
+            }
+        };
+
         let prep_input = AuthoringPrepareRunInput {
             project_id: project_id.clone(),
             book_number: input.book_number,
@@ -2659,6 +2729,10 @@ impl ToolRouter {
             // Threaded for symmetry; prepare adds NO preflight for revise (verify
             // is deterministic and revision reuses the draft route — §3.2).
             max_revise_attempts,
+            // Thread the resolved policy so prepare's review-route preflight runs
+            // only when the run actually opted into an auto checkpoint policy
+            // (evolution §3.3 K2 precondition).
+            checkpoint_policy: checkpoint_policy.clone(),
         };
         let prep_report = Box::pin(self.handle_authoring_prepare_run(prep_input)).await?;
         if !prep_report.ready_to_draft {
@@ -2737,6 +2811,7 @@ impl ToolRouter {
         harness_state.artifacts_dir = "../artifacts".to_string();
         harness_state.mining_policy = mining_policy;
         harness_state.max_revise_attempts = max_revise_attempts;
+        harness_state.checkpoint_policy = checkpoint_policy;
 
         let run_id = format!(
             "authoring_run:{}",
@@ -2906,6 +2981,13 @@ impl ToolRouter {
                 save_point_id: cp.save_point_id.clone(),
                 status: cp_status_str.to_string(),
                 report_artifact_path: cp.report_artifact_path.clone(),
+                // Additive auto-checkpoint surfacing (evolution §3.3, K4): the
+                // run policy in force plus this checkpoint's automation outcome
+                // and any scenes awaiting manual dual-persona review. Ids/enums
+                // only, never prose (I8).
+                checkpoint_policy: outcome.state.checkpoint_policy.clone(),
+                auto_outcome: cp.auto_outcome.clone(),
+                pending_manual_scene_ids: cp.pending_manual_scene_ids.clone(),
             });
         }
 
@@ -2982,6 +3064,157 @@ impl ToolRouter {
                 next_action: outcome.next_action.to_string(),
                 executed_action: "none".to_string(),
                 message: "Execution blocked by errors.".to_string(),
+                status: "blocked".to_string(),
+            });
+        }
+
+        // Auto-checkpoint interception (evolution §3.3, K3). A run whose
+        // checkpoint_policy is auto_advisory/auto_strict does NOT surface
+        // `AwaitCheckpointReview` — instead the harness performs the checkpoint
+        // work in-process (deep consistency + sampled dual-persona reviews) and
+        // self-clears on a severity threshold. `manual` (None) is untouched and
+        // byte-identical to today (I1). Runs before the block match so an
+        // approval lets the loop continue in the same call; a block falls
+        // through to the existing AwaitCheckpointReview path.
+        if let NextAction::AwaitCheckpointReview {
+            start_chapter,
+            end_chapter,
+            ..
+        } = &outcome.next_action
+            && let Some(policy) = auto_checkpoint_policy(run.checkpoint_policy.as_deref())
+        {
+            let start_chapter = *start_chapter;
+            let end_chapter = *end_chapter;
+            let mut auto_state = outcome.state.clone();
+            let auto = Box::pin(self.run_auto_checkpoint(
+                &run_id,
+                policy,
+                &mut auto_state,
+                start_chapter,
+                end_chapter,
+            ))
+            .await?;
+
+            if auto.approved {
+                // The checkpoint self-cleared. Re-reconcile the post-review state
+                // and persist; the run continues (or completes) exactly as a
+                // manual review would leave it. Journal the auto-approval.
+                let auto_snapshot = self.authoring_project_snapshot(&auto_state).await?;
+                let auto_outcome = reconcile_state(auto_state.clone(), &auto_snapshot);
+                let auto_status = if auto_outcome.next_action == NextAction::Complete {
+                    "completed"
+                } else if matches!(
+                    auto_outcome.next_action,
+                    NextAction::AwaitCheckpointReview { .. } | NextAction::AwaitResearch { .. }
+                ) {
+                    "blocked"
+                } else {
+                    "active"
+                };
+                let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                    &run_id,
+                    &auto_outcome.state,
+                    auto_status,
+                    Some(run.created_at),
+                );
+                repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                    .await?;
+
+                let journal = RunJournal::new(repo);
+                journal
+                    .emit(
+                        &run_id,
+                        "checkpoint_auto_approved",
+                        run_journal::checkpoint_auto_approved_payload(
+                            start_chapter,
+                            end_chapter,
+                            policy,
+                            &auto.finding_counts,
+                        ),
+                    )
+                    .await;
+                if run.status == "blocked" || run.status == "paused" {
+                    journal
+                        .emit(
+                            &run_id,
+                            "run_resumed",
+                            run_journal::run_status_payload(None),
+                        )
+                        .await;
+                }
+                if auto_status == "completed" {
+                    journal
+                        .emit(
+                            &run_id,
+                            "run_completed",
+                            run_journal::run_status_payload(None),
+                        )
+                        .await;
+                }
+
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: auto_outcome.next_action.to_string(),
+                    executed_action: format!(
+                        "auto-checkpoint approved chapters {start_chapter}-{end_chapter} under {policy}"
+                    ),
+                    message: format!(
+                        "Checkpoint {start_chapter}-{end_chapter} auto-approved under {policy} (0 blocking findings)."
+                    ),
+                    status: auto_status.to_string(),
+                });
+            }
+
+            // Not approved: the checkpoint stays pending_review exactly as
+            // manual, with the auto_outcome + pending-manual scenes stamped on
+            // it. Persist and journal `checkpoint_blocked`, then return blocked
+            // with the prose-free reason. The manual escape hatch still works —
+            // an operator can still call authoring_review_checkpoint.
+            let reason = auto
+                .blocked_reason
+                .clone()
+                .unwrap_or_else(|| "auto_checkpoint_blocked".to_string());
+            let (updated_run, updated_ch, updated_sc, updated_cp) =
+                map_harness_to_records(&run_id, &auto_state, "blocked", Some(run.created_at));
+            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                .await?;
+
+            let journal = RunJournal::new(repo);
+            journal
+                .emit(
+                    &run_id,
+                    "checkpoint_blocked",
+                    run_journal::checkpoint_blocked_payload(start_chapter, end_chapter, &reason),
+                )
+                .await;
+            if run.status != "blocked" {
+                journal
+                    .emit(
+                        &run_id,
+                        "run_blocked",
+                        run_journal::run_status_payload(Some("blocked")),
+                    )
+                    .await;
+            }
+
+            let manual_note = if auto.pending_manual_scene_ids.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Scenes awaiting manual dual-persona review: [{}].",
+                    auto.pending_manual_scene_ids.join(", ")
+                )
+            };
+            return Ok(AuthoringExecuteNextOutput {
+                run_id: run_id.clone(),
+                next_action: outcome.next_action.to_string(),
+                executed_action: format!(
+                    "auto-checkpoint blocked chapters {start_chapter}-{end_chapter} under {policy}"
+                ),
+                message: format!(
+                    "Checkpoint {start_chapter}-{end_chapter} blocked under {policy}: {reason}.{manual_note} \
+                     Review it manually with authoring_review_checkpoint."
+                ),
                 status: "blocked".to_string(),
             });
         }
@@ -3882,6 +4115,8 @@ impl ToolRouter {
             save_point_id: save_point.save_point_id.clone(),
             status: CheckpointStatus::PendingReview,
             report_artifact_path: Some(report_path.clone()),
+            auto_outcome: None,
+            pending_manual_scene_ids: Vec::new(),
         });
         state.last_checkpoint_end_chapter = end_chapter;
         state.save(state_path)?;
@@ -4169,6 +4404,236 @@ impl ToolRouter {
             message,
             status: final_status.to_string(),
         })
+    }
+
+    /// In-process auto-checkpoint automation (evolution §3.3, K3). Invoked from
+    /// `handle_authoring_execute_next` when a run whose `checkpoint_policy` is
+    /// `auto_advisory`/`auto_strict` reaches a pending checkpoint, INSTEAD of
+    /// surfacing `AwaitCheckpointReview`. This is pure orchestration of the
+    /// existing manual-checkpoint service paths — it introduces NO new review
+    /// logic:
+    ///
+    /// 1. Deep consistency: `check_consistency(deep_check=true)` over the
+    ///    checkpoint's chapter range (full default check set, as the manual flow
+    ///    instructs operators), recorded into the report artifact the SAME way
+    ///    `authoring_record_checkpoint_audit` records it.
+    /// 2. Sampled dual-persona reviews (rounds=2) via `run_dual_persona_review`,
+    ///    the exact service path the manual flow uses. Explicit-manual-fallback
+    ///    (I3): a scene whose review dispatch fails `RatingNotCovered` (surfaced
+    ///    from the chokepoint, NOT pre-checked) is marked pending-manual and is
+    ///    dispatched NOWHERE else; if any scene is pending-manual the checkpoint
+    ///    BLOCKS listing exactly those scenes — the rest of the automation still
+    ///    completed and is recorded.
+    /// 3. Verdict from the deep-consistency severity counts: `auto_advisory`
+    ///    approves iff zero findings ≥ `warning` (info allowed); `auto_strict`
+    ///    iff zero findings of ANY severity. Approve takes the SAME path
+    ///    `authoring_review_checkpoint` takes (`operator::review_checkpoint` with
+    ///    an honest auto-approval directive). Not approved → the checkpoint stays
+    ///    pending_review exactly as manual, with a prose-free `blocked_reason`.
+    /// 4. Journal (ADR D2): `checkpoint_auto_approved` on approval,
+    ///    `checkpoint_blocked` on block — via the existing RunJournal.
+    ///
+    /// Cost note: there is NO per-checkpoint model-cost ceiling in v1 (open
+    /// design per owner decision D-1); every sampled scene's review and the deep
+    /// pass run unbudgeted. A future ADR may add a ceiling.
+    ///
+    /// Transport-level errors during automation (deep-check call fails, a review
+    /// call fails for a NON-clearance reason) never fake completion (I8) and
+    /// never crash the run: the checkpoint stays pending_review with a
+    /// `blocked_reason` naming the failed step, returned as `AutoCheckpointOutcome`.
+    async fn run_auto_checkpoint(
+        &self,
+        run_id: &str,
+        policy: &str,
+        harness_state: &mut HarnessState,
+        start_chapter: i32,
+        end_chapter: i32,
+    ) -> anyhow::Result<AutoCheckpointOutcome> {
+        let repo = self.service.repository();
+        let data_dir = repo.data_dir();
+        let state_path = authoring_state_path(data_dir, run_id);
+
+        // ── Step 1: deep consistency over the checkpoint range ──
+        // Any transport error here blocks the checkpoint honestly (I8) — the
+        // automation never fabricates a clean audit.
+        let deep = match self
+            .service
+            .check_consistency(CheckConsistencyInput {
+                project_id: harness_state.project_id.clone(),
+                scope: ConsistencyScopeInput::chapter_range(
+                    harness_state.book_number,
+                    start_chapter,
+                    harness_state.book_number,
+                    end_chapter,
+                ),
+                checks: Vec::new(),
+                severity_filter: Vec::new(),
+                deep_check: Some(true),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                tracing::warn!(
+                    run_id,
+                    step = "deep_consistency",
+                    error = format!("{error:#}"),
+                    "auto-checkpoint deep consistency failed; blocking checkpoint (I8)"
+                );
+                return Ok(auto_checkpoint_block(
+                    harness_state,
+                    start_chapter,
+                    end_chapter,
+                    "deep_consistency_failed",
+                    Vec::new(),
+                ));
+            }
+        };
+
+        // Record the deep audit into the report artifact — the same shape
+        // `handle_authoring_record_checkpoint_audit` writes.
+        let deep_value = serde_json::to_value(&deep)?;
+        let finding_counts = auto_checkpoint_severity_counts(&deep);
+        if let Err(error) = authoring_record_checkpoint_deep_audit(
+            harness_state,
+            &state_path,
+            start_chapter,
+            end_chapter,
+            deep_value,
+        ) {
+            tracing::warn!(
+                run_id,
+                step = "record_audit",
+                error = format!("{error:#}"),
+                "auto-checkpoint audit record failed; blocking checkpoint (I8)"
+            );
+            return Ok(auto_checkpoint_block(
+                harness_state,
+                start_chapter,
+                end_chapter,
+                "record_audit_failed",
+                Vec::new(),
+            ));
+        }
+
+        // ── Step 2: sampled dual-persona reviews (rounds=2) ──
+        let sampled_scene_ids =
+            authoring_sample_checkpoint_scene_ids(harness_state, start_chapter, end_chapter)?;
+        let mut pending_manual: Vec<String> = Vec::new();
+        for scene_id in &sampled_scene_ids {
+            match self
+                .service
+                .run_dual_persona_review(spindle_core::models::RunDualPersonaReviewInput {
+                    project_id: harness_state.project_id.clone(),
+                    branch_id: Some(harness_state.active_branch_id.clone()),
+                    scene_id: scene_id.clone(),
+                    rounds: Some(2),
+                })
+                .await
+            {
+                Ok(_) => {}
+                Err(error) => {
+                    // Explicit-manual-fallback (I3): a RatingNotCovered rejection
+                    // from the dispatch chokepoint means the `review` route's
+                    // agent is not cleared for THIS scene's rating. That scene's
+                    // prose was never dispatched anywhere (the chokepoint rejects
+                    // before any model call); mark it pending-manual and DO NOT
+                    // route it elsewhere. Any OTHER error is a transport failure:
+                    // block the checkpoint naming the failed step (I8), never
+                    // faking completion.
+                    if auto_checkpoint_error_is_rating_not_covered(&error) {
+                        pending_manual.push(scene_id.clone());
+                    } else {
+                        tracing::warn!(
+                            run_id,
+                            step = "dual_persona_review",
+                            scene_id,
+                            error = format!("{error:#}"),
+                            "auto-checkpoint review failed at transport; blocking checkpoint (I8)"
+                        );
+                        return Ok(auto_checkpoint_block(
+                            harness_state,
+                            start_chapter,
+                            end_chapter,
+                            "review_dispatch_failed",
+                            Vec::new(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Any scene awaiting manual review blocks the checkpoint (partial
+        // automation, zero leakage): the completed reviews + deep audit are
+        // recorded, but the checkpoint stays pending_review listing exactly the
+        // scenes the operator must review by hand.
+        if !pending_manual.is_empty() {
+            return Ok(auto_checkpoint_block(
+                harness_state,
+                start_chapter,
+                end_chapter,
+                "pending_manual_review",
+                pending_manual,
+            ));
+        }
+
+        // ── Step 3: verdict from the deep-consistency severity counts ──
+        let errors = *finding_counts.get("error").unwrap_or(&0);
+        let warnings = *finding_counts.get("warning").unwrap_or(&0);
+        let infos = *finding_counts.get("info").unwrap_or(&0);
+        let approve = match policy {
+            "auto_advisory" => errors == 0 && warnings == 0,
+            "auto_strict" => errors == 0 && warnings == 0 && infos == 0,
+            // Defensive: an unknown policy never auto-approves.
+            _ => false,
+        };
+
+        if approve {
+            // Approve via the SAME path authoring_review_checkpoint takes: an
+            // honest auto-approval directive, then operator::review_checkpoint.
+            let directives = vec![format!("auto-approved under {policy}: 0 blocking findings")];
+            harness_state.save(&state_path)?;
+            let review_result = spindle_harness::operator::review_checkpoint(
+                harness_state,
+                &state_path,
+                start_chapter,
+                end_chapter,
+                &directives,
+            );
+            let _ = std::fs::remove_file(&state_path);
+            review_result?;
+            if let Some(checkpoint) = harness_state
+                .checkpoint_history
+                .iter_mut()
+                .find(|cp| cp.start_chapter == start_chapter && cp.end_chapter == end_chapter)
+            {
+                checkpoint.auto_outcome = Some("approved".to_string());
+            }
+            Ok(AutoCheckpointOutcome {
+                approved: true,
+                finding_counts,
+                blocked_reason: None,
+                pending_manual_scene_ids: Vec::new(),
+            })
+        } else {
+            let _ = std::fs::remove_file(&state_path);
+            // Blocked by findings: stay pending_review exactly as manual, with a
+            // prose-free severity-count summary (ids/counts, no prose).
+            let reason = format!(
+                "auto_{policy_tail}_findings: errors={errors} warnings={warnings} info={infos}",
+                policy_tail = policy.strip_prefix("auto_").unwrap_or(policy),
+            );
+            Ok(auto_checkpoint_block(
+                harness_state,
+                start_chapter,
+                end_chapter,
+                &reason,
+                Vec::new(),
+            ))
+        }
     }
 
     async fn handle_authoring_resolve_block(
@@ -5013,6 +5478,136 @@ fn authoring_sample_checkpoint_scene_ids(
     Ok(candidates)
 }
 
+/// Map a run's persisted `checkpoint_policy` to the auto policy in force, or
+/// `None` for manual (the default). `None`/`Some("manual")` (never persisted —
+/// manual canonicalizes to NULL at start) run the classic flow; only
+/// `auto_advisory`/`auto_strict` trigger the in-process automation. The
+/// scheduler is deliberately lenient so an out-of-band value never diverts the
+/// checkpoint loop into the automation.
+fn auto_checkpoint_policy(policy: Option<&str>) -> Option<&'static str> {
+    match policy {
+        Some("auto_advisory") => Some("auto_advisory"),
+        Some("auto_strict") => Some("auto_strict"),
+        _ => None,
+    }
+}
+
+/// Mark the pending checkpoint as an auto-block (evolution §3.3): stamp its
+/// `auto_outcome` (`blocked` or `manual`) and pending-manual scene ids on the
+/// in-memory state (the caller persists), and return the outcome carrying the
+/// prose-free `blocked_reason`. Never mutates checkpoint status — a blocked
+/// auto-checkpoint stays `pending_review` exactly like a manual one, so the
+/// operator's manual escape hatch still works.
+fn auto_checkpoint_block(
+    harness_state: &mut HarnessState,
+    start_chapter: i32,
+    end_chapter: i32,
+    reason: &str,
+    pending_manual_scene_ids: Vec<String>,
+) -> AutoCheckpointOutcome {
+    let outcome = if pending_manual_scene_ids.is_empty() {
+        "blocked"
+    } else {
+        "manual"
+    };
+    if let Some(checkpoint) = harness_state
+        .checkpoint_history
+        .iter_mut()
+        .find(|cp| cp.start_chapter == start_chapter && cp.end_chapter == end_chapter)
+    {
+        checkpoint.auto_outcome = Some(outcome.to_string());
+        checkpoint.pending_manual_scene_ids = pending_manual_scene_ids.clone();
+    }
+    AutoCheckpointOutcome {
+        approved: false,
+        finding_counts: std::collections::BTreeMap::new(),
+        blocked_reason: Some(reason.to_string()),
+        pending_manual_scene_ids,
+    }
+}
+
+/// The result of the in-process auto-checkpoint automation (evolution §3.3).
+/// Ids/counts/enums only, never prose (I8).
+struct AutoCheckpointOutcome {
+    /// True iff the automation self-cleared the checkpoint under its policy.
+    approved: bool,
+    /// Deep-consistency severity counts (`{severity: n}`) at approval; empty on
+    /// a block (the block reason carries the prose-free summary).
+    finding_counts: std::collections::BTreeMap<String, i64>,
+    /// Prose-free block summary when not approved; `None` on approval.
+    blocked_reason: Option<String>,
+    /// Scene ids awaiting manual dual-persona review (rating not covered — I3).
+    pending_manual_scene_ids: Vec<String>,
+}
+
+/// Severity counts of a deep `check_consistency` output, keyed by the
+/// lowercase severity word (`error` / `warning` / `info`). Uses the returned
+/// `summary` (already computed by the service) so the verdict never re-walks
+/// prose. Counts only — no prose.
+fn auto_checkpoint_severity_counts(
+    output: &spindle_core::models::CheckConsistencyOutput,
+) -> std::collections::BTreeMap<String, i64> {
+    let mut counts = std::collections::BTreeMap::new();
+    counts.insert("error".to_string(), output.summary.error_count as i64);
+    counts.insert("warning".to_string(), output.summary.warning_count as i64);
+    counts.insert("info".to_string(), output.summary.info_count as i64);
+    counts
+}
+
+/// Is `error` a rating-not-covered rejection from the dispatch chokepoint
+/// (evolution §4 rule 2)? The service surfaces the typed
+/// `RouteClearanceError::RatingNotCovered` through anyhow, so downcast to detect
+/// the explicit-manual-fallback case (I3) precisely — never string-matching an
+/// error message. Names ids only; carries no prose.
+fn auto_checkpoint_error_is_rating_not_covered(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<spindle_adapters::ai::RouteClearanceError>(),
+        Some(spindle_adapters::ai::RouteClearanceError::RatingNotCovered { .. })
+    )
+}
+
+/// Record a deep-consistency audit into the checkpoint report artifact — the
+/// exact write `authoring_record_checkpoint_audit` performs, factored out so the
+/// auto-checkpoint automation records the audit through the SAME persistence
+/// shape (evolution §3.3 K3.1: "call the service/handler internals, not a new
+/// persistence shape"). `deep_consistency` is the serialized deep output.
+fn authoring_record_checkpoint_deep_audit(
+    harness_state: &spindle_harness::state::HarnessState,
+    state_path: &Path,
+    start_chapter: i32,
+    end_chapter: i32,
+    deep_consistency: serde_json::Value,
+) -> anyhow::Result<()> {
+    let report_path =
+        checkpoint_report_path(harness_state, state_path, start_chapter, end_chapter)?;
+    let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+        format!(
+            "failed to read checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    let mut report: spindle_harness::artifacts::CheckpointReportArtifact =
+        serde_json::from_str(&raw_report).with_context(|| {
+            format!(
+                "failed to parse checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+    report.deep_consistency = Some(deep_consistency);
+    report.deep_consistency_status = "complete".to_string();
+    report.deep_consistency_instruction =
+        "Deep consistency audit recorded by the auto-checkpoint automation (evolution §3.3)."
+            .to_string();
+    let report_json = serde_json::to_string_pretty(&report)?;
+    std::fs::write(&report_path, report_json).with_context(|| {
+        format!(
+            "failed to update checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn authoring_state_path(data_dir: &Path, run_id: &str) -> PathBuf {
     spindle_adapters::workspace::runtime_dir(data_dir).join(format!(
         "authoring_run_{}_temp.json",
@@ -5079,6 +5674,7 @@ fn map_harness_to_records(
         updated_at: now,
         mining_policy: state.mining_policy.clone(),
         max_revise_attempts: state.max_revise_attempts,
+        checkpoint_policy: state.checkpoint_policy.clone(),
     };
 
     let mut chapters = Vec::new();
@@ -5152,6 +5748,8 @@ fn map_harness_to_records(
             save_point_id: cp.save_point_id.clone(),
             status: cp_status.to_string(),
             report_artifact_path: cp.report_artifact_path.clone(),
+            auto_outcome: cp.auto_outcome.clone(),
+            pending_manual_scene_ids: cp.pending_manual_scene_ids.clone(),
         });
     }
 
@@ -5243,6 +5841,8 @@ fn map_records_to_harness(
             save_point_id: cp.save_point_id.clone(),
             status,
             report_artifact_path: cp.report_artifact_path.clone(),
+            auto_outcome: cp.auto_outcome.clone(),
+            pending_manual_scene_ids: cp.pending_manual_scene_ids.clone(),
         });
     }
 
@@ -5260,6 +5860,7 @@ fn map_records_to_harness(
         editorial_directives: run.editorial_directives.clone(),
         mining_policy: run.mining_policy.clone(),
         max_revise_attempts: run.max_revise_attempts,
+        checkpoint_policy: run.checkpoint_policy.clone(),
         chapters: ch_states,
         checkpoint_history: cp_history,
     };
@@ -5878,6 +6479,7 @@ mod tests {
                 updated_at: now,
                 mining_policy: Some("propose_all".into()),
                 max_revise_attempts: Some(1),
+                checkpoint_policy: None,
             },
             Vec::new(),
             Vec::new(),

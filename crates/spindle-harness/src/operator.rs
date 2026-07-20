@@ -406,6 +406,8 @@ mod tests {
             save_point_id: "save_point:1".to_string(),
             status: CheckpointStatus::PendingReview,
             report_artifact_path: Some(report_rel),
+            auto_outcome: None,
+            pending_manual_scene_ids: Vec::new(),
         });
 
         let message = review_checkpoint(

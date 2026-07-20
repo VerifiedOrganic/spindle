@@ -6298,6 +6298,16 @@ pub struct AuthoringStartRunInput {
     /// revision. Validated `0..=2`; anything else is an input error.
     #[serde(default)]
     pub max_revise_attempts: Option<i32>,
+    /// Checkpoint policy for the run (evolution §3.3). Omitted, `None`, or
+    /// `"manual"` = the classic 4-step operator checkpoint flow, byte-identical
+    /// to today (I1). `"auto_advisory"` self-clears a checkpoint when no finding
+    /// is `warning`-or-worse; `"auto_strict"` self-clears only on zero findings
+    /// of any severity. Validated against
+    /// {`manual`, `auto_advisory`, `auto_strict`}; an auto policy additionally
+    /// requires review-route coverage across the run's ratings at start
+    /// (preflight). Anything else is an input error.
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6379,6 +6389,24 @@ pub struct AuthoringStatusCheckpoint {
     pub save_point_id: String,
     pub status: String,
     pub report_artifact_path: Option<String>,
+    /// The run's checkpoint policy in force for this checkpoint (evolution
+    /// §3.3). `None` = manual (default). Otherwise `auto_advisory` |
+    /// `auto_strict`. Additive, serde-default so pre-policy clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_policy: Option<String>,
+    /// Outcome of the in-process auto-checkpoint automation (evolution §3.3).
+    /// `None` = manual policy or automation not yet run; otherwise `approved`
+    /// (self-cleared under policy), `blocked` (findings held it pending_review),
+    /// or `manual` (one or more sampled scenes fell back to manual dual-persona
+    /// review). Ids/enums only, never prose (I8). Additive, serde-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_outcome: Option<String>,
+    /// Scene ids whose sampled dual-persona review fell back to manual because
+    /// the `review` route was not rating-cleared for the scene (evolution §3.3
+    /// explicit-manual-fallback, I3). Empty when no scene fell back. Ids only —
+    /// the prose of those scenes was never dispatched anywhere. Additive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_manual_scene_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6560,6 +6588,15 @@ pub struct AuthoringPrepareRunInput {
     /// adds a preflight nor changes prepare's `missing_requirements`.
     #[serde(default)]
     pub max_revise_attempts: Option<i32>,
+    /// Optional checkpoint policy the run will use (evolution §3.3). `None` by
+    /// default (prepare does not know the policy in the normal flow, so the
+    /// review-route preflight is skipped); `Some("auto_advisory")` /
+    /// `Some("auto_strict")` additionally verify the `review` route resolves
+    /// rating-cleared for every planned rating (§3.3 precondition (a); (b) — a
+    /// deep-check-capable review route — collapses into (a) today because the
+    /// same `review` route serves the checkpoint's deep dual-persona pass).
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6605,6 +6642,42 @@ pub fn validate_mining_policy(policy: Option<&str>) -> Result<Option<String>, St
             match normalized.as_str() {
                 "disabled" => Ok(None),
                 "propose_all" => Ok(Some("propose_all".to_string())),
+                _ => Err(raw.to_string()),
+            }
+        }
+    }
+}
+
+/// The valid `checkpoint_policy` values for an authoring run (evolution §3.3).
+/// `"manual"` runs the classic 4-step operator checkpoint flow exactly as
+/// before; `"auto_advisory"` and `"auto_strict"` let the harness self-clear a
+/// checkpoint in-process (deep consistency + sampled dual-persona reviews),
+/// approving on a severity threshold. Kept as a small closed set — additive
+/// values ship with an explicit entry here. `manual` remains the default even
+/// after auto policies land (owner decision D-1: `manual` is the global
+/// default; a run opts into an auto policy explicitly).
+pub const AUTHORING_CHECKPOINT_POLICIES: [&str; 3] = ["manual", "auto_advisory", "auto_strict"];
+
+/// Validate and canonicalize an optional `checkpoint_policy` from run input
+/// (evolution §3.3).
+///
+/// - `None` → `Ok(None)` (manual = default, byte-identical to the pre-policy
+///   4-step checkpoint flow).
+/// - `Some("manual")` → `Ok(None)`. `"manual"` canonicalizes to `None` so the
+///   run persists NULL, matching a pre-upgrade row exactly (I1: manual/NULL is
+///   byte-identical to today).
+/// - `Some(value)` where trimmed value ∈ {`auto_advisory`, `auto_strict`} →
+///   `Ok(Some(canonical))`.
+/// - anything else → `Err(rejected value)` for an input-error message.
+pub fn validate_checkpoint_policy(policy: Option<&str>) -> Result<Option<String>, String> {
+    match policy {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "manual" => Ok(None),
+                "auto_advisory" => Ok(Some("auto_advisory".to_string())),
+                "auto_strict" => Ok(Some("auto_strict".to_string())),
                 _ => Err(raw.to_string()),
             }
         }
@@ -6958,6 +7031,29 @@ mod tests {
         assert_eq!(
             validate_mining_policy(Some("auto_accept")),
             Err("auto_accept".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_checkpoint_policy_accepts_known_and_rejects_unknown() {
+        // None (default) and explicit "manual" both canonicalize to None so the
+        // run persists NULL = manual = byte-identical to the pre-policy flow.
+        assert_eq!(validate_checkpoint_policy(None), Ok(None));
+        assert_eq!(validate_checkpoint_policy(Some("manual")), Ok(None));
+        assert_eq!(validate_checkpoint_policy(Some("  Manual ")), Ok(None));
+        // auto_advisory / auto_strict are the two enabling values.
+        assert_eq!(
+            validate_checkpoint_policy(Some("auto_advisory")),
+            Ok(Some("auto_advisory".to_string()))
+        );
+        assert_eq!(
+            validate_checkpoint_policy(Some("AUTO_STRICT")),
+            Ok(Some("auto_strict".to_string()))
+        );
+        // Anything else is an input error carrying the rejected value verbatim.
+        assert_eq!(
+            validate_checkpoint_policy(Some("auto")),
+            Err("auto".to_string())
         );
     }
 
