@@ -91,6 +91,13 @@ pub struct HarnessState {
     /// default so pre-P3 state fixtures still deserialize.
     #[serde(default)]
     pub checkpoint_policy: Option<String>,
+    /// Living-outline replan policy for this run (ADR 0003, evolution §3.5).
+    /// `None` (pre-upgrade and default) or `Some("disabled")` runs the loop
+    /// exactly as before (never replans); `Some("propose_all")` inserts a
+    /// `ReplanChapter` step after each chapter summary. Additive with a serde
+    /// default so pre-P4 state fixtures still deserialize.
+    #[serde(default)]
+    pub replan_policy: Option<String>,
     #[serde(default)]
     pub chapters: Vec<ChapterState>,
     #[serde(default)]
@@ -111,6 +118,7 @@ impl HarnessState {
             mining_policy: None,
             max_revise_attempts: None,
             checkpoint_policy: None,
+            replan_policy: None,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -151,6 +159,8 @@ impl HarnessState {
                         .collect(),
                     summary_saved: false,
                     summary_artifact_path: None,
+                    replan_status: None,
+                    replan_detail: None,
                 })
                 .collect(),
             checkpoint_history: Vec::new(),
@@ -233,6 +243,18 @@ pub struct ChapterState {
     pub summary_saved: bool,
     #[serde(default)]
     pub summary_artifact_path: Option<String>,
+    /// Living-outline replan outcome for this chapter's post-summary pass (ADR
+    /// 0003, evolution §3.5). `None` = not attempted (disabled run, or summary
+    /// not yet saved); otherwise `staged` | `skipped` | `no_targets` |
+    /// `no_summary` | `error`. A `Some(_)` value is what the scheduler treats as
+    /// "replan done" so the pass runs at most once per chapter. Additive,
+    /// serde-default.
+    #[serde(default)]
+    pub replan_status: Option<String>,
+    /// Human-readable detail for the replan outcome (staged amendment count or
+    /// the skip/no-targets reason). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub replan_detail: Option<String>,
 }
 
 impl ChapterState {

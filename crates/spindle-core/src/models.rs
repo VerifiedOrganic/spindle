@@ -6309,6 +6309,14 @@ pub struct AuthoringStartRunInput {
     /// (preflight). Anything else is an input error.
     #[serde(default)]
     pub checkpoint_policy: Option<String>,
+    /// Living-outline replan policy for the run (ADR 0003, evolution §3.5).
+    /// Omitted, `None`, or `"disabled"` = the loop never replans (behaves exactly
+    /// as before). `"propose_all"` runs a replan pass after each chapter summary,
+    /// staging amendment proposals against the not-yet-drafted future chapters for
+    /// operator ratification (never auto-applied — ADR D5). Validated against
+    /// {`disabled`, `propose_all`}; anything else is an input error.
+    #[serde(default)]
+    pub replan_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6348,6 +6356,17 @@ pub struct AuthoringStatusChapter {
     pub summary_saved: bool,
     pub summary_artifact_path: Option<String>,
     pub scenes: Vec<AuthoringStatusScene>,
+    /// Living-outline replan outcome for this chapter's post-summary pass (ADR
+    /// 0003, evolution §3.5). `None` = replan not attempted (disabled run, or the
+    /// chapter's summary not yet saved); otherwise `staged` | `skipped` |
+    /// `no_targets` | `no_summary` | `error`. Additive, serde-default so
+    /// pre-replan clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replan_status: Option<String>,
+    /// Human-readable detail for the replan outcome (staged amendment count or
+    /// the skip/no-targets reason). Never carries prose (evolution I8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replan_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6617,6 +6636,16 @@ pub struct AuthoringPrepareRunInput {
     /// same `review` route serves the checkpoint's deep dual-persona pass).
     #[serde(default)]
     pub checkpoint_policy: Option<String>,
+    /// Optional living-outline replan policy the run will use (ADR 0003,
+    /// evolution §3.5). Threaded from `authoring_start_run` for validation, but
+    /// prepare adds **no** route preflight for it: the replan differ is
+    /// non-prose-bearing (summaries + metadata only, no scene prose — ADR D5), so
+    /// no rating clearance applies, and on a `NoRoute` the differ falls to
+    /// `review` and then skips honestly (never blocks). A non-`None` value here
+    /// therefore neither adds a preflight nor changes prepare's
+    /// `missing_requirements`.
+    #[serde(default)]
+    pub replan_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6655,6 +6684,36 @@ pub const AUTHORING_MINING_POLICIES: [&str; 2] = ["disabled", "propose_all"];
 ///   persists NULL, matching the pre-upgrade disabled state exactly.
 /// - anything else → `Err(rejected value)` for an input-error message.
 pub fn validate_mining_policy(policy: Option<&str>) -> Result<Option<String>, String> {
+    match policy {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "disabled" => Ok(None),
+                "propose_all" => Ok(Some("propose_all".to_string())),
+                _ => Err(raw.to_string()),
+            }
+        }
+    }
+}
+
+/// The valid `replan_policy` values for an authoring run (ADR 0003, evolution
+/// §3.5). `"disabled"` leaves the loop exactly as before (never replans);
+/// `"propose_all"` runs a replan pass after each chapter summary, staging
+/// amendment proposals against the not-yet-drafted future chapters. Kept as a
+/// small closed set — additive values ship with an explicit entry here. Mirrors
+/// [`AUTHORING_MINING_POLICIES`].
+pub const AUTHORING_REPLAN_POLICIES: [&str; 2] = ["disabled", "propose_all"];
+
+/// Validate and canonicalize an optional `replan_policy` from run input (ADR
+/// 0003, evolution §3.5). Mirrors [`validate_mining_policy`] exactly.
+///
+/// - `None` → `Ok(None)` (disabled = default, byte-identical to pre-replan).
+/// - `Some(value)` where trimmed value ∈ {`disabled`, `propose_all`} →
+///   `Ok(Some(canonical))`. `"disabled"` canonicalizes to `None` so the run
+///   persists NULL, matching the pre-upgrade disabled state exactly.
+/// - anything else → `Err(rejected value)` for an input-error message.
+pub fn validate_replan_policy(policy: Option<&str>) -> Result<Option<String>, String> {
     match policy {
         None => Ok(None),
         Some(raw) => {
@@ -6965,6 +7024,113 @@ pub struct ReplanChapterOutput {
     pub skip_reason: Option<String>,
 }
 
+/// Input for `list_plan_amendments` (ADR 0003): read the living-outline ratify
+/// queue on a project's active branch. Filters compose (AND): `status` narrows
+/// to `staged`/`applied`/`rejected`/`superseded`; `book_number` + `source_chapter`
+/// scope to one replan pass's provenance (both required together — a lone
+/// `book_number` or lone `source_chapter` is an input error). Mirrors
+/// [`ListCanonDeltasInput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListPlanAmendmentsInput {
+    pub project_id: String,
+    /// `staged` | `applied` | `rejected` | `superseded`; `None` returns all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Scope to the amendments a specific replan pass staged: the book the
+    /// `source_chapter` belongs to. Must be paired with `source_chapter`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_number: Option<i32>,
+    /// Scope to the amendments triggered by a specific summarized chapter. Must
+    /// be paired with `book_number`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_chapter: Option<i32>,
+}
+
+/// Output of `list_plan_amendments`: the matching amendments in the repository's
+/// deterministic `(created_at, id)` order.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListPlanAmendmentsOutput {
+    #[serde(default)]
+    pub amendments: Vec<PlanAmendment>,
+}
+
+/// One operator ratification decision on a staged plan amendment (ADR 0003 D5).
+/// `action` is `apply` or `reject`. `edit` optionally replaces the staged
+/// payload (ratify-with-correction) — the edited payload is what is applied AND
+/// recorded on the row. `note` is an operator annotation surfaced in the output
+/// (the `plan_amendment` row has no note column, so it is never persisted).
+/// Mirrors [`CanonDeltaDecisionInput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanAmendmentDecisionInput {
+    pub amendment_id: String,
+    /// `apply` | `reject`.
+    pub action: String,
+    /// Corrected payload replacing the staged one on apply. On reject it is
+    /// recorded but not applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "any_object_schema")]
+    pub edit: Option<serde_json::Value>,
+    /// Free-form operator note; echoed in the output, not persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Input for `decide_plan_amendments` (ADR 0003 D5): the apply dispatcher. All
+/// decisions are pre-flighted before any write; a single pre-flight failure
+/// aborts the whole call with zero writes (decisions on already-decided rows are
+/// input errors — finality). The ADR D3 immutability guard is checked at apply
+/// time for every chapter-targeting class. `decided_by` defaults to `operator`.
+/// Mirrors [`DecideCanonDeltasInput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecidePlanAmendmentsInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub decisions: Vec<PlanAmendmentDecisionInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+}
+
+/// The per-decision outcome in a `decide_plan_amendments` response.
+///
+/// * `applied` — the amendment replayed through its plan write path and the
+///   decision (with the ADR D4 prior-state snapshot) was recorded.
+/// * `rejected` — the amendment was marked rejected; no plan write.
+/// * `failed` — a real write error occurred after pre-flight; earlier applies in
+///   the batch stay applied (they are real outline changes), this row stays
+///   staged.
+/// * `not_reached` — a later decision the dispatcher never got to because an
+///   earlier one failed (this row stays staged).
+///
+/// Mirrors [`CanonDeltaDecisionResult`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanAmendmentDecisionResult {
+    pub amendment_id: String,
+    /// `applied` | `rejected` | `failed` | `not_reached`.
+    pub outcome: String,
+    /// Present on `failed`: the write error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Present on `applied` for `promise_followup` (the created narrative-promise
+    /// id). `None` for the chapter-plan classes, which rewrite a plan in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_record_id: Option<String>,
+    /// The operator note carried on the decision input, echoed back (the row has
+    /// no note column, so this is the only place it survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Output of `decide_plan_amendments`: one result per decision in input order,
+/// plus counts. Mirrors [`DecideCanonDeltasOutput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecidePlanAmendmentsOutput {
+    #[serde(default)]
+    pub results: Vec<PlanAmendmentDecisionResult>,
+    pub applied_count: usize,
+    pub rejected_count: usize,
+    pub failed_count: usize,
+}
+
 /// A single reader-simulation concern (evolution §3.6 cumulative reader-sim).
 /// `severity` is `info` | `warning` — a craft signal only, never a hard gate:
 /// reader-sim concerns are report-only, matching the sampled-review outcomes
@@ -7239,6 +7405,30 @@ mod tests {
             validate_mining_policy(Some("auto_accept")),
             Err("auto_accept".to_string())
         );
+    }
+
+    #[test]
+    fn validate_replan_policy_accepts_known_and_rejects_unknown() {
+        // None (default) and explicit "disabled" both canonicalize to None so
+        // the run persists NULL = byte-identical disabled state (ADR 0003 D5).
+        assert_eq!(validate_replan_policy(None), Ok(None));
+        assert_eq!(validate_replan_policy(Some("disabled")), Ok(None));
+        assert_eq!(validate_replan_policy(Some("  Disabled ")), Ok(None));
+        // propose_all is the one enabling value.
+        assert_eq!(
+            validate_replan_policy(Some("propose_all")),
+            Ok(Some("propose_all".to_string()))
+        );
+        assert_eq!(
+            validate_replan_policy(Some("PROPOSE_ALL")),
+            Ok(Some("propose_all".to_string()))
+        );
+        // Anything else is an input error carrying the rejected value verbatim.
+        assert_eq!(
+            validate_replan_policy(Some("auto_accept")),
+            Err("auto_accept".to_string())
+        );
+        assert_eq!(AUTHORING_REPLAN_POLICIES, ["disabled", "propose_all"]);
     }
 
     #[test]

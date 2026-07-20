@@ -130,6 +130,9 @@ pub enum NextAction {
     SaveChapterSummary {
         chapter_number: i32,
     },
+    ReplanChapter {
+        chapter_number: i32,
+    },
     Complete,
 }
 
@@ -217,6 +220,9 @@ impl std::fmt::Display for NextAction {
             ),
             Self::SaveChapterSummary { chapter_number } => {
                 write!(f, "save summary for chapter {chapter_number}")
+            }
+            Self::ReplanChapter { chapter_number } => {
+                write!(f, "replan future plans after chapter {chapter_number}")
             }
             Self::Complete => write!(f, "complete"),
         }
@@ -745,6 +751,26 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
         };
     }
 
+    // Opt-in living-outline replan sits AFTER a chapter's summary is saved and
+    // BEFORE that chapter's checkpoint (ADR 0003, evolution §3.5). Only when the
+    // run opted into `propose_all` AND a summarized chapter has not yet been
+    // replanned does the scheduler yield ReplanChapter; otherwise scheduling is
+    // byte-identical to the pre-replan loop. A `Some(_)` replan_status (any
+    // outcome) means the pass already ran, so it never re-fires — the checkpoint
+    // then proceeds. Placed before the interval-checkpoint trigger so a just-
+    // summarized chapter is replanned before its boundary checkpoint; because it
+    // runs at most once per chapter it never delays the checkpoint indefinitely.
+    if replan_enabled(state)
+        && let Some(chapter) = state
+            .chapters
+            .iter()
+            .find(|chapter| chapter.summary_saved && chapter.replan_status.is_none())
+    {
+        return NextAction::ReplanChapter {
+            chapter_number: chapter.chapter_number,
+        };
+    }
+
     let completed_since_checkpoint = contiguous_completed_after_last_checkpoint(state);
     if completed_since_checkpoint.len() >= state.checkpoint_interval {
         return NextAction::RunCheckpoint {
@@ -873,6 +899,16 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
 /// deliberately lenient so an unknown value never diverts the loop.
 fn mining_enabled(state: &HarnessState) -> bool {
     state.mining_policy.as_deref() == Some("propose_all")
+}
+
+/// True when the run opted into living-outline replanning (`replan_policy ==
+/// "propose_all"`). `None` (pre-upgrade / default) and any other value —
+/// including the explicit `"disabled"` — leave the loop exactly as it behaved
+/// before replanning existed. The policy string is validated at
+/// `authoring_start_run`; the scheduler is deliberately lenient so an unknown
+/// value never diverts the loop.
+fn replan_enabled(state: &HarnessState) -> bool {
+    state.replan_policy.as_deref() == Some("propose_all")
 }
 
 /// The run's bounded in-run revise budget, or `None` when the loop is disabled
@@ -1167,6 +1203,71 @@ mod tests {
                 scene_id: "scene:1".to_string(),
             }
         );
+    }
+
+    // ── P4 living-outline replan scheduling (ADR 0003, evolution §3.5) ──
+
+    /// A state where chapter 1's single scene is fully beats-annotated and the
+    /// chapter summary is saved (so chapter 1 is "complete"), chapter 2 still
+    /// pending. `replan_policy`/`replan_status` are set on chapter 1 so the
+    /// replan-vs-checkpoint fork can be exercised deterministically.
+    fn summarized_state(replan_policy: Option<&str>, replan_status: Option<&str>) -> HarnessState {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        state.replan_policy = replan_policy.map(str::to_string);
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::BeatsAnnotated;
+        chapter.summary_saved = true;
+        chapter.replan_status = replan_status.map(str::to_string);
+        state.normalize();
+        state
+    }
+
+    #[test]
+    fn propose_all_after_summary_schedules_replan_before_checkpoint() {
+        // With replan_policy propose_all and chapter 1 summarized but not yet
+        // replanned, ReplanChapter fires BEFORE the interval checkpoint.
+        let state = summarized_state(Some("propose_all"), None);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::ReplanChapter { chapter_number: 1 }
+        );
+    }
+
+    #[test]
+    fn propose_all_after_replan_proceeds_to_checkpoint() {
+        // Once chapter 1's replan_status is Some (any outcome) the pass has run;
+        // the checkpoint for its boundary proceeds (never re-fires, never delays
+        // the checkpoint indefinitely).
+        for status in ["staged", "skipped", "no_targets", "error"] {
+            let state = summarized_state(Some("propose_all"), Some(status));
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::RunCheckpoint {
+                    start_chapter: 1,
+                    end_chapter: 1,
+                },
+                "replan_status {status:?} must let the checkpoint proceed"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_policy_after_summary_schedules_checkpoint_never_replan() {
+        // policy None (pre-upgrade / default) and policy "disabled" both keep the
+        // existing byte-identical schedule: straight to the checkpoint, no
+        // ReplanChapter ever.
+        for policy in [None, Some("disabled")] {
+            let state = summarized_state(policy, None);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::RunCheckpoint {
+                    start_chapter: 1,
+                    end_chapter: 1,
+                },
+                "policy {policy:?} must not schedule ReplanChapter"
+            );
+        }
     }
 
     #[test]

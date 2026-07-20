@@ -2545,7 +2545,7 @@ impl<'a> TryFrom<&Row<'a>> for ImportReviewItem {
 // Authoring Runs
 // =============================================================================
 
-pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy, max_revise_attempts, checkpoint_policy";
+pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy, max_revise_attempts, checkpoint_policy, replan_policy";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringRun {
@@ -2573,6 +2573,11 @@ pub struct AuthoringRun {
     /// classic 4-step operator checkpoint flow. `Some("auto_advisory")` /
     /// `Some("auto_strict")` opt into the in-process auto-checkpoint automation.
     pub checkpoint_policy: Option<String>,
+    /// Living-outline replan opt-in (V0030, ADR 0003). `None` = disabled
+    /// (pre-upgrade + default): the run never replans. `Some("propose_all")` runs
+    /// a replan pass after each chapter summary, staging amendment proposals
+    /// against the not-yet-drafted future chapters for operator ratification.
+    pub replan_policy: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
@@ -2595,11 +2600,12 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
             mining_policy: row::opt_text(r, 13)?,
             max_revise_attempts: row::opt_int(r, 14)?.map(|value| value as i32),
             checkpoint_policy: row::opt_text(r, 15)?,
+            replan_policy: row::opt_text(r, 16)?,
         })
     }
 }
 
-pub const AUTHORING_RUN_CHAPTER_COLUMNS: &str = "authoring_run_id, chapter_number, planned, synopsis, pov_character_id, status, summary_saved, summary_artifact_path";
+pub const AUTHORING_RUN_CHAPTER_COLUMNS: &str = "authoring_run_id, chapter_number, planned, synopsis, pov_character_id, status, summary_saved, summary_artifact_path, replan_status, replan_detail";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringRunChapter {
@@ -2611,6 +2617,16 @@ pub struct AuthoringRunChapter {
     pub status: String,
     pub summary_saved: bool,
     pub summary_artifact_path: Option<String>,
+    /// Living-outline replan outcome for this chapter's post-summary pass (V0030,
+    /// ADR 0003). `None` = not attempted (disabled run, or summary not yet
+    /// saved); otherwise `staged` | `skipped` | `no_targets` | `no_summary` |
+    /// `error`. Additive, serde-default so pre-V0030 rows deserialize.
+    #[serde(default)]
+    pub replan_status: Option<String>,
+    /// Human-readable detail for the replan outcome (staged amendment count or
+    /// the skip/no-targets reason). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub replan_detail: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringRunChapter {
@@ -2625,6 +2641,8 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRunChapter {
             status: row::text(r, 5)?,
             summary_saved: row::int(r, 6)? != 0,
             summary_artifact_path: row::opt_text(r, 7)?,
+            replan_status: row::opt_text(r, 8)?,
+            replan_detail: row::opt_text(r, 9)?,
         })
     }
 }

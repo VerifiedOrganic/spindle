@@ -220,6 +220,18 @@ pub fn scene_mined_payload(
     Value::Object(map)
 }
 
+/// `replan_proposed` payload (ADR 0002 D2 reserved kind, activated in P4 —
+/// ADR 0003 §3.5). Carries the summarized `chapter` that triggered the pass and
+/// the `amendment_count` staged against the future plans. Ids/counts only, never
+/// prose or rationale text (ADR D3.1). Emitted ONLY on a `staged` outcome with a
+/// positive count; skip/error/no-target outcomes emit `pass_skipped` instead.
+pub fn replan_proposed_payload(chapter: i32, amendment_count: usize) -> Value {
+    json!({
+        "chapter": chapter,
+        "amendment_count": amendment_count,
+    })
+}
+
 /// `chapter_summarized` payload (ADR D2). `summary_artifact_path` is an artifact
 /// PATH — it points at content, it never carries content (ADR D3.1).
 pub fn chapter_summarized_payload(chapter: i32, summary_artifact_path: Option<&str>) -> Value {
@@ -330,6 +342,13 @@ fn leading_count(detail: &str) -> Option<i64> {
         .find_map(|token| token.parse::<i64>().ok())
 }
 
+/// Public wrapper over [`leading_count`] for the `replan_proposed` emitter,
+/// which recovers the staged amendment count from the harness's prose-free
+/// detail string (`"staged N amendment(s)"`) at the emission seam.
+pub fn leading_count_pub(detail: &str) -> Option<i64> {
+    leading_count(detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +424,18 @@ mod tests {
         assert_eq!(obj["finding_counts"]["info"], json!(2));
         // The kind is a member of the ADR D2 vocabulary (activated reserved kind).
         assert!(is_run_event_kind("checkpoint_auto_approved"));
+    }
+
+    #[test]
+    fn replan_proposed_carries_chapter_and_count() {
+        let payload = replan_proposed_payload(3, 2);
+        assert_eq!(payload["chapter"], json!(3));
+        assert_eq!(payload["amendment_count"], json!(2));
+        // The kind is a member of the ADR D2 vocabulary (activated reserved kind).
+        assert!(is_run_event_kind("replan_proposed"));
+        // The count recovers from the harness's prose-free detail line.
+        assert_eq!(leading_count_pub("staged 4 amendment(s)"), Some(4));
+        assert_eq!(leading_count_pub("no_targets"), None);
     }
 
     #[test]

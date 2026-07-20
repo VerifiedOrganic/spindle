@@ -17856,6 +17856,793 @@ impl SqliteSpindleService {
             .ok_or_else(|| anyhow::anyhow!("payload is missing required index '{key}'"))
     }
 
+    // =========================================================================
+    // Plan-amendment ratification (ADR 0003 — the living-outline apply
+    // dispatcher). Mirrors the canon-delta ratifier (D3/D5) exactly, plus the
+    // ADR 0003 D3 immutability guard and D4 prior-state/plan_revision capture.
+    // =========================================================================
+
+    /// List the plan amendments staged on a project's active branch (ADR 0003 —
+    /// the living-outline ratify queue). Thin over
+    /// [`Repository::list_plan_amendments`]; filters compose (AND):
+    /// `status` narrows to `staged`/`applied`/`rejected`/`superseded`, and
+    /// `book_number` + `source_chapter` scope to one replan pass's provenance
+    /// (both required together — a lone one is an input error). Mirrors
+    /// [`Self::list_canon_deltas`].
+    pub async fn list_plan_amendments(
+        &self,
+        input: spindle_core::models::ListPlanAmendmentsInput,
+    ) -> Result<spindle_core::models::ListPlanAmendmentsOutput> {
+        use spindle_core::models::ListPlanAmendmentsOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+
+        let provenance = match (input.book_number, input.source_chapter) {
+            (Some(book), Some(chapter)) => Some((book, chapter)),
+            (None, None) => None,
+            _ => anyhow::bail!(
+                "list_plan_amendments: book_number and source_chapter must be supplied together \
+                 (both scope to one replan pass's provenance)"
+            ),
+        };
+
+        let stored = self
+            .repository
+            .list_plan_amendments(
+                &input.project_id,
+                &active_branch.id,
+                input.status.as_deref(),
+                provenance,
+            )
+            .await?;
+        Ok(ListPlanAmendmentsOutput {
+            amendments: stored.into_iter().map(|a| a.into_core()).collect(),
+        })
+    }
+
+    /// The living-outline apply dispatcher (ADR 0003 D3/D4/D5). Ratifies a batch
+    /// of operator decisions on staged plan amendments:
+    ///
+    /// 1. **Pre-flight ALL before applying ANY.** Every decision is checked: the
+    ///    amendment exists, belongs to the project, and is currently `staged`
+    ///    (deciding a decided/superseded row is an input error — decisions are
+    ///    final). For `apply` decisions, the (edited) payload re-validates per
+    ///    class, the **ADR D3 immutability guard** runs (the target chapter has
+    ///    ZERO persisted scenes on the active branch AT APPLY TIME for every
+    ///    chapter-targeting class; `promise_followup` instead requires its
+    ///    placement be at or after the earliest undrafted chapter in its book),
+    ///    and referential/coherence checks run against the CURRENT plan
+    ///    (scene_order exists for drop/replace, new_order is a permutation of the
+    ///    live spine, insert_at coherent). Any failure aborts with **zero
+    ///    writes** — every row stays staged.
+    /// 2. **Apply phase (input order).** Each `apply` reads the CURRENT chapter
+    ///    plan, snapshots the full plan row JSON as `prior_state` (ADR D4),
+    ///    computes the amended [`PlanChapterInput`], replays it through the
+    ///    EXISTING [`Self::plan_chapter`] service path (never a raw write), then
+    ///    increments `chapter_plan.plan_revision` (the replay resets it, so the
+    ///    increment is written back explicitly), then records the decision with
+    ///    the prior state. `promise_followup` replays through
+    ///    [`Self::create_narrative_promise`] and captures no prior state (it
+    ///    targets a placement, not a chapter row). A `reject` records the
+    ///    decision only (prior_state `None`).
+    /// 3. **Mid-apply honesty.** A real write error after pre-flight stops the
+    ///    dispatcher: earlier applies stay applied (they are real outline
+    ///    changes — nothing is rolled back), the failing row is reported `failed`
+    ///    with its error and stays staged, and remaining rows read `not_reached`
+    ///    and stay staged. Mirrors [`Self::decide_canon_deltas`].
+    pub async fn decide_plan_amendments(
+        &self,
+        input: spindle_core::models::DecidePlanAmendmentsInput,
+    ) -> Result<spindle_core::models::DecidePlanAmendmentsOutput> {
+        self.decide_plan_amendments_with_seam(input, || async {})
+            .await
+    }
+
+    /// Implementation of [`Self::decide_plan_amendments`] with an injectable hook
+    /// run once, after pre-flight and before the apply phase. The public entry
+    /// point passes a no-op; a test injects a real mutation (e.g. deleting a plan
+    /// row pre-flight validated) to exercise the mid-apply-failure path through
+    /// the genuine dispatch code. Mirrors [`Self::decide_canon_deltas_with_seam`].
+    pub(crate) async fn decide_plan_amendments_with_seam<H, Fut>(
+        &self,
+        input: spindle_core::models::DecidePlanAmendmentsInput,
+        after_preflight: H,
+    ) -> Result<spindle_core::models::DecidePlanAmendmentsOutput>
+    where
+        H: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use crate::sqlite::repository::PlanAmendmentDecision;
+        use spindle_core::models::{DecidePlanAmendmentsOutput, PlanAmendmentDecisionResult};
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+        let decided_by = input
+            .decided_by
+            .as_deref()
+            .unwrap_or("operator")
+            .to_string();
+
+        // ── Pre-flight ALL ───────────────────────────────────────────────────
+        struct Preflighted {
+            amendment_id: String,
+            action: Action,
+            effective_payload: serde_json::Value,
+            amendment: crate::sqlite::records::StoredPlanAmendment,
+            note: Option<String>,
+        }
+        enum Action {
+            Apply,
+            Reject,
+        }
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut preflighted: Vec<Preflighted> = Vec::new();
+        for decision in &input.decisions {
+            let action = match decision.action.trim().to_ascii_lowercase().as_str() {
+                "apply" => Action::Apply,
+                "reject" => Action::Reject,
+                other => {
+                    offenders.push(format!(
+                        "decision on '{}' has unknown action '{other}' (expected apply|reject)",
+                        decision.amendment_id
+                    ));
+                    continue;
+                }
+            };
+            let amendment = match self
+                .repository
+                .read_plan_amendment_public(&decision.amendment_id)
+                .await?
+            {
+                Some(amendment) => amendment,
+                None => {
+                    offenders.push(format!(
+                        "amendment '{}' does not exist",
+                        decision.amendment_id
+                    ));
+                    continue;
+                }
+            };
+            if amendment.project_id != input.project_id {
+                offenders.push(format!(
+                    "amendment '{}' does not belong to project '{}'",
+                    decision.amendment_id, input.project_id
+                ));
+                continue;
+            }
+            if amendment.status != "staged" {
+                offenders.push(format!(
+                    "amendment '{}' is '{}', not staged (decisions are final)",
+                    decision.amendment_id, amendment.status
+                ));
+                continue;
+            }
+            let effective_payload = decision
+                .edit
+                .clone()
+                .unwrap_or_else(|| amendment.payload.clone());
+            // Box the fan-out future (pre-flight re-validates the payload, runs
+            // the ADR D3 immutability guard, and does referential checks against
+            // the current plan for ~8 classes). One heap indirection per apply
+            // decision keeps the enclosing MCP `call_tool` future off the worker
+            // stack (same class as the canon-delta fan-out fix).
+            if matches!(action, Action::Apply)
+                && let Err(err) = Box::pin(self.preflight_apply_plan_amendment(
+                    &amendment,
+                    &effective_payload,
+                    &active_branch.id,
+                ))
+                .await
+            {
+                offenders.push(format!(
+                    "amendment '{}' failed pre-flight: {err}",
+                    decision.amendment_id
+                ));
+                continue;
+            }
+            preflighted.push(Preflighted {
+                amendment_id: decision.amendment_id.clone(),
+                action,
+                effective_payload,
+                amendment,
+                note: decision.note.clone(),
+            });
+        }
+
+        if !offenders.is_empty() {
+            anyhow::bail!(
+                "decide_plan_amendments pre-flight failed ({} offender(s)); zero writes applied: {}",
+                offenders.len(),
+                offenders.join("; ")
+            );
+        }
+
+        // Test/instrumentation seam: mutate state between pre-flight and apply.
+        after_preflight().await;
+
+        // ── Apply phase (input order) ────────────────────────────────────────
+        let mut results: Vec<PlanAmendmentDecisionResult> = Vec::new();
+        let mut applied_count = 0usize;
+        let mut rejected_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut stopped = false;
+
+        for item in preflighted {
+            if stopped {
+                results.push(PlanAmendmentDecisionResult {
+                    amendment_id: item.amendment_id,
+                    outcome: "not_reached".to_string(),
+                    error: None,
+                    applied_record_id: None,
+                    note: item.note,
+                });
+                continue;
+            }
+            match item.action {
+                Action::Reject => {
+                    // Reject records the decision with no prior state (no write).
+                    self.repository
+                        .decide_plan_amendment(
+                            &item.amendment_id,
+                            PlanAmendmentDecision::Rejected,
+                            &decided_by,
+                            None,
+                        )
+                        .await?;
+                    rejected_count += 1;
+                    results.push(PlanAmendmentDecisionResult {
+                        amendment_id: item.amendment_id,
+                        outcome: "rejected".to_string(),
+                        error: None,
+                        applied_record_id: None,
+                        note: item.note,
+                    });
+                }
+                Action::Apply => {
+                    match Box::pin(self.apply_plan_amendment(
+                        &item.amendment,
+                        &item.effective_payload,
+                        &active_branch.id,
+                    ))
+                    .await
+                    {
+                        Ok((applied_record_id, prior_state)) => {
+                            self.repository
+                                .decide_plan_amendment(
+                                    &item.amendment_id,
+                                    PlanAmendmentDecision::Applied,
+                                    &decided_by,
+                                    prior_state,
+                                )
+                                .await?;
+                            applied_count += 1;
+                            results.push(PlanAmendmentDecisionResult {
+                                amendment_id: item.amendment_id,
+                                outcome: "applied".to_string(),
+                                error: None,
+                                applied_record_id,
+                                note: item.note,
+                            });
+                        }
+                        Err(err) => {
+                            failed_count += 1;
+                            results.push(PlanAmendmentDecisionResult {
+                                amendment_id: item.amendment_id,
+                                outcome: "failed".to_string(),
+                                error: Some(format!("{err:#}")),
+                                applied_record_id: None,
+                                note: item.note,
+                            });
+                            stopped = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(DecidePlanAmendmentsOutput {
+            results,
+            applied_count,
+            rejected_count,
+            failed_count,
+        })
+    }
+
+    /// The earliest chapter (in `book_number`) with ZERO persisted scenes on the
+    /// active branch — the "next undrafted chapter". Used by the ADR D3
+    /// immutability guard: a `promise_followup` placement must be at or after
+    /// this. `None` when no plan/chapter is undrafted (every planned chapter is
+    /// drafted); callers treat that as "any placement is fine" only when there is
+    /// genuinely nothing left to protect.
+    async fn earliest_undrafted_chapter(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+    ) -> Result<Option<i32>> {
+        let plans = self
+            .repository
+            .list_chapter_plans_by_project(project_id)
+            .await?;
+        let scenes = self
+            .repository
+            .list_scenes_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let drafted: std::collections::BTreeSet<i32> = scenes
+            .iter()
+            .filter(|s| s.book_number == book_number)
+            .map(|s| s.chapter_number)
+            .collect();
+        let earliest = plans
+            .iter()
+            .filter(|p| p.book_number == book_number && !drafted.contains(&p.chapter_number))
+            .map(|p| p.chapter_number)
+            .min();
+        Ok(earliest)
+    }
+
+    /// Whether a chapter has any persisted scene on the active branch (ADR D3
+    /// immutability guard — drafted reality is never rewritten by the outline).
+    async fn chapter_has_persisted_scenes(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+    ) -> Result<bool> {
+        let scenes = self
+            .repository
+            .list_scenes_by_project_and_branch(project_id, branch_id)
+            .await?;
+        Ok(scenes
+            .iter()
+            .any(|s| s.book_number == book_number && s.chapter_number == chapter_number))
+    }
+
+    /// Fetch the CURRENT chapter plan for one chapter on the active branch, or an
+    /// error naming the missing plan. The apply dispatcher reads through this so
+    /// a plan deleted between pre-flight and apply fails honestly at write time.
+    async fn current_chapter_plan(
+        &self,
+        project_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+    ) -> Result<crate::sqlite::records::ChapterPlan> {
+        let plans = self
+            .repository
+            .list_chapter_plans_by_project(project_id)
+            .await?;
+        plans
+            .into_iter()
+            .find(|p| p.book_number == book_number && p.chapter_number == chapter_number)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "chapter {chapter_number} (book {book_number}) has no current plan to amend"
+                )
+            })
+    }
+
+    /// Cheap referential + immutability pre-flight for one `apply` decision (ADR
+    /// 0003 D3). Re-validates the payload per class, runs the immutability guard,
+    /// and confirms the amendment coheres with the CURRENT plan. No writes. Runs
+    /// for every apply before any apply so a stale/dangling amendment aborts the
+    /// batch with zero writes.
+    async fn preflight_apply_plan_amendment(
+        &self,
+        amendment: &crate::sqlite::records::StoredPlanAmendment,
+        payload: &serde_json::Value,
+        branch_id: &str,
+    ) -> Result<()> {
+        let class = amendment.amendment_class.as_str();
+        // 1. Payload re-validates per class (Part A's validator).
+        if !plan_amendment_payload_is_valid(class, payload) {
+            anyhow::bail!("payload no longer valid for class '{class}'");
+        }
+
+        if class == "promise_followup" {
+            // Placement guard (ADR D3): the followup must plant at or after the
+            // earliest undrafted chapter in its book — never into drafted reality.
+            let placement = payload
+                .get("planted_at_placement")
+                .context("promise_followup missing planted_at_placement")?;
+            let book = placement
+                .get("book_number")
+                .and_then(|v| v.as_i64())
+                .context("planted_at_placement missing book_number")? as i32;
+            let chapter = placement
+                .get("chapter_number")
+                .and_then(|v| v.as_i64())
+                .context("planted_at_placement missing chapter_number")?
+                as i32;
+            if let Some(earliest) = self
+                .earliest_undrafted_chapter(&amendment.project_id, branch_id, book)
+                .await?
+                && chapter < earliest
+            {
+                anyhow::bail!(
+                    "promise_followup placement chapter {chapter} precedes the earliest \
+                     undrafted chapter {earliest} (ADR D3: cannot plant into drafted reality)"
+                );
+            }
+            return Ok(());
+        }
+
+        // Every chapter-targeting class names a target chapter.
+        let target_chapter = amendment
+            .target_chapter
+            .context("chapter-targeting amendment missing target_chapter")?;
+
+        // 2. Immutability guard (ADR D3): the target chapter has ZERO persisted
+        //    scenes on the active branch at apply time.
+        if self
+            .chapter_has_persisted_scenes(
+                &amendment.project_id,
+                branch_id,
+                amendment.book_number,
+                target_chapter,
+            )
+            .await?
+        {
+            anyhow::bail!(
+                "immutability guard: target chapter {target_chapter} already has a persisted \
+                 scene on the active branch — drafted reality is never rewritten by the outline \
+                 (ADR 0003 D3)"
+            );
+        }
+
+        // 3. Referential coherence against the CURRENT plan.
+        let plan = self
+            .current_chapter_plan(&amendment.project_id, amendment.book_number, target_chapter)
+            .await?;
+        let orders: Vec<i32> = plan.scenes.iter().map(|s| s.scene_order).collect();
+        match class {
+            "scene_drop" | "scene_replace" => {
+                let order = payload
+                    .get("scene_order")
+                    .and_then(|v| v.as_i64())
+                    .context("scene payload missing scene_order")?
+                    as i32;
+                if !orders.contains(&order) {
+                    anyhow::bail!(
+                        "{class}: scene_order {order} is not in chapter {target_chapter}'s current \
+                         spine {orders:?}"
+                    );
+                }
+            }
+            "scene_reorder" => {
+                let new_order: Vec<i32> = payload
+                    .get("new_order")
+                    .and_then(|v| v.as_array())
+                    .context("scene_reorder missing new_order")?
+                    .iter()
+                    .filter_map(|v| v.as_i64().map(|n| n as i32))
+                    .collect();
+                let mut want = orders.clone();
+                want.sort_unstable();
+                let mut got = new_order.clone();
+                got.sort_unstable();
+                if got != want {
+                    anyhow::bail!(
+                        "scene_reorder new_order {new_order:?} is not a permutation of chapter \
+                         {target_chapter}'s current spine {orders:?}"
+                    );
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Apply one pre-flighted plan amendment by replaying the class through the
+    /// EXISTING plan write path (ADR 0003 D1 — never a novel write). Returns
+    /// `(applied_record_id, prior_state)`: the created promise id +
+    /// no-prior-state for `promise_followup`, or `None` + the full pre-apply plan
+    /// row JSON for the chapter-targeting classes (ADR D4). After a chapter-plan
+    /// replay the caller-owned `plan_revision` is re-written incremented, because
+    /// the replay resets it.
+    async fn apply_plan_amendment(
+        &self,
+        amendment: &crate::sqlite::records::StoredPlanAmendment,
+        payload: &serde_json::Value,
+        branch_id: &str,
+    ) -> Result<(Option<String>, Option<String>)> {
+        use spindle_core::models::{
+            CreateNarrativePromiseInput, PlanChapterInput, PlanChapterSceneInput,
+        };
+
+        let class = amendment.amendment_class.as_str();
+
+        if class == "promise_followup" {
+            let placement = payload
+                .get("planted_at_placement")
+                .context("promise_followup missing planted_at_placement")?;
+            let planted_at = self.story_placement_from_json(placement)?;
+            let planned_payoff = match payload.get("planned_payoff") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(payoff) => Some(self.story_placement_from_json(payoff)?),
+            };
+            let promise_type = payload
+                .get("promise_type")
+                .and_then(|v| v.as_str())
+                .context("promise_followup missing promise_type")?
+                .to_string();
+            let description = payload
+                .get("description")
+                .and_then(|v| v.as_str())
+                .context("promise_followup missing description")?
+                .to_string();
+            let out = self
+                .create_narrative_promise(CreateNarrativePromiseInput {
+                    project_id: amendment.project_id.clone(),
+                    promise_type,
+                    description,
+                    planted_at,
+                    planned_payoff,
+                    notes: Vec::new(),
+                })
+                .await?;
+            return Ok((Some(out.narrative_promise_id), None));
+        }
+
+        // Chapter-targeting classes: read the CURRENT plan, snapshot it as
+        // prior_state, compute the amended input, replay, then bump plan_revision.
+        let target_chapter = amendment
+            .target_chapter
+            .context("chapter-targeting amendment missing target_chapter")?;
+        let plan = self
+            .current_chapter_plan(&amendment.project_id, amendment.book_number, target_chapter)
+            .await?;
+        let prior_state = serde_json::to_string(&plan).context("snapshotting prior plan state")?;
+        let next_revision = plan.plan_revision.unwrap_or(0) + 1;
+
+        // Rebuild the plan's scenes as PlanChapterSceneInput (the write DTO), so
+        // the amendment mutates the SAME shape the replay consumes.
+        let mut scenes: Vec<PlanChapterSceneInput> = plan
+            .scenes
+            .iter()
+            .map(|s| PlanChapterSceneInput {
+                scene_order: s.scene_order,
+                summary: s.summary.clone(),
+                beat_structure: s.beat_structure.clone(),
+                character_ids: s.character_ids.clone(),
+                location_id: s.location_id.clone(),
+                content_rating: s.content_rating.clone(),
+                purpose: s.purpose.clone(),
+                research_required: s.research_required,
+                research_tags: s.research_tags.clone(),
+                explicit_query: s.explicit_query.clone(),
+            })
+            .collect();
+        scenes.sort_by_key(|s| s.scene_order);
+
+        let mut synopsis = plan.synopsis.clone();
+        let mut target_theme_ids = plan.target_theme_ids.clone();
+        let mut target_conflict_ids = plan.target_conflict_ids.clone();
+        let mut target_plot_line_ids = plan.target_plot_line_ids.clone();
+
+        match class {
+            "synopsis_update" => {
+                synopsis = payload
+                    .get("synopsis")
+                    .and_then(|v| v.as_str())
+                    .context("synopsis_update missing synopsis")?
+                    .to_string();
+            }
+            "scene_add" => {
+                let insert_at = payload
+                    .get("insert_at")
+                    .and_then(|v| v.as_i64())
+                    .context("scene_add missing insert_at")?
+                    as usize;
+                let new_scene = PlanChapterSceneInput {
+                    scene_order: 0, // renumbered below
+                    summary: payload
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    beat_structure: payload
+                        .get("beat_structure")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    character_ids: payload
+                        .get("character_ids")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    location_id: payload
+                        .get("location_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    content_rating: payload
+                        .get("content_rating")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                    purpose: payload
+                        .get("purpose")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    research_required: None,
+                    research_tags: Vec::new(),
+                    explicit_query: None,
+                };
+                // insert_at is 1-based; clamp into [0, len] for the Vec index.
+                let idx = insert_at.saturating_sub(1).min(scenes.len());
+                scenes.insert(idx, new_scene);
+            }
+            "scene_drop" => {
+                let order = payload
+                    .get("scene_order")
+                    .and_then(|v| v.as_i64())
+                    .context("scene_drop missing scene_order")? as i32;
+                scenes.retain(|s| s.scene_order != order);
+            }
+            "scene_replace" => {
+                let order = payload
+                    .get("scene_order")
+                    .and_then(|v| v.as_i64())
+                    .context("scene_replace missing scene_order")?
+                    as i32;
+                if let Some(target) = scenes.iter_mut().find(|s| s.scene_order == order) {
+                    target.summary = payload
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&target.summary)
+                        .to_string();
+                    target.purpose = payload
+                        .get("purpose")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&target.purpose)
+                        .to_string();
+                    if let Some(ids) = payload.get("character_ids").and_then(|v| v.as_array()) {
+                        target.character_ids = ids
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect();
+                    }
+                    if let Some(loc) = payload.get("location_id").and_then(|v| v.as_str()) {
+                        target.location_id = Some(loc.to_string());
+                    }
+                    if let Some(rating) = payload.get("content_rating")
+                        && !rating.is_null()
+                        && let Ok(parsed) = serde_json::from_value(rating.clone())
+                    {
+                        target.content_rating = Some(parsed);
+                    }
+                }
+            }
+            "scene_reorder" => {
+                let new_order: Vec<i32> = payload
+                    .get("new_order")
+                    .and_then(|v| v.as_array())
+                    .context("scene_reorder missing new_order")?
+                    .iter()
+                    .filter_map(|v| v.as_i64().map(|n| n as i32))
+                    .collect();
+                // Reorder the scenes to follow new_order's sequence of original
+                // scene_orders; the renumber pass below assigns 1..n.
+                let mut reordered: Vec<PlanChapterSceneInput> = Vec::with_capacity(scenes.len());
+                for order in &new_order {
+                    if let Some(pos) = scenes.iter().position(|s| s.scene_order == *order) {
+                        reordered.push(scenes.remove(pos));
+                    }
+                }
+                reordered.append(&mut scenes);
+                scenes = reordered;
+            }
+            "thread_promote" => {
+                let (kind, id) = self.plan_amendment_thread_kv(payload)?;
+                let bucket = match kind.as_str() {
+                    "theme" => &mut target_theme_ids,
+                    "conflict" => &mut target_conflict_ids,
+                    "plot_line" => &mut target_plot_line_ids,
+                    other => anyhow::bail!("thread_promote unknown kind '{other}'"),
+                };
+                if !bucket.contains(&id) {
+                    bucket.push(id);
+                }
+            }
+            "thread_retire" => {
+                let (kind, id) = self.plan_amendment_thread_kv(payload)?;
+                let bucket = match kind.as_str() {
+                    "theme" => &mut target_theme_ids,
+                    "conflict" => &mut target_conflict_ids,
+                    "plot_line" => &mut target_plot_line_ids,
+                    other => anyhow::bail!("thread_retire unknown kind '{other}'"),
+                };
+                bucket.retain(|existing| existing != &id);
+            }
+            other => anyhow::bail!("unknown plan amendment class '{other}'"),
+        }
+
+        // Renumber the spine 1..n so orders stay dense after insert/drop/reorder.
+        for (index, scene) in scenes.iter_mut().enumerate() {
+            scene.scene_order = index as i32 + 1;
+        }
+
+        // Replay through the EXISTING plan write path (never a raw write).
+        self.plan_chapter(PlanChapterInput {
+            project_id: amendment.project_id.clone(),
+            book_number: amendment.book_number,
+            chapter_number: target_chapter,
+            pov_character_id: plan.pov_character_id.clone(),
+            synopsis,
+            target_theme_ids,
+            target_conflict_ids,
+            target_plot_line_ids,
+            scenes,
+        })
+        .await?;
+
+        // The replay reset plan_revision (it is not in the plan_chapter INSERT);
+        // write the incremented value back so the ADR D4 counter survives.
+        self.repository
+            .set_chapter_plan_revision(
+                &amendment.project_id,
+                branch_id,
+                amendment.book_number,
+                target_chapter,
+                next_revision,
+            )
+            .await?;
+
+        Ok((None, Some(prior_state)))
+    }
+
+    /// Extract the `(kind, id)` pair from a `thread_promote`/`thread_retire`
+    /// payload, normalizing kind to lowercase. Both are validated present by the
+    /// payload validator; this maps them for the apply.
+    fn plan_amendment_thread_kv(&self, payload: &serde_json::Value) -> Result<(String, String)> {
+        let kind = payload
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|k| k.trim().to_ascii_lowercase())
+            .context("thread amendment missing kind")?;
+        let id = payload
+            .get("id")
+            .and_then(|v| v.as_str())
+            .context("thread amendment missing id")?
+            .to_string();
+        Ok((kind, id))
+    }
+
+    /// Map a JSON placement object (`{book_number, chapter_number, scene_order?}`)
+    /// into a [`StoryPlacement`] for `promise_followup` apply.
+    fn story_placement_from_json(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<spindle_core::models::StoryPlacement> {
+        Ok(spindle_core::models::StoryPlacement {
+            book_number: value
+                .get("book_number")
+                .and_then(|v| v.as_i64())
+                .context("placement missing book_number")? as i32,
+            chapter_number: value
+                .get("chapter_number")
+                .and_then(|v| v.as_i64())
+                .context("placement missing chapter_number")? as i32,
+            scene_order: value
+                .get("scene_order")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            note: value
+                .get("note")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        })
+    }
+
     // Import pipeline.
     //
     // The 10 stubs that follow implement the import passes against the
@@ -46632,6 +47419,845 @@ agent = "review-dead"
                     delivered: false,
                 },
             );
+        }
+    }
+
+    // ── Plan-amendment ratification (list_plan_amendments +
+    //    decide_plan_amendments) — ADR 0003 D3/D4/D5. Exercises the apply
+    //    dispatcher: pre-flight-all, the immutability guard, per-class replay
+    //    through the plan write path, prior_state capture + plan_revision
+    //    increment, and the honesty guarantees (atomicity, mid-apply failure).
+    mod plan_ratify {
+        use super::*;
+        use crate::sqlite::repository::StagePlanAmendmentParams;
+        use spindle_core::models::{
+            DecidePlanAmendmentsInput, ListPlanAmendmentsInput, PlanAmendmentDecisionInput,
+            PlanChapterInput, PlanChapterSceneInput,
+        };
+
+        /// Create a project, then plan a future chapter (`chapter_number`) with
+        /// the given scenes, plus a source chapter summary so the outline has a
+        /// stable base for amendments. Returns the project.
+        async fn project_with_future_chapter(
+            svc: &SqliteSpindleService,
+            name: &str,
+            chapter_number: i32,
+            scenes: Vec<PlanChapterSceneInput>,
+            target_theme_ids: Vec<String>,
+        ) -> CreateProjectOutput {
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: name.to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "living outline".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            svc.plan_chapter(PlanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number,
+                pov_character_id: None,
+                synopsis: "the planned future".to_string(),
+                target_theme_ids,
+                target_conflict_ids: Vec::new(),
+                target_plot_line_ids: Vec::new(),
+                scenes,
+            })
+            .await
+            .unwrap();
+            project
+        }
+
+        fn scene(order: i32, summary: &str) -> PlanChapterSceneInput {
+            PlanChapterSceneInput {
+                scene_order: order,
+                summary: summary.to_string(),
+                beat_structure: Vec::new(),
+                character_ids: Vec::new(),
+                location_id: None,
+                content_rating: None,
+                purpose: format!("purpose {order}"),
+                research_required: None,
+                research_tags: Vec::new(),
+                explicit_query: None,
+            }
+        }
+
+        /// Stage one plan amendment directly on the active branch (bypassing the
+        /// model) so the dispatcher can be driven deterministically per class.
+        async fn stage(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            class: &str,
+            target_chapter: Option<i32>,
+            payload: serde_json::Value,
+        ) -> String {
+            let branch = svc
+                .repository()
+                .get_active_branch(project_id)
+                .await
+                .unwrap();
+            svc.repository()
+                .stage_plan_amendment(StagePlanAmendmentParams {
+                    project_id: project_id.to_string(),
+                    branch_id: branch.id,
+                    source_chapter: 3,
+                    book_number: 1,
+                    authoring_run_id: None,
+                    amendment_class: class.to_string(),
+                    target_chapter,
+                    payload,
+                    rationale: format!("{class}: realized event id x moved the outline"),
+                    confidence: "high".to_string(),
+                })
+                .await
+                .unwrap()
+                .id
+        }
+
+        /// Read the current plan for a chapter (active branch) or panic.
+        async fn plan_of(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            chapter: i32,
+        ) -> crate::sqlite::records::ChapterPlan {
+            let plans = svc
+                .repository()
+                .list_chapter_plans_by_project(project_id)
+                .await
+                .unwrap();
+            plans
+                .into_iter()
+                .find(|p| p.chapter_number == chapter)
+                .expect("plan for chapter")
+        }
+
+        async fn apply_one(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            amendment_id: &str,
+        ) -> spindle_core::models::DecidePlanAmendmentsOutput {
+            svc.decide_plan_amendments(DecidePlanAmendmentsInput {
+                project_id: project_id.to_string(),
+                decisions: vec![PlanAmendmentDecisionInput {
+                    amendment_id: amendment_id.to_string(),
+                    action: "apply".to_string(),
+                    edit: None,
+                    note: None,
+                }],
+                decided_by: None,
+            })
+            .await
+            .unwrap()
+        }
+
+        // ── Class round-trips (Test 1) ───────────────────────────────────────
+
+        #[tokio::test]
+        async fn apply_synopsis_update_rewrites_synopsis_and_bumps_revision() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA synopsis",
+                5,
+                vec![scene(1, "a")],
+                Vec::new(),
+            )
+            .await;
+            let before = plan_of(&svc, &project.project_id, 5).await;
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(5),
+                serde_json::json!({"synopsis": "the gate has already fallen"}),
+            )
+            .await;
+
+            let out = apply_one(&svc, &project.project_id, &id).await;
+            assert_eq!(out.applied_count, 1);
+            assert_eq!(out.results[0].outcome, "applied");
+
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            assert_eq!(after.synopsis, "the gate has already fallen");
+            // plan_revision NULL/0 → 1.
+            assert_eq!(after.plan_revision, Some(1));
+            // prior_state snapshot equals the pre-apply row.
+            let amendments = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: Some("applied".to_string()),
+                    book_number: None,
+                    source_chapter: None,
+                })
+                .await
+                .unwrap();
+            let prior = amendments.amendments[0]
+                .prior_state
+                .as_deref()
+                .expect("prior_state captured");
+            let prior_plan: crate::sqlite::records::ChapterPlan =
+                serde_json::from_str(prior).unwrap();
+            assert_eq!(prior_plan.synopsis, before.synopsis);
+            assert_eq!(prior_plan.plan_revision, before.plan_revision);
+        }
+
+        #[tokio::test]
+        async fn apply_scene_add_inserts_and_renumbers() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA add",
+                5,
+                vec![scene(1, "first"), scene(2, "second")],
+                Vec::new(),
+            )
+            .await;
+            // Insert a new scene at position 2 (1-based insert_at), pushing the
+            // old scene 2 to order 3.
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "scene_add",
+                Some(5),
+                serde_json::json!({
+                    "scene_order": 99, "summary": "inserted", "purpose": "bridge",
+                    "character_ids": [], "insert_at": 2
+                }),
+            )
+            .await;
+            let out = apply_one(&svc, &project.project_id, &id).await;
+            assert_eq!(out.results[0].outcome, "applied", "{out:?}");
+
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            let summaries: Vec<(i32, String)> = after
+                .scenes
+                .iter()
+                .map(|s| (s.scene_order, s.summary.clone()))
+                .collect();
+            assert_eq!(
+                summaries,
+                vec![
+                    (1, "first".to_string()),
+                    (2, "inserted".to_string()),
+                    (3, "second".to_string()),
+                ],
+                "insert_at renumbers the spine 1..n"
+            );
+            assert_eq!(after.plan_revision, Some(1));
+        }
+
+        #[tokio::test]
+        async fn apply_scene_drop_removes_and_renumbers() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA drop",
+                5,
+                vec![scene(1, "keep-a"), scene(2, "drop-me"), scene(3, "keep-b")],
+                Vec::new(),
+            )
+            .await;
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "scene_drop",
+                Some(5),
+                serde_json::json!({"scene_order": 2}),
+            )
+            .await;
+            let out = apply_one(&svc, &project.project_id, &id).await;
+            assert_eq!(out.results[0].outcome, "applied", "{out:?}");
+
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            let summaries: Vec<(i32, String)> = after
+                .scenes
+                .iter()
+                .map(|s| (s.scene_order, s.summary.clone()))
+                .collect();
+            assert_eq!(
+                summaries,
+                vec![(1, "keep-a".to_string()), (2, "keep-b".to_string())],
+                "drop renumbers the survivors 1..n"
+            );
+        }
+
+        #[tokio::test]
+        async fn apply_scene_replace_swaps_fields() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA replace",
+                5,
+                vec![scene(1, "old summary")],
+                Vec::new(),
+            )
+            .await;
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "scene_replace",
+                Some(5),
+                serde_json::json!({
+                    "scene_order": 1, "summary": "new summary", "purpose": "new purpose",
+                    "character_ids": ["character:x"]
+                }),
+            )
+            .await;
+            let out = apply_one(&svc, &project.project_id, &id).await;
+            assert_eq!(out.results[0].outcome, "applied", "{out:?}");
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            assert_eq!(after.scenes[0].summary, "new summary");
+            assert_eq!(after.scenes[0].purpose, "new purpose");
+            assert_eq!(
+                after.scenes[0].character_ids,
+                vec!["character:x".to_string()]
+            );
+        }
+
+        #[tokio::test]
+        async fn apply_scene_reorder_permutes_spine() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA reorder",
+                5,
+                vec![scene(1, "A"), scene(2, "B"), scene(3, "C")],
+                Vec::new(),
+            )
+            .await;
+            // Reverse: new_order [3,2,1] means scene currently at 3 becomes first.
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "scene_reorder",
+                Some(5),
+                serde_json::json!({"new_order": [3, 2, 1]}),
+            )
+            .await;
+            let out = apply_one(&svc, &project.project_id, &id).await;
+            assert_eq!(out.results[0].outcome, "applied", "{out:?}");
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            let summaries: Vec<(i32, String)> = after
+                .scenes
+                .iter()
+                .map(|s| (s.scene_order, s.summary.clone()))
+                .collect();
+            assert_eq!(
+                summaries,
+                vec![
+                    (1, "C".to_string()),
+                    (2, "B".to_string()),
+                    (3, "A".to_string()),
+                ],
+                "reorder applies the permutation then renumbers 1..n"
+            );
+        }
+
+        #[tokio::test]
+        async fn apply_thread_promote_and_retire() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA thread",
+                5,
+                vec![scene(1, "a")],
+                vec!["theme:existing".to_string()],
+            )
+            .await;
+            // Promote adds a theme id.
+            let promote = stage(
+                &svc,
+                &project.project_id,
+                "thread_promote",
+                Some(5),
+                serde_json::json!({"kind": "theme", "id": "theme:added"}),
+            )
+            .await;
+            apply_one(&svc, &project.project_id, &promote).await;
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            assert!(
+                after
+                    .target_theme_ids
+                    .contains(&"theme:existing".to_string())
+            );
+            assert!(after.target_theme_ids.contains(&"theme:added".to_string()));
+
+            // Retire removes the existing theme id.
+            let retire = stage(
+                &svc,
+                &project.project_id,
+                "thread_retire",
+                Some(5),
+                serde_json::json!({"kind": "theme", "id": "theme:existing"}),
+            )
+            .await;
+            apply_one(&svc, &project.project_id, &retire).await;
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            assert!(
+                !after
+                    .target_theme_ids
+                    .contains(&"theme:existing".to_string())
+            );
+            assert!(after.target_theme_ids.contains(&"theme:added".to_string()));
+            // Two applies bumped the revision twice.
+            assert_eq!(after.plan_revision, Some(2));
+        }
+
+        #[tokio::test]
+        async fn apply_promise_followup_creates_promise_at_placement() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project =
+                project_with_future_chapter(&svc, "PA promise", 5, vec![scene(1, "a")], Vec::new())
+                    .await;
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "promise_followup",
+                None, // promise_followup carries no target_chapter
+                serde_json::json!({
+                    "promise_type": "mystery",
+                    "description": "the successor thread",
+                    "planted_at_placement": {"book_number": 1, "chapter_number": 6, "scene_order": 1}
+                }),
+            )
+            .await;
+            let out = apply_one(&svc, &project.project_id, &id).await;
+            assert_eq!(out.results[0].outcome, "applied", "{out:?}");
+            let promise_id = out.results[0]
+                .applied_record_id
+                .as_deref()
+                .expect("promise id returned");
+            assert!(promise_id.starts_with("narrative_promise:"));
+            let promise = svc
+                .repository()
+                .get_narrative_promise(promise_id)
+                .await
+                .unwrap();
+            assert_eq!(promise.description, "the successor thread");
+            assert_eq!(promise.planted_at.chapter_number, 6);
+            // No prior_state for promise_followup (it targets no chapter row).
+            let applied = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: Some("applied".to_string()),
+                    book_number: None,
+                    source_chapter: None,
+                })
+                .await
+                .unwrap();
+            assert!(applied.amendments[0].prior_state.is_none());
+        }
+
+        // ── Immutability guard (Test 2) ──────────────────────────────────────
+
+        #[tokio::test]
+        async fn immutability_guard_rejects_drafted_target_at_apply() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA guard",
+                5,
+                vec![scene(1, "planned")],
+                Vec::new(),
+            )
+            .await;
+            let id = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(5),
+                serde_json::json!({"synopsis": "must not apply"}),
+            )
+            .await;
+            // Draft a scene into chapter 5 AFTER staging — the guard is checked at
+            // apply (ADR D3), so this makes the amendment fail at decision time.
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 5,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "chapter five now has drafted prose".to_string(),
+                summary: "drafted".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+            let err = svc
+                .decide_plan_amendments(DecidePlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![PlanAmendmentDecisionInput {
+                        amendment_id: id.clone(),
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .expect_err("guard must fail pre-flight");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("persisted scene") || msg.contains("immutab"),
+                "error names the immutability guard: {msg}"
+            );
+            // Zero writes: the amendment is still staged, the synopsis unchanged.
+            let staged = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: Some("staged".to_string()),
+                    book_number: None,
+                    source_chapter: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(staged.amendments.len(), 1);
+            assert_eq!(staged.amendments[0].id, id);
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            assert_eq!(after.synopsis, "the planned future");
+        }
+
+        // ── Pre-flight atomicity (Test 3) ────────────────────────────────────
+
+        #[tokio::test]
+        async fn preflight_atomicity_one_bad_decision_aborts_batch() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project =
+                project_with_future_chapter(&svc, "PA atomic", 5, vec![scene(1, "a")], Vec::new())
+                    .await;
+            let good1 = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(5),
+                serde_json::json!({"synopsis": "good one"}),
+            )
+            .await;
+            // A scene_drop naming an order that does not exist — dangling
+            // reference the pre-flight catches.
+            let bad = stage(
+                &svc,
+                &project.project_id,
+                "scene_drop",
+                Some(5),
+                serde_json::json!({"scene_order": 99}),
+            )
+            .await;
+            let good2 = stage(
+                &svc,
+                &project.project_id,
+                "thread_promote",
+                Some(5),
+                serde_json::json!({"kind": "theme", "id": "theme:z"}),
+            )
+            .await;
+
+            let err = svc
+                .decide_plan_amendments(DecidePlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![
+                        PlanAmendmentDecisionInput {
+                            amendment_id: good1.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                        PlanAmendmentDecisionInput {
+                            amendment_id: bad.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                        PlanAmendmentDecisionInput {
+                            amendment_id: good2.clone(),
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        },
+                    ],
+                    decided_by: None,
+                })
+                .await
+                .expect_err("one bad decision aborts");
+            assert!(format!("{err:#}").contains("pre-flight"));
+            // Zero writes: all three stay staged, the synopsis unchanged.
+            let staged = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: Some("staged".to_string()),
+                    book_number: None,
+                    source_chapter: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(staged.amendments.len(), 3);
+            let after = plan_of(&svc, &project.project_id, 5).await;
+            assert_eq!(after.synopsis, "the planned future");
+        }
+
+        // ── Mid-apply honesty via the seam (Test 3, seam arm) ────────────────
+
+        #[tokio::test]
+        async fn mid_apply_failure_stops_and_reports_honestly() {
+            // Pre-flight passes for two synopsis_update applies against two
+            // distinct future chapters. Between pre-flight and apply the SECOND
+            // chapter's plan row is deleted, so its apply fails at write time
+            // (the current plan vanished). Earlier applies stay applied; the
+            // failing row stays staged; the later row reads not_reached. The
+            // deletion runs through the injectable after-pre-flight hook, so the
+            // failure is driven through the genuine dispatch path, not a mock.
+            let (_tmp, svc) = fresh_service_local().await;
+            let project =
+                project_with_future_chapter(&svc, "PA mid", 5, vec![scene(1, "a")], Vec::new())
+                    .await;
+            // Add a second future chapter (6) and a third (7).
+            for ch in [6, 7] {
+                svc.plan_chapter(PlanChapterInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: ch,
+                    pov_character_id: None,
+                    synopsis: format!("chapter {ch} planned"),
+                    target_theme_ids: Vec::new(),
+                    target_conflict_ids: Vec::new(),
+                    target_plot_line_ids: Vec::new(),
+                    scenes: vec![scene(1, "s")],
+                })
+                .await
+                .unwrap();
+            }
+            let first = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(5),
+                serde_json::json!({"synopsis": "first applied"}),
+            )
+            .await;
+            let second = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(6),
+                serde_json::json!({"synopsis": "second fails"}),
+            )
+            .await;
+            let third = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(7),
+                serde_json::json!({"synopsis": "third not reached"}),
+            )
+            .await;
+
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+            let repo = svc.repository().clone();
+            let project_id = project.project_id.clone();
+            let branch_id = branch.id.clone();
+            let out = svc
+                .decide_plan_amendments_with_seam(
+                    DecidePlanAmendmentsInput {
+                        project_id: project.project_id.clone(),
+                        decisions: vec![
+                            PlanAmendmentDecisionInput {
+                                amendment_id: first.clone(),
+                                action: "apply".to_string(),
+                                edit: None,
+                                note: None,
+                            },
+                            PlanAmendmentDecisionInput {
+                                amendment_id: second.clone(),
+                                action: "apply".to_string(),
+                                edit: None,
+                                note: None,
+                            },
+                            PlanAmendmentDecisionInput {
+                                amendment_id: third.clone(),
+                                action: "apply".to_string(),
+                                edit: None,
+                                note: None,
+                            },
+                        ],
+                        decided_by: None,
+                    },
+                    move || {
+                        let repo = repo.clone();
+                        let project_id = project_id.clone();
+                        let branch_id = branch_id.clone();
+                        async move {
+                            repo.delete_chapter_plans_for_chapter(&project_id, &branch_id, 1, 6)
+                                .await
+                                .unwrap();
+                        }
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(out.applied_count, 1);
+            assert_eq!(out.failed_count, 1);
+            assert_eq!(out.results[0].outcome, "applied");
+            assert_eq!(out.results[1].outcome, "failed");
+            assert!(out.results[1].error.is_some());
+            assert_eq!(out.results[2].outcome, "not_reached");
+
+            // First apply is real (chapter 5 synopsis rewritten, not rolled back).
+            let ch5 = plan_of(&svc, &project.project_id, 5).await;
+            assert_eq!(ch5.synopsis, "first applied");
+            // The failed + not-reached rows stay staged.
+            let staged = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: Some("staged".to_string()),
+                    book_number: None,
+                    source_chapter: None,
+                })
+                .await
+                .unwrap();
+            let staged_ids: Vec<_> = staged.amendments.iter().map(|a| a.id.clone()).collect();
+            assert!(staged_ids.contains(&second));
+            assert!(staged_ids.contains(&third));
+        }
+
+        // ── Reorder / insert coherence (Test 4) ──────────────────────────────
+
+        #[tokio::test]
+        async fn incoherent_reorder_fails_preflight() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA badreorder",
+                5,
+                vec![scene(1, "A"), scene(2, "B"), scene(3, "C")],
+                Vec::new(),
+            )
+            .await;
+            // Wrong length (2 orders for a 3-scene chapter).
+            let wrong_len = stage(
+                &svc,
+                &project.project_id,
+                "scene_reorder",
+                Some(5),
+                serde_json::json!({"new_order": [1, 2]}),
+            )
+            .await;
+            let err = svc
+                .decide_plan_amendments(DecidePlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![PlanAmendmentDecisionInput {
+                        amendment_id: wrong_len.clone(),
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .expect_err("wrong-length permutation rejected");
+            assert!(format!("{err:#}").contains("pre-flight"));
+
+            // Duplicate order (dup 1, missing 3).
+            let dup = stage(
+                &svc,
+                &project.project_id,
+                "scene_reorder",
+                Some(5),
+                serde_json::json!({"new_order": [1, 1, 2]}),
+            )
+            .await;
+            let err2 = svc
+                .decide_plan_amendments(DecidePlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![PlanAmendmentDecisionInput {
+                        amendment_id: dup.clone(),
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .expect_err("duplicate permutation rejected");
+            assert!(format!("{err2:#}").contains("pre-flight"));
+        }
+
+        // ── List filtering (list_plan_amendments) ────────────────────────────
+
+        #[tokio::test]
+        async fn list_filters_by_status_and_provenance() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project =
+                project_with_future_chapter(&svc, "PA list", 5, vec![scene(1, "a")], Vec::new())
+                    .await;
+            let staged = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(5),
+                serde_json::json!({"synopsis": "x"}),
+            )
+            .await;
+            // All (no filter) returns it.
+            let all = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    book_number: None,
+                    source_chapter: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(all.amendments.len(), 1);
+            assert_eq!(all.amendments[0].id, staged);
+            // Provenance filter (book 1, source chapter 3 — the stage helper's
+            // provenance) returns it; a different source chapter returns none.
+            let scoped = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: Some("staged".to_string()),
+                    book_number: Some(1),
+                    source_chapter: Some(3),
+                })
+                .await
+                .unwrap();
+            assert_eq!(scoped.amendments.len(), 1);
+            let empty = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    book_number: Some(1),
+                    source_chapter: Some(99),
+                })
+                .await
+                .unwrap();
+            assert!(empty.amendments.is_empty());
+            // A lone book_number (no source_chapter) is an input error.
+            let err = svc
+                .list_plan_amendments(ListPlanAmendmentsInput {
+                    project_id: project.project_id.clone(),
+                    status: None,
+                    book_number: Some(1),
+                    source_chapter: None,
+                })
+                .await;
+            assert!(err.is_err(), "lone book_number is rejected");
         }
     }
 }

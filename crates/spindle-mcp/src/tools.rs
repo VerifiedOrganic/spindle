@@ -282,6 +282,9 @@ impl ToolRouter {
                 "mine_scene_canon",
                 "list_canon_deltas",
                 "decide_canon_deltas",
+                "replan_chapter",
+                "list_plan_amendments",
+                "decide_plan_amendments",
                 "get_writer_state",
                 "get_scene_context",
                 "get_entity",
@@ -811,6 +814,18 @@ impl ToolRouter {
             tool::<DecideCanonDeltasInput, DecideCanonDeltasOutput>(
                 "decide_canon_deltas",
                 "Ratify a batch of staged canon deltas: each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed in the output; not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, dangling target, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies dispatch to the class's existing write tool (register_canonical_fact, update_promise_status, update_relationship, commit_character_state, record_knowledge, annotate_scene_beats, commit_quantity_state, update_entity for conflict/arc columns, or create_character/location/term). Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
+            ),
+            tool::<ReplanChapterInput, ReplanChapterOutput>(
+                "replan_chapter",
+                "Audit a book's not-yet-drafted chapter plans against the realized reality one just-summarized chapter established, and stage plan-amendment proposals for operator ratification (never auto-applied — ADR 0003 D5). Non-prose-bearing: the differ reads summaries + metadata only (no scene prose), so no rating clearance applies; on a missing route it falls to review then skips honestly, and it never blocks the run. Re-running for the same source chapter supersedes its prior staged amendments. Returns the staged amendments, discard/supersede counts, and a status of staged, no_summary, no_targets, skipped, or model_output_rejected.",
+            ),
+            tool::<ListPlanAmendmentsInput, ListPlanAmendmentsOutput>(
+                "list_plan_amendments",
+                "List the plan amendments staged for a project's active branch (the living-outline ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance (book_number + source_chapter together — the summarized chapter that triggered a replan pass). Each amendment carries its class, the future target_chapter (null for promise_followup), the typed payload, the replanner's rationale (ids/summaries, no prose), confidence, status, and any prior_state snapshot, in deterministic order. Read this — and the rationale — before deciding; never bulk-apply blind.",
+            ),
+            tool::<DecidePlanAmendmentsInput, DecidePlanAmendmentsOutput>(
+                "decide_plan_amendments",
+                "Ratify a batch of staged plan amendments (the living outline). Each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed, not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, a target chapter that already has drafted scenes (the immutability guard: drafted reality is never rewritten), a dangling scene_order/incoherent reorder, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies replay through the existing plan write path (plan_chapter for the chapter classes, create_narrative_promise for promise_followup), snapshot the prior plan into prior_state, and bump plan_revision. Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
             ),
             tool::<ExportBibleInput, ExportBibleOutput>(
                 "export_bible",
@@ -1858,6 +1873,28 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.decide_canon_deltas(input))
                     .await
             }
+            "replan_chapter" => {
+                // Box::pin: the differ builds the realized/target digests + a
+                // model dispatch; un-boxed it inflates the call_tool future past
+                // the worker stack (same class as the mine/decide fan-outs).
+                self.invoke(arguments, |input| {
+                    Box::pin(self.service.replan_chapter(input))
+                })
+                .await
+            }
+            "list_plan_amendments" => {
+                self.invoke(arguments, |input| self.service.list_plan_amendments(input))
+                    .await
+            }
+            "decide_plan_amendments" => {
+                // Box::pin: the apply dispatcher fans out per-class plan replays
+                // + the immutability guard; un-boxed it inflates the call_tool
+                // future past the worker stack (same class as decide_canon_deltas).
+                self.invoke(arguments, |input| {
+                    Box::pin(self.service.decide_plan_amendments(input))
+                })
+                .await
+            }
             "export_bible" => {
                 self.invoke(arguments, |input| self.service.export_bible(input))
                     .await
@@ -2717,6 +2754,30 @@ impl ToolRouter {
             }
         };
 
+        // Validate the opt-in living-outline replan policy (ADR 0003, evolution
+        // §3.5). None/"disabled" canonicalize to None so the run persists NULL,
+        // matching a pre-upgrade row exactly (disabled = never replans). There is
+        // NO route preflight: the replan differ is non-prose-bearing (summaries +
+        // metadata only — ADR D5), so no rating clearance applies, and on a
+        // NoRoute it falls to review then skips honestly. Anything else is an
+        // input error.
+        let replan_policy = match spindle_core::models::validate_replan_policy(
+            input.replan_policy.as_deref(),
+        ) {
+            Ok(policy) => policy,
+            Err(rejected) => {
+                return Ok(AuthoringStartRunOutput {
+                    run_id: String::new(),
+                    status: "blocked".to_string(),
+                    message: format!(
+                        "Cannot start authoring run: replan_policy must be one of {:?}, got {:?}",
+                        spindle_core::models::AUTHORING_REPLAN_POLICIES,
+                        rejected
+                    ),
+                });
+            }
+        };
+
         let prep_input = AuthoringPrepareRunInput {
             project_id: project_id.clone(),
             book_number: input.book_number,
@@ -2733,6 +2794,9 @@ impl ToolRouter {
             // only when the run actually opted into an auto checkpoint policy
             // (evolution §3.3 K2 precondition).
             checkpoint_policy: checkpoint_policy.clone(),
+            // Threaded for symmetry; prepare adds NO preflight for replan (the
+            // differ is non-prose-bearing and skips honestly on NoRoute — §3.5).
+            replan_policy: replan_policy.clone(),
         };
         let prep_report = Box::pin(self.handle_authoring_prepare_run(prep_input)).await?;
         if !prep_report.ready_to_draft {
@@ -2812,6 +2876,7 @@ impl ToolRouter {
         harness_state.mining_policy = mining_policy;
         harness_state.max_revise_attempts = max_revise_attempts;
         harness_state.checkpoint_policy = checkpoint_policy;
+        harness_state.replan_policy = replan_policy;
 
         let run_id = format!(
             "authoring_run:{}",
@@ -2966,6 +3031,11 @@ impl ToolRouter {
                 summary_saved: ch.summary_saved,
                 summary_artifact_path: ch.summary_artifact_path.clone(),
                 scenes: status_scenes,
+                // Additive living-outline replan surfacing (ADR 0003, §3.5): the
+                // chapter's post-summary replan outcome + detail. Enums/counts
+                // only, never prose (I8).
+                replan_status: ch.replan_status.clone(),
+                replan_detail: ch.replan_detail.clone(),
             });
         }
 
@@ -5229,6 +5299,48 @@ async fn authoring_emit_step_events(
                 )
                 .await;
         }
+        NextAction::ReplanChapter { chapter_number } => {
+            // The chapter's post-summary replan outcome (ADR 0003 §3.5). The
+            // reserved `replan_proposed` kind (ADR 0002 D2) activates ONLY when
+            // the pass staged amendments (status `staged`, count > 0). A
+            // skip/error/no-target outcome is a skipped pass (`pass_skipped`).
+            // The count is recovered from the prose-free detail string ("staged
+            // N amendment(s)"), mirroring the scene_mined staged-count recovery.
+            if let Some(chapter) = after_state
+                .chapters
+                .iter()
+                .find(|chapter| chapter.chapter_number == *chapter_number)
+                && let Some(status) = chapter.replan_status.as_deref()
+            {
+                let count = chapter
+                    .replan_detail
+                    .as_deref()
+                    .and_then(run_journal::leading_count_pub)
+                    .unwrap_or(0);
+                if status == "staged" && count > 0 {
+                    journal
+                        .emit(
+                            run_id,
+                            "replan_proposed",
+                            run_journal::replan_proposed_payload(*chapter_number, count as usize),
+                        )
+                        .await;
+                } else {
+                    journal
+                        .emit(
+                            run_id,
+                            "pass_skipped",
+                            run_journal::pass_skipped_payload(
+                                "replan",
+                                Some(*chapter_number),
+                                None,
+                                chapter.replan_detail.as_deref().unwrap_or(status),
+                            ),
+                        )
+                        .await;
+                }
+            }
+        }
         NextAction::RunCheckpoint {
             start_chapter,
             end_chapter,
@@ -5921,6 +6033,7 @@ fn map_harness_to_records(
         mining_policy: state.mining_policy.clone(),
         max_revise_attempts: state.max_revise_attempts,
         checkpoint_policy: state.checkpoint_policy.clone(),
+        replan_policy: state.replan_policy.clone(),
     };
 
     let mut chapters = Vec::new();
@@ -5940,6 +6053,8 @@ fn map_harness_to_records(
             status: ch_status.to_string(),
             summary_saved: ch.summary_saved,
             summary_artifact_path: ch.summary_artifact_path.clone(),
+            replan_status: ch.replan_status.clone(),
+            replan_detail: ch.replan_detail.clone(),
         });
 
         for sc in &ch.scenes {
@@ -6071,6 +6186,8 @@ fn map_records_to_harness(
             scenes: ch_scenes,
             summary_saved: ch.summary_saved,
             summary_artifact_path: ch.summary_artifact_path.clone(),
+            replan_status: ch.replan_status.clone(),
+            replan_detail: ch.replan_detail.clone(),
         });
     }
 
@@ -6107,6 +6224,7 @@ fn map_records_to_harness(
         mining_policy: run.mining_policy.clone(),
         max_revise_attempts: run.max_revise_attempts,
         checkpoint_policy: run.checkpoint_policy.clone(),
+        replan_policy: run.replan_policy.clone(),
         chapters: ch_states,
         checkpoint_history: cp_history,
     };
@@ -6726,6 +6844,7 @@ mod tests {
                 mining_policy: Some("propose_all".into()),
                 max_revise_attempts: Some(1),
                 checkpoint_policy: None,
+                replan_policy: None,
             },
             Vec::new(),
             Vec::new(),
@@ -6783,6 +6902,8 @@ mod tests {
             scenes: vec![scene],
             summary_saved: false,
             summary_artifact_path: None,
+            replan_status: None,
+            replan_detail: None,
         }];
         state
     }

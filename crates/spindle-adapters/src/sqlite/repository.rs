@@ -8842,6 +8842,45 @@ impl Repository {
         self.get_chapter_plan(&plan_id_lookup).await
     }
 
+    /// Set `chapter_plan.plan_revision` for one chapter on the active branch
+    /// (ADR 0003 D4). Used by the plan-amendment apply dispatcher: the
+    /// [`Self::plan_chapter`] replay path rewrites the row and resets the column
+    /// to NULL (it is not in the INSERT list), so the dispatcher writes the
+    /// incremented value here AFTER the replay to make the increment survive.
+    /// Idempotent absolute write (not a `+= 1`); the caller computes the target
+    /// value. Returns the affected row count.
+    pub async fn set_chapter_plan_revision(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        plan_revision: i64,
+    ) -> Result<u64> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let affected = conn.execute(
+                    "UPDATE chapter_plan SET plan_revision = ?1, updated_at = ?2 \
+                     WHERE project_id = ?3 AND branch_id = ?4 \
+                       AND book_number = ?5 AND chapter_number = ?6",
+                    rusqlite::params![
+                        plan_revision,
+                        now,
+                        project_id,
+                        branch_id,
+                        book_number,
+                        chapter_number
+                    ],
+                )?;
+                Ok(affected as u64)
+            })
+            .await
+    }
+
     /// Active-branch list of every chapter_plan in a project, ordered by
     /// (book#, chapter#).
     pub async fn list_chapter_plans_by_project(
@@ -14296,8 +14335,8 @@ impl Repository {
                     id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
                     checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
                     editorial_directives, status, created_at, updated_at, mining_policy,
-                    max_revise_attempts, checkpoint_policy
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                    max_revise_attempts, checkpoint_policy, replan_policy
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                 ON CONFLICT(id) DO UPDATE SET
                     project_id = excluded.project_id,
                     active_branch_id = excluded.active_branch_id,
@@ -14312,7 +14351,8 @@ impl Repository {
                     updated_at = excluded.updated_at,
                     mining_policy = excluded.mining_policy,
                     max_revise_attempts = excluded.max_revise_attempts,
-                    checkpoint_policy = excluded.checkpoint_policy",
+                    checkpoint_policy = excluded.checkpoint_policy,
+                    replan_policy = excluded.replan_policy",
                     rusqlite::params![
                         run.id,
                         run.project_id,
@@ -14330,6 +14370,7 @@ impl Repository {
                         run.mining_policy,
                         run.max_revise_attempts,
                         run.checkpoint_policy,
+                        run.replan_policy,
                     ],
                 )?;
 
@@ -14346,8 +14387,8 @@ impl Repository {
                     tx.execute(
                         "INSERT INTO authoring_run_chapter (
                         authoring_run_id, chapter_number, planned, synopsis, pov_character_id,
-                        status, summary_saved, summary_artifact_path
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        status, summary_saved, summary_artifact_path, replan_status, replan_detail
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         rusqlite::params![
                             ch.authoring_run_id,
                             ch.chapter_number,
@@ -14357,6 +14398,8 @@ impl Repository {
                             ch.status,
                             ch.summary_saved as i32,
                             ch.summary_artifact_path,
+                            ch.replan_status,
+                            ch.replan_detail,
                         ],
                     )?;
                 }
@@ -17709,6 +17752,7 @@ mod tests {
             mining_policy: None,
             max_revise_attempts: None,
             checkpoint_policy: None,
+            replan_policy: None,
         };
         repo.save_authoring_run(run, Vec::new(), Vec::new(), Vec::new())
             .await
@@ -17818,6 +17862,7 @@ mod tests {
             mining_policy: None,
             max_revise_attempts: None,
             checkpoint_policy: None,
+            replan_policy: None,
         };
         repo.save_authoring_run(run, Vec::new(), Vec::new(), Vec::new())
             .await

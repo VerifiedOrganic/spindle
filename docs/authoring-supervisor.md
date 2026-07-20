@@ -28,7 +28,7 @@ The supervisor exposes 9 MCP tools through the `spindle-mcp` server:
 | Tool Name | Description | Key Input Fields | Key Output Fields |
 |---|---|---|---|
 | `authoring_prepare_run` | Verifies plans and resources are ready before drafting. | `project_id`, `book_number`, `start_chapter`, `end_chapter` | `ready_to_draft`, `missing_requirements` |
-| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`), `max_revise_attempts` (optional; `0` default, `1` or `2` to enable in-run verify/revise), `checkpoint_policy` (optional; `manual` default, `auto_advisory` or `auto_strict` to self-clear checkpoints) | `run_id`, `status` |
+| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`), `max_revise_attempts` (optional; `0` default, `1` or `2` to enable in-run verify/revise), `checkpoint_policy` (optional; `manual` default, `auto_advisory` or `auto_strict` to self-clear checkpoints), `replan_policy` (optional; `disabled` default or `propose_all` to replan future plans after each chapter summary) | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
 | `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
 | `authoring_save_scene_draft` | Saves host-drafted prose plus its required structured continuity package. | `project_id`, `run_id`, scene placement, `full_text`, `summary`, `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes` | `run_id`, `scene_id`, `scene_artifact_path`, `structured_update_count` |
@@ -111,6 +111,46 @@ auto-checkpoint stays `pending_review`, so the manual escape hatch
 (`authoring_review_checkpoint`) still clears it. There is no per-checkpoint
 model-cost ceiling in v1. Canon-steward ratification (`list_canon_deltas` /
 `decide_canon_deltas`) still happens between checkpoints regardless of policy.
+
+### Living outline (replan)
+
+`replan_policy` on `authoring_start_run` is optional and defaults to `disabled`
+(a run that never opts in behaves exactly as before). Set it to `propose_all` to
+insert an automatic `replan future plans` step immediately after each chapter
+summary and before that chapter's checkpoint. The replan pass (`replan_chapter`)
+audits the just-summarized chapter's **realized reality** (summary, key events,
+promise/arc states, beat annotations) against every **not-yet-drafted** future
+chapter's plan and stages plan-amendment proposals — the outline chases the
+story, never the reverse. The differ is **non-prose-bearing** (summaries +
+metadata only, no scene prose), so no rating clearance applies: on a missing
+route it falls to `review` then **skips honestly**, and it never blocks the run.
+Because there is no rating perimeter to protect, `authoring_prepare_run` adds
+**no** extra coverage check for this policy. The outcome is recorded honestly per
+chapter in `authoring_status` as `replan_status` (`staged` | `skipped` |
+`no_targets` | `no_summary` | `error`) plus `replan_detail`; a staged pass emits
+a `replan_proposed` run-journal event (chapter + amendment count), a skip emits
+`pass_skipped`. The pass runs **at most once per chapter**, so it never delays
+the checkpoint.
+
+Staged amendments are **never auto-applied** — every applied amendment is a human
+decision. Review the queue with `list_plan_amendments` (filter by status and by
+`book_number` + `source_chapter` provenance; read each `rationale`) and ratify a
+batch with `decide_plan_amendments`, exactly as canon deltas are decided. Each
+decision is `apply` or `reject`, with an optional `edit` (a corrected payload
+applied AND recorded) and an operator `note`. All decisions are pre-flighted
+before any write: a single failure aborts the whole call with **zero writes**.
+The pre-flight enforces the **immutability guard** — an amendment whose target
+chapter has *any persisted scene on the active branch at apply time* is rejected
+(drafted reality is never rewritten by the outline; the guard is checked at
+decision time, not at staging, because drafting may advance between). On apply,
+the amendment replays through the existing plan write path (`plan_chapter`, or
+`create_narrative_promise` for a `promise_followup`), the affected plan slice is
+snapshotted into the amendment's `prior_state` before the write, and
+`plan_revision` increments — so the outline gains recoverable **history**
+(rollback is a new operator edit informed by `prior_state`, not an automated
+revert). A per-decision outcome (`applied` | `rejected` | `failed` |
+`not_reached`) is returned; a real write failure mid-batch stops honestly (earlier
+applies stay applied, the failing row stays staged).
 
 ### Reader simulation
 

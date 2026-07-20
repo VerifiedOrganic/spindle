@@ -165,6 +165,29 @@ Fan-out for a mined chapter range:
 Without a subagent mechanism, walk the scenes one at a time in the main context — read each queue,
 judge the evidence, decide.
 
+## Plan amendments are outline-canon
+
+The same ratification discipline extends to the **living outline**. When a run
+opts into `replan_policy: "propose_all"`, a `replan_chapter` pass after each
+chapter summary stages **plan amendments** — proposed edits to the not-yet-drafted
+future chapters' plans (synopsis rewrites, scene add/drop/replace/reorder, thread
+promote/retire, promise followups) — into a parallel queue you ratify with
+`list_plan_amendments` / `decide_plan_amendments`, structurally identical to the
+canon-delta flow (pre-flight-all, apply-or-reject, edit-with-correction, finality).
+
+Same evidence discipline, one difference in kind: a plan amendment is grounded in
+its `rationale` (the differ's stated reasoning, citing realized ids/events — no
+prose quote, because the differ never reads prose) rather than a verbatim evidence
+quote. Judge the rationale against the summarized reality exactly as you judge a
+delta's evidence against the scene. The same rules hold: **decisions stay in the
+main context** (never delegate the `decide_plan_amendments` call to a subagent),
+**never bulk-apply** an outline sight-unseen, and every apply is a human decision
+(there is no auto-accept). Two guards are outline-specific: the **immutability
+guard** rejects any amendment whose target chapter already has drafted scenes
+(drafted reality is never rewritten — the outline chases the story), and applying
+snapshots the prior plan into `prior_state` and bumps `plan_revision`, so the
+outline keeps recoverable history. See `docs/adr/0003-plan-amendment-classes.md`.
+
 ## Skill chains
 
 - **authoring-supervisor** hands off here for post-scene mining after a drafting run's scenes are

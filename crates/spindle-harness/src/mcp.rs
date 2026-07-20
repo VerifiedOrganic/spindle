@@ -316,6 +316,13 @@ impl McpHarnessClient {
         self.call_tool("mine_scene_canon", input).await
     }
 
+    pub async fn replan_chapter(
+        &self,
+        input: &spindle_core::models::ReplanChapterInput,
+    ) -> Result<spindle_core::models::ReplanChapterOutput> {
+        self.call_tool("replan_chapter", input).await
+    }
+
     pub async fn save_summary(&self, input: &SaveSummaryInput) -> Result<SaveSummaryOutput> {
         self.call_tool("save_summary", input).await
     }

@@ -64,7 +64,8 @@ authoring_start_run({
   "editorial_directives": ["Keep the prose dark."],
   "mining_policy": "disabled",
   "max_revise_attempts": 0,
-  "checkpoint_policy": "manual"
+  "checkpoint_policy": "manual",
+  "replan_policy": "disabled"
 })
 ```
 
@@ -134,6 +135,41 @@ and the deep audit still completed. A blocked auto-checkpoint stays
 (`approved` | `blocked` | `manual`), and `pending_manual_scene_ids`.
 Canon-steward ratification (`list_canon_deltas` / `decide_canon_deltas`) still
 happens between checkpoints regardless of policy.
+
+`replan_policy` is optional and defaults to `disabled` (omit it for the exact
+pre-replan behavior). Set it to `"propose_all"` to run a **living-outline replan**
+pass after each chapter summary and before that chapter's checkpoint: the pass
+(`replan_chapter`) compares the just-summarized chapter's realized reality
+against every not-yet-drafted future chapter's plan and stages plan-amendment
+proposals — the outline chasing the story. The differ reads summaries and
+metadata only (no scene prose), so it is non-prose-bearing: no rating clearance
+applies, `authoring_prepare_run` needs no extra coverage for it, and on a missing
+route it falls to `review` then skips honestly — it never blocks the run.
+`authoring_status` surfaces each chapter's `replan_status` (`staged` | `skipped`
+| `no_targets` | `no_summary` | `error`) and `replan_detail`; a staged pass emits
+a `replan_proposed` journal event, a skip a `pass_skipped`. The pass runs at most
+once per chapter, so it never stalls the checkpoint.
+
+Staged amendments are **never auto-applied** — every applied amendment is a human
+decision (there is deliberately no auto-accept policy, not even one). Review the
+queue with `list_plan_amendments` and ratify a batch with
+`decide_plan_amendments`, exactly as canon deltas are decided. Triage each
+amendment against its `rationale` and the realized reality:
+
+- **Accept** when the story's trajectory *genuinely moved* — a promise paid off
+  early, an arc resolved, a thread died — and a future plan now contradicts what
+  actually happened. The outline should follow the drafted reality.
+- **Reject** when the plan should *hold* — the drift is speculative, or the future
+  chapter is deliberately meant to subvert the just-realized beat. Rejecting is
+  **also steering, not a no-op**: the parked intent flows into the next drafting
+  brief unchanged, so a considered reject actively re-asserts the original plan.
+
+The pre-flight enforces the **immutability guard**: an amendment whose target
+chapter already has drafted scenes is rejected at decision time (drafted reality
+is never rewritten). On apply, the amendment replays through `plan_chapter` (or
+`create_narrative_promise`), snapshots the prior plan into `prior_state`, and
+bumps `plan_revision` — so the outline keeps recoverable history. Hand the staged
+queue to the **canon-steward** skill's outline-canon discipline; never bulk-apply.
 
 **Reader simulation (auto policies only):** each auto-checkpoint also runs a
 cumulative reader — a persona from the reader contract that reads the range's

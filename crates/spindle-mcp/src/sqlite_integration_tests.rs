@@ -2988,6 +2988,654 @@ async fn pre_upgrade_run_row_opens_and_resumes_with_null_policy_disabled() {
 }
 
 // =============================================================================
+// Living-outline replan integration (ADR 0003, evolution §3.5 — P4)
+// =============================================================================
+
+/// Shared setup for the replan run integration tests. Mirrors the mining
+/// fixture, but plans TWO chapters (1 = the run's range, 2 = a not-yet-drafted
+/// FUTURE target the replan differ audits) and runs the range 1..=1 so chapter 2
+/// stays undrafted. Chapter 2's synopsis carries the `MOCK_REPLAN_SYNOPSIS[2]`
+/// sentinel so the built-in local review adapter (the replan→review fallback
+/// lands there — the differ is non-prose-bearing) stages a synopsis_update
+/// amendment against it. `review_config_extra` is appended to the base config so
+/// a test can override the `review` route to force a skip. `replan_policy` is the
+/// run's opt-in string.
+struct ReplanRunFixture {
+    _tmp: TempDir,
+    svc: SqliteSpindleService,
+    router: crate::tools::ToolRouter,
+    project_id: String,
+    run_id: String,
+    ct: tokio_util::sync::CancellationToken,
+    server_handle: tokio::task::JoinHandle<()>,
+    data_dir: std::path::PathBuf,
+}
+
+async fn replan_run_fixture(
+    review_config_extra: &str,
+    replan_policy: Option<&str>,
+) -> ReplanRunFixture {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_replan.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let script_path = universal_mock_agent_path();
+    let config_path = tmp.path().join("config.toml");
+    // Base config wires ONLY the draft route (general + explicit). The replan
+    // differ has no `replan` route, so it falls to `review`, which is left to the
+    // built-in local adapter that recognizes MOCK_REPLAN_SYNOPSIS. A test that
+    // wants to force a replan skip overrides the `review` route via `extra`.
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+{extra}
+"#,
+        script = script_path.display(),
+        extra = review_config_extra,
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Replan Run".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Living outline.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    // Chapter 1 — the run's range (will be drafted).
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: "First watch.".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara takes the watch".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::General),
+            purpose: "establishing".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    // Chapter 2 — the FUTURE, never-drafted target the replan differ audits. Its
+    // synopsis carries the sentinel so the local review adapter stages an
+    // amendment against it.
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 2,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: "MOCK_REPLAN_SYNOPSIS[2] second chapter as planned".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "the planned future opening".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::General),
+            purpose: "future".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    // Start the run over chapter 1 ONLY (checkpoint_interval 1), with the policy.
+    let mut start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+    });
+    if let Some(policy) = replan_policy {
+        start_args["replan_policy"] = serde_json::Value::String(policy.to_string());
+    }
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let start_val = start_res.structured_content.unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "run should start active: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    ReplanRunFixture {
+        _tmp: tmp,
+        svc,
+        router,
+        project_id: project.project_id,
+        run_id,
+        ct,
+        server_handle,
+        data_dir: data_dir.clone(),
+    }
+}
+
+impl ReplanRunFixture {
+    async fn execute_next(&self) -> serde_json::Value {
+        let exec_args = serde_json::json!({ "project_id": self.project_id, "run_id": self.run_id });
+        self.router
+            .call_tool(
+                "authoring_execute_next",
+                Some(exec_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap()
+    }
+
+    async fn status(&self) -> serde_json::Value {
+        let status_args =
+            serde_json::json!({ "project_id": self.project_id, "run_id": self.run_id });
+        self.router
+            .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap()
+    }
+
+    /// Host-draft chapter 1's single scene and advance through its host-draft
+    /// pause + save.
+    async fn host_draft_and_save_scene_1(&self) {
+        let exec_args = serde_json::json!({ "project_id": self.project_id, "run_id": self.run_id });
+        let host_exec = self
+            .router
+            .call_tool(
+                "authoring_execute_next",
+                Some(exec_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert!(
+            host_exec["message"]
+                .as_str()
+                .unwrap()
+                .contains("Host draft required"),
+            "expected host-draft pause, got {host_exec:?}"
+        );
+        let save_args = serde_json::json!({
+            "project_id": self.project_id,
+            "run_id": self.run_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "full_text": "The watch held through the night. Mara kept the gate.",
+            "summary": "s",
+            "content_rating": "general",
+            "tone": "grim",
+            "continuity_notes": ["No durable canon changes."]
+        });
+        let saved = self
+            .router
+            .call_tool(
+                "authoring_save_scene_draft",
+                Some(save_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            saved.structured_content.unwrap()["status"].as_str(),
+            Some("saved")
+        );
+    }
+
+    /// Drive execute_next until the given predicate matches the executed action,
+    /// returning that response. Caps iterations so a stuck loop fails the test.
+    async fn drive_until(&self, needle: &str) -> serde_json::Value {
+        for _ in 0..12 {
+            let out = self.execute_next().await;
+            let action = out["executed_action"].as_str().unwrap_or("");
+            if action.contains(needle) {
+                return out;
+            }
+        }
+        panic!("never reached an executed action containing {needle:?}");
+    }
+
+    async fn run_events(&self) -> Vec<spindle_adapters::sqlite::records::StoredRunEvent> {
+        self.svc
+            .repository()
+            .list_run_events(&self.run_id, None, None)
+            .await
+            .unwrap()
+    }
+
+    async fn shutdown(self) {
+        self.ct.cancel();
+        self.server_handle.await.unwrap();
+        crate::remove_addr_file(&self.data_dir);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replan_run_stages_amendments_after_summary_before_checkpoint() {
+    // A propose_all run: after chapter 1's summary is saved, ReplanChapter fires
+    // BEFORE the checkpoint, stages an amendment against the future chapter 2,
+    // surfaces replan_status=staged with a count on the chapter, emits a
+    // replan_proposed journal event, and the checkpoint is still reached.
+    let fx = replan_run_fixture("", Some("propose_all")).await;
+
+    fx.host_draft_and_save_scene_1().await;
+    // Drive commit → beats → summary. (No mining policy, so no mine step.)
+    fx.drive_until("commit scene changes").await;
+    fx.drive_until("annotate beats").await;
+    fx.drive_until("save summary").await;
+
+    // The very next executed action must be the replan pass (before checkpoint).
+    let replan = fx.execute_next().await;
+    assert!(
+        replan["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("replan future plans"),
+        "expected replan step right after summary, got {replan:?}"
+    );
+
+    // Status surfaces the honest replan outcome on the chapter entry.
+    let st = fx.status().await;
+    let ch1 = &st["chapters"][0];
+    assert_eq!(
+        ch1["replan_status"].as_str(),
+        Some("staged"),
+        "expected replan_status staged, got {st:?}"
+    );
+    // The MOCK_REPLAN_SYNOPSIS[2] sentinel stages a synopsis_update +
+    // thread_retire against chapter 2 = 2 amendments.
+    assert!(
+        ch1["replan_detail"].as_str().unwrap().contains("staged 2"),
+        "expected staged count detail, got {ch1:?}"
+    );
+
+    // Amendments are really staged on the branch against chapter 2.
+    let list_args = serde_json::json!({ "project_id": fx.project_id, "status": "staged" });
+    let list = fx
+        .router
+        .call_tool("list_plan_amendments", Some(list_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let amendments = list["amendments"].as_array().unwrap();
+    assert_eq!(
+        amendments.len(),
+        2,
+        "two staged amendments expected: {list:?}"
+    );
+    assert!(
+        amendments
+            .iter()
+            .all(|a| a["target_chapter"].as_i64() == Some(2)),
+        "all amendments target the future chapter 2: {list:?}"
+    );
+
+    // The replan_proposed journal event is present (chapter + count).
+    let events = fx.run_events().await;
+    let proposed = events
+        .iter()
+        .find(|e| e.kind == "replan_proposed")
+        .expect("replan_proposed emitted");
+    assert_eq!(proposed.payload["chapter"], serde_json::json!(1));
+    assert_eq!(proposed.payload["amendment_count"], serde_json::json!(2));
+
+    // The checkpoint is still reached (replan ran once, does not re-fire).
+    let checkpoint = fx.drive_until("run checkpoint").await;
+    assert!(
+        checkpoint["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("run checkpoint"),
+        "checkpoint must still be reached after replan, got {checkpoint:?}"
+    );
+
+    fx.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replan_run_skips_honestly_when_review_route_dead_and_advances() {
+    // The `review` route (the replan→review fallback) points at a dead endpoint,
+    // so the replan pass skips honestly: replan_status skipped, a pass_skipped
+    // journal event fires, and the run still advances to the checkpoint (replan
+    // never blocks — evolution I8).
+    let extra = r#"
+[[agents]]
+id = "review-dead"
+name = "Review Dead"
+provider = "openai_compatible"
+endpoint = "http://127.0.0.1:1/unreachable"
+model = "dead"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-dead"
+"#;
+    let fx = replan_run_fixture(extra, Some("propose_all")).await;
+
+    fx.host_draft_and_save_scene_1().await;
+    fx.drive_until("commit scene changes").await;
+    fx.drive_until("annotate beats").await;
+    fx.drive_until("save summary").await;
+
+    let replan = fx.execute_next().await;
+    assert!(
+        replan["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("replan future plans"),
+        "expected replan step, got {replan:?}"
+    );
+    assert_ne!(
+        replan["status"].as_str(),
+        Some("blocked"),
+        "replan must never block the run: {replan:?}"
+    );
+
+    let st = fx.status().await;
+    let ch1 = &st["chapters"][0];
+    assert_eq!(
+        ch1["replan_status"].as_str(),
+        Some("skipped"),
+        "dead review route → skipped, got {st:?}"
+    );
+
+    // No amendments were staged.
+    let list_args = serde_json::json!({ "project_id": fx.project_id, "status": "staged" });
+    let list = fx
+        .router
+        .call_tool("list_plan_amendments", Some(list_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        list["amendments"].as_array().unwrap().is_empty(),
+        "no amendments: {list:?}"
+    );
+
+    // A pass_skipped(replan) journal event fired; no replan_proposed.
+    let events = fx.run_events().await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "pass_skipped" && e.payload["pass"] == serde_json::json!("replan")),
+        "pass_skipped(replan) expected: {:?}",
+        events.iter().map(|e| e.kind.clone()).collect::<Vec<_>>()
+    );
+    assert!(
+        !events.iter().any(|e| e.kind == "replan_proposed"),
+        "no replan_proposed on a skip"
+    );
+
+    // The run still advances to the checkpoint.
+    let checkpoint = fx.drive_until("run checkpoint").await;
+    assert!(
+        checkpoint["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("run checkpoint"),
+        "run must advance to checkpoint after a replan skip, got {checkpoint:?}"
+    );
+
+    fx.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn policy_less_run_never_yields_replan_chapter() {
+    // A run started with NO replan_policy goes straight from summary to the
+    // checkpoint — ReplanChapter is never scheduled, replan_status stays absent.
+    let fx = replan_run_fixture("", None).await;
+
+    // The persisted run row carries a NULL replan_policy (disabled).
+    let (run, _, _, _) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run.replan_policy, None,
+        "policy-less run must persist NULL replan_policy (disabled)"
+    );
+
+    fx.host_draft_and_save_scene_1().await;
+    fx.drive_until("commit scene changes").await;
+    fx.drive_until("annotate beats").await;
+    fx.drive_until("save summary").await;
+
+    // With no replan policy the very next action is the checkpoint — never replan.
+    let next = fx.execute_next().await;
+    assert!(
+        next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("run checkpoint"),
+        "policy-less run must go summary -> checkpoint, got {next:?}"
+    );
+    assert!(
+        !next["executed_action"].as_str().unwrap().contains("replan"),
+        "policy-less run must never replan, got {next:?}"
+    );
+
+    // The chapter's replan_status stays absent (replan not attempted).
+    let st = fx.status().await;
+    let ch1 = &st["chapters"][0];
+    assert!(ch1.get("replan_status").is_none() || ch1["replan_status"].is_null());
+    // No replan_proposed journal event.
+    let events = fx.run_events().await;
+    assert!(!events.iter().any(|e| e.kind == "replan_proposed"));
+
+    fx.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_upgrade_run_row_resumes_with_null_replan_policy_disabled() {
+    // A run row written WITHOUT a replan_policy (NULL = pre-V0030) opens and
+    // resumes fine. NULL = disabled: after the summary the loop goes straight to
+    // the checkpoint, no ReplanChapter. Proves the additive column defaults
+    // cleanly for existing rows.
+    let fx = replan_run_fixture("", None).await;
+    let (run, _, _, _) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.replan_policy, None);
+
+    fx.host_draft_and_save_scene_1().await;
+    fx.drive_until("commit scene changes").await;
+    fx.drive_until("annotate beats").await;
+    fx.drive_until("save summary").await;
+    let next = fx.execute_next().await;
+    assert!(
+        next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("run checkpoint"),
+        "NULL-policy (disabled) run must go summary -> checkpoint, got {next:?}"
+    );
+
+    fx.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replan_run_rejects_bad_policy_string() {
+    // A bad replan_policy string is an input error at authoring_start_run — the
+    // run is blocked, not started (mirrors mining_policy validation).
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use std::sync::Arc;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_replan_bad.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Replan Bad".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+        "replan_policy": "auto_accept",
+    });
+    let res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(res["status"].as_str(), Some("blocked"), "{res:?}");
+    assert!(
+        res["message"].as_str().unwrap().contains("replan_policy"),
+        "message names the bad policy: {res:?}"
+    );
+}
+
+// =============================================================================
 // In-run verify/revise integration (evolution §3.2 — P2.2)
 // =============================================================================
 

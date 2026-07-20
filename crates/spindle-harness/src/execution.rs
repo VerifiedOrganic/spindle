@@ -194,6 +194,19 @@ pub async fn execute_one(
             )
             .await?
         }
+        NextAction::ReplanChapter { chapter_number } => {
+            // Box::pin: this arm's future contributes its full size to the
+            // enclosing executor future even when never executed; un-boxed it
+            // pushes the C1 integration test past the default macOS test stack
+            // (same failure class as the MineScene / verify / revise arms).
+            Box::pin(replan_chapter(
+                state_path,
+                &mut state,
+                client,
+                chapter_number,
+            ))
+            .await?
+        }
         NextAction::Complete => "Harness range is complete.".to_string(),
     };
 
@@ -515,6 +528,68 @@ async fn mine_scene(
     state.save(state_path)?;
     Ok(format!(
         "Mined canon for chapter {chapter_number} scene {scene_order} ({status}: {detail})"
+    ))
+}
+
+/// Opt-in living-outline replan step (ADR 0003, evolution §3.5). Runs the
+/// `replan_chapter` differ against the just-summarized chapter, comparing its
+/// realized reality to the not-yet-drafted future chapters' plans and staging
+/// amendment proposals for operator ratification (never auto-applied — ADR D5).
+/// Records the outcome on the chapter's `replan_status`/`replan_detail` and
+/// advances the run regardless of outcome.
+///
+/// Replan never blocks a run (evolution I8, mirroring mining): a transport-level
+/// error records an honest `error` status and proceeds. Outcomes:
+/// - `staged` — amendments persisted; detail carries the count.
+/// - `skipped` / `no_targets` / `no_summary` — detail carries the reason.
+/// - `error` — a transport failure; detail carries the error (prose-free).
+async fn replan_chapter(
+    state_path: &Path,
+    state: &mut HarnessState,
+    client: &McpHarnessClient,
+    chapter_number: i32,
+) -> Result<String> {
+    let chapter_index =
+        chapter_index(state, chapter_number).context("chapter not found in state")?;
+
+    let (status, detail) = match client
+        .replan_chapter(&spindle_core::models::ReplanChapterInput {
+            project_id: state.project_id.clone(),
+            book_number: state.book_number,
+            source_chapter: chapter_number,
+        })
+        .await
+    {
+        Ok(output) => {
+            let detail = match output.status.as_str() {
+                "staged" => format!("staged {} amendment(s)", output.staged.len()),
+                _ => output
+                    .skip_reason
+                    .clone()
+                    .unwrap_or_else(|| output.status.clone()),
+            };
+            (output.status, detail)
+        }
+        Err(error) => {
+            // Transport-level tool error: record an honest `error` status and
+            // advance anyway (replan never blocks the run — evolution I8).
+            tracing::warn!(
+                "replan_chapter for chapter {chapter_number} failed at transport; \
+                 recording error and advancing: {error:#}"
+            );
+            (
+                "error".to_string(),
+                format!("replan transport error: {error}"),
+            )
+        }
+    };
+
+    let live_chapter = &mut state.chapters[chapter_index];
+    live_chapter.replan_status = Some(status.clone());
+    live_chapter.replan_detail = Some(detail.clone());
+    state.save(state_path)?;
+    Ok(format!(
+        "Replanned future plans after chapter {chapter_number} ({status}: {detail})"
     ))
 }
 
@@ -2113,6 +2188,7 @@ mod tests {
             mining_policy: None,
             max_revise_attempts: None,
             checkpoint_policy: None,
+            replan_policy: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         }
@@ -2128,6 +2204,8 @@ mod tests {
             scenes: Vec::new(),
             summary_saved: false,
             summary_artifact_path: None,
+            replan_status: None,
+            replan_detail: None,
         }
     }
 
@@ -2484,6 +2562,7 @@ mod tests {
             mining_policy: None,
             max_revise_attempts: None,
             checkpoint_policy: None,
+            replan_policy: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         };
@@ -2496,6 +2575,8 @@ mod tests {
             scenes: Vec::new(),
             summary_saved: false,
             summary_artifact_path: None,
+            replan_status: None,
+            replan_detail: None,
         };
         let scene = SceneState {
             scene_order: 1,
