@@ -2618,6 +2618,27 @@ impl ToolRouter {
             }
         };
 
+        // Validate the opt-in bounded-revise budget (evolution §3.2). None/0 =
+        // disabled (canonicalized to None so the run persists NULL, matching a
+        // pre-upgrade row); 1..=2 enable the in-run verify/revise loop; anything
+        // else is an input error — a bound, not a knob explosion.
+        let max_revise_attempts = match spindle_core::models::validate_max_revise_attempts(
+            input.max_revise_attempts,
+        ) {
+            Ok(budget) => budget,
+            Err(rejected) => {
+                return Ok(AuthoringStartRunOutput {
+                    run_id: String::new(),
+                    status: "blocked".to_string(),
+                    message: format!(
+                        "Cannot start authoring run: max_revise_attempts must be between 0 and {}, got {}",
+                        spindle_core::models::MAX_REVISE_ATTEMPTS_UPPER_BOUND,
+                        rejected
+                    ),
+                });
+            }
+        };
+
         let prep_input = AuthoringPrepareRunInput {
             project_id: project_id.clone(),
             book_number: input.book_number,
@@ -2627,6 +2648,9 @@ impl ToolRouter {
             // Thread the resolved policy so prepare's mine-route preflight runs
             // only when the run actually opted into propose_all.
             mining_policy: mining_policy.clone(),
+            // Threaded for symmetry; prepare adds NO preflight for revise (verify
+            // is deterministic and revision reuses the draft route — §3.2).
+            max_revise_attempts,
         };
         let prep_report = Box::pin(self.handle_authoring_prepare_run(prep_input)).await?;
         if !prep_report.ready_to_draft {
@@ -2704,6 +2728,7 @@ impl ToolRouter {
             spindle_harness::state::HarnessState::from_seed(seed, active_branch.id.clone());
         harness_state.artifacts_dir = "../artifacts".to_string();
         harness_state.mining_policy = mining_policy;
+        harness_state.max_revise_attempts = max_revise_attempts;
 
         let run_id = format!(
             "authoring_run:{}",
@@ -2825,6 +2850,9 @@ impl ToolRouter {
                     blocked_reason: sc.blocked_reason.clone(),
                     mine_status: sc.mine_status.clone(),
                     mine_detail: sc.mine_detail.clone(),
+                    verify_status: sc.verify_status.clone(),
+                    verify_detail: sc.verify_detail.clone(),
+                    revise_attempts: sc.revise_attempts,
                 });
             }
             let ch_status_str = match ch.status {
@@ -2997,6 +3025,59 @@ impl ToolRouter {
                     chapter_number,
                     scene_order,
                     scene.content_rating.as_str()
+                ),
+                status: run.status.clone(),
+            });
+        }
+
+        // Hybrid-mode revision hand-off (evolution §3.2, I2). VerifyScene runs
+        // host-independently (it falls through to the executor below), but a
+        // ReviseScene in hybrid mode means the HOST is the revision agent: list
+        // the scene-scoped findings and instruct a revise + re-save. The re-save
+        // through authoring_save_scene_draft resets verify_status and counts the
+        // attempt, so the loop re-verifies exactly as the agent path does. In
+        // agent mode this arm is skipped and ReviseScene re-drafts automatically.
+        if let NextAction::ReviseScene {
+            chapter_number,
+            scene_order,
+            attempt,
+        } = &action_to_execute
+            && !agent_mode
+        {
+            let findings = self
+                .authoring_scene_verify_findings(
+                    data_dir,
+                    &project_id,
+                    outcome.state.book_number,
+                    *chapter_number,
+                    *scene_order,
+                )
+                .await
+                .unwrap_or_default();
+            let findings_block = if findings.is_empty() {
+                "(no findings resolved at read time)".to_string()
+            } else {
+                findings
+                    .iter()
+                    .take(12)
+                    .map(|(check_type, message)| format!("- [{check_type}] {message}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            return Ok(AuthoringExecuteNextOutput {
+                run_id: run_id.clone(),
+                next_action: action_to_execute.to_string(),
+                executed_action: "none".to_string(),
+                message: format!(
+                    "Host revision required for scene {chapter_number}.{scene_order} \
+                     (revision attempt {attempt}). The saved draft tripped these scene-scoped \
+                     checks:\n{findings_block}\n\nRevise the scene to resolve each finding, then \
+                     re-save it with authoring_save_scene_draft (project_id={project_id}, \
+                     run_id={run_id}, book_number={}, chapter_number={chapter_number}, \
+                     scene_order={scene_order}) and call authoring_execute_next again. The re-save \
+                     re-verifies the revised draft; if the same findings persist the scene is \
+                     parked at the checkpoint rather than revised again.",
+                    outcome.state.book_number,
                 ),
                 status: run.status.clone(),
             });
@@ -3247,6 +3328,17 @@ impl ToolRouter {
         artifact_store.save_json(&artifact_rel, &artifact)?;
 
         let live_scene = &mut harness_state.chapters[chapter_index].scenes[scene_index];
+        // In-run verify/revise (evolution §3.2, hybrid mode): a re-save that
+        // follows a `findings` verify IS the host's revision. Reset verify_status
+        // so the scheduler re-verifies the revised draft, and count the attempt
+        // so the bounded budget is honored. Any other prior verify state (clean,
+        // parked, error, or none) leaves the counters untouched — a first save,
+        // or a save after the loop already converged, must not spend budget.
+        if live_scene.verify_status.as_deref() == Some("findings") {
+            live_scene.revise_attempts += 1;
+            live_scene.verify_status = None;
+            live_scene.verify_detail = None;
+        }
         live_scene.phase = ScenePhase::DraftSaved;
         live_scene.scene_id = Some(save_output.scene_id.clone());
         live_scene.scene_artifact_path = Some(artifact_rel.clone());
@@ -3267,6 +3359,58 @@ impl ToolRouter {
             structured_update_count,
             save_output,
         })
+    }
+
+    /// Run the scene-scoped deterministic check subset for one scene and return
+    /// its actionable (severity ≥ warning) findings as `(check_type, message)`
+    /// pairs, sorted and deduplicated (evolution §3.2). Used by the hybrid-mode
+    /// revision hand-off to list findings for the host. Connects to the running
+    /// HTTP MCP server (same transport the executor uses); the check is
+    /// deterministic and issues zero model calls (`deep_check = false`).
+    async fn authoring_scene_verify_findings(
+        &self,
+        data_dir: &Path,
+        project_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let active_addr = crate::read_addr_file(data_dir)?;
+        let url = format!("http://{}/mcp", active_addr);
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
+        let scope = spindle_core::models::ConsistencyScopeInput {
+            scene_order: Some(scene_order),
+            ..spindle_core::models::ConsistencyScopeInput::chapter_range(
+                book_number,
+                chapter_number,
+                book_number,
+                chapter_number,
+            )
+        };
+        let output = client
+            .check_consistency(&spindle_core::models::CheckConsistencyInput {
+                project_id: project_id.to_string(),
+                scope,
+                checks: spindle_core::models::SCENE_VERIFY_CHECKS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await?;
+        let mut findings: Vec<(String, String)> = output
+            .issues
+            .into_iter()
+            .filter(|issue| matches!(issue.severity.as_str(), "warning" | "error"))
+            .map(|issue| (issue.check_type, issue.message))
+            .collect();
+        findings.sort();
+        findings.dedup();
+        Ok(findings)
     }
 
     async fn execute_authoring_commit_scene_changes(
@@ -4497,6 +4641,7 @@ fn map_harness_to_records(
         created_at: created_at.unwrap_or(now),
         updated_at: now,
         mining_policy: state.mining_policy.clone(),
+        max_revise_attempts: state.max_revise_attempts,
     };
 
     let mut chapters = Vec::new();
@@ -4547,6 +4692,12 @@ fn map_harness_to_records(
                 explicit_query: sc.explicit_query.clone(),
                 mine_status: sc.mine_status.clone(),
                 mine_detail: sc.mine_detail.clone(),
+                verify_status: sc.verify_status.clone(),
+                verify_detail: sc.verify_detail.clone(),
+                revise_attempts: sc.revise_attempts,
+                // The revision-directives block is transient harness state only;
+                // it is never persisted to the run tables (evolution §3.2).
+                last_finding_fingerprint: sc.last_finding_fingerprint.clone(),
             });
         }
     }
@@ -4616,6 +4767,10 @@ fn map_records_to_harness(
                     explicit_query: sc.explicit_query.clone(),
                     mine_status: sc.mine_status.clone(),
                     mine_detail: sc.mine_detail.clone(),
+                    verify_status: sc.verify_status.clone(),
+                    verify_detail: sc.verify_detail.clone(),
+                    revise_attempts: sc.revise_attempts,
+                    last_finding_fingerprint: sc.last_finding_fingerprint.clone(),
                     ..Default::default()
                 });
             }
@@ -4667,6 +4822,7 @@ fn map_records_to_harness(
         artifacts_dir: run.artifacts_dir.clone(),
         editorial_directives: run.editorial_directives.clone(),
         mining_policy: run.mining_policy.clone(),
+        max_revise_attempts: run.max_revise_attempts,
         chapters: ch_states,
         checkpoint_history: cp_history,
     };

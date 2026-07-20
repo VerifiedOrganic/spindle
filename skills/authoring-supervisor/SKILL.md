@@ -62,7 +62,8 @@ authoring_start_run({
   "end_chapter": 5,
   "checkpoint_interval": 1,
   "editorial_directives": ["Keep the prose dark."],
-  "mining_policy": "disabled"
+  "mining_policy": "disabled",
+  "max_revise_attempts": 0
 })
 ```
 
@@ -80,6 +81,21 @@ verifies the mine-or-review route ladder covers every planned rating and returns
 `missing_requirements` when it does not. Ratification stays an operator decision
 between checkpoints — hand the staged queue to the **canon-steward** skill to
 review and apply/reject; never auto-apply mined deltas.
+
+`max_revise_attempts` is optional and defaults to **off** (omit it, or pass `0`,
+for the exact pre-revise behavior: a saved draft goes straight to commit). Set it
+to `1` or `2` (bounded — higher values are rejected as an input error) to enable
+the in-run verify/revise loop: after each draft a deterministic `verify scene`
+step runs the scene-scoped check subset, and any finding at or above `warning`
+sends the scene back to the same draft route (or, in hybrid mode, back to you)
+for a bounded revision before commit. Verify is deterministic (zero model calls)
+and revision reuses the already-preflighted draft route, so no extra
+`authoring_prepare_run` coverage is required. `authoring_status` surfaces each
+scene's `verify_status` (`clean` | `findings` | `parked_findings` | `error`),
+`verify_detail`, and `revise_attempts`. The loop converges or stops: the same
+findings are never revised twice (a re-verify with an unchanged finding set parks
+the scene as `parked_findings` "unchanged after revision"), and parked findings
+inherit to the checkpoint exactly as today. Verify never blocks a run.
 
 ### 3. Drive the Bounded Execution Loop
 
@@ -127,6 +143,8 @@ authoring_execute_next({
 
 This will advance the current transition, such as:
 - `draft book scene X.Y` (host-drafted by default for non-explicit scenes; route-offloaded only for explicit scenes or `mode: "agent"`)
+- `verify scene X.Y` (only when `max_revise_attempts > 0`; deterministic scene-scoped checks after a draft)
+- `revise scene X.Y (attempt N)` (only when verify found `warning`+ findings and attempts remain; agent mode re-drafts, hybrid mode hands the findings back to you to revise and re-save)
 - `commit scene changes` (validating and committing draft changes)
 - `annotate beats` (extracting structure and tagging beats)
 - `save summary` (compiling chapter summaries)

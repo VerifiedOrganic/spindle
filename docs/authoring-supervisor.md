@@ -28,7 +28,7 @@ The supervisor exposes 9 MCP tools through the `spindle-mcp` server:
 | Tool Name | Description | Key Input Fields | Key Output Fields |
 |---|---|---|---|
 | `authoring_prepare_run` | Verifies plans and resources are ready before drafting. | `project_id`, `book_number`, `start_chapter`, `end_chapter` | `ready_to_draft`, `missing_requirements` |
-| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`) | `run_id`, `status` |
+| `authoring_start_run` | Initializes a new authoring run. | `project_id`, `book_number`, `start_chapter`, `end_chapter`, `checkpoint_interval`, `mining_policy` (optional; `disabled` default or `propose_all`), `max_revise_attempts` (optional; `0` default, `1` or `2` to enable in-run verify/revise) | `run_id`, `status` |
 | `authoring_status` | Retrieves status and next actions of the active run. | `project_id`, `run_id` (optional) | `status`, `next_action`, `blocked_reason`, `chapters` |
 | `authoring_execute_next` | Advances exactly one bounded drafting/commit/checkpoint action. Default mode is interactive/hybrid: non-explicit draft steps return host-draft instructions instead of calling the draft route. | `project_id`, `run_id`, `mode` (optional; use `"agent"` only for intentional full offload) | `run_id`, `executed_action`, `next_action`, `status` |
 | `authoring_save_scene_draft` | Saves host-drafted prose plus its required structured continuity package. | `project_id`, `run_id`, scene placement, `full_text`, `summary`, `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes` | `run_id`, `scene_id`, `scene_artifact_path`, `structured_update_count` |
@@ -57,6 +57,25 @@ verifies the mine-or-review route ladder covers every planned rating and reports
 `missing_requirements` when it cannot, so an offload gap fails at prepare rather
 than mid-run. `authoring_prepare_run`'s optional `mining_policy` input drives
 this extra preflight and defaults to skipping it.
+
+`max_revise_attempts` on `authoring_start_run` is optional and defaults to `0`
+(disabled — a run that never opts in behaves exactly as before: a saved draft
+goes straight to `commit scene changes`). Set it to `1` or `2` (a bound; higher
+values are rejected as an input error) to insert a deterministic `verify scene`
+step between `draft` and `commit`. Verify runs the scene-scoped check subset
+(`SCENE_VERIFY_CHECKS`, no model calls); a finding at or above `warning` sends
+the scene back to the same draft route as a bounded `revise scene (attempt N)`
+(in hybrid mode `authoring_execute_next` instead returns a "Host revision
+required" instruction listing the findings, and the host re-saves via
+`authoring_save_scene_draft`, which resets the verify state and counts the
+attempt). The outcome is recorded honestly per scene in `authoring_status` as
+`verify_status` (`clean` | `findings` | `parked_findings` | `error`),
+`verify_detail`, and `revise_attempts`. The loop converges or stops: a re-verify
+with an unchanged finding set parks the scene (`parked_findings`, "unchanged
+after revision") rather than re-revising the same findings, and any parked
+findings inherit to the checkpoint. Verify is deterministic and revision reuses
+the already-preflighted draft route, so `authoring_prepare_run` adds **no** extra
+coverage check for this policy; verify never blocks the run.
 
 ## Interactive Drafting Workflow
 

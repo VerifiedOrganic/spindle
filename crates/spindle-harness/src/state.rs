@@ -77,6 +77,13 @@ pub struct HarnessState {
     /// this field existed still deserialize.
     #[serde(default)]
     pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise budget (evolution §3.2). `None` (pre-upgrade
+    /// and default) or `Some(0)` runs the loop exactly as before; `Some(1..=2)`
+    /// inserts a `VerifyScene` step after each draft and lets warning-or-worse
+    /// findings drive up to N bounded `ReviseScene` passes. Additive with a
+    /// serde default so pre-P2.2 state fixtures still deserialize.
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
     #[serde(default)]
     pub chapters: Vec<ChapterState>,
     #[serde(default)]
@@ -95,6 +102,7 @@ impl HarnessState {
             artifacts_dir: default_artifacts_dir(),
             editorial_directives: seed.editorial_directives,
             mining_policy: None,
+            max_revise_attempts: None,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -126,6 +134,11 @@ impl HarnessState {
                             research_tags_matched: true,
                             mine_status: None,
                             mine_detail: None,
+                            verify_status: None,
+                            verify_detail: None,
+                            revise_attempts: 0,
+                            last_finding_fingerprint: None,
+                            revision_directives: None,
                         })
                         .collect(),
                     summary_saved: false,
@@ -278,6 +291,33 @@ pub struct SceneState {
     /// skip/error reason). Never carries prose (evolution I8). Additive.
     #[serde(default)]
     pub mine_detail: Option<String>,
+    /// In-run verification outcome (evolution §3.2). `None` = verify not
+    /// attempted; otherwise `"clean"` | `"findings"` | `"parked_findings"` |
+    /// `"error"`. The scheduler reads this at `DraftSaved` to decide verify vs
+    /// revise vs commit. Additive, serde-default.
+    #[serde(default)]
+    pub verify_status: Option<String>,
+    /// Human-readable detail for the verify outcome (finding counts, the parked
+    /// reason, or the error). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub verify_detail: Option<String>,
+    /// Bounded revision passes this scene has consumed (evolution §3.2). `0`
+    /// until the scene enters the revise loop. Additive, serde-default.
+    #[serde(default)]
+    pub revise_attempts: i32,
+    /// Deterministic digest of the last verify's warning-or-worse finding set
+    /// (evolution §3.2 convergence guard). `None` until the first `findings`
+    /// verify; a re-verify producing an identical fingerprint parks the scene
+    /// instead of re-revising, so the loop never oscillates. Additive.
+    #[serde(default)]
+    pub last_finding_fingerprint: Option<String>,
+    /// Transient revision directives block appended to the next draft prompt
+    /// when this scene is re-dispatched by the in-run revise step (evolution
+    /// §3.2). Set by `revise_scene` before the re-draft and cleared on a
+    /// successful re-save; never persisted to the run tables (harness-state
+    /// only). Ids-not-prose. Additive, serde-default.
+    #[serde(default)]
+    pub revision_directives: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]

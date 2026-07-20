@@ -1776,6 +1776,75 @@ agent = "tame-mine"
 // Canon-mining run integration (evolution §3.1 — P1 run integration)
 // =============================================================================
 
+/// The single mock CLI draft/review agent script shared by every CLI-agent
+/// integration fixture (mining, verify/revise). `SPINDLE_MODEL_CLI_COMMAND` is
+/// a PROCESS-global env var, so parallel tests may invoke each other's script;
+/// keeping ONE byte-identical body makes that harmless. Argv is `[route, prompt]`.
+///
+/// Draft branch: emits a valid `GeneratedScenePackage`. The prose carries the
+/// `MOCK_CANON_MINE` sentinel (mining tests recognize it; inert everywhere else)
+/// and the tone drives `tone_consistency`:
+/// - tone starts `"grim"` (outside a declared `tone: solemn` boundary → warning);
+/// - on a revision (prompt carries the appended `## Revision directives` block)
+///   it switches to `"solemn"` and resolves the finding — UNLESS the prompt
+///   names the `STUBBORN_SCENE` synopsis marker, in which case it stays `"grim"`
+///   so the convergence guard can park the scene.
+///
+/// Non-draft (review) branch: a plain strengths/concerns block.
+const UNIVERSAL_MOCK_AGENT_SCRIPT: &str = r#"#!/bin/bash
+ROUTE=$1
+PROMPT=$2
+if [ "$ROUTE" = "draft" ]; then
+  TONE="grim"
+  if echo "$PROMPT" | grep -q "Revision directives"; then
+    if ! echo "$PROMPT" | grep -q "STUBBORN_SCENE"; then
+      TONE="solemn"
+    fi
+  fi
+  cat <<EOF
+{
+  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE as the door swung wide.",
+  "summary": "Stranger crosses",
+  "tone": "$TONE",
+  "character_states": [],
+  "canonical_facts": [],
+  "relationship_updates": [],
+  "beats": [],
+  "continuity_notes": []
+}
+EOF
+else
+  cat <<EOF
+STRENGTHS:
+- ok
+CONCERNS:
+- none
+EOF
+fi
+"#;
+
+/// Write the universal mock agent script ONCE to a process-stable path (under
+/// the OS temp dir, not any per-test `TempDir`) and return it. Because
+/// `SPINDLE_MODEL_CLI_COMMAND` is process-global and per-test `TempDir`s are
+/// deleted on drop, a fixture that pointed the env var at a script inside its
+/// own `TempDir` would leave a dangling command for any concurrently-running
+/// test whose draft fires after that dir is cleaned. A single stable path that
+/// lives for the whole test process removes that lifetime race.
+fn universal_mock_agent_path() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::OnceLock;
+    static PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = std::env::temp_dir().join("spindle_universal_mock_agent.sh");
+        std::fs::write(&path, UNIVERSAL_MOCK_AGENT_SCRIPT).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
+    })
+    .clone()
+}
+
 /// Shared setup for the mining run integration tests. Mirrors the C1 flow's
 /// structure: a mock CLI draft/review agent, an HTTP MCP server the harness
 /// connects to, a project with one general scene planned, and a started run
@@ -1804,7 +1873,6 @@ async fn mining_run_fixture(
 ) -> MiningRunFixture {
     use crate::tools::{ToolRouter, ToolSerializationState};
     use spindle_core::models::ConfigureAgentsInput;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -1816,35 +1884,9 @@ async fn mining_run_fixture(
     // Mock CLI agent: draft returns prose carrying the MOCK_CANON_MINE sentinel
     // so the committed scene mines into a canonical_fact; review returns a plain
     // strengths/concerns block (unused by mining, present for completeness).
-    let script_path = tmp.path().join("mock_agent.sh");
-    let script_content = r#"#!/bin/bash
-ROUTE=$1
-if [ "$ROUTE" = "draft" ]; then
-  cat <<EOF
-{
-  "full_text": "The grey-eyed stranger crossed the hall. MOCK_CANON_MINE as the door swung wide.",
-  "summary": "Stranger crosses",
-  "tone": "grim",
-  "character_states": [],
-  "canonical_facts": [],
-  "relationship_updates": [],
-  "beats": [],
-  "continuity_notes": []
-}
-EOF
-else
-  cat <<EOF
-STRENGTHS:
-- ok
-CONCERNS:
-- none
-EOF
-fi
-"#;
-    std::fs::write(&script_path, script_content).unwrap();
-    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&script_path, perms).unwrap();
+    // Uses the process-stable universal script so the shared global env var is
+    // race-safe across parallel mining/verify tests (see helper doc).
+    let script_path = universal_mock_agent_path();
 
     let config_path = tmp.path().join("config.toml");
     // NOTE: the base config configures ONLY the draft route. It deliberately
@@ -2315,6 +2357,13 @@ async fn pre_upgrade_run_row_opens_and_resumes_with_null_policy_disabled() {
         run.mining_policy, None,
         "pre-upgrade/default run must persist NULL policy"
     );
+    // P2.2: the V0026 verify/revise columns also default cleanly for a run that
+    // predates them — NULL max_revise_attempts = disabled (the same additive
+    // guarantee C9 pins). A V0025-era row resumes with the revise loop off.
+    assert_eq!(
+        run.max_revise_attempts, None,
+        "pre-upgrade/default run must persist NULL max_revise_attempts (revise disabled)"
+    );
 
     // Resume: host-draft, commit, then the next action is beats (disabled).
     host_draft_and_save_scene_1(&fx, "A resumed watch, no mining.").await;
@@ -2335,4 +2384,648 @@ async fn pre_upgrade_run_row_opens_and_resumes_with_null_policy_disabled() {
     );
 
     shutdown(fx).await;
+}
+
+// =============================================================================
+// In-run verify/revise integration (evolution §3.2 — P2.2)
+// =============================================================================
+
+/// Shared setup for the verify/revise run integration tests. Mirrors the mining
+/// fixture: a CLI draft agent, an HTTP MCP server the harness connects to, a
+/// project whose reader contract declares a `tone: solemn` boundary, and one
+/// general scene planned. The run is started in AGENT mode with the given
+/// `max_revise_attempts`, so drafting/verify/revise are all executed by the
+/// harness through `authoring_execute_next`.
+///
+/// The deterministic violation is `tone_consistency`: the draft agent's scene
+/// carries a tone outside the declared `tone: solemn` boundary, so a
+/// scene-scoped `check_consistency` returns a `warning` attributed to the scene
+/// with zero model calls. When `revision_fixes` is true the agent switches its
+/// tone to `solemn` the moment the prompt carries a `## Revision directives`
+/// block (detectable in argv), so the revision resolves the finding; when false
+/// it never changes, so the convergence guard parks the scene.
+struct VerifyRunFixture {
+    _tmp: TempDir,
+    router: crate::tools::ToolRouter,
+    project_id: String,
+    run_id: String,
+    ct: tokio_util::sync::CancellationToken,
+    server_handle: tokio::task::JoinHandle<()>,
+    data_dir: std::path::PathBuf,
+}
+
+async fn verify_run_fixture(
+    revision_fixes: bool,
+    max_revise_attempts: Option<i32>,
+) -> VerifyRunFixture {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_verify.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Universal mock draft agent at a process-stable path (see helper doc). The
+    // synopsis (STUBBORN_SCENE marker) is the per-test signal it keys on, folded
+    // into the draft prompt.
+    let script_path = universal_mock_agent_path();
+
+    let config_path = tmp.path().join("config.toml");
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+"#,
+        script = script_path.display(),
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Verify Run".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Verified prose.".into(),
+                style_notes: Vec::new(),
+                // Declares the allowed tone so a "grim" scene trips
+                // tone_consistency (the boundary contains "tone:" but not
+                // the scene's tone value).
+                boundaries: vec!["tone: solemn".into()],
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("solemn".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    // The synopsis is the per-test signal the universal draft script keys on
+    // (it is folded into the draft prompt). When the revision must NOT resolve
+    // the finding, the STUBBORN_SCENE marker keeps the re-drafted tone "grim".
+    let synopsis = if revision_fixes {
+        "First watch."
+    } else {
+        "First watch. STUBBORN_SCENE"
+    };
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: synopsis.into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara takes the watch".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            content_rating: Some(ContentRating::General),
+            purpose: "establishing".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    let mut start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+    });
+    if let Some(budget) = max_revise_attempts {
+        start_args["max_revise_attempts"] = serde_json::Value::from(budget);
+    }
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let start_val = start_res.structured_content.unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "run should start active: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    VerifyRunFixture {
+        _tmp: tmp,
+        router,
+        project_id: project.project_id,
+        run_id,
+        ct,
+        server_handle,
+        data_dir: data_dir.clone(),
+    }
+}
+
+/// Drive `authoring_execute_next` in AGENT mode for a verify fixture.
+async fn verify_execute_next(fx: &VerifyRunFixture) -> serde_json::Value {
+    let exec_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "mode": "agent",
+    });
+    fx.router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+async fn verify_status(fx: &VerifyRunFixture) -> serde_json::Value {
+    let status_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+    fx.router
+        .call_tool("authoring_status", Some(status_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+async fn verify_shutdown(fx: VerifyRunFixture) {
+    fx.ct.cancel();
+    fx.server_handle.await.unwrap();
+    crate::remove_addr_file(&fx.data_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verify_run_revises_findings_then_commits_clean() {
+    // Test 2: agent-mode run with max_revise_attempts=1. The first draft trips a
+    // tone_consistency warning; the run verifies (findings), revises (the agent
+    // fixes the tone), re-verifies (clean), then commits. revise_attempts == 1.
+    let fx = verify_run_fixture(true, Some(1)).await;
+
+    // Draft.
+    let draft = verify_execute_next(&fx).await;
+    assert!(
+        draft["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("draft book scene"),
+        "expected draft, got {draft:?}"
+    );
+
+    // Verify — first pass finds the tone warning.
+    let verify1 = verify_execute_next(&fx).await;
+    assert!(
+        verify1["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene"),
+        "expected verify after draft, got {verify1:?}"
+    );
+    let st = verify_status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert_eq!(
+        scene["verify_status"].as_str(),
+        Some("findings"),
+        "first verify must find the tone warning, got {scene:?}"
+    );
+
+    // Revise — the agent re-drafts with the fixed tone.
+    let revise = verify_execute_next(&fx).await;
+    assert!(
+        revise["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("revise scene"),
+        "expected revise after findings, got {revise:?}"
+    );
+
+    // Verify again — now clean.
+    let verify2 = verify_execute_next(&fx).await;
+    assert!(
+        verify2["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene"),
+        "expected a second verify after revise, got {verify2:?}"
+    );
+    let st = verify_status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert_eq!(
+        scene["verify_status"].as_str(),
+        Some("clean"),
+        "re-verify after a fixing revision must be clean, got {scene:?}"
+    );
+    assert_eq!(
+        scene["revise_attempts"].as_i64(),
+        Some(1),
+        "exactly one revision consumed, got {scene:?}"
+    );
+
+    // Commit proceeds.
+    let commit = verify_execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes"),
+        "expected commit after a clean re-verify, got {commit:?}"
+    );
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verify_run_convergence_guard_parks_unchanged_findings() {
+    // Test 3: the revision does NOT fix the violation (tone stays "grim"). The
+    // first verify finds it; a revision runs; the second verify computes the
+    // SAME fingerprint → parked_findings "unchanged after revision". The run
+    // proceeds to commit; revise_attempts == 1 (never re-revised for the same
+    // findings), even though the budget was 2.
+    let fx = verify_run_fixture(false, Some(2)).await;
+
+    verify_execute_next(&fx).await; // draft
+    let verify1 = verify_execute_next(&fx).await;
+    assert!(
+        verify1["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene")
+    );
+    let st = verify_status(&fx).await;
+    assert_eq!(
+        st["chapters"][0]["scenes"][0]["verify_status"].as_str(),
+        Some("findings")
+    );
+
+    let revise = verify_execute_next(&fx).await;
+    assert!(
+        revise["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("revise scene"),
+        "expected a revise pass, got {revise:?}"
+    );
+
+    // Second verify: fingerprint unchanged → parked, not another finding.
+    let verify2 = verify_execute_next(&fx).await;
+    assert!(
+        verify2["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene")
+    );
+    let st = verify_status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert_eq!(
+        scene["verify_status"].as_str(),
+        Some("parked_findings"),
+        "unchanged findings must park, got {scene:?}"
+    );
+    assert!(
+        scene["verify_detail"]
+            .as_str()
+            .unwrap()
+            .contains("unchanged after revision"),
+        "parked detail must name the convergence guard, got {scene:?}"
+    );
+    assert_eq!(
+        scene["revise_attempts"].as_i64(),
+        Some(1),
+        "the same findings are never revised twice, got {scene:?}"
+    );
+
+    // The run proceeds to commit despite the parked findings.
+    let commit = verify_execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes"),
+        "parked scene must proceed to commit, got {commit:?}"
+    );
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verify_run_disabled_goes_draft_to_commit() {
+    // Test 4 (integration companion to plan-level opt-out): a run started with
+    // NO max_revise_attempts goes straight from draft to commit — VerifyScene is
+    // never scheduled even though the draft trips the tone violation.
+    let fx = verify_run_fixture(false, None).await;
+
+    let draft = verify_execute_next(&fx).await;
+    assert!(
+        draft["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("draft book scene")
+    );
+    let next = verify_execute_next(&fx).await;
+    assert!(
+        next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes"),
+        "disabled run must go draft -> commit, got {next:?}"
+    );
+    assert!(
+        !next["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene"),
+        "disabled run must never verify, got {next:?}"
+    );
+    let st = verify_status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert!(scene.get("verify_status").is_none() || scene["verify_status"].is_null());
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_run_rejects_out_of_bounds_max_revise_attempts() {
+    // Test 7: max_revise_attempts=3 is above the 0..=2 bound → input error at
+    // start (blocked, no run created).
+    let fx = verify_run_fixture(false, None).await;
+    let start_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+        "max_revise_attempts": 3,
+    });
+    let res = fx
+        .router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        res["status"].as_str(),
+        Some("blocked"),
+        "out-of-bounds budget must block, got {res:?}"
+    );
+    assert!(
+        res["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_revise_attempts"),
+        "message must name the offending input, got {res:?}"
+    );
+    assert!(res["run_id"].as_str().unwrap_or("").is_empty());
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hybrid_run_surfaces_findings_and_host_resave_resets_verify_state() {
+    // Test 6: an enabled run in HYBRID mode. The host drafts a general scene
+    // whose tone trips the tone violation. execute_next verifies (findings),
+    // then the next execute_next is intercepted as a host-revision hand-off
+    // whose message lists the findings. A host re-save resets verify_status and
+    // increments revise_attempts; a re-save with a fixed tone re-verifies clean.
+    let fx = verify_run_fixture(true, Some(1)).await;
+    let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+
+    // Hybrid mode (default): first execute_next asks the host to draft.
+    let host_exec = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        host_exec["message"]
+            .as_str()
+            .unwrap()
+            .contains("Host draft required"),
+        "expected host-draft pause, got {host_exec:?}"
+    );
+
+    // Host saves a draft with the violating "grim" tone.
+    let save_grim = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "The warden kept a grim vigil.",
+        "summary": "s",
+        "content_rating": "general",
+        "tone": "grim",
+        "continuity_notes": ["No durable canon."]
+    });
+    fx.router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(save_grim.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+
+    // Verify runs host-independently and finds the tone warning.
+    let verify1 = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        verify1["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene"),
+        "hybrid verify must still run, got {verify1:?}"
+    );
+    let st = verify_status(&fx).await;
+    assert_eq!(
+        st["chapters"][0]["scenes"][0]["verify_status"].as_str(),
+        Some("findings")
+    );
+
+    // Next execute_next is the host-revision hand-off listing the findings.
+    let handoff = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        handoff["message"]
+            .as_str()
+            .unwrap()
+            .contains("Host revision required"),
+        "expected host-revision hand-off, got {handoff:?}"
+    );
+    assert!(
+        handoff["message"]
+            .as_str()
+            .unwrap()
+            .contains("tone_consistency"),
+        "hand-off must list the findings, got {handoff:?}"
+    );
+
+    // Host re-saves with a fixed "solemn" tone: resets verify_status + counts.
+    let save_fixed = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "The warden kept a solemn vigil.",
+        "summary": "s",
+        "content_rating": "general",
+        "tone": "solemn",
+        "continuity_notes": ["No durable canon."]
+    });
+    fx.router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(save_fixed.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+
+    let st = verify_status(&fx).await;
+    let scene = &st["chapters"][0]["scenes"][0];
+    assert!(
+        scene.get("verify_status").is_none() || scene["verify_status"].is_null(),
+        "re-save must reset verify_status to None, got {scene:?}"
+    );
+    assert_eq!(
+        scene["revise_attempts"].as_i64(),
+        Some(1),
+        "host re-save after findings must count the attempt, got {scene:?}"
+    );
+
+    // Re-verify: the fixed tone is clean.
+    let verify2 = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(
+        verify2["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("verify scene")
+    );
+    let st = verify_status(&fx).await;
+    assert_eq!(
+        st["chapters"][0]["scenes"][0]["verify_status"].as_str(),
+        Some("clean"),
+        "re-verify of the fixed draft must be clean, got {st:?}"
+    );
+
+    verify_shutdown(fx).await;
 }

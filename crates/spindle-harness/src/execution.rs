@@ -116,6 +116,42 @@ pub async fn execute_one(
             )
             .await?
         }
+        NextAction::VerifyScene {
+            chapter_number,
+            scene_order,
+        } => {
+            // Box::pin: this arm's future contributes its full size to the
+            // enclosing executor future even when never executed; un-boxed it
+            // pushes the C1 integration test past the default macOS test stack
+            // (same failure class as the MineScene / ratify dispatch arms).
+            Box::pin(verify_scene(
+                state_path,
+                &mut state,
+                client,
+                chapter_number,
+                scene_order,
+            ))
+            .await?
+        }
+        NextAction::ReviseScene {
+            chapter_number,
+            scene_order,
+            attempt,
+        } => {
+            // Box::pin: see VerifyScene above — the revise arm re-dispatches the
+            // full draft path, so its future is large; box it to keep the
+            // enclosing executor future off the default test stack.
+            Box::pin(revise_scene(
+                state_path,
+                &mut state,
+                client,
+                &artifact_store,
+                chapter_number,
+                scene_order,
+                attempt,
+            ))
+            .await?
+        }
         NextAction::MineScene {
             chapter_number,
             scene_order,
@@ -482,6 +518,292 @@ async fn mine_scene(
     ))
 }
 
+/// Maximum number of rendered `## Revision directives` lines carried into a
+/// revision brief (evolution §3.2). Beyond this the block is truncated with an
+/// explicit tail line, so the brief carries findings-not-prose and stays small.
+const MAX_REVISION_DIRECTIVE_LINES: usize = 12;
+
+/// The severity floor at or above which a verification finding drives a revision
+/// (evolution §3.2: findings ≥ `warning`). `info` findings never trigger a
+/// revise pass.
+fn finding_is_actionable(severity: &str) -> bool {
+    matches!(severity, "warning" | "error")
+}
+
+/// Run the scene-scoped deterministic check subset for one scene and return its
+/// actionable (severity ≥ warning) findings as `(check_type, message)` pairs,
+/// deterministically ordered.
+///
+/// The scope is pinned to exactly this scene (single-chapter range +
+/// `scene_order`), so every finding the check returns is already attributed to
+/// the scene — the same narrowing the scene-scoped verifier honors. `checks` is
+/// the `SCENE_VERIFY_CHECKS` subset and `deep_check` is false, so this issues
+/// **zero** model calls; it is a pure deterministic pass.
+async fn scene_verify_findings(
+    client: &McpHarnessClient,
+    project_id: &str,
+    book_number: i32,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Result<Vec<(String, String)>> {
+    let scope = ConsistencyScopeInput {
+        scene_order: Some(scene_order),
+        ..ConsistencyScopeInput::chapter_range(
+            book_number,
+            chapter_number,
+            book_number,
+            chapter_number,
+        )
+    };
+    let output = client
+        .check_consistency(&CheckConsistencyInput {
+            project_id: project_id.to_string(),
+            scope,
+            checks: spindle_core::models::SCENE_VERIFY_CHECKS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await?;
+
+    let mut findings: Vec<(String, String)> = output
+        .issues
+        .into_iter()
+        .filter(|issue| finding_is_actionable(&issue.severity))
+        .map(|issue| (issue.check_type, issue.message))
+        .collect();
+    findings.sort();
+    findings.dedup();
+    Ok(findings)
+}
+
+/// Deterministic fingerprint of a warning-or-worse finding set (evolution §3.2
+/// convergence guard).
+///
+/// The key is the sorted, de-duplicated set of `"{check_type}:{message}"` lines
+/// joined by newlines and SHA-256'd to hex. Sorting makes the digest independent
+/// of finding order; keying on `check_type` **and** the full message means an
+/// identical finding (same check flagging the same scene id / same drifted
+/// value — the messages embed those stable ids) across two verify rounds yields
+/// an identical fingerprint, while any change to the finding set changes it. A
+/// re-verify whose fingerprint matches the prior one is what parks a scene
+/// instead of re-revising the same findings. An empty set never reaches here
+/// (no findings ⇒ `clean`).
+fn finding_fingerprint(findings: &[(String, String)]) -> String {
+    let mut keys: Vec<String> = findings
+        .iter()
+        .map(|(check_type, message)| format!("{check_type}:{message}"))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut hasher = Sha256::new();
+    hasher.update(keys.join("\n").as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Render a bounded `## Revision directives` block from the actionable findings.
+/// Ids-not-prose: each line is the finding's `check_type` plus its own message
+/// (which itself names scene ids / drifted values, not scene prose), capped at
+/// `MAX_REVISION_DIRECTIVE_LINES` with an explicit truncation tail.
+fn render_revision_directives(findings: &[(String, String)]) -> String {
+    let mut block = String::from(
+        "## Revision directives\n\
+         The previous draft tripped these scene-scoped checks. Revise the scene to \
+         resolve each finding, then return the same strict JSON package:\n",
+    );
+    for (check_type, message) in findings.iter().take(MAX_REVISION_DIRECTIVE_LINES) {
+        block.push_str(&format!("- [{check_type}] {message}\n"));
+    }
+    if findings.len() > MAX_REVISION_DIRECTIVE_LINES {
+        block.push_str(&format!(
+            "- (+{} more finding(s) omitted; resolve the categories above)\n",
+            findings.len() - MAX_REVISION_DIRECTIVE_LINES
+        ));
+    }
+    block
+}
+
+/// In-run verification step (evolution §3.2). Runs the deterministic
+/// scene-scoped check subset for a just-saved draft and records the outcome on
+/// the scene's `verify_status`/`verify_detail`/`last_finding_fingerprint`,
+/// advancing the run regardless of outcome.
+///
+/// Verify never blocks a run (evolution I8, mirroring mining): a transport-level
+/// error records an honest `error` status and proceeds. Outcomes:
+/// - no actionable findings → `clean`; the loop proceeds to commit.
+/// - findings, budget remaining, fingerprint changed → `findings`; the
+///   scheduler will schedule a `ReviseScene`.
+/// - findings, budget remaining, fingerprint UNCHANGED from the prior round →
+///   `parked_findings` ("unchanged after revision"): the convergence guard, so
+///   the same findings are never re-revised.
+/// - findings, budget exhausted → `parked_findings` with counts.
+async fn verify_scene(
+    state_path: &Path,
+    state: &mut HarnessState,
+    client: &McpHarnessClient,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Result<String> {
+    let (chapter_index, scene_index) =
+        scene_indices(state, chapter_number, scene_order).context("scene not found in state")?;
+    let book_number = state.book_number;
+    let max = state.max_revise_attempts.unwrap_or(0);
+    let revise_attempts = state.chapters[chapter_index].scenes[scene_index].revise_attempts;
+    let prior_fingerprint = state.chapters[chapter_index].scenes[scene_index]
+        .last_finding_fingerprint
+        .clone();
+
+    let (status, detail, fingerprint) = match scene_verify_findings(
+        client,
+        &state.project_id,
+        book_number,
+        chapter_number,
+        scene_order,
+    )
+    .await
+    {
+        Ok(findings) if findings.is_empty() => (
+            "clean".to_string(),
+            "0 finding(s) at or above warning".to_string(),
+            None,
+        ),
+        Ok(findings) => {
+            let fingerprint = finding_fingerprint(&findings);
+            let count = findings.len();
+            if prior_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+                // Convergence guard: the revision did not change the finding set,
+                // so parking beats another identical revision pass.
+                (
+                    "parked_findings".to_string(),
+                    "unchanged after revision".to_string(),
+                    Some(fingerprint),
+                )
+            } else if revise_attempts >= max {
+                // Budget spent on this finding set: park with counts.
+                (
+                    "parked_findings".to_string(),
+                    format!("{count} finding(s) parked after {revise_attempts} revision(s)"),
+                    Some(fingerprint),
+                )
+            } else {
+                (
+                    "findings".to_string(),
+                    format!("{count} finding(s) at or above warning"),
+                    Some(fingerprint),
+                )
+            }
+        }
+        Err(error) => {
+            // Transport-level tool error: record an honest `error` status and
+            // advance anyway (verify never blocks the run — evolution I8).
+            tracing::warn!(
+                "check_consistency for chapter {chapter_number} scene {scene_order} failed at \
+                 transport; recording error and advancing: {error:#}"
+            );
+            (
+                "error".to_string(),
+                format!("verify transport error: {error}"),
+                None,
+            )
+        }
+    };
+
+    let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+    live_scene.verify_status = Some(status.clone());
+    live_scene.verify_detail = Some(detail.clone());
+    if let Some(fingerprint) = fingerprint {
+        live_scene.last_finding_fingerprint = Some(fingerprint);
+    }
+    state.save(state_path)?;
+    Ok(format!(
+        "Verified chapter {chapter_number} scene {scene_order} ({status}: {detail})"
+    ))
+}
+
+/// In-run revision step (evolution §3.2), agent mode. Re-dispatches the scene
+/// through the SAME draft route it originally used, appending a bounded
+/// `## Revision directives` block rendered from the current actionable findings.
+/// On a successful re-save the scene's `revise_attempts` increments and its
+/// `verify_status` resets to `None` so the scheduler re-runs `VerifyScene`.
+///
+/// The chokepoint is inherited: `draft_scene` resolves the draft route at the
+/// scene's rating exactly as the first draft did, so the explicit-offload
+/// guarantee holds with zero new configuration (evolution I3).
+async fn revise_scene(
+    state_path: &Path,
+    state: &mut HarnessState,
+    client: &McpHarnessClient,
+    artifact_store: &ArtifactStore,
+    chapter_number: i32,
+    scene_order: i32,
+    attempt: i32,
+) -> Result<String> {
+    let (chapter_index, scene_index) =
+        scene_indices(state, chapter_number, scene_order).context("scene not found in state")?;
+    let book_number = state.book_number;
+
+    // Re-run the deterministic scene check to render the current directives.
+    // The check is deterministic and prose-free, so this is a stable re-read of
+    // exactly the findings the prior verify saw.
+    let findings = scene_verify_findings(
+        client,
+        &state.project_id,
+        book_number,
+        chapter_number,
+        scene_order,
+    )
+    .await
+    .unwrap_or_default();
+    let directives = render_revision_directives(&findings);
+
+    // Reset the scene artifact so the draft path rebuilds the prompt with the
+    // appended revision directives, then re-run the same draft route. Removing
+    // the artifact + resetting the phase makes the re-dispatch idempotent and
+    // reuses the existing draft plumbing wholesale (evolution §3.2: "same draft
+    // path").
+    if let Some(artifact_rel) = state.chapters[chapter_index].scenes[scene_index]
+        .scene_artifact_path
+        .clone()
+    {
+        let full = artifact_store.root().join(&artifact_rel);
+        let _ = std::fs::remove_file(&full);
+    }
+    {
+        let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+        live_scene.phase = ScenePhase::Pending;
+        live_scene.revision_directives = Some(directives);
+        state.save(state_path)?;
+    }
+
+    // Re-dispatch through the same draft route/rating (chokepoint inherited).
+    draft_scene(
+        state_path,
+        state,
+        client,
+        artifact_store,
+        chapter_number,
+        scene_order,
+    )
+    .await?;
+
+    // Successful re-save: increment the attempt count, clear the directives, and
+    // reset verify_status so the scheduler re-verifies the revised draft.
+    let live_scene = &mut state.chapters[chapter_index].scenes[scene_index];
+    live_scene.revise_attempts += 1;
+    live_scene.verify_status = None;
+    live_scene.verify_detail = None;
+    live_scene.revision_directives = None;
+    state.save(state_path)?;
+    Ok(format!(
+        "Revised chapter {chapter_number} scene {scene_order} (attempt {attempt})"
+    ))
+}
+
 async fn save_chapter_summary(
     state_path: &Path,
     state: &mut HarnessState,
@@ -752,7 +1074,7 @@ async fn load_or_create_scene_artifact(
         .collect::<Vec<_>>();
     let query_pack_input_str = serde_json::to_string(&research_input).ok();
 
-    let prompt = build_scene_prompt(
+    let mut prompt = build_scene_prompt(
         client,
         state,
         chapter,
@@ -762,6 +1084,14 @@ async fn load_or_create_scene_artifact(
         draft_route,
     )
     .await?;
+    // In-run revision (evolution §3.2): when this scene is being re-dispatched
+    // by the revise step, append the bounded revision-directives block so the
+    // same draft route reworks the flagged findings. Ids-not-prose; cleared on
+    // a successful re-save by `revise_scene`.
+    if let Some(directives) = scene.revision_directives.as_deref() {
+        prompt.push_str("\n\n");
+        prompt.push_str(directives);
+    }
     let mut artifact = SceneGenerationArtifact::new(
         chapter.chapter_number,
         scene.scene_order,
@@ -1774,6 +2104,7 @@ mod tests {
             artifacts_dir: "artifacts".to_string(),
             editorial_directives: vec!["Keep the voice sharp.".to_string()],
             mining_policy: None,
+            max_revise_attempts: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         }
@@ -1812,6 +2143,11 @@ mod tests {
             research_tags_matched: true,
             mine_status: None,
             mine_detail: None,
+            verify_status: None,
+            verify_detail: None,
+            revise_attempts: 0,
+            last_finding_fingerprint: None,
+            revision_directives: None,
         }
     }
 
@@ -2138,6 +2474,7 @@ mod tests {
             artifacts_dir: "artifacts".to_string(),
             editorial_directives: vec!["Keep the voice sharp.".to_string()],
             mining_policy: None,
+            max_revise_attempts: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         };
@@ -2170,6 +2507,11 @@ mod tests {
             research_tags_matched: true,
             mine_status: None,
             mine_detail: None,
+            verify_status: None,
+            verify_detail: None,
+            revise_attempts: 0,
+            last_finding_fingerprint: None,
+            revision_directives: None,
         };
 
         let prompt = build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &[], &[]).unwrap();

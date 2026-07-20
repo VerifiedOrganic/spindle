@@ -104,6 +104,15 @@ pub enum NextAction {
         query: Option<String>,
         location: Option<String>,
     },
+    VerifyScene {
+        chapter_number: i32,
+        scene_order: i32,
+    },
+    ReviseScene {
+        chapter_number: i32,
+        scene_order: i32,
+        attempt: i32,
+    },
     CommitSceneChanges {
         chapter_number: i32,
         scene_order: i32,
@@ -168,6 +177,21 @@ impl std::fmt::Display for NextAction {
                      Suggested action: use research tools (e.g. research_add_source, research_add_note, research_add_claim) to add relevant research, then resume."
                 )
             }
+            Self::VerifyScene {
+                chapter_number,
+                scene_order,
+            } => write!(
+                f,
+                "verify scene for chapter {chapter_number} scene {scene_order}"
+            ),
+            Self::ReviseScene {
+                chapter_number,
+                scene_order,
+                attempt,
+            } => write!(
+                f,
+                "revise scene for chapter {chapter_number} scene {scene_order} (attempt {attempt})"
+            ),
             Self::CommitSceneChanges {
                 chapter_number,
                 scene_order,
@@ -758,6 +782,37 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
                     };
                 }
                 ScenePhase::DraftSaved => {
+                    // Opt-in in-run verify/revise sits between draft and commit
+                    // (evolution §3.2, I7). When the run set a revise budget the
+                    // saved draft is verified first; warning-or-worse findings
+                    // drive up to `max` bounded revisions before commit. With the
+                    // budget disabled (None/0) scheduling is byte-identical to the
+                    // pre-verify loop: straight to CommitSceneChanges.
+                    if let Some(max) = revise_budget(state) {
+                        match scene.verify_status.as_deref() {
+                            // Not yet verified: run the deterministic scene check.
+                            None => {
+                                return NextAction::VerifyScene {
+                                    chapter_number: chapter.chapter_number,
+                                    scene_order: scene.scene_order,
+                                };
+                            }
+                            // Findings with budget left: revise, then re-verify.
+                            // If the budget is spent but state still reads
+                            // "findings" (the executor should have parked), treat
+                            // it defensively as parked and commit — never loop.
+                            Some("findings") if scene.revise_attempts < max => {
+                                return NextAction::ReviseScene {
+                                    chapter_number: chapter.chapter_number,
+                                    scene_order: scene.scene_order,
+                                    attempt: scene.revise_attempts + 1,
+                                };
+                            }
+                            // clean | parked_findings | error | findings-exhausted:
+                            // fall through to commit.
+                            _ => {}
+                        }
+                    }
                     return NextAction::CommitSceneChanges {
                         chapter_number: chapter.chapter_number,
                         scene_order: scene.scene_order,
@@ -818,6 +873,19 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
 /// deliberately lenient so an unknown value never diverts the loop.
 fn mining_enabled(state: &HarnessState) -> bool {
     state.mining_policy.as_deref() == Some("propose_all")
+}
+
+/// The run's bounded in-run revise budget, or `None` when the loop is disabled
+/// (evolution §3.2). `None` (pre-upgrade / default) and `Some(0)` both mean
+/// "no verify/revise step" so the loop is byte-identical to before; a positive
+/// budget is the max number of `ReviseScene` passes a scene may take. The value
+/// is validated `0..=2` at `authoring_start_run`; the scheduler is lenient so an
+/// out-of-band value never strands the loop.
+fn revise_budget(state: &HarnessState) -> Option<i32> {
+    match state.max_revise_attempts {
+        Some(n) if n > 0 => Some(n),
+        _ => None,
+    }
 }
 
 fn contiguous_completed_after_last_checkpoint(state: &HarnessState) -> Vec<i32> {
@@ -1117,6 +1185,101 @@ mod tests {
                 "policy {policy:?} must not schedule MineScene"
             );
         }
+    }
+
+    // ── P2.2 in-run verify/revise scheduling (evolution §3.2) ──
+
+    /// Advance a chapter-1 scene to `DraftSaved` and set the run's revise budget
+    /// plus the scene's verify state, so the verify/revise scheduler tests can
+    /// exercise the `DraftSaved` fork against one scene.
+    fn draft_saved_state(
+        max_revise_attempts: Option<i32>,
+        verify_status: Option<&str>,
+        revise_attempts: i32,
+    ) -> HarnessState {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        state.max_revise_attempts = max_revise_attempts;
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::DraftSaved;
+        chapter.scenes[0].verify_status = verify_status.map(str::to_string);
+        chapter.scenes[0].revise_attempts = revise_attempts;
+        state
+    }
+
+    #[test]
+    fn revise_disabled_draft_saved_schedules_commit_byte_identical() {
+        // None (pre-upgrade / default) and explicit 0 both keep the existing
+        // schedule: DraftSaved -> CommitSceneChanges, no VerifyScene.
+        for budget in [None, Some(0)] {
+            let state = draft_saved_state(budget, None, 0);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::CommitSceneChanges {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    scene_id: "scene:1".to_string(),
+                },
+                "budget {budget:?} must go straight to commit"
+            );
+        }
+    }
+
+    #[test]
+    fn enabled_draft_saved_without_verify_schedules_verify() {
+        let state = draft_saved_state(Some(1), None, 0);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::VerifyScene {
+                chapter_number: 1,
+                scene_order: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn findings_with_attempts_remaining_schedules_revise_with_next_attempt() {
+        let state = draft_saved_state(Some(2), Some("findings"), 0);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::ReviseScene {
+                chapter_number: 1,
+                scene_order: 1,
+                attempt: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn clean_or_parked_or_error_verify_schedules_commit() {
+        for status in ["clean", "parked_findings", "error"] {
+            let state = draft_saved_state(Some(2), Some(status), 0);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::CommitSceneChanges {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    scene_id: "scene:1".to_string(),
+                },
+                "verify_status {status} must proceed to commit"
+            );
+        }
+    }
+
+    #[test]
+    fn findings_with_attempts_exhausted_defensively_schedules_commit() {
+        // Defensive: the executor parks on the last attempt, but if state still
+        // reads "findings" with the budget spent, treat it as parked and commit
+        // rather than looping forever.
+        let state = draft_saved_state(Some(1), Some("findings"), 1);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
+        );
     }
 
     #[test]

@@ -2538,7 +2538,7 @@ impl<'a> TryFrom<&Row<'a>> for ImportReviewItem {
 // Authoring Runs
 // =============================================================================
 
-pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy";
+pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy, max_revise_attempts";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringRun {
@@ -2558,6 +2558,10 @@ pub struct AuthoringRun {
     /// Canon-mining opt-in (V0025). `None` = disabled (pre-upgrade + default);
     /// `Some("propose_all")` inserts the MineScene step after each commit.
     pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise budget (V0026). `None` = disabled
+    /// (pre-upgrade + default = 0); `Some(1..=2)` inserts the VerifyScene step
+    /// after each draft and bounds the revise loop.
+    pub max_revise_attempts: Option<i32>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
@@ -2578,6 +2582,7 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
             created_at: row::time(r, 11)?,
             updated_at: row::time(r, 12)?,
             mining_policy: row::opt_text(r, 13)?,
+            max_revise_attempts: row::opt_int(r, 14)?.map(|value| value as i32),
         })
     }
 }
@@ -2612,7 +2617,7 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRunChapter {
     }
 }
 
-pub const AUTHORING_RUN_SCENE_COLUMNS: &str = "authoring_run_id, chapter_number, scene_order, character_ids, location_id, content_rating, tone, source_path, phase, scene_id, scene_artifact_path, draft_diagnostics, blocked_reason, research_required, research_tags, explicit_query, mine_status, mine_detail";
+pub const AUTHORING_RUN_SCENE_COLUMNS: &str = "authoring_run_id, chapter_number, scene_order, character_ids, location_id, content_rating, tone, source_path, phase, scene_id, scene_artifact_path, draft_diagnostics, blocked_reason, research_required, research_tags, explicit_query, mine_status, mine_detail, verify_status, verify_detail, revise_attempts, last_finding_fingerprint";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthoringRunScene {
@@ -2637,6 +2642,16 @@ pub struct AuthoringRunScene {
     pub mine_status: Option<String>,
     /// Detail for the mining outcome: staged count or skip/error reason.
     pub mine_detail: Option<String>,
+    /// In-run verification outcome (V0026). `None` = not attempted; otherwise
+    /// `clean` | `findings` | `parked_findings` | `error`.
+    pub verify_status: Option<String>,
+    /// Detail for the verify outcome: finding counts, parked reason, or error.
+    pub verify_detail: Option<String>,
+    /// Bounded revision passes consumed by this scene (V0026, DEFAULT 0).
+    pub revise_attempts: i32,
+    /// Deterministic digest of the last verify's warning-or-worse finding set
+    /// (V0026 convergence guard). `None` until the first `findings` verify.
+    pub last_finding_fingerprint: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
@@ -2661,6 +2676,10 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
             explicit_query: row::opt_text(r, 15)?,
             mine_status: row::opt_text(r, 16)?,
             mine_detail: row::opt_text(r, 17)?,
+            verify_status: row::opt_text(r, 18)?,
+            verify_detail: row::opt_text(r, 19)?,
+            revise_attempts: row::int(r, 20)? as i32,
+            last_finding_fingerprint: row::opt_text(r, 21)?,
         })
     }
 }

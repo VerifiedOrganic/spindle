@@ -6291,6 +6291,13 @@ pub struct AuthoringStartRunInput {
     /// deltas per committed scene.
     #[serde(default)]
     pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise attempts per scene (evolution §3.2). Omitted,
+    /// `None`, or `0` = disabled: a saved draft goes straight to commit exactly
+    /// as before. `1` or `2` opts the run into scene-scoped verification after
+    /// each draft, feeding any warning-or-worse findings back as a bounded
+    /// revision. Validated `0..=2`; anything else is an input error.
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6349,6 +6356,20 @@ pub struct AuthoringStatusScene {
     /// skip/error reason). Never carries prose (evolution I8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mine_detail: Option<String>,
+    /// In-run verification outcome for this scene (evolution §3.2). `None` =
+    /// verify not attempted (disabled run, or scene not yet past draft);
+    /// otherwise `clean` | `findings` | `parked_findings` | `error`. Additive,
+    /// serde-default so pre-revise clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_status: Option<String>,
+    /// Human-readable detail for the verify outcome (finding counts, the parked
+    /// reason, or the error). Never carries prose (evolution I8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_detail: Option<String>,
+    /// How many bounded revision passes this scene has already consumed
+    /// (evolution §3.2). `0` for scenes that never entered the revise loop.
+    #[serde(default)]
+    pub revise_attempts: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6531,6 +6552,14 @@ pub struct AuthoringPrepareRunInput {
     /// coverage for every planned rating.
     #[serde(default)]
     pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise attempts (evolution §3.2). Threaded from
+    /// `authoring_start_run` for validation, but prepare adds **no** route
+    /// preflight for it: scene-scoped verification is deterministic (zero model
+    /// calls) and any revision re-dispatches through the already-preflighted
+    /// `draft` route at the scene's rating. So a non-zero value here neither
+    /// adds a preflight nor changes prepare's `missing_requirements`.
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6579,6 +6608,31 @@ pub fn validate_mining_policy(policy: Option<&str>) -> Result<Option<String>, St
                 _ => Err(raw.to_string()),
             }
         }
+    }
+}
+
+/// The inclusive upper bound on `max_revise_attempts` (evolution §3.2). The
+/// in-run revise loop is a bound, not a tunable knob — one or two attempts keep
+/// the loop convergent while capping model-call cost. `>2` or negative is an
+/// input error.
+pub const MAX_REVISE_ATTEMPTS_UPPER_BOUND: i32 = 2;
+
+/// Validate and canonicalize an optional `max_revise_attempts` from run input
+/// (evolution §3.2).
+///
+/// - `None` → `Ok(None)` (revise disabled = default, byte-identical to the
+///   pre-revise loop).
+/// - `Some(0)` → `Ok(None)`. Zero is the explicit "disabled" spelling; it
+///   canonicalizes to `None` so the run persists NULL, matching a pre-upgrade
+///   row exactly.
+/// - `Some(n)` for `1..=2` → `Ok(Some(n))`.
+/// - anything else (`n > 2`, negative) → `Err(rejected value)` for an
+///   input-error message.
+pub fn validate_max_revise_attempts(attempts: Option<i32>) -> Result<Option<i32>, i32> {
+    match attempts {
+        None | Some(0) => Ok(None),
+        Some(n) if (1..=MAX_REVISE_ATTEMPTS_UPPER_BOUND).contains(&n) => Ok(Some(n)),
+        Some(other) => Err(other),
     }
 }
 
@@ -6905,6 +6959,20 @@ mod tests {
             validate_mining_policy(Some("auto_accept")),
             Err("auto_accept".to_string())
         );
+    }
+
+    #[test]
+    fn validate_max_revise_attempts_bounds_zero_to_two() {
+        // None (default / disabled) and explicit 0 both canonicalize to None so
+        // the run persists NULL = byte-identical to the pre-revise loop.
+        assert_eq!(validate_max_revise_attempts(None), Ok(None));
+        assert_eq!(validate_max_revise_attempts(Some(0)), Ok(None));
+        // 1 and 2 are the only enabling bounds.
+        assert_eq!(validate_max_revise_attempts(Some(1)), Ok(Some(1)));
+        assert_eq!(validate_max_revise_attempts(Some(2)), Ok(Some(2)));
+        // Above the bound and negative are input errors carrying the rejected value.
+        assert_eq!(validate_max_revise_attempts(Some(3)), Err(3));
+        assert_eq!(validate_max_revise_attempts(Some(-1)), Err(-1));
     }
 
     #[test]

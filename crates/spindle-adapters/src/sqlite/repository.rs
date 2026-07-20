@@ -13880,8 +13880,9 @@ impl Repository {
                     "INSERT OR REPLACE INTO authoring_run (
                     id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
                     checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
-                    editorial_directives, status, created_at, updated_at, mining_policy
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    editorial_directives, status, created_at, updated_at, mining_policy,
+                    max_revise_attempts
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     rusqlite::params![
                         run.id,
                         run.project_id,
@@ -13897,6 +13898,7 @@ impl Repository {
                         created_at_micros,
                         updated_at_micros,
                         run.mining_policy,
+                        run.max_revise_attempts,
                     ],
                 )?;
 
@@ -13934,8 +13936,9 @@ impl Repository {
                         authoring_run_id, chapter_number, scene_order, character_ids, location_id,
                         content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
                         draft_diagnostics, blocked_reason, research_required, research_tags,
-                        explicit_query, mine_status, mine_detail
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                        explicit_query, mine_status, mine_detail, verify_status, verify_detail,
+                        revise_attempts, last_finding_fingerprint
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                         rusqlite::params![
                             sc.authoring_run_id,
                             sc.chapter_number,
@@ -13955,6 +13958,10 @@ impl Repository {
                             sc.explicit_query,
                             sc.mine_status,
                             sc.mine_detail,
+                            sc.verify_status,
+                            sc.verify_detail,
+                            sc.revise_attempts,
+                            sc.last_finding_fingerprint,
                         ],
                     )?;
                 }
