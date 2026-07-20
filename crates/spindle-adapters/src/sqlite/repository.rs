@@ -540,6 +540,50 @@ impl CanonDeltaDecision {
     }
 }
 
+/// Parameters for staging a proposed plan amendment (ADR 0003 D2).
+#[derive(Debug, Clone)]
+pub struct StagePlanAmendmentParams {
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the summarized chapter that triggered the replan pass.
+    pub source_chapter: i32,
+    /// The book the source/target chapter numbers belong to.
+    pub book_number: i32,
+    /// The authoring run that staged it, or `None` when replanned outside a run.
+    pub authoring_run_id: Option<String>,
+    /// One of `spindle_core::models::PLAN_AMENDMENT_CLASSES`; unknown is rejected.
+    pub amendment_class: String,
+    /// The future chapter this amends. `None` only for `promise_followup`;
+    /// required for every other class (validated at staging).
+    pub target_chapter: Option<i32>,
+    /// Typed per-class payload.
+    pub payload: serde_json::Value,
+    /// The replanner's stated reasoning (non-empty, ≤500 chars).
+    pub rationale: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+}
+
+/// The operator's ratification of a staged plan amendment (ADR 0003 D5). The
+/// repository records the decision + prior state only; the apply-dispatch to
+/// plan write paths is the service layer's responsibility (Part B) — keeps the
+/// decide/apply seam clean, mirroring [`CanonDeltaDecision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAmendmentDecision {
+    Applied,
+    Rejected,
+}
+
+impl PlanAmendmentDecision {
+    /// The terminal `status` string this decision records.
+    fn status(self) -> &'static str {
+        match self {
+            PlanAmendmentDecision::Applied => "applied",
+            PlanAmendmentDecision::Rejected => "rejected",
+        }
+    }
+}
+
 /// Parameters for appending a session-activity row.
 #[derive(Debug, Clone)]
 pub struct AppendSessionActivityParams {
@@ -1850,6 +1894,278 @@ impl Repository {
                     "UPDATE canon_delta SET status = 'superseded', updated_at = ?1 \
                      WHERE scene_id = ?2 AND status = 'staged'",
                     rusqlite::params![now, scene_id],
+                )?;
+                Ok(affected as u64)
+            })
+            .await
+    }
+
+    // ── Plan amendments (ADR 0003 — living-outline replanning) ────────────────
+
+    /// Stage a proposed plan amendment (ADR 0003 D2). Validates:
+    ///   * `amendment_class` ∈ `PLAN_AMENDMENT_CLASSES` (unknown classes are
+    ///     rejected — forward-compat additions ship via a new constant entry,
+    ///     never a free-form label);
+    ///   * `rationale` non-empty (trimmed) and ≤500 **chars** (char-safe, so a
+    ///     multibyte reasoning string is measured correctly — the miner's
+    ///     evidence discipline transplanted to rationale);
+    ///   * `confidence` ∈ {high, medium, low};
+    ///   * `target_chapter` present for every class EXCEPT `promise_followup`,
+    ///     and absent (forbidden-none) for `promise_followup` (which targets a
+    ///     future placement, not a chapter row — ADR D1/D2).
+    ///
+    /// Records nothing about the decision seam here — apply-dispatch to plan
+    /// write paths is the service layer's job (Part B).
+    pub async fn stage_plan_amendment(
+        &self,
+        params: StagePlanAmendmentParams,
+    ) -> Result<crate::sqlite::records::StoredPlanAmendment> {
+        let StagePlanAmendmentParams {
+            project_id,
+            branch_id,
+            source_chapter,
+            book_number,
+            authoring_run_id,
+            amendment_class,
+            target_chapter,
+            payload,
+            rationale,
+            confidence,
+        } = params;
+
+        if !spindle_core::models::is_plan_amendment_class(&amendment_class) {
+            return Err(anyhow!(
+                "unknown plan amendment class '{amendment_class}' (not in PLAN_AMENDMENT_CLASSES)"
+            ));
+        }
+        if rationale.trim().is_empty() {
+            return Err(anyhow!(
+                "plan amendment rationale is mandatory — an amendment with no stated reasoning is not stageable"
+            ));
+        }
+        let rationale_chars = rationale.chars().count();
+        if rationale_chars > 500 {
+            return Err(anyhow!(
+                "plan amendment rationale must be ≤500 chars (got {rationale_chars})"
+            ));
+        }
+        if !matches!(confidence.as_str(), "high" | "medium" | "low") {
+            return Err(anyhow!(
+                "plan amendment confidence must be one of high|medium|low (got '{confidence}')"
+            ));
+        }
+        // `promise_followup` targets a future placement, not a chapter row: its
+        // target_chapter must be absent. Every other class amends a specific
+        // future chapter and must name it (ADR D1/D2). The rule is
+        // class-conditional, so it lives here, not in a SQL CHECK.
+        if amendment_class == "promise_followup" {
+            if target_chapter.is_some() {
+                return Err(anyhow!(
+                    "plan amendment class 'promise_followup' must NOT carry a target_chapter (it targets a future placement)"
+                ));
+            }
+        } else if target_chapter.is_none() {
+            return Err(anyhow!(
+                "plan amendment class '{amendment_class}' requires a target_chapter"
+            ));
+        }
+
+        let payload_str =
+            serde_json::to_string(&payload).context("serializing plan amendment payload")?;
+        let id = mint_id("plan_amendment");
+        let id_lookup = id.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO plan_amendment \
+                     (id, project_id, branch_id, source_chapter, book_number, authoring_run_id, \
+                      amendment_class, target_chapter, payload, rationale, confidence, status, \
+                      decided_at, decided_by, prior_state, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'staged', NULL, NULL, \
+                             NULL, ?12, ?13)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        source_chapter,
+                        book_number,
+                        &authoring_run_id,
+                        &amendment_class,
+                        target_chapter,
+                        &payload_str,
+                        &rationale,
+                        &confidence,
+                        now,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.read_plan_amendment(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("plan_amendment vanished after insert"))
+    }
+
+    /// Fetch one plan amendment by id, or `None` if absent. Public read used by
+    /// the service-layer apply dispatcher (Part B) to pre-flight each decision.
+    pub async fn read_plan_amendment_public(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredPlanAmendment>> {
+        self.read_plan_amendment(id).await
+    }
+
+    /// Fetch one plan amendment by id, or `None` if absent.
+    async fn read_plan_amendment(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredPlanAmendment>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM plan_amendment WHERE id = ?1",
+                    crate::sqlite::records::PLAN_AMENDMENT_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| {
+                    crate::sqlite::records::StoredPlanAmendment::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// List plan amendments on a branch, optionally filtered by `status` and/or
+    /// provenance `(book_number, source_chapter)`. Deterministic order:
+    /// `(created_at, id)`. The book/source-chapter filter is all-or-nothing —
+    /// pass `Some((book, chapter))` to scope to one replan pass's provenance.
+    pub async fn list_plan_amendments(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        status: Option<&str>,
+        book_source_chapter: Option<(i32, i32)>,
+    ) -> Result<Vec<crate::sqlite::records::StoredPlanAmendment>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let status = status.map(str::to_string);
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Bind only the filters that are present. Params are pushed in
+                // the same order the placeholders are appended.
+                let mut clauses = String::from("project_id = ?1 AND branch_id = ?2");
+                let mut binds: Vec<&dyn rusqlite::ToSql> = vec![&project_id, &branch_id];
+                if let Some(status) = status.as_ref() {
+                    clauses.push_str(&format!(" AND status = ?{}", binds.len() + 1));
+                    binds.push(status);
+                }
+                if let Some((book, source_chapter)) = book_source_chapter.as_ref() {
+                    clauses.push_str(&format!(
+                        " AND book_number = ?{} AND source_chapter = ?{}",
+                        binds.len() + 1,
+                        binds.len() + 2
+                    ));
+                    binds.push(book);
+                    binds.push(source_chapter);
+                }
+                let sql = format!(
+                    "SELECT {} FROM plan_amendment WHERE {clauses} ORDER BY created_at, id",
+                    crate::sqlite::records::PLAN_AMENDMENT_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        crate::sqlite::records::StoredPlanAmendment::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Record the operator's ratification of a staged plan amendment (ADR 0003
+    /// D5). Errors if the amendment is not currently `staged` — decisions are
+    /// final history, never revised (a second decide errors; deciding a
+    /// superseded row errors). Stamps `decided_at`/`decided_by`, sets `status`
+    /// to `applied`/`rejected`, and persists the supplied `prior_state` snapshot
+    /// (ADR D4 — the affected plan slice captured before the apply write; `None`
+    /// on reject or for `promise_followup`).
+    ///
+    /// This records the decision + prior state **only**. Apply-dispatch to the
+    /// class's plan write path is the service layer's job (Part B) — the
+    /// repository decides, the service applies.
+    pub async fn decide_plan_amendment(
+        &self,
+        id: &str,
+        decision: PlanAmendmentDecision,
+        decided_by: &str,
+        prior_state: Option<String>,
+    ) -> Result<crate::sqlite::records::StoredPlanAmendment> {
+        let id_owned = id.to_string();
+        let id_lookup = id_owned.clone();
+        let decided_by = decided_by.to_string();
+        let new_status = decision.status();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Guard: only a `staged` row may be decided. The status
+                // predicate in the UPDATE makes the transition atomic; a zero
+                // rowcount means the row was absent or already terminal.
+                let affected = conn.execute(
+                    "UPDATE plan_amendment \
+                     SET status = ?1, decided_at = ?2, decided_by = ?3, prior_state = ?4, \
+                         updated_at = ?2 \
+                     WHERE id = ?5 AND status = 'staged'",
+                    rusqlite::params![new_status, now, decided_by, prior_state, id_owned],
+                )?;
+                Ok(affected)
+            })
+            .await
+            .and_then(|affected| {
+                if affected == 0 {
+                    Err(anyhow!(
+                        "plan amendment '{id_lookup}' is not staged (already decided or absent — \
+                         decisions are final)"
+                    ))
+                } else {
+                    Ok(())
+                }
+            })?;
+        self.read_plan_amendment(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("plan_amendment '{id_lookup}' vanished after decide"))
+    }
+
+    /// Supersede-on-replan (ADR 0003 D2): flip only this source chapter's
+    /// `staged` plan amendments to `superseded`. `applied`/`rejected`/already-
+    /// `superseded` rows are untouched — decisions are history. Scoped to one
+    /// branch + book + source chapter so a rerun for a different chapter never
+    /// touches these. Returns the number of rows flipped.
+    pub async fn supersede_source_chapter_amendments(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        source_chapter: i32,
+    ) -> Result<u64> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let affected = conn.execute(
+                    "UPDATE plan_amendment SET status = 'superseded', updated_at = ?1 \
+                     WHERE project_id = ?2 AND branch_id = ?3 AND book_number = ?4 \
+                       AND source_chapter = ?5 AND status = 'staged'",
+                    rusqlite::params![now, project_id, branch_id, book_number, source_chapter],
                 )?;
                 Ok(affected as u64)
             })
@@ -15277,6 +15593,483 @@ mod tests {
         // And canon_delta now exists and is queryable (empty).
         let listed = repo
             .list_canon_deltas("project:legacy", "bible_branch:missing", None, None)
+            .await
+            .unwrap();
+        assert!(listed.is_empty());
+    }
+
+    // ── Plan amendments (ADR 0003 — living-outline replanning) ───────────────
+
+    /// Project + main branch, for FK-valid plan_amendment rows (no scene needed
+    /// — amendments have no scene FK).
+    async fn repo_with_project_branch() -> (TempDir, Repository, Project, BibleBranch) {
+        let (tmp, repo) = fresh_repo().await;
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        (tmp, repo, project, branch)
+    }
+
+    fn plan_stage_params(
+        project: &Project,
+        branch: &BibleBranch,
+        class: &str,
+        target_chapter: Option<i32>,
+        rationale: &str,
+    ) -> StagePlanAmendmentParams {
+        StagePlanAmendmentParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            source_chapter: 3,
+            book_number: 1,
+            authoring_run_id: None,
+            amendment_class: class.to_string(),
+            target_chapter,
+            payload: serde_json::json!({ "synopsis": "revised" }),
+            rationale: rationale.to_string(),
+            confidence: "high".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_round_trips() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "chapter 3 resolved the siege early",
+            ))
+            .await
+            .unwrap();
+        assert!(staged.id.starts_with("plan_amendment:"));
+        assert_eq!(staged.status, "staged");
+        assert_eq!(staged.source_chapter, 3);
+        assert_eq!(staged.target_chapter, Some(5));
+        assert!(staged.decided_at.is_none());
+        assert!(staged.prior_state.is_none());
+
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, staged.id);
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_rejects_unknown_class() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let err = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "totally_made_up",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown plan amendment class"));
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_rejects_empty_and_oversized_rationale() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        // Empty (whitespace-only) rationale is rejected.
+        let empty = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "   ",
+            ))
+            .await
+            .unwrap_err();
+        assert!(empty.to_string().contains("rationale is mandatory"));
+
+        // Exactly 500 multibyte chars is accepted; 501 is rejected — the check
+        // must count chars, not bytes (each `é` is 2 bytes).
+        let ok_rationale: String = "é".repeat(500);
+        let ok = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                &ok_rationale,
+            ))
+            .await;
+        assert!(ok.is_ok(), "500 chars is the boundary and must pass");
+
+        let over_rationale: String = "é".repeat(501);
+        let over = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                &over_rationale,
+            ))
+            .await
+            .unwrap_err();
+        assert!(over.to_string().contains("≤500 chars"));
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_rejects_bad_confidence() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let mut params = plan_stage_params(&project, &branch, "synopsis_update", Some(5), "reason");
+        params.confidence = "certain".to_string();
+        let err = repo.stage_plan_amendment(params).await.unwrap_err();
+        assert!(err.to_string().contains("confidence must be one of"));
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_enforces_target_chapter_rules_per_class() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+
+        // Every chapter-targeting class requires a target_chapter.
+        for class in [
+            "synopsis_update",
+            "scene_add",
+            "scene_drop",
+            "scene_replace",
+            "scene_reorder",
+            "thread_promote",
+            "thread_retire",
+        ] {
+            let err = repo
+                .stage_plan_amendment(plan_stage_params(&project, &branch, class, None, "reason"))
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("requires a target_chapter"),
+                "{class} without target must be rejected"
+            );
+            // And with a target it stages.
+            let ok = repo
+                .stage_plan_amendment(plan_stage_params(
+                    &project,
+                    &branch,
+                    class,
+                    Some(5),
+                    "reason",
+                ))
+                .await;
+            assert!(ok.is_ok(), "{class} with target must stage");
+        }
+
+        // promise_followup must NOT carry a target_chapter.
+        let followup_bad = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "promise_followup",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            followup_bad
+                .to_string()
+                .contains("must NOT carry a target_chapter")
+        );
+
+        // promise_followup with no target stages.
+        let followup_ok = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "promise_followup",
+                None,
+                "reason",
+            ))
+            .await;
+        assert!(
+            followup_ok.is_ok(),
+            "promise_followup without target must stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_plan_amendments_filters_and_orders_deterministically() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        // Stage three (order by created_at, id — insertion order stable).
+        for class in ["synopsis_update", "scene_drop", "thread_retire"] {
+            repo.stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                class,
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap();
+        }
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        // Deterministic (created_at, id): non-decreasing created_at.
+        for w in all.windows(2) {
+            assert!(w[0].created_at <= w[1].created_at);
+        }
+
+        // Decide one → status filter narrows.
+        let first = all[0].id.clone();
+        repo.decide_plan_amendment(&first, PlanAmendmentDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        let staged = repo
+            .list_plan_amendments(&project.id, &branch.id, Some("staged"), None)
+            .await
+            .unwrap();
+        assert_eq!(staged.len(), 2);
+        let applied = repo
+            .list_plan_amendments(&project.id, &branch.id, Some("applied"), None)
+            .await
+            .unwrap();
+        assert_eq!(applied.len(), 1);
+
+        // Book+source-chapter filter: matching pair returns all three, a
+        // different chapter returns none.
+        let scoped = repo
+            .list_plan_amendments(&project.id, &branch.id, None, Some((1, 3)))
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 3);
+        let other = repo
+            .list_plan_amendments(&project.id, &branch.id, None, Some((1, 9)))
+            .await
+            .unwrap();
+        assert!(other.is_empty());
+    }
+
+    #[tokio::test]
+    async fn decide_plan_amendment_records_decision_prior_state_and_is_final() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap();
+        let prior = r#"{"synopsis":"old"}"#.to_string();
+        let applied = repo
+            .decide_plan_amendment(
+                &staged.id,
+                PlanAmendmentDecision::Applied,
+                "operator-1",
+                Some(prior.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(applied.status, "applied");
+        assert_eq!(applied.decided_by.as_deref(), Some("operator-1"));
+        assert!(applied.decided_at.is_some());
+        assert_eq!(applied.prior_state.as_deref(), Some(prior.as_str()));
+
+        // A second decision on the same (now-applied) row errors — decisions are
+        // final history.
+        let again = repo
+            .decide_plan_amendment(&staged.id, PlanAmendmentDecision::Rejected, "op2", None)
+            .await
+            .unwrap_err();
+        assert!(again.to_string().contains("not staged"));
+    }
+
+    #[tokio::test]
+    async fn decide_plan_amendment_on_superseded_errors() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap();
+        repo.supersede_source_chapter_amendments(&project.id, &branch.id, 1, 3)
+            .await
+            .unwrap();
+        let err = repo
+            .decide_plan_amendment(&staged.id, PlanAmendmentDecision::Applied, "op", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not staged"));
+    }
+
+    #[tokio::test]
+    async fn supersede_source_chapter_amendments_only_flips_staged_rows() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "will be superseded",
+            ))
+            .await
+            .unwrap();
+        let applied = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "scene_drop",
+                Some(5),
+                "already applied",
+            ))
+            .await
+            .unwrap();
+        let rejected = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "thread_retire",
+                Some(5),
+                "already rejected",
+            ))
+            .await
+            .unwrap();
+        repo.decide_plan_amendment(&applied.id, PlanAmendmentDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        repo.decide_plan_amendment(&rejected.id, PlanAmendmentDecision::Rejected, "op", None)
+            .await
+            .unwrap();
+
+        let flipped = repo
+            .supersede_source_chapter_amendments(&project.id, &branch.id, 1, 3)
+            .await
+            .unwrap();
+        assert_eq!(flipped, 1, "only the one staged row is superseded");
+
+        let by_id = |rows: &[crate::sqlite::records::StoredPlanAmendment], id: &str| {
+            rows.iter().find(|r| r.id == id).unwrap().status.clone()
+        };
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(by_id(&all, &staged.id), "superseded");
+        assert_eq!(by_id(&all, &applied.id), "applied");
+        assert_eq!(by_id(&all, &rejected.id), "rejected");
+    }
+
+    #[tokio::test]
+    async fn supersede_source_chapter_amendments_spares_other_source_chapters() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        // Two staged amendments from different source chapters.
+        let mut p3 = plan_stage_params(&project, &branch, "synopsis_update", Some(6), "from ch3");
+        p3.source_chapter = 3;
+        let a3 = repo.stage_plan_amendment(p3).await.unwrap();
+        let mut p4 = plan_stage_params(&project, &branch, "synopsis_update", Some(6), "from ch4");
+        p4.source_chapter = 4;
+        let a4 = repo.stage_plan_amendment(p4).await.unwrap();
+
+        let flipped = repo
+            .supersede_source_chapter_amendments(&project.id, &branch.id, 1, 3)
+            .await
+            .unwrap();
+        assert_eq!(flipped, 1);
+
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        let status = |id: &str| all.iter().find(|r| r.id == id).unwrap().status.clone();
+        assert_eq!(status(&a3.id), "superseded");
+        assert_eq!(
+            status(&a4.id),
+            "staged",
+            "chapter 4's amendment is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_v0029_database_upgrades_additively() {
+        // A DB migrated only through V0028 (no plan_amendment table, no
+        // chapter_plan.plan_revision column) must upgrade to V0029 cleanly with
+        // its existing rows intact — the migration is a pure addition (ADR
+        // reversal-cost: additions are additive).
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("legacy29.db");
+
+        // Warm sqlite-vec's vec0 module process-globally before the raw-conn run.
+        let _warm = SqlitePool::open(&tmp.path().join("warm29.db"))
+            .await
+            .unwrap();
+
+        // Stage 1: run migrations up to V0028 only, on a raw rusqlite conn.
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            crate::sqlite::migrations::runner()
+                .set_target(refinery::Target::Version(28))
+                .run(&mut conn)
+                .unwrap();
+            // plan_amendment does not exist yet at V0028.
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='plan_amendment'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "plan_amendment must not exist before V0029");
+            // Seed a project row so we can prove it survives the upgrade.
+            let now = timestamp_to_micros(chrono::Utc::now());
+            conn.execute(
+                "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "project:legacy29",
+                    "Legacy29",
+                    "novel",
+                    "fantasy",
+                    r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                    now,
+                    now
+                ],
+            )
+            .unwrap();
+        }
+
+        // Stage 2: open through the pool, which runs the full runner (incl.
+        // V0029). Must succeed and the legacy row must still be there.
+        let pool = SqlitePool::open(&db_path).await.unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = Repository::new(pool, data_dir);
+
+        let again = repo.get_project("project:legacy29").await.unwrap();
+        assert_eq!(again.name, "Legacy29");
+
+        // And plan_amendment now exists and is queryable (empty).
+        let listed = repo
+            .list_plan_amendments("project:legacy29", "bible_branch:missing", None, None)
             .await
             .unwrap();
         assert!(listed.is_empty());

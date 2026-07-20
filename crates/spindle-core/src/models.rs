@@ -6846,6 +6846,125 @@ pub struct MineSceneCanonOutput {
     pub skip_reason: Option<String>,
 }
 
+// =============================================================================
+// Plan amendments (ADR 0003 — living-outline replanning & ratification)
+// =============================================================================
+
+/// The v1 plan-amendment class vocabulary (ADR 0003 D1). Order and spelling are
+/// a **one-way door**: staged rows persist in operator databases keyed on these
+/// strings, so a rename strands rows and breaks decided-audit replay (identical
+/// contract to [`CANON_DELTA_CLASSES`]).
+///
+/// Classes are validated strings, not an enum — additions are additive by
+/// construction (ADR reversal-cost note), but [`is_plan_amendment_class`]
+/// rejects any class not in this table at the staging boundary. Each applies
+/// through an existing plan write path only (`plan_chapter` /
+/// `create_narrative_promise`) — the replanner never gains a novel write path.
+pub const PLAN_AMENDMENT_CLASSES: [&str; 8] = [
+    "synopsis_update",
+    "scene_add",
+    "scene_drop",
+    "scene_replace",
+    "scene_reorder",
+    "thread_promote",
+    "thread_retire",
+    "promise_followup",
+];
+
+/// Whether `class` is one of the recognised [`PLAN_AMENDMENT_CLASSES`]. Exact
+/// (case-sensitive) match — the class vocabulary is a public contract, not a
+/// free-form label. Staging rejects anything this returns `false` for.
+pub fn is_plan_amendment_class(class: &str) -> bool {
+    PLAN_AMENDMENT_CLASSES.contains(&class)
+}
+
+/// A proposed plan amendment staged by the replan differ and awaiting operator
+/// ratification (ADR 0003 D2). Read model: timestamps are ISO-8601 strings,
+/// mapped from the stored microsecond representation at the adapter boundary
+/// (mirrors [`CanonDelta`]). `payload` is the typed per-class JSON — the minimal
+/// delta against the plan-write input the class applies through (Part B).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanAmendment {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the summarized chapter whose save triggered the replan pass.
+    pub source_chapter: i32,
+    /// The book the source/target chapter numbers belong to.
+    pub book_number: i32,
+    /// The authoring run that staged it, or `None` when replanned outside a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_run_id: Option<String>,
+    /// One of [`PLAN_AMENDMENT_CLASSES`].
+    pub amendment_class: String,
+    /// The future chapter this amends. `None` only for `promise_followup`
+    /// (which targets a future placement, not a chapter row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_chapter: Option<i32>,
+    /// Typed per-class payload (the minimal delta against the class's plan-write
+    /// input, replayed on apply by Part B).
+    pub payload: serde_json::Value,
+    /// The replanner's stated reasoning (ids/summaries only, no prose quotes);
+    /// mandatory, non-empty, ≤500 chars.
+    pub rationale: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+    /// `staged` | `applied` | `rejected` | `superseded`.
+    pub status: String,
+    /// Ratification audit — when the decision was recorded (ISO-8601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// Ratification audit — who recorded the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    /// ADR D4 history: the affected plan slice snapshotted at apply time, before
+    /// the write. `None` until an apply captures it (Part B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_state: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for the replan differ (`replan_chapter`, ADR 0003). The pass audits the
+/// realized reality of `source_chapter` against every not-yet-drafted chapter's
+/// plan strictly after it in the same book, staging amendment proposals the
+/// operator ratifies. Branch resolution is implicit — the differ reads the
+/// project's active branch, matching the other summary-scoped passes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReplanChapterInput {
+    pub project_id: String,
+    pub book_number: i32,
+    /// The just-summarized chapter whose realized reality drives the audit.
+    pub source_chapter: i32,
+}
+
+/// Output of `replan_chapter` (ADR 0003). `status` is one of `staged`
+/// (amendments persisted), `no_summary` (the source chapter has no saved
+/// summary — nothing to compare against), `no_targets` (no eligible undrafted
+/// future chapter), `skipped` (no cleared route / transport error —
+/// `skip_reason` names the error class, never prose), or `model_output_rejected`
+/// (the model's JSON was malformed; nothing staged). A skip, no-summary,
+/// no-targets, or rejection never reads as a clean pass (evolution I8).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReplanChapterOutput {
+    /// The surviving amendments staged this pass, in prompt order (cap 8).
+    #[serde(default)]
+    pub staged: Vec<PlanAmendment>,
+    /// Amendments the model proposed but that failed validation (unknown class,
+    /// empty rationale, missing/forbidden target chapter, bad payload, target
+    /// outside the eligible set) or that overflowed the per-pass cap.
+    pub discarded_count: usize,
+    /// Prior `staged` amendments for this source chapter flipped to `superseded`
+    /// on rerun.
+    pub superseded_count: usize,
+    /// `staged` | `no_summary` | `no_targets` | `skipped` | `model_output_rejected`.
+    pub status: String,
+    /// Present only when `status == "skipped"`; names the route+rating that was
+    /// uncleared or the transport failure. Never carries prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
 /// A single reader-simulation concern (evolution §3.6 cumulative reader-sim).
 /// `severity` is `info` | `warning` — a craft signal only, never a hard gate:
 /// reader-sim concerns are report-only, matching the sampled-review outcomes
@@ -7222,6 +7341,70 @@ mod tests {
         assert_eq!(decoded.status, "staged");
         assert_eq!(decoded.payload["trust_delta"], -2);
         assert!(decoded.decided_at.is_none());
+    }
+
+    #[test]
+    fn plan_amendment_classes_match_adr_d1_exactly() {
+        // ADR 0003 D1 — the class vocabulary is a one-way door; this test pins
+        // the exact eight names and their order so a rename can never slip in
+        // unnoticed (orphaned staged rows, broken outline history).
+        assert_eq!(PLAN_AMENDMENT_CLASSES.len(), 8);
+        assert_eq!(
+            PLAN_AMENDMENT_CLASSES,
+            [
+                "synopsis_update",
+                "scene_add",
+                "scene_drop",
+                "scene_replace",
+                "scene_reorder",
+                "thread_promote",
+                "thread_retire",
+                "promise_followup",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_amendment_class_validation_rejects_unknown_and_accepts_known() {
+        assert!(is_plan_amendment_class("synopsis_update"));
+        assert!(is_plan_amendment_class("promise_followup"));
+        assert!(!is_plan_amendment_class("made_up_class"));
+        assert!(!is_plan_amendment_class(""));
+        // Classes are case-sensitive validated strings, not an enum.
+        assert!(!is_plan_amendment_class("Synopsis_Update"));
+    }
+
+    #[test]
+    fn plan_amendment_read_model_round_trips() {
+        let amendment = PlanAmendment {
+            id: "plan_amendment:01J".to_string(),
+            project_id: "project:demo".to_string(),
+            branch_id: "bible_branch:main".to_string(),
+            source_chapter: 3,
+            book_number: 1,
+            authoring_run_id: Some("authoring_run:run1".to_string()),
+            amendment_class: "synopsis_update".to_string(),
+            target_chapter: Some(5),
+            payload: serde_json::json!({ "synopsis": "The gate falls." }),
+            rationale: "chapter 3 resolved the siege early".to_string(),
+            confidence: "high".to_string(),
+            status: "staged".to_string(),
+            decided_at: None,
+            decided_by: None,
+            prior_state: None,
+            created_at: "2026-07-20T00:00:00Z".to_string(),
+            updated_at: "2026-07-20T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&amendment).expect("serialize plan amendment");
+        let decoded: PlanAmendment =
+            serde_json::from_str(&json).expect("deserialize plan amendment");
+        assert_eq!(decoded.id, amendment.id);
+        assert_eq!(decoded.amendment_class, "synopsis_update");
+        assert_eq!(decoded.status, "staged");
+        assert_eq!(decoded.target_chapter, Some(5));
+        assert_eq!(decoded.payload["synopsis"], "The gate falls.");
+        assert!(decoded.decided_at.is_none());
+        assert!(decoded.prior_state.is_none());
     }
 
     #[test]

@@ -2083,6 +2083,34 @@ fn extract_mock_canon_mine_promise(prompt: &str) -> Option<String> {
     }
 }
 
+/// Parse the target-chapter number out of the replan test marker
+/// `MOCK_REPLAN_SYNOPSIS[N]` embedded in a target chapter's synopsis (ADR 0003).
+/// The digit run between the brackets is the chapter number the stub emits a
+/// synopsis_update + thread_retire for. Returns `None` when the marker is absent
+/// or the payload is not a parseable positive integer, so the stub falls through
+/// to an empty amendments array.
+fn extract_mock_replan_synopsis_chapter(prompt: &str) -> Option<i32> {
+    const OPEN: &str = "MOCK_REPLAN_SYNOPSIS[";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    rest[..end].trim().parse::<i32>().ok()
+}
+
+/// Parse the target-chapter number out of the replan cap-test marker
+/// `MOCK_REPLAN_CAP[N]` embedded in a target chapter's synopsis (ADR 0003 D5
+/// per-pass cap). The stub emits ten valid synopsis_update amendments for
+/// chapter N so the differ can prove it stages only 8 and reports 2 dropped.
+/// Returns `None` when the marker is absent or the payload is not a positive
+/// integer.
+fn extract_mock_replan_cap_chapter(prompt: &str) -> Option<i32> {
+    const OPEN: &str = "MOCK_REPLAN_CAP[";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    rest[..end].trim().parse::<i32>().ok()
+}
+
 /// Extract the first 40 characters of the prior-notes block from a reader-sim
 /// prompt (evolution §3.6), for the `MOCK_READER_NOTES_ECHO` memory-flow test
 /// sentinel. The service prompt frames the prior notes between the
@@ -2142,6 +2170,59 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
                     }
                 } else {
                     r#"{"deltas":[]}"#.to_string()
+                }
+            } else if prompt.contains("outline replanning audit") {
+                // The replan differ (evolution §3.5, ADR 0003) rides the `review`
+                // route in local-only deployments (no `replan` route in
+                // default_routes, so the ladder falls to this stub). Without a
+                // real replan model, return deterministic staged amendments only
+                // when a target synopsis carries a test sentinel; otherwise an
+                // empty amendments array, so a local-only run degrades to no
+                // proposals rather than fabricating outline edits.
+                //
+                // The route is non-prose-bearing (summaries + metadata only —
+                // ADR D5), so no rating gate applies here. Sentinels compose
+                // additively so a happy pass can carry discard-path fuel in the
+                // SAME response (the differ stages survivors, counts the rest).
+                if let Some(n) = extract_mock_replan_cap_chapter(prompt) {
+                    // Cap fixture: ten valid synopsis_update amendments for
+                    // chapter N. The differ stages the first 8 and reports 2
+                    // dropped (ADR D5 per-pass cap). Kept exclusive so the count
+                    // is exactly ten.
+                    let items: Vec<String> = (0..10)
+                        .map(|i| {
+                            format!(
+                                r#"{{"amendment_class":"synopsis_update","target_chapter":{n},"confidence":"medium","rationale":"cap item {i}","payload":{{"synopsis":"revised synopsis {i}"}}}}"#
+                            )
+                        })
+                        .collect();
+                    format!(r#"{{"amendments":[{}]}}"#, items.join(","))
+                } else {
+                    let mut items: Vec<String> = Vec::new();
+                    if let Some(n) = extract_mock_replan_synopsis_chapter(prompt) {
+                        // Happy fixture: one synopsis_update + one thread_retire
+                        // for chapter N, both with fabricated-but-valid payloads.
+                        items.push(format!(
+                            r#"{{"amendment_class":"synopsis_update","target_chapter":{n},"confidence":"high","rationale":"chapter {n} synopsis now trails the realized siege resolution","payload":{{"synopsis":"The gate has already fallen; the chapter opens on the aftermath."}}}}"#
+                        ));
+                        items.push(format!(
+                            r#"{{"amendment_class":"thread_retire","target_chapter":{n},"confidence":"medium","rationale":"the siege conflict resolved in the source chapter and no longer belongs to chapter {n}","payload":{{"kind":"conflict","id":"conflict:siege"}}}}"#
+                        ));
+                    }
+                    if prompt.contains("MOCK_REPLAN_BAD") {
+                        // Discard fixture: one unknown class + one with empty
+                        // rationale. Both are discarded by the differ's
+                        // validation, so they only ever grow discarded_count.
+                        items.push(
+                            r#"{"amendment_class":"totally_made_up_class","target_chapter":5,"confidence":"high","rationale":"reason","payload":{}}"#
+                                .to_string(),
+                        );
+                        items.push(
+                            r#"{"amendment_class":"synopsis_update","target_chapter":5,"confidence":"high","rationale":"   ","payload":{"synopsis":"x"}}"#
+                                .to_string(),
+                        );
+                    }
+                    format!(r#"{{"amendments":[{}]}}"#, items.join(","))
                 }
             } else if prompt.contains("intra-scene temporal-coherence audit") {
                 if prompt.contains("MOCK_TEMPORAL_JUMP") {
@@ -2411,6 +2492,27 @@ mod tests {
             None
         );
         assert_eq!(extract_mock_canon_mine_promise("no marker"), None);
+    }
+
+    #[test]
+    fn replan_markers_parse_chapter_number_and_tolerate_absent_or_garbled() {
+        assert_eq!(
+            extract_mock_replan_synopsis_chapter(
+                "outline replanning audit MOCK_REPLAN_SYNOPSIS[5] tail"
+            ),
+            Some(5)
+        );
+        assert_eq!(
+            extract_mock_replan_cap_chapter("MOCK_REPLAN_CAP[12] tail"),
+            Some(12)
+        );
+        // Absent marker and non-integer payload both yield None.
+        assert_eq!(extract_mock_replan_synopsis_chapter("no marker"), None);
+        assert_eq!(
+            extract_mock_replan_synopsis_chapter("MOCK_REPLAN_SYNOPSIS[abc]"),
+            None
+        );
+        assert_eq!(extract_mock_replan_cap_chapter("no marker"), None);
     }
 
     #[tokio::test]

@@ -1231,7 +1231,8 @@ impl<'a> TryFrom<&Row<'a>> for PacingTracker {
 // =============================================================================
 
 pub const CHAPTER_PLAN_COLUMNS: &str = "id, project_id, branch_id, book_number, chapter_number, pov_character_id, synopsis, \
-     target_theme_ids, target_conflict_ids, target_plot_line_ids, scenes, created_at, updated_at";
+     target_theme_ids, target_conflict_ids, target_plot_line_ids, scenes, created_at, updated_at, \
+     plan_revision";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterPlan {
@@ -1248,6 +1249,11 @@ pub struct ChapterPlan {
     pub scenes: Vec<StoredPlannedScene>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// ADR 0003 D4 outline-history counter (migration V0029). NULL (pre-V0029
+    /// plans and never-amended plans) reads as revision 0; the apply dispatcher
+    /// (Part B) increments it each time an amendment rewrites the plan.
+    #[serde(default)]
+    pub plan_revision: Option<i64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for ChapterPlan {
@@ -1267,6 +1273,7 @@ impl<'a> TryFrom<&Row<'a>> for ChapterPlan {
             scenes: row::json(r, 10)?,
             created_at: row::time(r, 11)?,
             updated_at: row::time(r, 12)?,
+            plan_revision: row::opt_int(r, 13)?,
         })
     }
 }
@@ -3368,6 +3375,87 @@ impl StoredCanonDelta {
             status: self.status,
             decided_at: self.decided_at.map(|t| t.to_rfc3339()),
             decided_by: self.decided_by,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+pub const PLAN_AMENDMENT_COLUMNS: &str = "id, project_id, branch_id, source_chapter, book_number, \
+     authoring_run_id, amendment_class, target_chapter, payload, rationale, confidence, \
+     status, decided_at, decided_by, prior_state, created_at, updated_at";
+
+/// A staged/decided plan amendment (ADR 0003, migration V0029). Timestamps are
+/// the stored microsecond [`Timestamp`]; the adapter maps them to ISO-8601
+/// strings when producing the spindle-core
+/// [`spindle_core::models::PlanAmendment`] read model (mirrors
+/// [`StoredCanonDelta`]).
+#[derive(Debug, Clone)]
+pub struct StoredPlanAmendment {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub source_chapter: i32,
+    pub book_number: i32,
+    pub authoring_run_id: Option<String>,
+    pub amendment_class: String,
+    pub target_chapter: Option<i32>,
+    pub payload: Value,
+    pub rationale: String,
+    pub confidence: String,
+    pub status: String,
+    pub decided_at: Option<Timestamp>,
+    pub decided_by: Option<String>,
+    pub prior_state: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredPlanAmendment {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            source_chapter: row::int(r, 3)? as i32,
+            book_number: row::int(r, 4)? as i32,
+            authoring_run_id: row::opt_text(r, 5)?,
+            amendment_class: row::text(r, 6)?,
+            target_chapter: row::opt_int(r, 7)?.map(|v| v as i32),
+            payload: row::json(r, 8)?,
+            rationale: row::text(r, 9)?,
+            confidence: row::text(r, 10)?,
+            status: row::text(r, 11)?,
+            decided_at: row::opt_time(r, 12)?,
+            decided_by: row::opt_text(r, 13)?,
+            prior_state: row::opt_text(r, 14)?,
+            created_at: row::time(r, 15)?,
+            updated_at: row::time(r, 16)?,
+        })
+    }
+}
+
+impl StoredPlanAmendment {
+    /// Map to the spindle-core read model, rendering microsecond timestamps as
+    /// ISO-8601 strings (mirrors [`StoredCanonDelta::into_core`]).
+    pub fn into_core(self) -> spindle_core::models::PlanAmendment {
+        spindle_core::models::PlanAmendment {
+            id: self.id,
+            project_id: self.project_id,
+            branch_id: self.branch_id,
+            source_chapter: self.source_chapter,
+            book_number: self.book_number,
+            authoring_run_id: self.authoring_run_id,
+            amendment_class: self.amendment_class,
+            target_chapter: self.target_chapter,
+            payload: self.payload,
+            rationale: self.rationale,
+            confidence: self.confidence,
+            status: self.status,
+            decided_at: self.decided_at.map(|t| t.to_rfc3339()),
+            decided_by: self.decided_by,
+            prior_state: self.prior_state,
             created_at: self.created_at.to_rfc3339(),
             updated_at: self.updated_at.to_rfc3339(),
         }

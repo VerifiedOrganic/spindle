@@ -16553,6 +16553,297 @@ impl SqliteSpindleService {
         })
     }
 
+    /// The replan differ (evolution §3.5, ADR 0003). Compares the realized
+    /// reality of one just-summarized chapter (its summary, beat annotations,
+    /// current promise/arc states) against every not-yet-drafted future chapter's
+    /// plan in the same book, staging plan-amendment proposals the operator later
+    /// ratifies (Part B). Nothing writes to the outline here (ADR D5
+    /// no-auto-accept) — every applied amendment is a human decision.
+    ///
+    /// **Non-prose-bearing (ADR D5).** The differ's inputs are summaries and
+    /// metadata only — never scene prose — so the `replan` route carries no
+    /// rating clearance: every dispatch here uses `rating: None`. This keeps the
+    /// route outside the rating perimeter by construction, the same reasoning
+    /// class as the import exemption.
+    ///
+    /// Dispatch follows the design §2.3 ladder: try the `replan` route (absent
+    /// from `default_routes` by design — never added), then `review` on NoRoute,
+    /// then an honest skip on transport error (never an error return, never
+    /// blocks a run).
+    pub async fn replan_chapter(
+        &self,
+        input: spindle_core::models::ReplanChapterInput,
+    ) -> Result<spindle_core::models::ReplanChapterOutput> {
+        use crate::ai::{ModelRequest, RouteClearanceError};
+        use spindle_core::models::ReplanChapterOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+
+        // Eligibility 1: the source chapter must have a saved summary (else
+        // there is no realized reality to compare against — honest skip).
+        let source_summary = self
+            .repository
+            .get_chapter_summary(
+                &input.project_id,
+                &active_branch.id,
+                input.book_number,
+                input.source_chapter,
+            )
+            .await?;
+        let source_summary = match source_summary {
+            Some(summary) => summary,
+            None => {
+                return Ok(ReplanChapterOutput {
+                    staged: Vec::new(),
+                    discarded_count: 0,
+                    superseded_count: 0,
+                    status: "no_summary".to_string(),
+                    skip_reason: None,
+                });
+            }
+        };
+
+        // Eligibility 2: the target set is chapters WITH plans, strictly greater
+        // chapter_number, same book, having ZERO persisted scenes on the active
+        // branch at staging time (cheap sanity — Part B re-checks the
+        // immutability guard at apply, ADR D3).
+        let plans = self
+            .repository
+            .list_chapter_plans_by_project(&input.project_id)
+            .await?;
+        let scenes = self
+            .repository
+            .list_scenes_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?;
+        let drafted_chapters: std::collections::BTreeSet<i32> = scenes
+            .iter()
+            .filter(|s| s.book_number == input.book_number)
+            .map(|s| s.chapter_number)
+            .collect();
+        let mut targets: Vec<&crate::sqlite::records::ChapterPlan> = plans
+            .iter()
+            .filter(|plan| {
+                plan.book_number == input.book_number
+                    && plan.chapter_number > input.source_chapter
+                    && !drafted_chapters.contains(&plan.chapter_number)
+            })
+            .collect();
+        targets.sort_by_key(|plan| plan.chapter_number);
+        let eligible_chapters: std::collections::BTreeSet<i32> =
+            targets.iter().map(|plan| plan.chapter_number).collect();
+
+        if targets.is_empty() {
+            return Ok(ReplanChapterOutput {
+                staged: Vec::new(),
+                discarded_count: 0,
+                superseded_count: 0,
+                status: "no_targets".to_string(),
+                skip_reason: None,
+            });
+        }
+
+        // Current promise states (id + status + urgency verdict), deterministic.
+        let mut promises = self
+            .repository
+            .list_narrative_promises_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?;
+        promises.retain(|p| p.archived_at.is_none());
+        promises.sort_by(|a, b| a.id.cmp(&b.id));
+        let source_cursor = crate::format::story_index(input.book_number, input.source_chapter, 1);
+        let promise_states: Vec<(String, String, String)> = promises
+            .iter()
+            .take(REPLAN_DIGEST_CAP)
+            .map(|p| {
+                let verdict = crate::format::promise_timing_verdict(p, source_cursor);
+                (
+                    p.id.clone(),
+                    p.status.clone(),
+                    format!("{:?}", verdict.urgency).to_ascii_lowercase(),
+                )
+            })
+            .collect();
+
+        // Arc tracker states for the project's arcs (id + status + progress).
+        let mut arcs = self
+            .repository
+            .list_character_arcs_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?;
+        arcs.retain(|a| a.archived_at.is_none());
+        arcs.sort_by(|a, b| a.id.cmp(&b.id));
+        let arc_states: Vec<(String, String, f64)> = arcs
+            .iter()
+            .take(REPLAN_DIGEST_CAP)
+            .map(|a| (a.id.clone(), a.status.clone(), a.progress))
+            .collect();
+
+        // Source chapter's realized beat annotations: motif/theme/conflict ids +
+        // intensities across its scenes, deterministic by scene order.
+        let mut source_scenes: Vec<&crate::sqlite::records::Scene> = scenes
+            .iter()
+            .filter(|s| {
+                s.book_number == input.book_number && s.chapter_number == input.source_chapter
+            })
+            .collect();
+        source_scenes.sort_by_key(|s| s.scene_order);
+        let mut source_beats: Vec<ReplanBeatDigest> = Vec::new();
+        for scene in source_scenes.iter().take(REPLAN_DIGEST_CAP) {
+            if let Some(ann) = self
+                .repository
+                .get_scene_beat_annotation(&active_branch.id, &scene.id)
+                .await?
+            {
+                if ann.motif_ids.is_empty()
+                    && ann.theme_ids.is_empty()
+                    && ann.conflict_ids.is_empty()
+                    && ann.intensity.is_none()
+                {
+                    continue;
+                }
+                source_beats.push(ReplanBeatDigest {
+                    scene_order: scene.scene_order,
+                    motif_ids: ann.motif_ids.clone(),
+                    theme_ids: ann.theme_ids.clone(),
+                    conflict_ids: ann.conflict_ids.clone(),
+                    intensity: ann.intensity,
+                });
+            }
+        }
+
+        // Assemble the realized digest for the source chapter + the target plans.
+        let realized = ReplanRealizedDigest {
+            source_chapter: input.source_chapter,
+            summary: crate::format::truncate_at_chars(&source_summary.summary, REPLAN_TEXT_CAP),
+            key_events: cap_string_list(&source_summary.key_events),
+            character_changes: cap_string_list(&source_summary.character_changes),
+            relationship_shifts: cap_string_list(&source_summary.relationship_shifts),
+            arc_advances: cap_string_list(&source_summary.arc_advances),
+            promise_events: cap_string_list(&source_summary.promise_events),
+            beats: source_beats,
+            promise_states,
+            arc_states,
+        };
+        let target_digests: Vec<ReplanTargetDigest> = targets
+            .iter()
+            .map(|plan| ReplanTargetDigest::from_plan(plan))
+            .collect();
+        let prompt = build_replan_prompt(&realized, &target_digests);
+
+        // Dispatch ladder (§2.3): replan → review (on NoRoute) → skip. The
+        // route is non-prose-bearing, so rating is None throughout.
+        let response = match self
+            .repository
+            .model_router()
+            .complete(&ModelRequest {
+                route: "replan".to_string(),
+                prompt: prompt.clone(),
+                rating: None,
+                context: None,
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let is_no_route = matches!(
+                    err.downcast_ref::<RouteClearanceError>(),
+                    Some(RouteClearanceError::NoRoute { .. })
+                );
+                if is_no_route {
+                    // Retry via the review route (non-prose-bearing, rating None).
+                    match self
+                        .repository
+                        .model_router()
+                        .complete(&ModelRequest {
+                            route: "review".to_string(),
+                            prompt: prompt.clone(),
+                            rating: None,
+                            context: None,
+                        })
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(review_err) => {
+                            return Ok(replan_skip_output(&review_err, "review"));
+                        }
+                    }
+                } else {
+                    return Ok(replan_skip_output(&err, "replan"));
+                }
+            }
+        };
+
+        // Strict parse; malformed → reject the whole batch, stage nothing.
+        let raw_amendments = match parse_replan_output(&response.output) {
+            Ok(amendments) => amendments,
+            Err(_) => {
+                return Ok(ReplanChapterOutput {
+                    staged: Vec::new(),
+                    discarded_count: 0,
+                    superseded_count: 0,
+                    status: "model_output_rejected".to_string(),
+                    skip_reason: None,
+                });
+            }
+        };
+
+        // Validate each amendment (ADR D5 discard discipline). Survivors keep
+        // prompt order; the per-pass cap of 8 is applied AFTER validation, and
+        // overflow counts toward `discarded_count`.
+        use crate::sqlite::repository::StagePlanAmendmentParams;
+        let mut valid: Vec<StagePlanAmendmentParams> = Vec::new();
+        let mut discarded_count = 0usize;
+        for raw in raw_amendments {
+            match validate_plan_amendment(&raw, &eligible_chapters) {
+                Some((amendment_class, target_chapter, confidence, rationale, payload)) => {
+                    if valid.len() >= REPLAN_STAGE_CAP {
+                        // Overflow beyond the cap is dropped and counted.
+                        discarded_count += 1;
+                        continue;
+                    }
+                    valid.push(StagePlanAmendmentParams {
+                        project_id: input.project_id.clone(),
+                        branch_id: active_branch.id.clone(),
+                        source_chapter: input.source_chapter,
+                        book_number: input.book_number,
+                        authoring_run_id: None,
+                        amendment_class,
+                        target_chapter,
+                        payload,
+                        rationale,
+                        confidence,
+                    });
+                }
+                None => discarded_count += 1,
+            }
+        }
+
+        // Supersede prior staged rows for this source chapter, then stage
+        // survivors in prompt order (ADR D2 supersede-on-replan).
+        let superseded_count = self
+            .repository
+            .supersede_source_chapter_amendments(
+                &input.project_id,
+                &active_branch.id,
+                input.book_number,
+                input.source_chapter,
+            )
+            .await? as usize;
+
+        let mut staged = Vec::with_capacity(valid.len());
+        for params in valid {
+            let stored = self.repository.stage_plan_amendment(params).await?;
+            staged.push(stored.into_core());
+        }
+
+        Ok(ReplanChapterOutput {
+            staged,
+            discarded_count,
+            superseded_count,
+            status: "staged".to_string(),
+            skip_reason: None,
+        })
+    }
+
     /// Run the cumulative reader-simulation pass for a single chapter (evolution
     /// §3.6, P3.4). Concatenates the given scenes' prose in spine order, derives
     /// the reader persona from the project's reader contract, folds in the prior
@@ -23126,6 +23417,503 @@ fn parse_deep_world_rule_check_output(output: &str) -> anyhow::Result<Vec<DeepWo
 
     let parsed: DeepWorldRuleCheckOutput = serde_json::from_str(&candidate)?;
     Ok(parsed.violations)
+}
+
+// ── Replan differ (replan_chapter — evolution §3.5, ADR 0003) ────────────────
+
+/// The distinctive header line the replan prompt leads with. Doubles as the
+/// fake-router marker (`ai.rs::local_completion`) so a local-only deployment
+/// returns deterministic staged amendments. Non-prose-bearing (ADR D5): the
+/// review-route stub keys on this header exactly like the mine header.
+const REPLAN_AUDIT_HEADER: &str = "outline replanning audit";
+
+/// Per-pass cap on staged amendments (ADR D5). Survivors beyond this are dropped
+/// and counted toward `discarded_count`.
+const REPLAN_STAGE_CAP: usize = 8;
+
+/// Per-section cap keeping the realized/target digests bounded and deterministic
+/// (mirrors `CANON_MINE_DIGEST_CAP`).
+const REPLAN_DIGEST_CAP: usize = 30;
+
+/// Char cap applied to every free-text field the digest surfaces (summaries,
+/// synopses, list items, rationale echoes) — char-safe truncation keeps the
+/// prompt lean and deterministic.
+const REPLAN_TEXT_CAP: usize = 300;
+
+/// Maximum characters a staged rationale may occupy (ADR D2). Matches the
+/// repository staging guard; the differ truncates char-safe before staging so a
+/// long model rationale never trips the guard.
+const REPLAN_RATIONALE_MAX_CHARS: usize = 500;
+
+/// Truncate every item of a string list char-safe to [`REPLAN_TEXT_CAP`],
+/// dropping empty items and capping the count at [`REPLAN_DIGEST_CAP`]. Keeps
+/// the realized-digest sections lean and deterministic.
+fn cap_string_list(items: &[String]) -> Vec<String> {
+    items
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .take(REPLAN_DIGEST_CAP)
+        .map(|s| crate::format::truncate_at_chars(s, REPLAN_TEXT_CAP))
+        .collect()
+}
+
+/// One source-chapter scene's realized beat annotation, digested for the replan
+/// prompt (motif/theme/conflict ids + intensity — ids and numbers only, no
+/// prose).
+#[derive(Debug, Clone)]
+struct ReplanBeatDigest {
+    scene_order: i32,
+    motif_ids: Vec<String>,
+    theme_ids: Vec<String>,
+    conflict_ids: Vec<String>,
+    intensity: Option<f64>,
+}
+
+/// The realized digest for the source chapter: its saved-summary fields, beat
+/// annotations, and the current promise/arc states — the reality the outline is
+/// audited against. Summaries + metadata only (ADR D5); never scene prose.
+#[derive(Debug, Clone)]
+struct ReplanRealizedDigest {
+    source_chapter: i32,
+    summary: String,
+    key_events: Vec<String>,
+    character_changes: Vec<String>,
+    relationship_shifts: Vec<String>,
+    arc_advances: Vec<String>,
+    promise_events: Vec<String>,
+    beats: Vec<ReplanBeatDigest>,
+    /// Current promise states: (id, status, urgency).
+    promise_states: Vec<(String, String, String)>,
+    /// Arc tracker states: (id, status, progress).
+    arc_states: Vec<(String, String, f64)>,
+}
+
+/// One target chapter's plan, digested for the replan prompt. Planned scenes are
+/// summarized by (order, summary, purpose, cast ids, location, rating); thread
+/// targets are the theme/conflict/plot-line ids; `plan_revision` is the ADR D4
+/// counter (NULL = 0).
+#[derive(Debug, Clone)]
+struct ReplanTargetDigest {
+    chapter_number: i32,
+    synopsis: String,
+    scenes: Vec<ReplanTargetSceneDigest>,
+    target_theme_ids: Vec<String>,
+    target_conflict_ids: Vec<String>,
+    target_plot_line_ids: Vec<String>,
+    plan_revision: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ReplanTargetSceneDigest {
+    scene_order: i32,
+    summary: String,
+    purpose: String,
+    character_ids: Vec<String>,
+    location_id: Option<String>,
+    content_rating: Option<String>,
+}
+
+impl ReplanTargetDigest {
+    /// Build the digest from a stored chapter plan. Free text is char-capped;
+    /// scenes stay in the plan's stored spine order.
+    fn from_plan(plan: &crate::sqlite::records::ChapterPlan) -> Self {
+        let mut scenes: Vec<ReplanTargetSceneDigest> = plan
+            .scenes
+            .iter()
+            .map(|s| ReplanTargetSceneDigest {
+                scene_order: s.scene_order,
+                summary: crate::format::truncate_at_chars(&s.summary, REPLAN_TEXT_CAP),
+                purpose: crate::format::truncate_at_chars(&s.purpose, REPLAN_TEXT_CAP),
+                character_ids: s.character_ids.clone(),
+                location_id: s.location_id.clone(),
+                content_rating: s.content_rating.as_ref().map(|r| r.as_str().to_string()),
+            })
+            .collect();
+        scenes.sort_by_key(|s| s.scene_order);
+        Self {
+            chapter_number: plan.chapter_number,
+            synopsis: crate::format::truncate_at_chars(&plan.synopsis, REPLAN_TEXT_CAP),
+            scenes,
+            target_theme_ids: plan.target_theme_ids.clone(),
+            target_conflict_ids: plan.target_conflict_ids.clone(),
+            target_plot_line_ids: plan.target_plot_line_ids.clone(),
+            // ADR D4: NULL reads as revision 0.
+            plan_revision: plan.plan_revision.unwrap_or(0),
+        }
+    }
+}
+
+/// Render the realized-reality section of the replan prompt deterministically.
+/// Sections are emitted in a fixed order; empty ones are omitted so the prompt
+/// stays lean. Pure — no I/O, unit-tested directly.
+fn build_replan_realized_section(realized: &ReplanRealizedDigest) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "REALIZED REALITY of chapter {} (what the story ACTUALLY did — audit the future plans against THIS):\n",
+        realized.source_chapter
+    ));
+    if !realized.summary.trim().is_empty() {
+        out.push_str(&format!("Summary: {}\n", realized.summary));
+    }
+    let list_section = |out: &mut String, label: &str, items: &[String]| {
+        if !items.is_empty() {
+            out.push_str(&format!("{label}:\n"));
+            for item in items {
+                out.push_str(&format!("  - {item}\n"));
+            }
+        }
+    };
+    list_section(&mut out, "Key events", &realized.key_events);
+    list_section(&mut out, "Character changes", &realized.character_changes);
+    list_section(
+        &mut out,
+        "Relationship shifts",
+        &realized.relationship_shifts,
+    );
+    list_section(&mut out, "Arc advances", &realized.arc_advances);
+    list_section(&mut out, "Promise events", &realized.promise_events);
+
+    if !realized.beats.is_empty() {
+        out.push_str("Realized beat annotations (ids + intensity):\n");
+        for beat in &realized.beats {
+            out.push_str(&format!("  - scene {}", beat.scene_order));
+            if !beat.motif_ids.is_empty() {
+                out.push_str(&format!("; motifs: {}", beat.motif_ids.join(",")));
+            }
+            if !beat.theme_ids.is_empty() {
+                out.push_str(&format!("; themes: {}", beat.theme_ids.join(",")));
+            }
+            if !beat.conflict_ids.is_empty() {
+                out.push_str(&format!("; conflicts: {}", beat.conflict_ids.join(",")));
+            }
+            if let Some(intensity) = beat.intensity {
+                out.push_str(&format!("; intensity: {intensity:.2}"));
+            }
+            out.push('\n');
+        }
+    }
+    if !realized.promise_states.is_empty() {
+        out.push_str("Current promise states (id, status, urgency):\n");
+        for (id, status, urgency) in &realized.promise_states {
+            out.push_str(&format!("  - {id} ({status}, {urgency})\n"));
+        }
+    }
+    if !realized.arc_states.is_empty() {
+        out.push_str("Arc tracker states (id, status, progress):\n");
+        for (id, status, progress) in &realized.arc_states {
+            out.push_str(&format!("  - {id} ({status}, {progress:.2})\n"));
+        }
+    }
+    out
+}
+
+/// Render the target-plans section of the replan prompt deterministically. Each
+/// undrafted future chapter's plan is emitted in ascending chapter order. Pure.
+fn build_replan_targets_section(targets: &[ReplanTargetDigest]) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "FUTURE CHAPTER PLANS to audit (propose amendments ONLY against these chapter numbers):\n",
+    );
+    for target in targets {
+        out.push_str(&format!(
+            "Chapter {} (plan_revision {}):\n",
+            target.chapter_number, target.plan_revision
+        ));
+        out.push_str(&format!("  Synopsis: {}\n", target.synopsis));
+        if !target.target_theme_ids.is_empty() {
+            out.push_str(&format!(
+                "  Target themes: {}\n",
+                target.target_theme_ids.join(",")
+            ));
+        }
+        if !target.target_conflict_ids.is_empty() {
+            out.push_str(&format!(
+                "  Target conflicts: {}\n",
+                target.target_conflict_ids.join(",")
+            ));
+        }
+        if !target.target_plot_line_ids.is_empty() {
+            out.push_str(&format!(
+                "  Target plot lines: {}\n",
+                target.target_plot_line_ids.join(",")
+            ));
+        }
+        if target.scenes.is_empty() {
+            out.push_str("  Planned scenes: (none)\n");
+        } else {
+            out.push_str("  Planned scenes:\n");
+            for scene in &target.scenes {
+                out.push_str(&format!(
+                    "    - order {} — {} (purpose: {})",
+                    scene.scene_order, scene.summary, scene.purpose
+                ));
+                if !scene.character_ids.is_empty() {
+                    out.push_str(&format!("; cast: {}", scene.character_ids.join(",")));
+                }
+                if let Some(location) = &scene.location_id {
+                    out.push_str(&format!("; location: {location}"));
+                }
+                if let Some(rating) = &scene.content_rating {
+                    out.push_str(&format!("; rating: {rating}"));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// The static output-contract block: the exact JSON envelope plus the per-class
+/// payload field lists (ADR 0003 D1). Spelled out so the model never has to
+/// guess a payload shape; each shape is the minimal delta against the plan-write
+/// input the class applies through (validated by [`validate_plan_amendment`]).
+fn replan_output_contract() -> &'static str {
+    "OUTPUT CONTRACT — return STRICT JSON only, no prose, this exact envelope:\n\
+     {\"amendments\":[{\"amendment_class\":\"...\",\"target_chapter\":N|null,\"confidence\":\"high|medium|low\",\"rationale\":\"<why, referencing realized events by id>\",\"payload\":{...}}]}\n\
+     `target_chapter` is a future chapter number for every class EXCEPT promise_followup (which uses null — it targets a placement).\n\
+     `rationale` is mandatory and cites realized ids/events only — NO prose quotes.\n\
+     Per-class payload fields (use EXACTLY these keys):\n\
+     - synopsis_update: synopsis\n\
+     - scene_add: scene_order, summary, purpose, character_ids[], location_id?, content_rating?, beat_structure?[], insert_at\n\
+     - scene_drop: scene_order\n\
+     - scene_replace: scene_order, summary, purpose, character_ids[], location_id?, content_rating?\n\
+     - scene_reorder: new_order (array of existing scene_orders, a permutation)\n\
+     - thread_promote: kind (theme|conflict|plot_line), id\n\
+     - thread_retire: kind (theme|conflict|plot_line), id\n\
+     - promise_followup: promise_type, description, planted_at_placement {book_number, chapter_number, scene_order?}, planned_payoff? {book_number, chapter_number, scene_order?}"
+}
+
+/// Assemble the full replan prompt from the header/instructions, the realized
+/// digest, the target plans, and the output contract. Pure — the service builds
+/// `realized`/`targets`.
+fn build_replan_prompt(realized: &ReplanRealizedDigest, targets: &[ReplanTargetDigest]) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(REPLAN_AUDIT_HEADER);
+    prompt.push('\n');
+    prompt.push_str(
+        "You are auditing a book's not-yet-drafted chapter plans against the reality one\n\
+         just-completed chapter established. Propose plan amendments ONLY where a future plan\n\
+         has drifted from what actually happened. Never rewrite a drafted chapter; never invent\n\
+         reality not present below. Prefer no amendment over a speculative one.\n\n",
+    );
+    prompt.push_str(&build_replan_realized_section(realized));
+    prompt.push('\n');
+    prompt.push_str(&build_replan_targets_section(targets));
+    prompt.push('\n');
+    prompt.push_str(replan_output_contract());
+    prompt
+}
+
+/// One raw amendment as emitted by the model, before validation. Fields mirror
+/// the output contract; unknown extras are ignored.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawPlanAmendment {
+    amendment_class: String,
+    #[serde(default)]
+    target_chapter: Option<i32>,
+    #[serde(default)]
+    confidence: Option<String>,
+    #[serde(default)]
+    rationale: Option<String>,
+    #[serde(default)]
+    payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawReplanOutput {
+    #[serde(default)]
+    amendments: Vec<RawPlanAmendment>,
+}
+
+/// Parse the differ's strict-JSON output. Tolerates code fences / surrounding
+/// prose via [`extract_json_object`]; a genuinely malformed payload is an error
+/// the caller maps to `model_output_rejected` (never a guess). Mirrors
+/// [`parse_canon_mine_output`].
+fn parse_replan_output(output: &str) -> anyhow::Result<Vec<RawPlanAmendment>> {
+    let trimmed = output.trim();
+    let candidate = if trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else if let Some(fenced) = extract_json_object(output) {
+        fenced
+    } else {
+        trimmed.to_string()
+    };
+    let parsed: RawReplanOutput =
+        serde_json::from_str(&candidate).context("parsing replan model output as strict JSON")?;
+    Ok(parsed.amendments)
+}
+
+/// Whether a per-class payload is structurally sound (ADR 0003 D1). Each arm
+/// checks only the minimal keys Part B's apply dispatcher needs to replay the
+/// class against the plan-write input — it does NOT resolve ids against the
+/// bible (Part B does at apply). Returns `true` when the payload deserializes
+/// into the class's minimal delta, `false` (discard) otherwise.
+///
+/// Payload shapes (Part B's contract — precise):
+///   * `synopsis_update` — `{synopsis: String (non-empty)}`
+///   * `scene_add` — the full planned-scene shape plus an insert point:
+///     `{scene_order: i32, summary: String, purpose: String, character_ids: [String],
+///       location_id?: String, content_rating?: String, beat_structure?: [String],
+///       insert_at: i32}`
+///   * `scene_drop` — `{scene_order: i32}`
+///   * `scene_replace` — the mutable planned-scene fields keyed by order:
+///     `{scene_order: i32, summary: String, purpose: String, character_ids: [String],
+///       location_id?: String, content_rating?: String}`
+///   * `scene_reorder` — `{new_order: [i32] (non-empty permutation of scene orders)}`
+///   * `thread_promote` / `thread_retire` —
+///     `{kind: "theme"|"conflict"|"plot_line", id: String (non-empty)}`
+///   * `promise_followup` — the `create_narrative_promise` delta:
+///     `{promise_type: String, description: String,
+///       planted_at_placement: {book_number: i32, chapter_number: i32, scene_order?: i32},
+///       planned_payoff?: {book_number: i32, chapter_number: i32, scene_order?: i32}}`
+fn plan_amendment_payload_is_valid(class: &str, payload: &serde_json::Value) -> bool {
+    fn nonempty_str(v: &serde_json::Value, key: &str) -> bool {
+        v.get(key)
+            .and_then(|f| f.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    }
+    fn is_i64(v: &serde_json::Value, key: &str) -> bool {
+        v.get(key).and_then(|f| f.as_i64()).is_some()
+    }
+    fn placement_ok(v: &serde_json::Value) -> bool {
+        // Minimal StoryPlacement: book_number + chapter_number required ints;
+        // scene_order optional int (ignored if absent/null).
+        is_i64(v, "book_number") && is_i64(v, "chapter_number")
+    }
+    match class {
+        "synopsis_update" => nonempty_str(payload, "synopsis"),
+        "scene_add" => {
+            is_i64(payload, "scene_order")
+                && nonempty_str(payload, "summary")
+                && nonempty_str(payload, "purpose")
+                && payload
+                    .get("character_ids")
+                    .map(|c| c.is_array())
+                    .unwrap_or(false)
+                && is_i64(payload, "insert_at")
+        }
+        "scene_drop" => is_i64(payload, "scene_order"),
+        "scene_replace" => {
+            is_i64(payload, "scene_order")
+                && nonempty_str(payload, "summary")
+                && nonempty_str(payload, "purpose")
+                && payload
+                    .get("character_ids")
+                    .map(|c| c.is_array())
+                    .unwrap_or(false)
+        }
+        "scene_reorder" => payload
+            .get("new_order")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty() && a.iter().all(|e| e.as_i64().is_some()))
+            .unwrap_or(false),
+        "thread_promote" | "thread_retire" => {
+            let kind = payload
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .map(|k| k.trim());
+            matches!(kind, Some("theme" | "conflict" | "plot_line")) && nonempty_str(payload, "id")
+        }
+        "promise_followup" => {
+            nonempty_str(payload, "promise_type")
+                && nonempty_str(payload, "description")
+                && payload
+                    .get("planted_at_placement")
+                    .map(placement_ok)
+                    .unwrap_or(false)
+                && match payload.get("planned_payoff") {
+                    None | Some(serde_json::Value::Null) => true,
+                    Some(payoff) => placement_ok(payoff),
+                }
+        }
+        _ => false,
+    }
+}
+
+/// Validate one raw amendment against the ADR 0003 D5 discard discipline.
+/// Returns the staged tuple `(amendment_class, target_chapter, confidence,
+/// rationale, payload)` on success, or `None` when the amendment is discarded:
+///   * `amendment_class ∉ PLAN_AMENDMENT_CLASSES` (unknown → discard);
+///   * rationale empty (whitespace-only) after trim (the differ's evidence
+///     discipline — an amendment with no stated reasoning is not stageable). The
+///     stored rationale is then truncated char-safe to ≤500;
+///   * `target_chapter` missing for a chapter-targeting class, or present for
+///     `promise_followup` (forbidden-none);
+///   * `target_chapter` present but NOT in `eligible_chapters` (the differ never
+///     stages against a chapter outside the audited set);
+///   * payload failing [`plan_amendment_payload_is_valid`] for the class.
+///
+/// `confidence` normalizes to `high|medium|low`, defaulting to `low` when the
+/// model omits/garbles it (a low-confidence proposal is still stageable).
+fn validate_plan_amendment(
+    raw: &RawPlanAmendment,
+    eligible_chapters: &std::collections::BTreeSet<i32>,
+) -> Option<(String, Option<i32>, String, String, serde_json::Value)> {
+    if !spindle_core::models::is_plan_amendment_class(&raw.amendment_class) {
+        return None;
+    }
+    let rationale = raw.rationale.as_deref().unwrap_or("").trim();
+    if rationale.is_empty() {
+        return None;
+    }
+    // Target-chapter rules per class (mirror the repository staging guard so an
+    // amendment that would be rejected at stage is discarded here first).
+    if raw.amendment_class == "promise_followup" {
+        if raw.target_chapter.is_some() {
+            return None;
+        }
+    } else {
+        match raw.target_chapter {
+            Some(chapter) if eligible_chapters.contains(&chapter) => {}
+            _ => return None,
+        }
+    }
+    if !plan_amendment_payload_is_valid(&raw.amendment_class, &raw.payload) {
+        return None;
+    }
+    let confidence = match raw
+        .confidence
+        .as_deref()
+        .map(|c| c.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("high") => "high",
+        Some("medium") => "medium",
+        _ => "low",
+    }
+    .to_string();
+    let stored_rationale = crate::format::truncate_at_chars(rationale, REPLAN_RATIONALE_MAX_CHARS);
+    Some((
+        raw.amendment_class.clone(),
+        raw.target_chapter,
+        confidence,
+        stored_rationale,
+        raw.payload.clone(),
+    ))
+}
+
+/// Build the honest-skip `ReplanChapterOutput` for a route failure. A
+/// RatingNotCovered names route+rating (never applicable here — the route is
+/// non-prose-bearing — but handled for symmetry); any other error reads as a
+/// dead-route skip naming the attempted route. Never carries prose.
+fn replan_skip_output(
+    err: &anyhow::Error,
+    attempted_route: &str,
+) -> spindle_core::models::ReplanChapterOutput {
+    let skip_reason = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => {
+            format!("replan SKIPPED: the `{route}` route is not cleared for rating `{rating}`")
+        }
+        _ => format!("replan SKIPPED: no usable `{attempted_route}` route (the model call failed)"),
+    };
+    spindle_core::models::ReplanChapterOutput {
+        staged: Vec::new(),
+        discarded_count: 0,
+        superseded_count: 0,
+        status: "skipped".to_string(),
+        skip_reason: Some(skip_reason),
+    }
 }
 
 // ── Canon miner (mine_scene_canon — evolution §3.1, ADR 0001) ────────────────
@@ -44162,6 +44950,477 @@ agent = "review-safe"
         );
         // Content rating unaffected (guards the plumbing).
         let _ = ContentRating::General;
+    }
+
+    // ── Replan differ (replan_chapter — evolution §3.5, ADR 0003) ────────────
+
+    /// Per-class payload validation units (ADR 0003 D1): one valid + one invalid
+    /// payload per class. This is the Part B contract — the payload shapes are
+    /// pinned here so a later apply dispatcher can rely on them.
+    #[test]
+    fn plan_amendment_payload_validation_per_class() {
+        use serde_json::json;
+        // (class, valid payload, invalid payload)
+        let cases: [(&str, serde_json::Value, serde_json::Value); 8] = [
+            (
+                "synopsis_update",
+                json!({"synopsis": "The gate has already fallen."}),
+                json!({"synopsis": "   "}), // empty
+            ),
+            (
+                "scene_add",
+                json!({"scene_order": 2, "summary": "s", "purpose": "p", "character_ids": [], "insert_at": 1}),
+                json!({"scene_order": 2, "summary": "s", "purpose": "p"}), // missing character_ids + insert_at
+            ),
+            (
+                "scene_drop",
+                json!({"scene_order": 3}),
+                json!({"scene_order": "not-a-number"}),
+            ),
+            (
+                "scene_replace",
+                json!({"scene_order": 1, "summary": "s", "purpose": "p", "character_ids": ["character:x"]}),
+                json!({"scene_order": 1, "purpose": "p", "character_ids": []}), // missing summary
+            ),
+            (
+                "scene_reorder",
+                json!({"new_order": [3, 1, 2]}),
+                json!({"new_order": []}), // empty permutation
+            ),
+            (
+                "thread_promote",
+                json!({"kind": "theme", "id": "theme:x"}),
+                json!({"kind": "invalid", "id": "theme:x"}), // bad kind
+            ),
+            (
+                "thread_retire",
+                json!({"kind": "conflict", "id": "conflict:x"}),
+                json!({"kind": "conflict", "id": ""}), // empty id
+            ),
+            (
+                "promise_followup",
+                json!({"promise_type": "mystery", "description": "d", "planted_at_placement": {"book_number": 1, "chapter_number": 6}}),
+                json!({"promise_type": "mystery", "description": "d"}), // missing placement
+            ),
+        ];
+        for (class, valid, invalid) in cases {
+            assert!(
+                plan_amendment_payload_is_valid(class, &valid),
+                "{class} valid payload must pass"
+            );
+            assert!(
+                !plan_amendment_payload_is_valid(class, &invalid),
+                "{class} invalid payload must be rejected"
+            );
+        }
+        // An unknown class never validates regardless of payload.
+        assert!(!plan_amendment_payload_is_valid(
+            "made_up",
+            &serde_json::json!({})
+        ));
+    }
+
+    #[test]
+    fn replan_prompt_renders_realized_and_target_sections_deterministically() {
+        // Pure render: the realized digest surfaces the source chapter's summary
+        // + list fields + ids; the target section names only the future chapter
+        // number and its plan_revision. No I/O.
+        let realized = ReplanRealizedDigest {
+            source_chapter: 3,
+            summary: "The gate fell early.".to_string(),
+            key_events: vec!["gate breached".to_string()],
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+            beats: vec![ReplanBeatDigest {
+                scene_order: 1,
+                motif_ids: vec!["motif:ash".to_string()],
+                theme_ids: Vec::new(),
+                conflict_ids: vec!["conflict:siege".to_string()],
+                intensity: Some(0.8),
+            }],
+            promise_states: vec![(
+                "narrative_promise:door".to_string(),
+                "planted".to_string(),
+                "soon".to_string(),
+            )],
+            arc_states: vec![("character_arc:mara".to_string(), "active".to_string(), 0.5)],
+        };
+        let realized_rendered = build_replan_realized_section(&realized);
+        assert!(realized_rendered.contains("REALIZED REALITY of chapter 3"));
+        assert!(realized_rendered.contains("The gate fell early."));
+        assert!(realized_rendered.contains("gate breached"));
+        assert!(realized_rendered.contains("motif:ash"));
+        assert!(realized_rendered.contains("conflict:siege"));
+        assert!(realized_rendered.contains("narrative_promise:door"));
+        assert!(realized_rendered.contains("character_arc:mara"));
+
+        let targets = vec![ReplanTargetDigest {
+            chapter_number: 5,
+            synopsis: "Chapter five as planned.".to_string(),
+            scenes: vec![ReplanTargetSceneDigest {
+                scene_order: 1,
+                summary: "opening".to_string(),
+                purpose: "establish".to_string(),
+                character_ids: vec!["character:x".to_string()],
+                location_id: Some("location:hall".to_string()),
+                content_rating: Some("general".to_string()),
+            }],
+            target_theme_ids: vec!["theme:loss".to_string()],
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            plan_revision: 0,
+        }];
+        let targets_rendered = build_replan_targets_section(&targets);
+        assert!(targets_rendered.contains("Chapter 5 (plan_revision 0)"));
+        assert!(targets_rendered.contains("Chapter five as planned."));
+        assert!(targets_rendered.contains("theme:loss"));
+        assert!(targets_rendered.contains("character:x"));
+        assert!(targets_rendered.contains("location:hall"));
+    }
+
+    /// Create a project and plan `chapter_number` with the given synopsis
+    /// (carrying whatever replan sentinel the test wants), returning the project.
+    async fn project_with_target_plan(
+        svc: &SqliteSpindleService,
+        name: &str,
+        chapter_number: i32,
+        synopsis: &str,
+    ) -> CreateProjectOutput {
+        use spindle_core::models::{PlanChapterInput, PlanChapterSceneInput};
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: name.to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "clean continuity".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number,
+            pov_character_id: None,
+            synopsis: synopsis.to_string(),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "planned opening".to_string(),
+                beat_structure: Vec::new(),
+                character_ids: Vec::new(),
+                location_id: None,
+                content_rating: None,
+                purpose: "establish".to_string(),
+                research_required: None,
+                research_tags: Vec::new(),
+                explicit_query: None,
+            }],
+        })
+        .await
+        .unwrap();
+        project
+    }
+
+    /// Save a summary for the source chapter so the source chapter is eligible.
+    async fn save_source_summary(svc: &SqliteSpindleService, project_id: &str, chapter: i32) {
+        svc.save_summary(SaveSummaryInput {
+            project_id: project_id.to_string(),
+            book_number: 1,
+            chapter_number: chapter,
+            entity_type: None,
+            entity_id: None,
+            summary: format!("Chapter {chapter} resolved the siege early."),
+            key_events: vec!["The gate fell".to_string()],
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_stages_amendments_supersedes_on_rerun_and_counts_discards() {
+        use spindle_core::models::ReplanChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        // Target chapter 5's synopsis carries the happy sentinel (chapter 5) and
+        // the discard sentinel (MOCK_REPLAN_BAD) so the stub returns 2 valid + 2
+        // discardable amendments in one pass.
+        let project = project_with_target_plan(
+            &svc,
+            "Replan Happy",
+            5,
+            "MOCK_REPLAN_SYNOPSIS[5] MOCK_REPLAN_BAD chapter five synopsis",
+        )
+        .await;
+        save_source_summary(&svc, &project.project_id, 3).await;
+
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "staged");
+        assert_eq!(out.superseded_count, 0);
+        assert_eq!(out.staged.len(), 2, "synopsis_update + thread_retire stage");
+        assert_eq!(
+            out.discarded_count, 2,
+            "unknown class + empty rationale discarded"
+        );
+        // Every staged amendment carries a non-empty rationale.
+        assert!(out.staged.iter().all(|a| !a.rationale.trim().is_empty()));
+        let classes: Vec<&str> = out
+            .staged
+            .iter()
+            .map(|a| a.amendment_class.as_str())
+            .collect();
+        assert!(classes.contains(&"synopsis_update"));
+        assert!(classes.contains(&"thread_retire"));
+        assert!(out.staged.iter().all(|a| a.target_chapter == Some(5)));
+
+        // Rerun supersedes the prior staged rows for the same source chapter.
+        let rerun = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rerun.status, "staged");
+        assert_eq!(
+            rerun.superseded_count, 2,
+            "the prior pass's 2 staged rows superseded"
+        );
+        assert_eq!(rerun.staged.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_skips_when_source_has_no_summary() {
+        use spindle_core::models::ReplanChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let project =
+            project_with_target_plan(&svc, "Replan NoSummary", 5, "MOCK_REPLAN_SYNOPSIS[5] x")
+                .await;
+        // No summary saved for chapter 3.
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "no_summary");
+        assert!(out.staged.is_empty());
+        assert_eq!(out.superseded_count, 0);
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_skips_when_no_eligible_targets() {
+        use spindle_core::models::ReplanChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        // Only a plan for chapter 2 (BEFORE the source chapter 3) — no target
+        // strictly after chapter 3.
+        let project =
+            project_with_target_plan(&svc, "Replan NoTargets", 2, "earlier chapter").await;
+        save_source_summary(&svc, &project.project_id, 3).await;
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "no_targets");
+        assert!(out.staged.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_excludes_drafted_target_at_staging() {
+        use spindle_core::models::ReplanChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        // Plan chapter 5 (the only future chapter) but then draft a scene in it —
+        // it must drop out of the eligible set, leaving no targets.
+        let project = project_with_target_plan(
+            &svc,
+            "Replan Drafted",
+            5,
+            "MOCK_REPLAN_SYNOPSIS[5] chapter five",
+        )
+        .await;
+        save_source_summary(&svc, &project.project_id, 3).await;
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 5,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "chapter five already has drafted prose".to_string(),
+            summary: "drafted".to_string(),
+            content_rating: spindle_core::models::ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            out.status, "no_targets",
+            "a drafted target is excluded at staging (ADR D3 immutability sanity)"
+        );
+        assert!(out.staged.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_dispatch_falls_to_review_route() {
+        // `replan` is absent from default_routes; the ladder must fall to
+        // `review`. We prove it via the dispatch recorder: the dispatch went to
+        // the `review` route and never to a `replan` route.
+        use spindle_core::models::ReplanChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        let log = svc.repository.model_router().install_dispatch_recorder();
+
+        let project = project_with_target_plan(
+            &svc,
+            "Replan Ladder",
+            5,
+            "MOCK_REPLAN_SYNOPSIS[5] chapter five",
+        )
+        .await;
+        save_source_summary(&svc, &project.project_id, 3).await;
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "staged");
+
+        let records = log.lock().unwrap().clone();
+        let dispatched_routes: Vec<String> = records
+            .iter()
+            .filter_map(|r| match r {
+                crate::ai::DispatchRecord::Dispatch { route, .. } => Some(route.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            dispatched_routes.iter().any(|r| r == "review"),
+            "the replan dispatch fell to the review route: {dispatched_routes:?}"
+        );
+        assert!(
+            !dispatched_routes.iter().any(|r| r == "replan"),
+            "replan is not a real route and never dispatches: {dispatched_routes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_skips_on_transport_error() {
+        // Config a review agent whose endpoint fails so the ladder's review leg
+        // errors → honest `skipped` status (never an error return, never blocks).
+        use spindle_core::models::{ConfigureAgentsInput, ReplanChapterInput};
+        let (tmp, svc) = fresh_service_local().await;
+        let config_path = tmp.path().join("replan-routes.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-dead"
+name = "Review Dead"
+provider = "openai_compatible"
+endpoint = "http://127.0.0.1:1/unreachable"
+model = "dead"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-dead"
+"#,
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        let project = project_with_target_plan(
+            &svc,
+            "Replan Dead",
+            5,
+            "MOCK_REPLAN_SYNOPSIS[5] chapter five",
+        )
+        .await;
+        save_source_summary(&svc, &project.project_id, 3).await;
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "skipped");
+        assert!(out.staged.is_empty());
+        let reason = out.skip_reason.expect("skip reason present");
+        assert!(
+            reason.contains("replan SKIPPED"),
+            "honest skip reason: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replan_chapter_caps_staged_at_eight_and_reports_dropped() {
+        use spindle_core::models::ReplanChapterInput;
+        let (_tmp, svc) = fresh_service_local().await;
+        // The cap sentinel makes the stub return 10 valid synopsis_update
+        // amendments for chapter 5; the differ stages 8 and drops 2.
+        let project =
+            project_with_target_plan(&svc, "Replan Cap", 5, "MOCK_REPLAN_CAP[5] chapter five")
+                .await;
+        save_source_summary(&svc, &project.project_id, 3).await;
+        let out = svc
+            .replan_chapter(ReplanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                source_chapter: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.status, "staged");
+        assert_eq!(out.staged.len(), 8, "per-pass cap");
+        assert_eq!(
+            out.discarded_count, 2,
+            "overflow beyond the cap is dropped + counted"
+        );
     }
 
     // ── Canon-delta ratification (list_canon_deltas + decide_canon_deltas) ────
