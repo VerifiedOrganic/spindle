@@ -157,6 +157,24 @@ In that mode, Spindle routes non-explicit scenes through the configured `draft`
 route too. Do not use it for normal interactive writing unless the operator
 asks for full offload.
 
+### Explicit-content offload guarantee
+
+Every automated pass that carries scene prose — drafting, in-run revision,
+canon mining, and (once enabled) review/reader-sim automation — resolves its
+route through the single rating-gated chokepoint. A scene's prose is never
+dispatched to a model whose agent does not declare the scene's content rating.
+When a pass cannot serve a rating it **skips honestly** rather than downgrading:
+the mine step records `mine_status: "skipped"` naming the rating and emits a
+`pass_skipped` journal event; the run advances anyway (skips never block). The
+in-run verify step is deterministic (no model call), so it carries no leakage
+risk, and the journal carries ids/counts only — never prose. The checkpoint
+samples the last scene in the range, so an interleaved explicit scene is not
+routed to review by the default flow. This whole guarantee is pinned by an
+integration test that drives a `general` + `explicit` run whose `mine` route
+resolves only to a non-explicit agent and asserts, against a post-gate dispatch
+recorder, that no request containing the explicit scene's prose or brief ever
+reached the uncleared agent (evolution design §4).
+
 ## Run journal (observability)
 
 Each authoring run appends an **append-only event journal** as it advances —

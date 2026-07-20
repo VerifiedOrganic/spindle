@@ -263,11 +263,53 @@ struct RuntimeConfig {
     health_check_timeout: Duration,
 }
 
+/// A single ATTEMPTED dispatch observed at the router's rating-gated chokepoint
+/// (evolution §4 rule 2 recording seam). Test-only: the offload contract test
+/// iterates these to prove no explicit prose was ever sent to an uncleared
+/// agent. Records are captured in `complete`/`complete_continuation` — a
+/// `Dispatch` is written *after* `resolve_cleared_route` clears the request
+/// (so a recorded dispatch to an uncleared agent would be a leak), and a
+/// `Rejection` is written when the clearance gate refuses.
+///
+/// Available in this crate's own tests and, for cross-crate integration tests
+/// (the offload contract test lives in `spindle-mcp`), under the `test-support`
+/// feature. Compiled out of normal builds — zero production cost.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchRecord {
+    /// A request that passed the clearance gate and was handed to an adapter.
+    /// `agent` is the resolved external agent id, or `"builtin:<model_name>"`
+    /// when the route falls back to a built-in local adapter (which serves
+    /// every rating). `prompt` is the full prompt as dispatched.
+    Dispatch {
+        route: String,
+        agent: String,
+        rating: Option<String>,
+        prompt: String,
+    },
+    /// A prose-bearing request the clearance gate refused (never dispatched).
+    Rejection {
+        route: String,
+        rating: Option<String>,
+        error: String,
+    },
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type DispatchLog = Arc<std::sync::Mutex<Vec<DispatchRecord>>>;
+
 #[derive(Debug, Clone)]
 pub struct ModelRouter {
     runtime: Arc<RwLock<RuntimeConfig>>,
     http_client: reqwest::Client,
     health_generation: Arc<AtomicU64>,
+    /// Test-only dispatch recorder (evolution §4 rule 2 recording seam). When
+    /// installed via [`ModelRouter::install_dispatch_recorder`], every attempted
+    /// dispatch past the clearance gate — and every clearance rejection — is
+    /// appended here. Gated behind test/`test-support` so it carries zero
+    /// production cost.
+    #[cfg(any(test, feature = "test-support"))]
+    dispatch_log: Arc<RwLock<Option<DispatchLog>>>,
 }
 
 impl Default for ModelRouter {
@@ -293,6 +335,34 @@ impl ModelRouter {
         })
     }
 
+    /// Install a fresh dispatch recorder (evolution §4 rule 2 recording seam)
+    /// and return a handle to its log. Every subsequent `complete` /
+    /// `complete_continuation` appends a [`DispatchRecord`] to the returned log:
+    /// a `Dispatch` for each request that clears the rating gate, a `Rejection`
+    /// for each refused prose-bearing request. Test-only. Surviving a
+    /// `configure` swap is guaranteed because the recorder lives on the router
+    /// struct, not the runtime it replaces.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_dispatch_recorder(&self) -> DispatchLog {
+        let log: DispatchLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+        *self.dispatch_log.write().expect("dispatch log write lock") = Some(log.clone());
+        log
+    }
+
+    /// Append a record to the installed dispatch recorder, if any. No-op when
+    /// no recorder is installed (the common case). Test-only.
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_dispatch(&self, record: DispatchRecord) {
+        if let Some(log) = self
+            .dispatch_log
+            .read()
+            .expect("dispatch log read lock")
+            .as_ref()
+        {
+            log.lock().expect("dispatch log lock").push(record);
+        }
+    }
+
     fn from_loaded_config(loaded: LoadedAgentConfig) -> Self {
         let http_client = reqwest::Client::new();
         let runtime = runtime_from_loaded_config(&http_client, loaded);
@@ -300,6 +370,8 @@ impl ModelRouter {
             runtime: Arc::new(RwLock::new(runtime)),
             http_client,
             health_generation: Arc::new(AtomicU64::new(0)),
+            #[cfg(any(test, feature = "test-support"))]
+            dispatch_log: Arc::new(RwLock::new(None)),
         };
         router.refresh_health_heartbeat();
         router
@@ -504,8 +576,28 @@ impl ModelRouter {
         // preserved through anyhow so callers can `downcast_ref` to honest-skip
         // with a rating-not-covered message (never any prose). Non-prose routes
         // and rating-None requests pass straight through.
-        let route = resolve_cleared_route(&runtime, &request.route, request.rating.as_deref())
-            .map_err(anyhow::Error::new)?;
+        let route = match resolve_cleared_route(&runtime, &request.route, request.rating.as_deref())
+        {
+            Ok(route) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Dispatch {
+                    route: request.route.clone(),
+                    agent: dispatch_agent_label(&runtime, route),
+                    rating: request.rating.clone(),
+                    prompt: request.prompt.clone(),
+                });
+                route
+            }
+            Err(err) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Rejection {
+                    route: request.route.clone(),
+                    rating: request.rating.clone(),
+                    error: err.to_string(),
+                });
+                return Err(anyhow::Error::new(err));
+            }
+        };
 
         match route.adapter_kind.as_str() {
             "local" => Ok(ModelResponse {
@@ -585,8 +677,30 @@ impl ModelRouter {
         // Same rating-gated chokepoint as `complete` — a continuation carries
         // the same prose and rating as the original request (I3), so an
         // uncleared prose-bearing continuation must fail here too.
-        let route =
-            resolve_cleared_route(&runtime, route_name, rating).map_err(anyhow::Error::new)?;
+        let route = match resolve_cleared_route(&runtime, route_name, rating) {
+            Ok(route) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Dispatch {
+                    route: route_name.to_string(),
+                    agent: dispatch_agent_label(&runtime, route),
+                    rating: rating.map(ToString::to_string),
+                    // A continuation carries the same prose as the original
+                    // request; recording the original prompt keeps the seam's
+                    // no-leak sweep exact.
+                    prompt: original_prompt.to_string(),
+                });
+                route
+            }
+            Err(err) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Rejection {
+                    route: route_name.to_string(),
+                    rating: rating.map(ToString::to_string),
+                    error: err.to_string(),
+                });
+                return Err(anyhow::Error::new(err));
+            }
+        };
 
         match route.adapter_kind.as_str() {
             "http" => {
@@ -1051,6 +1165,20 @@ fn resolve_cleared_route<'r>(
 
 fn normalize_route_rating(rating: &str) -> String {
     rating.trim().to_ascii_lowercase()
+}
+
+/// Label the agent a cleared route dispatches to, for the test recording seam
+/// (evolution §4 rule 2). A route whose `model_name` matches a configured agent
+/// returns that agent id; a built-in local route (no matching configured agent)
+/// returns `"builtin:<model_name>"`, so the contract test can distinguish an
+/// external cleared agent from the never-gated local adapter.
+#[cfg(any(test, feature = "test-support"))]
+fn dispatch_agent_label(runtime: &RuntimeConfig, route: &ModelRoute) -> String {
+    if runtime.agents.contains_key(&route.model_name) {
+        route.model_name.clone()
+    } else {
+        format!("builtin:{}", route.model_name)
+    }
 }
 
 fn system_prompt_for_request(route: &ModelRoute, rating: Option<&str>) -> String {
@@ -2919,6 +3047,7 @@ enabled = false
             runtime: Arc::new(RwLock::new(runtime)),
             http_client: reqwest::Client::new(),
             health_generation: Arc::new(AtomicU64::new(0)),
+            dispatch_log: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -3826,6 +3955,92 @@ agent = "reviewer"
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
         router
+    }
+
+    #[tokio::test]
+    async fn dispatch_recorder_captures_rejection_for_uncleared_explicit_prose() {
+        // The recording seam (evolution §4 rule 2): a `mine` request at an
+        // explicit rating whose agent covers only general must be REFUSED at the
+        // gate and recorded as a Rejection — never a Dispatch. Network-free: the
+        // gate rejects before any adapter call.
+        let router = cleared_route_router(&["general"]);
+        let log = router.install_dispatch_recorder();
+        let err = router
+            .complete(&ModelRequest {
+                route: "mine".to_string(),
+                prompt: "explicit prose that must not leave".to_string(),
+                rating: Some("explicit".to_string()),
+                context: None,
+            })
+            .await
+            .expect_err("uncleared explicit mine must be refused at the gate");
+        assert!(
+            err.downcast_ref::<RouteClearanceError>().is_some(),
+            "the typed clearance error must be preserved through anyhow"
+        );
+        let records = log.lock().expect("dispatch log lock").clone();
+        assert_eq!(records.len(), 1, "exactly one record: {records:?}");
+        match &records[0] {
+            DispatchRecord::Rejection {
+                route,
+                rating,
+                error,
+            } => {
+                assert_eq!(route, "mine");
+                assert_eq!(rating.as_deref(), Some("explicit"));
+                assert!(error.contains("not cleared"), "error text: {error}");
+            }
+            other => panic!("expected a Rejection, got {other:?}"),
+        }
+        // The seam observed no Dispatch — the prose never left for the agent.
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, DispatchRecord::Dispatch { .. })),
+            "no dispatch may be recorded for a refused request: {records:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_recorder_captures_dispatch_post_gate_for_cleared_prose() {
+        // A `mine` request whose agent covers the rating clears the gate and is
+        // recorded as a Dispatch BEFORE the adapter runs. The subsequent HTTP
+        // call has no server and errors, but the post-gate record is already
+        // written — proving the seam observes cleared dispatches (a leak would
+        // therefore surface as a Dispatch to an uncleared agent).
+        let router = cleared_route_router(&["general", "explicit"]);
+        let log = router.install_dispatch_recorder();
+        let _ = router
+            .complete(&ModelRequest {
+                route: "mine".to_string(),
+                prompt: "cleared explicit prose".to_string(),
+                rating: Some("explicit".to_string()),
+                context: None,
+            })
+            .await; // network error is fine; the record precedes dispatch.
+        let records = log.lock().expect("dispatch log lock").clone();
+        let dispatch = records
+            .iter()
+            .find_map(|r| match r {
+                DispatchRecord::Dispatch {
+                    route,
+                    agent,
+                    rating,
+                    prompt,
+                } => Some((route, agent, rating, prompt)),
+                _ => None,
+            })
+            .expect("a cleared request must record a Dispatch");
+        assert_eq!(dispatch.0, "mine");
+        assert_eq!(dispatch.1, "reviewer", "resolved external agent id");
+        assert_eq!(dispatch.2.as_deref(), Some("explicit"));
+        assert!(dispatch.3.contains("cleared explicit prose"));
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, DispatchRecord::Rejection { .. })),
+            "a cleared request must not record a Rejection: {records:?}"
+        );
     }
 
     #[test]

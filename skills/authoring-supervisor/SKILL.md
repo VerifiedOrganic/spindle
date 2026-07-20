@@ -97,6 +97,26 @@ findings are never revised twice (a re-verify with an unchanged finding set park
 the scene as `parked_findings` "unchanged after revision"), and parked findings
 inherit to the checkpoint exactly as today. Verify never blocks a run.
 
+#### When a pass skips
+
+A `mine_status` of `skipped` (detail: `"…SKIPPED: the mine route is not cleared
+for rating \`explicit\`…"`) and a matching `pass_skipped` journal event mean the
+explicit-content offload gate refused to send that scene's prose to a model whose
+configured agent does not declare the scene's content rating. This is by design:
+a skip is honest, not a failure, and the run advances (skips never block). A
+skipped pass is **not** a clean pass — do not report it as one.
+
+Two remedies:
+
+- **Clear the agent's ratings coverage** — add the missing rating to the
+  agent's `ratings` list in the project agent config (or route the pass to an
+  agent that already declares it), then re-run. This is what the rating-coverage
+  preflight (`authoring_prepare_run` with the run's `mining_policy`) checks up
+  front, so an offload gap surfaces at prepare rather than mid-run.
+- **Accept the skip** — leave the scene unmined/unreviewed by an automated model
+  and handle it manually (mine/review it yourself in-chat, or ratify canon by
+  hand). Nothing is lost; only the automation was declined for that rating.
+
 ### 3. Drive the Bounded Execution Loop
 
 Drafting proceeds incrementally. Call `authoring_execute_next` to advance exactly one bounded drafting, commit, or beat annotation step:

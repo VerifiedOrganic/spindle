@@ -30,3 +30,8 @@ tower = { version = "0.5.2", features = ["util"] }
 [dev-dependencies]
 reqwest.workspace = true
 tempfile.workspace = true
+# Enable the adapter's test-only dispatch recorder (evolution §4 rule 2) so the
+# offload contract integration test can observe post-gate dispatches. Feature
+# unification folds this into the single spindle-adapters build under `cargo
+# test`; normal `cargo build` never sees it.
+spindle-adapters = { path = "../spindle-adapters", features = ["test-support"] }

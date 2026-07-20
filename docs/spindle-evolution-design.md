@@ -375,6 +375,12 @@ This section is normative. The current system, verified:
    `route_name == "draft"` in `system_prompt_for_request` with a `PROSE_BEARING_ROUTES`
    constant — `{"draft","mine","line_edit","reader_sim","review"}` — so the explicit appendix
    and rating gates apply uniformly. (The narrow check is cap §1.2-6.)
+   *(Implementation refinement — landed:* the **gate** applies uniformly to every
+   prose-bearing route, but the **appendix** is split: `draft` keeps the drafting directive
+   that instructs on-page adult prose, while every other prose-bearing route — miner/auditor —
+   gets an *analysis* directive instead. Instructing a miner to write porn would be wrong;
+   the invariant is uniform gating, not a uniform prompt. See `EXPLICIT_ANALYSIS_SYSTEM_APPENDIX`
+   in `ai.rs`.)
 2. **The gate is at dispatch, in one place.** A single `resolve_cleared_route(role, rating)`
    helper wraps `resolve_route` and additionally verifies the resolved agent's `ratings` list
    covers the scene's rating (normalized compare). All harness/service pass dispatch goes

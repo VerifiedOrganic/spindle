@@ -36,3 +36,7 @@ tempfile.workspace = true
 
 [features]
 perf = []
+# Exposes test-only seams (the ModelRouter dispatch recorder, evolution §4
+# rule 2) so downstream crates' integration tests can observe post-gate
+# dispatches. Off in normal builds — zero production cost.
+test-support = []

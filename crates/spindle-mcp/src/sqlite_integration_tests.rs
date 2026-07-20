@@ -3462,3 +3462,577 @@ async fn hybrid_run_surfaces_findings_and_host_resave_resets_verify_state() {
 
     verify_shutdown(fx).await;
 }
+
+// =============================================================================
+// Explicit-offload contract test (evolution §4 pinned P2 exit; §5 row C2)
+// =============================================================================
+
+/// The §4 pinned offload contract: a run over one `general` + one `explicit`
+/// scene where the `mine` route resolves ONLY to a non-explicit-cleared agent
+/// must prove no request containing the explicit scene's prose/brief was ever
+/// DISPATCHED to that uncleared agent. Enforced against the router's post-gate
+/// recording seam (`ModelRouter::install_dispatch_recorder`, evolution §4 rule
+/// 2), not merely status strings — a leak is a recorded dispatch, so the seam
+/// makes the invariant falsifiable (see the falsification note in the module's
+/// dev record).
+///
+/// Fixture (evolution §4 / §2.3):
+///   - draft route → the mock CLI agent, `ratings = ["general","explicit"]`
+///     (explicit-cleared, so the explicit scene drafts through the origin agent);
+///   - mine route → a separate agent `ratings = ["general"]` (NOT explicit);
+///   - review route left unconfigured → built-in local (serves every rating), so
+///     the propose_all preflight passes via the mine→review fallback ladder and
+///     the run actually STARTS (start_run runs prepare internally). The explicit
+///     mine still SKIPS at runtime because the `mine` route itself resolves to
+///     the uncleared agent and `RatingNotCovered` does not trigger the NoRoute
+///     review fallback — exactly the honest-skip path the ladder specifies.
+///
+/// One chapter, two scenes (explicit = scene_order 1, general = scene_order 2)
+/// keeps the single end-of-run checkpoint's sample on the LAST scene (the
+/// general one, `sample_checkpoint_scene_ids`), so clearing the checkpoint never
+/// sends the explicit scene to any review route.
+///
+/// The chapter synopsis carries a distinctive `EXPLICIT_BRIEF_SENTINEL`. It
+/// reaches the draft mega-prompt (the CLI adapter receives the whole prompt), so
+/// it is recorded on the draft dispatch to the cleared agent; the mine and
+/// review prompts are built from scene prose + digest only (no chapter synopsis)
+/// so a non-cleared mine/review dispatch could never carry it. The sweep asserts
+/// the sentinel appears ONLY in draft-route dispatches to the cleared agent, and
+/// in zero mine/review dispatches and zero journal payloads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_offload_contract_no_explicit_prose_to_uncleared_agent() {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_adapters::ai::DispatchRecord;
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    // A distinctive brief sentinel that must never reach an uncleared agent nor
+    // any journal payload. Lives in the explicit chapter's synopsis (→ draft
+    // mega-prompt), never in mine/review prompts.
+    const EXPLICIT_BRIEF_SENTINEL: &str = "ZZ_EXPLICIT_BRIEF_QVX";
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("offload_contract.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let script_path = universal_mock_agent_path();
+    let config_path = tmp.path().join("config.toml");
+    // draft → explicit-cleared mock CLI; mine → a general-only agent (the
+    // uncleared analyst for explicit); review left to the built-in local route.
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "tame-analyst"
+name = "Tame Analyst"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "mine"
+agent = "tame-analyst"
+"#,
+        script = script_path.display(),
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    // Install the post-gate dispatch recorder on the SAME router the harness,
+    // mining, verify, and review all dispatch through (there is exactly one:
+    // `configure_agents` mutates the router in place, so the recorder survives).
+    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Offload Contract".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Explicit prose never leaves for an uncleared model.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    // One chapter, two scenes: scene 1 EXPLICIT, scene 2 GENERAL. The single
+    // end-of-run checkpoint samples the LAST scene (general), so the explicit
+    // scene is never routed to review. The synopsis carries the brief sentinel.
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: format!("First watch. {EXPLICIT_BRIEF_SENTINEL}"),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![
+            PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara and the stranger, explicit".into(),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(ContentRating::Explicit),
+                purpose: "intimacy".into(),
+                research_required: Some(false),
+                ..Default::default()
+            },
+            PlanChapterSceneInput {
+                scene_order: 2,
+                summary: "Mara takes the watch".into(),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(ContentRating::General),
+                purpose: "establishing".into(),
+                research_required: Some(false),
+                ..Default::default()
+            },
+        ],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+
+    // Start the run: propose_all mining + one revise attempt. checkpoint_interval
+    // 2 > the single chapter, so only the final end-of-run checkpoint fires. The
+    // start must SUCCEED (the mine→review fallback ladder clears explicit at
+    // preflight via the built-in local review route).
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 2,
+        "mining_policy": "propose_all",
+        "max_revise_attempts": 1,
+    });
+    let start_val = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "run must start (mine→review fallback clears explicit at preflight): {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    // Background HTTP MCP server the harness executor connects to.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct1 = ct.clone();
+    let ct2 = ct.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct1))
+            .with_graceful_shutdown(async move { ct2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    // Drive the run in AGENT mode until it blocks at the checkpoint (or, defensively,
+    // completes). The mock CLI drafts both scenes through the draft route.
+    let exec_args = serde_json::json!({
+        "project_id": project.project_id,
+        "run_id": run_id,
+        "mode": "agent",
+    });
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        assert!(guard < 60, "run did not reach checkpoint/complete in time");
+        let val = router
+            .call_tool(
+                "authoring_execute_next",
+                Some(exec_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let status = val["status"].as_str().unwrap();
+        if status == "blocked" || status == "completed" {
+            break;
+        }
+    }
+
+    // --- Per-scene status assertions (evolution §4 rule 3, I8) ----------------
+    let status_val = router
+        .call_tool(
+            "authoring_status",
+            Some(
+                serde_json::json!({ "project_id": project.project_id, "run_id": run_id })
+                    .as_object()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let scenes = status_val["chapters"][0]["scenes"].as_array().unwrap();
+    let explicit_scene = scenes
+        .iter()
+        .find(|s| s["scene_order"].as_i64() == Some(1))
+        .expect("explicit scene present");
+    let general_scene = scenes
+        .iter()
+        .find(|s| s["scene_order"].as_i64() == Some(2))
+        .expect("general scene present");
+
+    // (1) The explicit scene drafted successfully through the cleared draft route.
+    assert!(
+        explicit_scene["scene_id"].as_str().is_some(),
+        "explicit scene must have drafted+committed a scene_id: {explicit_scene:?}"
+    );
+    // (2) The explicit scene's mining SKIPPED, naming the rating (honest skip).
+    assert_eq!(
+        explicit_scene["mine_status"].as_str(),
+        Some("skipped"),
+        "explicit mine must skip at the gate: {explicit_scene:?}"
+    );
+    assert!(
+        explicit_scene["mine_detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("explicit"),
+        "explicit mine skip detail must name the uncleared rating: {explicit_scene:?}"
+    );
+    // (3) The general scene's mining COMPLETED (dispatched to the general-cleared
+    // agent; its non-JSON output → model_output_rejected). Crucially NOT skipped:
+    // that is the contrast that proves the general mine reached the agent while
+    // the explicit mine was gated away.
+    assert_eq!(
+        general_scene["mine_status"].as_str(),
+        Some("model_output_rejected"),
+        "general mine must dispatch and complete (not skip): {general_scene:?}"
+    );
+    assert_ne!(
+        general_scene["mine_status"].as_str(),
+        Some("skipped"),
+        "general mine must not be a gate skip: {general_scene:?}"
+    );
+
+    // --- Journal assertions (evolution §3.4, I8) ------------------------------
+    let events = svc
+        .repository()
+        .list_run_events(&run_id, None, None)
+        .await
+        .unwrap();
+    assert!(!events.is_empty(), "run must have journalled events");
+
+    // (2 cont.) A `pass_skipped` event exists for the explicit scene's mine pass
+    // with a prose-free reason naming the rating.
+    let explicit_skip = events.iter().find(|e| {
+        e.kind == "pass_skipped"
+            && e.payload["pass"] == serde_json::json!("mine")
+            && e.payload["scene_order"] == serde_json::json!(1)
+    });
+    let explicit_skip = explicit_skip.expect("a pass_skipped(mine, scene 1) event must exist");
+    let skip_reason = explicit_skip.payload["reason"].as_str().unwrap_or_default();
+    assert!(
+        skip_reason.contains("explicit"),
+        "pass_skipped reason must name the rating (prose-free): {skip_reason}"
+    );
+
+    // --- (4) THE CORE PIN: post-gate dispatch sweep ---------------------------
+    let dispatches = dispatch_log.lock().expect("dispatch log lock").clone();
+    assert!(
+        !dispatches.is_empty(),
+        "the recorder must have observed dispatches"
+    );
+
+    // The uncleared analyst agent's id — no explicit-carrying prompt may ever be
+    // dispatched to it, and no mine/review dispatch may carry the brief sentinel.
+    const UNCLEARED_AGENT: &str = "tame-analyst";
+    const CLEARED_DRAFT_AGENT: &str = "cli-agent-draft";
+
+    let mut explicit_mine_rejected = false;
+    for record in &dispatches {
+        match record {
+            DispatchRecord::Dispatch {
+                route,
+                agent,
+                rating,
+                prompt,
+            } => {
+                // No dispatch to the uncleared agent may carry the explicit rating.
+                if agent == UNCLEARED_AGENT {
+                    assert_ne!(
+                        rating.as_deref(),
+                        Some("explicit"),
+                        "explicit-rated request dispatched to the uncleared agent: {record:?}"
+                    );
+                }
+                // The brief sentinel may appear ONLY in draft-route dispatches to
+                // the cleared draft agent — never in mine/review dispatches.
+                if prompt.contains(EXPLICIT_BRIEF_SENTINEL) {
+                    assert_eq!(
+                        route, "draft",
+                        "explicit brief sentinel leaked into a non-draft dispatch: {record:?}"
+                    );
+                    assert_eq!(
+                        agent, CLEARED_DRAFT_AGENT,
+                        "explicit brief sentinel reached a non-cleared agent: {record:?}"
+                    );
+                }
+                // Specifically: zero mine/review dispatches carry the sentinel.
+                assert!(
+                    !(matches!(route.as_str(), "mine" | "review")
+                        && prompt.contains(EXPLICIT_BRIEF_SENTINEL)),
+                    "a mine/review dispatch carried the explicit brief sentinel: {record:?}"
+                );
+            }
+            DispatchRecord::Rejection {
+                route,
+                rating,
+                error,
+            } => {
+                if route == "mine" && rating.as_deref() == Some("explicit") {
+                    explicit_mine_rejected = true;
+                    assert!(
+                        error.contains("not cleared") || error.contains("explicit"),
+                        "explicit mine rejection must be a clearance error: {error}"
+                    );
+                }
+            }
+        }
+    }
+    // The explicit scene's mine dispatch was REFUSED at the gate (recorded as a
+    // Rejection, never a Dispatch): the prose-bearing mine prompt never left.
+    assert!(
+        explicit_mine_rejected,
+        "the explicit mine must have been rejected at the clearance gate: {dispatches:?}"
+    );
+    // And there is genuinely at least one draft dispatch carrying the sentinel to
+    // the cleared agent (the positive half of the pin is not vacuous).
+    assert!(
+        dispatches.iter().any(|r| matches!(
+            r,
+            DispatchRecord::Dispatch { route, agent, prompt, .. }
+                if route == "draft" && agent == CLEARED_DRAFT_AGENT
+                    && prompt.contains(EXPLICIT_BRIEF_SENTINEL)
+        )),
+        "the explicit brief must have been dispatched to the cleared draft agent: {dispatches:?}"
+    );
+
+    // --- (5) Journal payload sweep: the sentinel is in ZERO payloads ----------
+    for event in &events {
+        let payload = serde_json::to_string(&event.payload).unwrap();
+        assert!(
+            !payload.contains(EXPLICIT_BRIEF_SENTINEL),
+            "brief sentinel leaked into a {} journal payload: {payload}",
+            event.kind
+        );
+    }
+
+    // --- (6) The run completes (skips never block) ----------------------------
+    // Clear the single end-of-run checkpoint. The sampled scene is the general
+    // (last) scene, so no explicit prose is ever sent to a review route.
+    let report_rel = status_val["checkpoint_reports"][0]["report_artifact_path"]
+        .as_str()
+        .expect("a checkpoint report must exist");
+    let report_path = data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    let sampled_scene_ids: Vec<String> = report_json["sampled_scene_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    // The explicit scene must NOT be among the sampled scenes (offload-safe
+    // checkpoint): reviewing it would route explicit prose. The fixture's
+    // single-chapter/last-scene sampling guarantees this.
+    let explicit_scene_id = explicit_scene["scene_id"].as_str().unwrap();
+    assert!(
+        !sampled_scene_ids.iter().any(|id| id == explicit_scene_id),
+        "the explicit scene must not be sampled for review (offload-safe checkpoint)"
+    );
+
+    let deep_args = serde_json::json!({
+        "project_id": project.project_id,
+        "scope": {
+            "scope_type": "chapter_range",
+            "start_book_number": 1, "start_chapter_number": 1,
+            "end_book_number": 1, "end_chapter_number": 1
+        },
+        "checks": [], "severity_filter": [], "deep_check": true, "subjects": []
+    });
+    let deep = router
+        .call_tool("check_consistency", Some(deep_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    router
+        .call_tool(
+            "authoring_record_checkpoint_audit",
+            Some(
+                serde_json::json!({
+                    "project_id": project.project_id, "run_id": run_id,
+                    "start_chapter": 1, "end_chapter": 1, "deep_consistency": deep
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    for scene_id in &sampled_scene_ids {
+        router
+            .call_tool(
+                "run_dual_persona_review",
+                Some(
+                    serde_json::json!({ "project_id": project.project_id, "scene_id": scene_id, "rounds": 2 })
+                        .as_object()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    router
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(
+                serde_json::json!({
+                    "project_id": project.project_id, "run_id": run_id,
+                    "start_chapter": 1, "end_chapter": 1, "directives": ["Keep it dark."]
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let final_val = router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        final_val["next_action"].as_str(),
+        Some("complete"),
+        "the run must complete (skips never block): {final_val:?}"
+    );
+
+    // Re-sweep post-checkpoint: the deep audit + general-scene review dispatched
+    // more requests; re-confirm none carried the explicit brief sentinel to a
+    // mine/review route and none reached the uncleared agent at explicit rating.
+    let dispatches = dispatch_log.lock().expect("dispatch log lock").clone();
+    for record in &dispatches {
+        if let DispatchRecord::Dispatch {
+            route,
+            agent,
+            rating,
+            prompt,
+        } = record
+        {
+            assert!(
+                !(matches!(route.as_str(), "mine" | "review")
+                    && prompt.contains(EXPLICIT_BRIEF_SENTINEL)),
+                "post-checkpoint: mine/review dispatch carried the explicit brief: {record:?}"
+            );
+            if agent == UNCLEARED_AGENT {
+                assert_ne!(
+                    rating.as_deref(),
+                    Some("explicit"),
+                    "post-checkpoint: explicit request dispatched to uncleared agent: {record:?}"
+                );
+            }
+        }
+    }
+
+    ct.cancel();
+    server.await.unwrap();
+    crate::remove_addr_file(&data_dir);
+}
