@@ -3655,6 +3655,7 @@ async fn replan_run_rejects_bad_policy_string() {
 /// it never changes, so the convergence guard parks the scene.
 struct VerifyRunFixture {
     _tmp: TempDir,
+    svc: SqliteSpindleService,
     router: crate::tools::ToolRouter,
     project_id: String,
     run_id: String,
@@ -3851,6 +3852,7 @@ agent = "cli-agent-draft"
 
     VerifyRunFixture {
         _tmp: tmp,
+        svc,
         router,
         project_id: project.project_id,
         run_id,
@@ -4078,6 +4080,134 @@ async fn verify_run_disabled_goes_draft_to_commit() {
     let st = verify_status(&fx).await;
     let scene = &st["chapters"][0]["scenes"][0];
     assert!(scene.get("verify_status").is_none() || scene["verify_status"].is_null());
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_mode_non_explicit_draft_stamps_agent_provenance() {
+    // Provenance gap (evolution §3.9): a NON-explicit scene drafted by the run's
+    // agent (mock CLI over the agent-draft seam) must stamp
+    // `draft_origin = "agent:*"`. Before uniform stamping this left NULL — the
+    // majority of agent drafting was invisible to style-edit capture.
+    let fx = verify_run_fixture(false, None).await;
+
+    let draft = verify_execute_next(&fx).await;
+    assert!(
+        draft["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("draft book scene"),
+        "expected an agent draft, got {draft:?}"
+    );
+
+    let st = verify_status(&fx).await;
+    let scene_id = st["chapters"][0]["scenes"][0]["scene_id"]
+        .as_str()
+        .expect("agent draft persisted a scene id")
+        .to_string();
+    let scene = fx.svc.repository().get_scene(&scene_id).await.unwrap();
+    assert!(
+        !scene.content_rating.eq_ignore_ascii_case("explicit"),
+        "the drafted scene is non-explicit, got {:?}",
+        scene.content_rating
+    );
+    assert!(
+        scene
+            .draft_origin
+            .as_deref()
+            .is_some_and(|o| o.starts_with("agent:")),
+        "non-explicit agent draft must carry agent provenance, got {:?}",
+        scene.draft_origin
+    );
+
+    verify_shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_draft_then_operator_edit_captures_style_candidate() {
+    // Style capture end-to-end (evolution §3.9) for a NON-explicit agent draft:
+    // opt-in project, the agent drafts (mock CLI), the operator re-saves with
+    // changed prose → one pending style-edit candidate. Before uniform stamping
+    // the non-explicit agent draft left NULL provenance, so nothing captured.
+    let fx = verify_run_fixture(false, None).await;
+
+    // Opt in to style learning via the public tool surface.
+    let opt_in_args = serde_json::json!({
+        "entity_type": "project",
+        "entity_id": fx.project_id,
+        "changes": { "style_learning": 1 },
+    });
+    fx.router
+        .call_tool("update_entity", Some(opt_in_args.as_object().unwrap()))
+        .await
+        .unwrap();
+
+    // Agent drafts the (non-explicit) scene.
+    let draft = verify_execute_next(&fx).await;
+    assert!(
+        draft["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("draft book scene"),
+        "expected an agent draft, got {draft:?}"
+    );
+    let st = verify_status(&fx).await;
+    let scene_id = st["chapters"][0]["scenes"][0]["scene_id"]
+        .as_str()
+        .expect("agent draft persisted a scene id")
+        .to_string();
+    let agent_prose = fx
+        .svc
+        .repository()
+        .get_scene(&scene_id)
+        .await
+        .unwrap()
+        .full_text;
+
+    // Operator re-saves the same scene with changed prose (no generation_id →
+    // operator origin). This must capture an agent→operator style pair.
+    let operator_edit = format!("{agent_prose} The operator sharpened the closing line.");
+    let resave_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": operator_edit,
+        "summary": "Operator edit",
+        "content_rating": "general",
+    });
+    let resave = fx
+        .router
+        .call_tool("save_scene_draft", Some(resave_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        resave.is_error,
+        Some(false),
+        "operator re-save failed: {resave:?}"
+    );
+
+    let branch_id = fx
+        .svc
+        .repository()
+        .active_branch_id_public(&fx.project_id)
+        .await
+        .unwrap();
+    let pending = fx
+        .svc
+        .repository()
+        .list_style_edit_candidates(&fx.project_id, &branch_id, Some("pending"))
+        .await
+        .unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "operator edit over a non-explicit agent draft must capture one candidate, got {pending:?}"
+    );
+    assert_eq!(pending[0].agent_draft, agent_prose);
+    assert_eq!(pending[0].operator_edit, operator_edit);
+    assert_eq!(pending[0].content_rating, "general");
 
     verify_shutdown(fx).await;
 }

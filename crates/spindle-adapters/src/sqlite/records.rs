@@ -205,6 +205,27 @@ pub struct Scene {
     pub summary: String,
     pub content_rating: String,
     pub tone: Option<String>,
+    /// Provenance of the persisted prose — the single source of truth for the
+    /// three-way vocabulary the style-learning capture policy keys on
+    /// (evolution §3.9):
+    ///
+    /// * `agent:<agent-id>` — the run's draft agent authored this prose. Stamped
+    ///   by `save_scene_draft` for EVERY agent-origin save regardless of rating
+    ///   (the agent-draft seam always passes a valid `draft`-route
+    ///   `generation_id`). This is the style-contrast signal: only agent drafts
+    ///   are a style edit's "before".
+    /// * `host` — a hybrid host draft through `authoring_save_scene_draft`. The
+    ///   operator's own prose, not an agent style signal; an operator re-save
+    ///   over it never captures.
+    /// * `operator` — re-stamped by the capture policy after it stages a
+    ///   candidate, so a later same-scene save is recognized as
+    ///   operator-over-operator (replace the pending pair, never a fresh one).
+    ///
+    /// `NULL` is the pre-provenance default (legacy rows / plain operator saves
+    /// that were never an agent or host draft); it reads as "not an agent draft"
+    /// and therefore never triggers capture. The capture predicate matches on
+    /// `starts_with("agent:")`, so both explicit and non-explicit agent stamps
+    /// trip it uniformly.
     pub draft_origin: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

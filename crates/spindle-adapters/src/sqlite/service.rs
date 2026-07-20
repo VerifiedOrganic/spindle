@@ -20864,6 +20864,25 @@ impl SqliteSpindleService {
         input: SaveSceneDraftInput,
     ) -> Result<SaveSceneDraftOutput> {
         let mut save_input = input.clone();
+        // Provenance vocabulary (see the `draft_origin` field on
+        // `crate::sqlite::records::Scene` for the canonical definition):
+        //   * `agent:<agent-id>` — the run's draft agent authored this prose.
+        //     Stamped for EVERY agent-origin save regardless of rating: the
+        //     agent-draft seam always passes a valid `draft`-route
+        //     `generation_id`. Explicit drafts additionally rewrite `full_text`
+        //     from the server-held receipt (that prose is never client-supplied);
+        //     non-explicit drafts persist the client prose but still carry agent
+        //     provenance. This uniform stamp is what unlocks style-edit capture
+        //     for the non-explicit agent-draft majority (a NULL origin was never
+        //     recognized as an agent draft).
+        //   * `host` — a hybrid host draft through `authoring_save_scene_draft`
+        //     (stamped by that handler after the save). The operator's own prose,
+        //     not an agent style signal.
+        //   * `operator` — re-stamped by `maybe_capture_style_edit` on capture so
+        //     a later same-scene save is operator-over-operator (replace, never a
+        //     fresh pair).
+        // The capture predicate keys on `starts_with("agent:")`, so both explicit
+        // and non-explicit agent stamps trip it uniformly.
         let mut draft_origin: Option<String> = None;
         if matches!(
             input.content_rating,
@@ -20884,6 +20903,20 @@ impl SqliteSpindleService {
                 anyhow::bail!(
                     "generation_id is required when saving explicit sexual prose; call continue_generation with route \"draft\" and rating \"explicit\", then pass the returned generation_id"
                 );
+            }
+        } else if input
+            .generation_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+        {
+            // Non-explicit agent draft: a valid `draft`-route receipt at any
+            // rating identifies the agent-draft seam. Stamp agent provenance so
+            // an operator re-save is recognized as a style-contrast pair. The
+            // client-supplied prose is authoritative here (only explicit prose is
+            // server-held), so `full_text` is left untouched.
+            let receipt = self.verified_revisable_draft_receipt(input.generation_id.as_deref())?;
+            if let Some(receipt) = receipt {
+                draft_origin = Some(format!("agent:{}", receipt.agent_id));
             }
         }
 
@@ -49849,6 +49882,341 @@ agent = "draft-agent"
                 .await
                 .unwrap();
             assert!(!enabled, "NULL style_learning reads as disabled");
+        }
+
+        /// Configure a draft agent that covers `general` (the non-explicit
+        /// majority path) so a seeded `draft`-route receipt at that rating is a
+        /// valid agent-draft provenance signal. Mirrors the run's agent-draft
+        /// seam: the harness resolves the draft route, generates through
+        /// `test_agent`/`continue_generation` (which register the receipt), then
+        /// calls `save_scene_draft` with that `generation_id`.
+        async fn configure_general_draft_agent(svc: &SqliteSpindleService, tmp: &TempDir) {
+            use spindle_core::models::ConfigureAgentsInput;
+            let config_path = tmp.path().join("agents.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "draft-agent"
+name = "Draft Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:1/v1"
+model = "drafter"
+ratings = ["general"]
+
+[[routing]]
+route = "draft"
+agent = "draft-agent"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.to_string_lossy().to_string()),
+            })
+            .unwrap();
+        }
+
+        /// Test 1 (provenance): a NON-explicit scene saved through the
+        /// agent-draft seam (a valid `draft`-route `generation_id` at `general`
+        /// rating) must stamp `draft_origin = "agent:<agent_id>"`. This is the
+        /// flagged gap — before uniform stamping, non-explicit agent drafts left
+        /// `draft_origin` NULL.
+        #[tokio::test]
+        async fn non_explicit_agent_draft_stamps_agent_provenance() {
+            let (tmp, svc) = fresh_service_local().await;
+            configure_general_draft_agent(&svc, &tmp).await;
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "nonexpl-agent".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            // Seed a general-rated draft receipt (what the agent path registers
+            // for a non-explicit scene).
+            let receipt = svc.register_generation_receipt(
+                "draft",
+                Some("general"),
+                "draft-agent",
+                "The agent drafted this general-rated watch scene.",
+            );
+            let saved = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 1,
+                    full_text: "The agent drafted this general-rated watch scene.".to_string(),
+                    summary: "s".to_string(),
+                    content_rating: spindle_core::models::ContentRating::General,
+                    generation_id: Some(receipt.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let scene = svc.repository.get_scene(&saved.scene_id).await.unwrap();
+            assert_eq!(
+                scene.draft_origin.as_deref(),
+                Some("agent:draft-agent"),
+                "non-explicit agent draft must stamp agent provenance, got {:?}",
+                scene.draft_origin
+            );
+            assert!(
+                saved.draft_origin.starts_with("agent:"),
+                "output draft_origin must carry agent provenance, got {:?}",
+                saved.draft_origin
+            );
+        }
+
+        /// Test 2 (capture end-to-end, non-explicit): opt-in project, a
+        /// non-explicit agent draft (via `generation_id`), then an operator
+        /// re-save with changed prose → one pending candidate. Before uniform
+        /// stamping this captured nothing (NULL provenance).
+        #[tokio::test]
+        async fn operator_edit_over_non_explicit_agent_draft_captures() {
+            let (tmp, svc) = fresh_service_local().await;
+            configure_general_draft_agent(&svc, &tmp).await;
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "nonexpl-capture".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            enable_style_learning(&svc, &project.project_id).await;
+
+            let receipt = svc.register_generation_receipt(
+                "draft",
+                Some("general"),
+                "draft-agent",
+                "The agent wrote this line plainly.",
+            );
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "The agent wrote this line plainly.".to_string(),
+                summary: "opening".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                generation_id: Some(receipt.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+            // Operator re-save (no generation_id → host/operator origin) with
+            // changed prose.
+            operator_resave(
+                &svc,
+                &project.project_id,
+                "The operator rewrote this line with flair.",
+            )
+            .await;
+
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project.project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert_eq!(
+                pending.len(),
+                1,
+                "operator edit over a non-explicit agent draft must capture one candidate"
+            );
+            assert_eq!(pending[0].agent_draft, "The agent wrote this line plainly.");
+            assert_eq!(
+                pending[0].operator_edit,
+                "The operator rewrote this line with flair."
+            );
+            assert_eq!(pending[0].content_rating, "general");
+        }
+
+        /// Test 3 (host semantics): a HOST-origin draft stamps `"host"`, and an
+        /// operator re-save over a host draft does NOT capture — host drafting is
+        /// the operator's own prose, not agent style signal (§3.9 intent). The
+        /// host path is `authoring_save_scene_draft`; at the service seam a host
+        /// save is a non-explicit save with NO valid `draft` receipt whose origin
+        /// is stamped `"host"` by the caller. This test drives that stamp through
+        /// `update_scene_draft_origin("host")` (as the host handler does) and
+        /// asserts no capture.
+        #[tokio::test]
+        async fn host_draft_then_operator_resave_does_not_capture() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "host-nocapture".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            enable_style_learning(&svc, &project.project_id).await;
+
+            // Host draft: a plain operator-style save, then stamped "host" the way
+            // the host handler (authoring_save_scene_draft) does.
+            let saved = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 1,
+                    full_text: "The host drafted this scene by hand.".to_string(),
+                    summary: "opening".to_string(),
+                    content_rating: spindle_core::models::ContentRating::General,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            svc.repository
+                .update_scene_draft_origin(&saved.scene_id, "host")
+                .await
+                .unwrap();
+            let scene = svc.repository.get_scene(&saved.scene_id).await.unwrap();
+            assert_eq!(
+                scene.draft_origin.as_deref(),
+                Some("host"),
+                "host draft carries host provenance"
+            );
+
+            // Operator re-save over a host draft: host prose is the operator's
+            // own, not an agent style contrast → no capture.
+            operator_resave(
+                &svc,
+                &project.project_id,
+                "The host revised their own scene further.",
+            )
+            .await;
+
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project.project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(
+                pending.is_empty(),
+                "operator re-save over a host draft must not capture a style candidate"
+            );
+        }
+
+        /// Test 4 (revise-loop agent-over-agent, non-explicit): two successive
+        /// NON-explicit agent drafts (both via `generation_id`). The second
+        /// re-save is itself an agent save (`is_agent_save = true`) — capture is
+        /// short-circuited, and the scene keeps agent provenance.
+        #[tokio::test]
+        async fn non_explicit_agent_over_agent_keeps_stamp_no_capture() {
+            let (tmp, svc) = fresh_service_local().await;
+            configure_general_draft_agent(&svc, &tmp).await;
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "nonexpl-aoa".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            enable_style_learning(&svc, &project.project_id).await;
+
+            let r1 = svc.register_generation_receipt(
+                "draft",
+                Some("general"),
+                "draft-agent",
+                "The agent drafted the watch, first pass.",
+            );
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "The agent drafted the watch, first pass.".to_string(),
+                summary: "s".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                generation_id: Some(r1.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+            // Revise loop re-save: a second agent draft (agent-over-agent).
+            let r2 = svc.register_generation_receipt(
+                "draft",
+                Some("general"),
+                "draft-agent",
+                "The agent revised the watch, second pass, sharper.",
+            );
+            let resaved = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 1,
+                    full_text: "The agent revised the watch, second pass, sharper.".to_string(),
+                    summary: "s".to_string(),
+                    content_rating: spindle_core::models::ContentRating::General,
+                    generation_id: Some(r2.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let scene = svc.repository.get_scene(&resaved.scene_id).await.unwrap();
+            assert!(
+                scene
+                    .draft_origin
+                    .as_deref()
+                    .is_some_and(|o| o.starts_with("agent:")),
+                "revise-loop re-save keeps agent provenance, got {:?}",
+                scene.draft_origin
+            );
+
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project.project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(
+                pending.is_empty(),
+                "non-explicit agent-over-agent re-save must not capture a candidate"
+            );
         }
     }
 

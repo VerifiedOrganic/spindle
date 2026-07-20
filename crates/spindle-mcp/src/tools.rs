@@ -3699,6 +3699,22 @@ impl ToolRouter {
             .save_scene_draft(authoring_save_scene_input(&input))
             .await?;
 
+        // Provenance (evolution §3.9): a host draft through this hybrid seam is
+        // the operator's own prose, not an agent style signal. Stamp `"host"` so
+        // the three-way vocabulary (agent:*/host/operator — see the `draft_origin`
+        // record field) is uniform and an operator re-save over a host draft is
+        // never mistaken for an agent-draft contrast pair. An explicit hybrid
+        // draft carries a valid `draft` `generation_id`, which `save_scene_draft`
+        // already stamped as `agent:*` (server-held prose); leave that intact.
+        let host_authored = input
+            .generation_id
+            .as_deref()
+            .is_none_or(|id| id.trim().is_empty());
+        if host_authored {
+            repo.update_scene_draft_origin(&save_output.scene_id, "host")
+                .await?;
+        }
+
         let state_path = authoring_state_path(repo.data_dir(), &run_id);
         let artifact_store =
             ArtifactStore::new(authoring_artifacts_root(&state_path, &harness_state));
