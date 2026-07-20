@@ -16204,6 +16204,467 @@ impl SqliteSpindleService {
         })
     }
 
+    // ── Reader-facing artifacts (export_recap / export_series_bible — §3.8) ──
+
+    /// Resolve the set of secret-`canonical_fact` ids that a **reader artifact**
+    /// may name at `cursor` (a [`crate::format::story_index`] value).
+    ///
+    /// This is the ONE reader-secret resolver shared by [`Self::export_recap`]
+    /// and [`Self::export_series_bible`], and it is deliberately *stricter* than
+    /// the scene-context circle-of-trust gate ([`Self::resolve_scene_secret_gate`]).
+    ///
+    /// The two gates protect different audiences. Scene-context gating protects
+    /// the *characters* on the page from knowing something they haven't learned —
+    /// so it turns on who is present and what the POV knows. Reader artifacts
+    /// instead protect the *reader* from spoilers, so the authorial dial is
+    /// `knowledge_fact.reader_visible` and the reveal date is the linked reveal
+    /// row's `learned_at` placement.
+    ///
+    /// A secret fact (`canonical_fact.secret = 1`) is includable IFF at least one
+    /// linked reveal row (`knowledge_fact.secret_of_fact_id = fact.id`) has
+    /// `reader_visible = true` AND a dated `learned_at` placement that is at or
+    /// before the cursor. With no qualifying reveal the fact — and any
+    /// thread/summary/page line that names it — is withheld. Public facts
+    /// (`secret = 0`) are never gated here. Pass `i64::MAX` for the whole-project
+    /// (+infinity) cursor so only never-revealed secrets are held.
+    ///
+    /// Placement discipline (a reconciliation with the raw data model): the
+    /// declaration path (`register_canonical_fact { secrecy }`) already writes a
+    /// circle-of-trust holder row with `reader_visible = true` and
+    /// `learned_at = NULL` — that row is standing DRAMATIC IRONY (a *character*
+    /// holds the secret), not a *reader* reveal. Because the spec's own rationale
+    /// makes "the placement is the reveal date", a NULL-placement holder row is
+    /// NOT treated as a reader reveal here; only a row carrying a concrete
+    /// `learned_at` (the author's dated reveal, e.g. via `record_knowledge` with
+    /// `secret_of_fact_id`) lifts the spoiler veil. This keeps `reader_visible`
+    /// as the authorial dial while preventing every held secret from leaking to
+    /// the reader the moment it is declared.
+    ///
+    /// Returns the display values of secret facts that MUST be withheld (the gate
+    /// set), so callers strip any output line whose text contains one of them.
+    async fn reader_withheld_secret_values(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        cursor: i64,
+    ) -> Result<Vec<String>> {
+        use crate::format::{canonical_fact_value_display, story_index_from_placement};
+
+        let facts = self
+            .repository
+            .list_canonical_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let secret_facts: Vec<&crate::sqlite::records::CanonicalFact> =
+            facts.iter().filter(|fact| fact.secret).collect();
+        if secret_facts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // All knowledge rows on the branch; a reveal is one linked to the secret,
+        // reader-visible, and carrying a dated placement at/under the cursor.
+        let knowledge = self
+            .repository
+            .list_knowledge_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let mut withheld = Vec::new();
+        for fact in secret_facts {
+            let reader_reached = knowledge.iter().any(|row| {
+                row.secret_of_fact_id.as_deref() == Some(fact.id.as_str())
+                    && row.reader_visible
+                    && row
+                        .learned_at
+                        .as_ref()
+                        .is_some_and(|placement| story_index_from_placement(placement) <= cursor)
+            });
+            if !reader_reached {
+                // Withhold every rendering of the secret's value: read models
+                // print `canonical_fact_value_display`, so that display string is
+                // the sentinel any recap/bible line would carry.
+                withheld.push(canonical_fact_value_display(fact));
+            }
+        }
+        Ok(withheld)
+    }
+
+    /// Spoiler-bounded "previously on" recap of a book up to (and including)
+    /// `through_chapter` (evolution §3.8). Pure read model, zero model calls.
+    ///
+    /// Cursor = end of `through_chapter` in `book_number` — packed as
+    /// `story_index(book, chapter, SCENE_RADIX - 1)` so every scene of that
+    /// chapter is inside the window but the next chapter is not. Sources:
+    /// per-chapter `chapter_summary` rows (chosen over `book_digest` because the
+    /// digest condenses across chapters and can lag the cursor); `narrative_promise`
+    /// rows for the paid-off / still-open sections. The reader-secret rule is
+    /// applied to every rendered line.
+    pub async fn export_recap(
+        &self,
+        input: spindle_core::models::ExportRecapInput,
+    ) -> Result<spindle_core::models::ExportRecapOutput> {
+        use crate::format::{SCENE_RADIX, story_index, story_index_from_placement};
+        use spindle_core::models::ExportRecapOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+
+        // Inclusive end-of-chapter cursor (scene_order below the radix ceiling).
+        let cursor = story_index(
+            input.book_number,
+            input.through_chapter,
+            (SCENE_RADIX - 1) as i32,
+        );
+
+        let withheld = self
+            .reader_withheld_secret_values(&input.project_id, &active_branch.id, cursor)
+            .await?;
+        let names_secret = |text: &str| withheld.iter().any(|value| text.contains(value.as_str()));
+
+        // Story-so-far from per-chapter summaries at/under the cursor, in order.
+        let mut summaries = self
+            .repository
+            .list_chapter_summaries_by_project(&input.project_id)
+            .await?;
+        summaries.retain(|summary| {
+            summary.branch_id == active_branch.id
+                && summary.book_number == input.book_number
+                && summary.chapter_number <= input.through_chapter
+        });
+        summaries.sort_by_key(|summary| summary.chapter_number);
+
+        let mut markdown = String::new();
+        markdown.push_str("# Previously on\n\n");
+        markdown.push_str("## The story so far\n\n");
+        let mut chapter_count = 0usize;
+        if summaries.is_empty() {
+            markdown.push_str("_Nothing to recap yet._\n\n");
+        } else {
+            for summary in &summaries {
+                chapter_count += 1;
+                // A summary line that names a still-secret value is withheld
+                // wholesale (the reader must not learn it early).
+                let body = if names_secret(&summary.summary) {
+                    "_(a development here is being kept under wraps)_"
+                } else {
+                    summary.summary.as_str()
+                };
+                markdown.push_str(&format!(
+                    "**Chapter {}.** {}\n\n",
+                    summary.chapter_number, body
+                ));
+            }
+        }
+
+        // Promises on the active branch, split into paid-off / still-open.
+        let promises = self
+            .repository
+            .list_narrative_promises_by_project_and_branch(&input.project_id, &active_branch.id)
+            .await?;
+
+        // Paid off: status paid_off whose payoff placement <= cursor. There is no
+        // recorded *actual* payoff placement (update_promise_status writes only
+        // the status string; the mined payoff path routes through it too), so we
+        // use the author's declared `planned_payoff` when present, and fall back
+        // to `planted_at <= cursor` when it is absent. Reader-secret gated.
+        let mut paid: Vec<&crate::sqlite::records::NarrativePromise> = promises
+            .iter()
+            .filter(|promise| promise.status == "paid_off" && promise.archived_at.is_none())
+            .filter(|promise| {
+                let placement = promise
+                    .planned_payoff
+                    .as_ref()
+                    .unwrap_or(&promise.planted_at);
+                story_index_from_placement(placement) <= cursor
+            })
+            .filter(|promise| !names_secret(&promise.description))
+            .collect();
+        paid.sort_by(|a, b| a.id.cmp(&b.id));
+
+        // Still open: non-resolved (not paid_off / abandoned) promises planted at
+        // or under the cursor. Reader voice, no urgency jargon. Reader-secret gated.
+        let mut open: Vec<&crate::sqlite::records::NarrativePromise> = promises
+            .iter()
+            .filter(|promise| {
+                promise.status != "paid_off"
+                    && promise.status != "abandoned"
+                    && promise.archived_at.is_none()
+            })
+            .filter(|promise| story_index_from_placement(&promise.planted_at) <= cursor)
+            .filter(|promise| !names_secret(&promise.description))
+            .collect();
+        open.sort_by(|a, b| a.id.cmp(&b.id));
+
+        markdown.push_str("## Paid off\n\n");
+        if paid.is_empty() {
+            markdown.push_str("_Nothing has paid off yet._\n\n");
+        } else {
+            for promise in &paid {
+                markdown.push_str(&format!("- {}\n", promise.description));
+            }
+            markdown.push('\n');
+        }
+
+        markdown.push_str("## Questions still hanging\n\n");
+        if open.is_empty() {
+            markdown.push_str("_No open questions right now._\n\n");
+        } else {
+            for promise in &open {
+                markdown.push_str(&format!("- {}\n", promise.description));
+            }
+            markdown.push('\n');
+        }
+
+        let word_count = markdown.split_whitespace().count();
+
+        let artifact_path = if input.write_to_workspace {
+            let artifacts_dir = artifacts_dir_for_data_dir(self.repository.data_dir());
+            std::fs::create_dir_all(&artifacts_dir)?;
+            let filename = format!(
+                "recap-book-{}-through-ch{}.md",
+                input.book_number, input.through_chapter
+            );
+            let file_path = artifacts_dir.join(&filename);
+            std::fs::write(&file_path, markdown.as_bytes())?;
+            Some(file_path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        Ok(ExportRecapOutput {
+            markdown,
+            chapter_count,
+            word_count,
+            artifact_path,
+        })
+    }
+
+    /// Spoiler-bounded, reader-facing series bible as-of an optional cursor
+    /// (evolution §3.8). Pure read model, zero model calls.
+    ///
+    /// Cursor: `through` present → packed placement (chapter-level cursors use
+    /// scene_order `SCENE_RADIX - 1` so the whole chapter is inside the window);
+    /// absent → `i64::MAX` (+infinity, whole project). Sections, deterministically
+    /// ordered: characters (name, role, summary, status/emotional state taken
+    /// from the latest placement-stamped `character_state` at/under the cursor,
+    /// plus banded relationships), locations, a sorted glossary of `term`s, and
+    /// factions/religions when present. The reader-secret rule gates every line.
+    pub async fn export_series_bible(
+        &self,
+        input: spindle_core::models::ExportSeriesBibleInput,
+    ) -> Result<spindle_core::models::ExportSeriesBibleOutput> {
+        use crate::format::{SCENE_RADIX, story_index};
+        use spindle_core::models::ExportSeriesBibleOutput;
+
+        self.repository.get_project(&input.project_id).await?;
+        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+        let branch_id = active_branch.id.clone();
+
+        // Cursor: a chapter-level `through` (no scene_order) covers the whole
+        // chapter; absent `through` is +infinity.
+        let cursor = match input.through.as_ref() {
+            Some(placement) => story_index(
+                placement.book_number,
+                placement.chapter_number,
+                placement.scene_order.unwrap_or((SCENE_RADIX - 1) as i32),
+            ),
+            None => i64::MAX,
+        };
+
+        let withheld = self
+            .reader_withheld_secret_values(&input.project_id, &branch_id, cursor)
+            .await?;
+        let names_secret = |text: &str| withheld.iter().any(|value| text.contains(value.as_str()));
+
+        let mut markdown = String::new();
+        markdown.push_str("# Series Bible\n\n");
+
+        // ── Characters (deterministic by id) ────────────────────────────────
+        let mut characters = self
+            .repository
+            .list_characters_by_project(&input.project_id)
+            .await?;
+        characters.sort_by(|a, b| a.id.cmp(&b.id));
+
+        // Placement-stamped states (character_state carries book/chapter/scene),
+        // so the state as-of the cursor is the latest state at/under it.
+        let states = self
+            .repository
+            .list_character_states_by_project_and_branch(&input.project_id, &branch_id)
+            .await?;
+        // Relationship edges on the branch, for the reader-voice banding.
+        let relationships = self
+            .repository
+            .list_relationships_by_branch(&branch_id)
+            .await?;
+        let name_of: std::collections::HashMap<&str, &str> = characters
+            .iter()
+            .map(|c| (c.id.as_str(), c.name.as_str()))
+            .collect();
+
+        markdown.push_str("## Characters\n\n");
+        let mut character_count = 0usize;
+        for character in &characters {
+            character_count += 1;
+            markdown.push_str(&format!("### {}\n\n", character.name));
+            markdown.push_str(&format!("- Role: {}\n", character.role));
+            if !character.summary.trim().is_empty() {
+                markdown.push_str(&format!("- Summary: {}\n", character.summary));
+            }
+
+            // Latest state at/under the cursor (states are placement-stamped).
+            let latest = states
+                .iter()
+                .filter(|state| state.character_id == character.id)
+                .filter(|state| {
+                    story_index(state.book_number, state.chapter_number, state.scene_order)
+                        <= cursor
+                })
+                .max_by_key(|state| {
+                    story_index(state.book_number, state.chapter_number, state.scene_order)
+                });
+            if let Some(state) = latest {
+                if !state.status.is_empty() {
+                    markdown.push_str(&format!("- Status: {}\n", state.status.join(", ")));
+                }
+                if !state.emotional_state.is_empty() {
+                    let mood: Vec<String> = state
+                        .emotional_state
+                        .iter()
+                        .map(|(key, value)| format!("{key}: {value}"))
+                        .collect();
+                    markdown.push_str(&format!("- Mood: {}\n", mood.join(", ")));
+                }
+            }
+
+            // Relationships in reader-voice bands (never raw trust/tension). Bands
+            // (documented, deterministic): "allies" when trust exceeds tension,
+            // "strained" when tension exceeds trust, "entangled" when they are
+            // level. Edges are deduplicated by the pair and named by the other id.
+            let mut rel_lines: Vec<String> = relationships
+                .iter()
+                .filter(|edge| edge.in_id == character.id || edge.out_id == character.id)
+                .map(|edge| {
+                    let other = if edge.in_id == character.id {
+                        edge.out_id.as_str()
+                    } else {
+                        edge.in_id.as_str()
+                    };
+                    let other_name = name_of.get(other).copied().unwrap_or(other);
+                    let band = if edge.trust > edge.tension {
+                        "allies"
+                    } else if edge.tension > edge.trust {
+                        "strained"
+                    } else {
+                        "entangled"
+                    };
+                    format!("{other_name} ({band})")
+                })
+                .collect();
+            rel_lines.sort();
+            rel_lines.dedup();
+            if !rel_lines.is_empty() {
+                markdown.push_str(&format!("- Relationships: {}\n", rel_lines.join(", ")));
+            }
+            markdown.push('\n');
+        }
+        if characters.is_empty() {
+            markdown.push_str("_No characters yet._\n\n");
+        }
+
+        // ── Locations (kind, then name) ─────────────────────────────────────
+        let mut locations = self
+            .repository
+            .list_locations_by_project(&input.project_id)
+            .await?;
+        locations.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+        markdown.push_str("## Locations\n\n");
+        if locations.is_empty() {
+            markdown.push_str("_No locations yet._\n\n");
+        } else {
+            for location in &locations {
+                markdown.push_str(&format!(
+                    "- **{}** ({}): {}\n",
+                    location.name, location.kind, location.summary
+                ));
+            }
+            markdown.push('\n');
+        }
+
+        // ── Glossary (terms, sorted by term text) ───────────────────────────
+        let mut terms = self
+            .repository
+            .list_terms_by_project(&input.project_id)
+            .await?;
+        terms.retain(|term| !names_secret(&term.term_text) && !names_secret(&term.definition));
+        terms.sort_by(|a, b| a.term_text.cmp(&b.term_text));
+        markdown.push_str("## Glossary\n\n");
+        if terms.is_empty() {
+            markdown.push_str("_No glossary entries yet._\n\n");
+        } else {
+            for term in &terms {
+                markdown.push_str(&format!("- **{}**: {}\n", term.term_text, term.definition));
+            }
+            markdown.push('\n');
+        }
+
+        // ── Factions (optional; by name) ────────────────────────────────────
+        let mut factions = self
+            .repository
+            .list_factions_by_project(&input.project_id)
+            .await?;
+        factions.retain(|faction| faction.archived_at.is_none());
+        factions.sort_by(|a, b| a.name.cmp(&b.name));
+        if !factions.is_empty() {
+            markdown.push_str("## Factions\n\n");
+            for faction in &factions {
+                markdown.push_str(&format!(
+                    "- **{}** ({}): {}\n",
+                    faction.name, faction.faction_type, faction.summary
+                ));
+            }
+            markdown.push('\n');
+        }
+
+        // ── Religions (optional; by name) ───────────────────────────────────
+        let mut religions = self
+            .repository
+            .list_religions_by_project(&input.project_id)
+            .await?;
+        religions.retain(|religion| religion.archived_at.is_none());
+        religions.sort_by(|a, b| a.name.cmp(&b.name));
+        if !religions.is_empty() {
+            markdown.push_str("## Religions\n\n");
+            for religion in &religions {
+                markdown.push_str(&format!("- **{}**: {}\n", religion.name, religion.summary));
+            }
+            markdown.push('\n');
+        }
+
+        let word_count = markdown.split_whitespace().count();
+
+        let artifact_path = if input.write_to_workspace {
+            let artifacts_dir = artifacts_dir_for_data_dir(self.repository.data_dir());
+            std::fs::create_dir_all(&artifacts_dir)?;
+            let filename = match input.through.as_ref() {
+                Some(placement) => format!(
+                    "series-bible-through-b{}c{}.md",
+                    placement.book_number, placement.chapter_number
+                ),
+                None => "series-bible-full.md".to_string(),
+            };
+            let file_path = artifacts_dir.join(&filename);
+            std::fs::write(&file_path, markdown.as_bytes())?;
+            Some(file_path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        Ok(ExportSeriesBibleOutput {
+            markdown,
+            chapter_count: character_count,
+            word_count,
+            artifact_path,
+        })
+    }
+
     // ── Canon miner (mine_scene_canon — evolution §3.1, ADR 0001) ────────────
 
     /// Gather the secret-gated current-state digest for a scene and assemble the
@@ -28602,6 +29063,618 @@ mod tests {
             .unwrap();
         assert!(!out.markdown.contains("Only on branch A."));
         assert_eq!(out.scene_count, 0);
+    }
+
+    // ── Reader-facing artifacts (export_recap / export_series_bible §3.8) ────
+
+    /// Create a bare project for the reader-artifact tests.
+    async fn recap_project(svc: &SqliteSpindleService, name: &str) -> String {
+        svc.create_project(CreateProjectInput {
+            name: name.into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap()
+        .project_id
+    }
+
+    /// Save one committed scene and return its scene id. Ensures the chapter row
+    /// exists first (`save_scene_draft` requires it), so non-sequential chapters
+    /// can be seeded directly in a test.
+    async fn recap_scene(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        book: i32,
+        chapter: i32,
+        order: i32,
+        text: &str,
+    ) -> String {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+        svc.repository
+            .ensure_chapter(project_id, book, chapter)
+            .await
+            .unwrap();
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.to_string(),
+            book_number: book,
+            chapter_number: chapter,
+            chapter_id: None,
+            scene_order: order,
+            full_text: text.into(),
+            summary: "s".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .scene_id
+    }
+
+    #[tokio::test]
+    async fn export_recap_folds_summaries_and_promises_at_cursor() {
+        use spindle_core::models::{
+            CreateNarrativePromiseInput, ExportRecapInput, SaveSummaryInput, StoryPlacement,
+            UpdatePromiseStatusInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = recap_project(&svc, "Recap").await;
+
+        // Three summarized chapters; chapter 3 carries a sentinel event.
+        for (ch, summary) in [
+            (1, "Chapter one opens the tale."),
+            (2, "Chapter two raises the stakes."),
+            (3, "Chapter three burns the CH3SENTINEL bridge."),
+        ] {
+            svc.save_summary(SaveSummaryInput {
+                project_id: proj.clone(),
+                book_number: 1,
+                chapter_number: ch,
+                entity_type: None,
+                entity_id: None,
+                summary: summary.into(),
+                key_events: Vec::new(),
+                character_changes: Vec::new(),
+                relationship_shifts: Vec::new(),
+                arc_advances: Vec::new(),
+                promise_events: Vec::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        // A paid-off promise whose planned payoff is at chapter 2 (<= cursor).
+        let paid = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.clone(),
+                promise_type: "mystery".into(),
+                description: "PAIDOFFPROMISE about the harbor".into(),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(1),
+                    note: None,
+                },
+                planned_payoff: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 2,
+                    scene_order: Some(1),
+                    note: None,
+                }),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.update_promise_status(UpdatePromiseStatusInput {
+            narrative_promise_id: paid.narrative_promise_id.clone(),
+            status: "paid_off".into(),
+            note: None,
+        })
+        .await
+        .unwrap();
+
+        // An open promise planted at chapter 1 (<= cursor).
+        svc.create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: proj.clone(),
+            promise_type: "mystery".into(),
+            description: "OPENPROMISE about the stranger".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: None,
+            notes: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .export_recap(ExportRecapInput {
+                project_id: proj.clone(),
+                book_number: 1,
+                through_chapter: 2,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(out.word_count > 0, "recap must have prose");
+        assert_eq!(out.chapter_count, 2, "only ch1+ch2 at/under cursor");
+        // Chapter-3 events are spoilers past the cursor.
+        assert!(
+            !out.markdown.contains("CH3SENTINEL"),
+            "chapter past cursor must be withheld"
+        );
+        assert!(out.markdown.contains("Chapter one opens the tale."));
+        assert!(out.markdown.contains("Chapter two raises the stakes."));
+        // Paid-off promise (payoff <= cursor) appears; open promise appears.
+        assert!(out.markdown.contains("PAIDOFFPROMISE"), "paid off section");
+        assert!(out.markdown.contains("OPENPROMISE"), "still open section");
+        // Reader voice, not urgency jargon.
+        assert!(!out.markdown.to_lowercase().contains("overdue"));
+    }
+
+    /// Register a secret canonical fact whose value carries `sentinel`, returning
+    /// its id. Uses a committed scene as the anchor.
+    async fn recap_secret_fact(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        scene_id: &str,
+        holder_id: &str,
+        sentinel: &str,
+    ) -> String {
+        use spindle_core::models::{RegisterCanonicalFactInput, SecrecyScope};
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project_id.to_string(),
+            scene_id: scene_id.to_string(),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: Some("Vex:trueheir".into()),
+            value: Some(sentinel.to_string()),
+            context: None,
+            subject_table: None,
+            subject_id: None,
+            predicate: None,
+            value_kind: None,
+            value_text: Some(sentinel.to_string()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(SecrecyScope {
+                holder_ids: vec![holder_id.to_string()],
+                concealment_note: None,
+            }),
+        })
+        .await
+        .unwrap()
+        .canonical_fact_id
+    }
+
+    #[tokio::test]
+    async fn export_recap_and_bible_withhold_unrevealed_secret_then_reveal() {
+        use spindle_core::models::{
+            CreateTermInput, ExportRecapInput, ExportSeriesBibleInput, RecordKnowledgeInput,
+            SaveSummaryInput, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = recap_project(&svc, "Secret Sweep").await;
+
+        // A holder character and an anchor scene at ch1.
+        let holder = create_character_named(&svc, &proj, "Vex").await;
+        let scene_id = recap_scene(&svc, &proj, 1, 1, 1, "Vex walks the docks.").await;
+
+        // A chapter summary that names the sentinel (recap prose carrier).
+        svc.save_summary(SaveSummaryInput {
+            project_id: proj.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            entity_type: None,
+            entity_id: None,
+            summary: "Vex conceals SENTINELSECRET from the court.".into(),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        // A glossary entry that names the sentinel (series-bible carrier), so the
+        // sweep covers a bible section too, not only the recap prose.
+        svc.create_term(CreateTermInput {
+            project_id: proj.clone(),
+            term_text: "The Concealed Line".into(),
+            pronunciation: None,
+            definition: "SENTINELSECRET — the bloodline nobody may speak of.".into(),
+            usage_context: None,
+            origin: None,
+        })
+        .await
+        .unwrap();
+
+        let fact_id = recap_secret_fact(&svc, &proj, &scene_id, &holder, "SENTINELSECRET").await;
+
+        let recap_input = || ExportRecapInput {
+            project_id: proj.clone(),
+            book_number: 1,
+            through_chapter: 5,
+            write_to_workspace: false,
+        };
+        let bible_input = || ExportSeriesBibleInput {
+            project_id: proj.clone(),
+            through: None,
+            write_to_workspace: false,
+        };
+
+        // Pre-reveal: sentinel in NEITHER recap NOR bible.
+        let pre_recap = svc.export_recap(recap_input()).await.unwrap().markdown;
+        let pre_bible = svc
+            .export_series_bible(bible_input())
+            .await
+            .unwrap()
+            .markdown;
+        assert!(!pre_recap.contains("SENTINELSECRET"), "pre-reveal recap");
+        assert!(!pre_bible.contains("SENTINELSECRET"), "pre-reveal bible");
+
+        // Add a reader-visible reveal at chapter 1 (<= cursor).
+        svc.record_knowledge(RecordKnowledgeInput {
+            project_id: proj.clone(),
+            branch_id: None,
+            character_id: holder.clone(),
+            fact: "the reader now learns it".into(),
+            source_summary: "reveal".into(),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: None,
+            tags: Vec::new(),
+            reader_visible: true,
+            secret_of_fact_id: Some(fact_id.clone()),
+        })
+        .await
+        .unwrap();
+
+        // Post-reveal: sentinel now appears in BOTH.
+        let post_recap = svc.export_recap(recap_input()).await.unwrap().markdown;
+        let post_bible = svc
+            .export_series_bible(bible_input())
+            .await
+            .unwrap()
+            .markdown;
+        assert!(post_recap.contains("SENTINELSECRET"), "post-reveal recap");
+        assert!(post_bible.contains("SENTINELSECRET"), "post-reveal bible");
+    }
+
+    #[tokio::test]
+    async fn export_bible_respects_reveal_timing_at_cursor() {
+        use spindle_core::models::{
+            CreateTermInput, ExportSeriesBibleInput, RecordKnowledgeInput,
+            RegisterCanonicalFactInput, SecrecyScope, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = recap_project(&svc, "Timing").await;
+        let holder = create_character_named(&svc, &proj, "Vex").await;
+        let scene_id = recap_scene(&svc, &proj, 1, 1, 1, "Vex walks the docks.").await;
+
+        // Glossary carrier that names the sentinel value in the bible.
+        svc.create_term(CreateTermInput {
+            project_id: proj.clone(),
+            term_text: "Heir-mark".into(),
+            pronunciation: None,
+            definition: "TIMINGSENTINEL — the sign of the true line.".into(),
+            usage_context: None,
+            origin: None,
+        })
+        .await
+        .unwrap();
+
+        let fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: proj.clone(),
+                scene_id: scene_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: Some("Vex:trueheir".into()),
+                value: Some("TIMINGSENTINEL".into()),
+                context: None,
+                subject_table: None,
+                subject_id: None,
+                predicate: None,
+                value_kind: None,
+                value_text: Some("TIMINGSENTINEL".into()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: Some(SecrecyScope {
+                    holder_ids: vec![holder.clone()],
+                    concealment_note: None,
+                }),
+            })
+            .await
+            .unwrap();
+
+        // Reveal placed at chapter 3, reader-visible.
+        svc.record_knowledge(RecordKnowledgeInput {
+            project_id: proj.clone(),
+            branch_id: None,
+            character_id: holder.clone(),
+            fact: "revealed at ch3".into(),
+            source_summary: "reveal".into(),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 3,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: None,
+            tags: Vec::new(),
+            reader_visible: true,
+            secret_of_fact_id: Some(fact.canonical_fact_id.clone()),
+        })
+        .await
+        .unwrap();
+
+        // Cursor at ch2 → reveal is in the future → withheld.
+        let at_ch2 = svc
+            .export_series_bible(ExportSeriesBibleInput {
+                project_id: proj.clone(),
+                through: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 2,
+                    scene_order: None,
+                    note: None,
+                }),
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !at_ch2.markdown.contains("TIMINGSENTINEL"),
+            "reveal in future"
+        );
+
+        // Cursor at ch3 → reveal reached → included.
+        let at_ch3 = svc
+            .export_series_bible(ExportSeriesBibleInput {
+                project_id: proj.clone(),
+                through: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 3,
+                    scene_order: None,
+                    note: None,
+                }),
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert!(at_ch3.markdown.contains("TIMINGSENTINEL"), "reveal reached");
+    }
+
+    #[tokio::test]
+    async fn export_series_bible_state_as_of_cursor_glossary_sorted_and_empty() {
+        use spindle_core::models::{
+            CharacterStatePatch, CommitCharacterStateInput, CreateTermInput,
+            ExportSeriesBibleInput, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+
+        // Empty project → structured empty markdown, no error.
+        let empty_proj = recap_project(&svc, "Empty Bible").await;
+        let empty = svc
+            .export_series_bible(ExportSeriesBibleInput {
+                project_id: empty_proj,
+                through: None,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(empty.chapter_count, 0);
+        assert!(empty.artifact_path.is_none());
+        assert!(
+            !empty.markdown.is_empty(),
+            "empty is still structured markdown"
+        );
+
+        let proj = recap_project(&svc, "Bible").await;
+        let vex = create_character_named(&svc, &proj, "Vex").await;
+
+        // Two placement-stamped states: an earlier (ch1) and a later (ch3).
+        let s1 = recap_scene(&svc, &proj, 1, 1, 1, "Vex is calm at the start.").await;
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: vex.clone(),
+            scene_id: s1,
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: Some(vec!["EARLYSTATE".into()]),
+                notes: None,
+                source_summary: None,
+            },
+        })
+        .await
+        .unwrap();
+        let s3 = recap_scene(&svc, &proj, 1, 3, 1, "Vex is furious later.").await;
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: vex.clone(),
+            scene_id: s3,
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: Some(vec!["LATESTATE".into()]),
+                notes: None,
+                source_summary: None,
+            },
+        })
+        .await
+        .unwrap();
+
+        // Two glossary terms out of alphabetical order.
+        for term in ["Zephyr", "Aegis"] {
+            svc.create_term(CreateTermInput {
+                project_id: proj.clone(),
+                term_text: term.into(),
+                pronunciation: None,
+                definition: format!("Definition of {term}."),
+                usage_context: None,
+                origin: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Cursor at ch2 → earlier state shown, later state not.
+        let out = svc
+            .export_series_bible(ExportSeriesBibleInput {
+                project_id: proj.clone(),
+                through: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 2,
+                    scene_order: None,
+                    note: None,
+                }),
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert!(out.markdown.contains("EARLYSTATE"), "state as-of cursor");
+        assert!(!out.markdown.contains("LATESTATE"), "later state withheld");
+        // Glossary sorted: Aegis before Zephyr.
+        let a = out.markdown.find("Aegis").expect("Aegis present");
+        let z = out.markdown.find("Zephyr").expect("Zephyr present");
+        assert!(a < z, "glossary sorted ascending");
+    }
+
+    #[tokio::test]
+    async fn export_recap_writes_deterministic_artifact_inside_workspace() {
+        use spindle_core::models::{ExportRecapInput, SaveSummaryInput};
+        use std::path::Path;
+
+        let (tmp, svc) = fresh_service_workspace().await;
+        let proj = recap_project(&svc, "Artifact Recap").await;
+        svc.save_summary(SaveSummaryInput {
+            project_id: proj.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            entity_type: None,
+            entity_id: None,
+            summary: "The tale begins.".into(),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let input = || ExportRecapInput {
+            project_id: proj.clone(),
+            book_number: 1,
+            through_chapter: 1,
+            write_to_workspace: true,
+        };
+
+        let first = svc.export_recap(input()).await.unwrap();
+        let path = first.artifact_path.clone().expect("artifact path");
+        assert!(
+            path.ends_with("recap-book-1-through-ch1.md"),
+            "deterministic filename: {path}"
+        );
+        let workspace_root = tmp.path().canonicalize().unwrap();
+        let written = Path::new(&path).canonicalize().unwrap();
+        assert!(
+            written.starts_with(&workspace_root),
+            "{written:?} must live inside {workspace_root:?}"
+        );
+
+        // Overwrite on repeat: same path, one file.
+        let second = svc.export_recap(input()).await.unwrap();
+        assert_eq!(second.artifact_path.as_deref(), Some(path.as_str()));
+        let artifacts_dir = written.parent().unwrap();
+        let md_count = std::fs::read_dir(artifacts_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .count();
+        assert_eq!(md_count, 1, "overwrite must not duplicate files");
+    }
+
+    /// Create a character with the given name, returning its id.
+    async fn create_character_named(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        name: &str,
+    ) -> String {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CreateCharacterInput,
+        };
+        svc.create_character(CreateCharacterInput {
+            project_id: project_id.to_string(),
+            name: name.into(),
+            summary: format!("{name} of the docks."),
+            role: "supporting".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: None,
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: std::collections::BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: Some(CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: None,
+                notes: None,
+                source_summary: None,
+            }),
+        })
+        .await
+        .unwrap()
+        .character_id
     }
 
     #[tokio::test]

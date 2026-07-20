@@ -279,6 +279,8 @@ impl ToolRouter {
                 "create_system_overlay",
                 "preflight_book_export",
                 "compile_manuscript",
+                "export_recap",
+                "export_series_bible",
                 "mine_scene_canon",
                 "list_canon_deltas",
                 "decide_canon_deltas",
@@ -802,6 +804,14 @@ impl ToolRouter {
             tool::<CompileManuscriptInput, CompileManuscriptOutput>(
                 "compile_manuscript",
                 "Assemble the committed prose of a book (or an inclusive chapter range within it) on the active branch into one Markdown read-so-far document, with per-chapter and per-scene headings; planned-but-undrafted scenes render an explicit placeholder and are reported in missing_scenes. Optionally writes the Markdown to the project's workspace artifacts directory.",
+            ),
+            tool::<ExportRecapInput, ExportRecapOutput>(
+                "export_recap",
+                "Assemble a spoiler-bounded, reader-facing \"previously on\" recap of a book up to (and including) through_chapter on the active branch: a story-so-far section from chapter summaries at/under the cursor, a \"paid off\" section of resolved promises, and a \"questions still hanging\" section of open promises. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
+            ),
+            tool::<ExportSeriesBibleInput, ExportSeriesBibleOutput>(
+                "export_series_bible",
+                "Assemble a spoiler-bounded, reader-facing series bible on the active branch as of an optional cursor (through, absent = whole project): character pages with state as-of the cursor and relationship bands, locations, a sorted glossary of terms, and factions/religions when present. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
             ),
             tool::<MineSceneCanonInput, MineSceneCanonOutput>(
                 "mine_scene_canon",
@@ -1859,6 +1869,14 @@ impl ToolRouter {
             }
             "compile_manuscript" => {
                 self.invoke(arguments, |input| self.service.compile_manuscript(input))
+                    .await
+            }
+            "export_recap" => {
+                self.invoke(arguments, |input| self.service.export_recap(input))
+                    .await
+            }
+            "export_series_bible" => {
+                self.invoke(arguments, |input| self.service.export_series_bible(input))
                     .await
             }
             "mine_scene_canon" => {
@@ -8116,6 +8134,166 @@ mod tests {
         assert!(out.markdown.contains("The tool assembles this prose."));
         assert!(out.markdown.contains("> [scene 2.1 not yet drafted]"));
         assert_eq!(out.missing_scenes, vec!["2.1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn export_recap_tool_folds_summary_end_to_end() {
+        let router = router().await;
+
+        let create_project_args = serde_json::to_value(CreateProjectInput {
+            name: "Recap MCP".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "read so far".to_string(),
+                style_notes: vec![],
+                boundaries: vec![],
+            },
+        })
+        .expect("create project args");
+        let create_project_args = create_project_args
+            .as_object()
+            .cloned()
+            .expect("create project object");
+        let project: CreateProjectOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("create_project", Some(&create_project_args))
+                .await
+                .expect("create project"),
+        ))
+        .expect("project output");
+
+        let save_summary_args = serde_json::to_value(SaveSummaryInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            entity_type: None,
+            entity_id: None,
+            summary: "The recap tool folds this chapter.".to_string(),
+            key_events: vec![],
+            character_changes: vec![],
+            relationship_shifts: vec![],
+            arc_advances: vec![],
+            promise_events: vec![],
+        })
+        .expect("save summary args");
+        let save_summary_args = save_summary_args
+            .as_object()
+            .cloned()
+            .expect("save summary object");
+        router
+            .call_tool("save_summary", Some(&save_summary_args))
+            .await
+            .expect("save summary");
+
+        let recap_args = serde_json::to_value(ExportRecapInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            through_chapter: 1,
+            write_to_workspace: false,
+        })
+        .expect("recap args");
+        let recap_args = recap_args.as_object().cloned().expect("recap args object");
+        let out: ExportRecapOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("export_recap", Some(&recap_args))
+                .await
+                .expect("export recap"),
+        ))
+        .expect("recap output");
+
+        assert_eq!(out.chapter_count, 1);
+        assert!(out.markdown.contains("The recap tool folds this chapter."));
+        assert!(out.word_count > 0);
+    }
+
+    #[tokio::test]
+    async fn export_series_bible_tool_lists_character_end_to_end() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CreateCharacterInput,
+        };
+        let router = router().await;
+
+        let create_project_args = serde_json::to_value(CreateProjectInput {
+            name: "Bible MCP".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "series bible".to_string(),
+                style_notes: vec![],
+                boundaries: vec![],
+            },
+        })
+        .expect("create project args");
+        let create_project_args = create_project_args
+            .as_object()
+            .cloned()
+            .expect("create project object");
+        let project: CreateProjectOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("create_project", Some(&create_project_args))
+                .await
+                .expect("create project"),
+        ))
+        .expect("project output");
+
+        let char_args = serde_json::to_value(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Bellwether".to_string(),
+            summary: "The bell-ringer of the keep.".to_string(),
+            role: "protagonist".to_string(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: None,
+                vocabulary: vec![],
+                sentence_structure: vec![],
+                tics: vec![],
+                forbidden_words: vec![],
+                example_lines: vec![],
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: std::collections::BTreeMap::new(),
+                suppressed: vec![],
+                triggers: vec![],
+                defense_mechanisms: vec![],
+                flex_range: None,
+            },
+            initial_state: Some(CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: None,
+                notes: None,
+                source_summary: None,
+            }),
+        })
+        .expect("char args");
+        let char_args = char_args.as_object().cloned().expect("char args object");
+        router
+            .call_tool("create_character", Some(&char_args))
+            .await
+            .expect("create character");
+
+        let bible_args = serde_json::to_value(ExportSeriesBibleInput {
+            project_id: project.project_id.clone(),
+            through: None,
+            write_to_workspace: false,
+        })
+        .expect("bible args");
+        let bible_args = bible_args.as_object().cloned().expect("bible args object");
+        let out: ExportSeriesBibleOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("export_series_bible", Some(&bible_args))
+                .await
+                .expect("export series bible"),
+        ))
+        .expect("bible output");
+
+        assert_eq!(out.chapter_count, 1);
+        assert!(out.markdown.contains("Bellwether"));
+        assert!(out.word_count > 0);
     }
 
     #[tokio::test]

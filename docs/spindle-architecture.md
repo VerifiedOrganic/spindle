@@ -163,6 +163,24 @@ validator flow as transitional rather than final.
 - Any schema/tool change that affects facts must update docs and tests in the
   same change.
 
+## Reader-facing artifacts (spoiler-bounded)
+
+`export_recap` and `export_series_bible` (evolution §3.8) are pure read models
+over existing branch data — no model calls. Both assemble reader-facing Markdown
+bounded at a story-index cursor (end of `through_chapter` / `through`, whole
+book/project when absent) and both take an opt-in `write_to_workspace` that
+reuses the same workspace `artifacts/` write as `compile_manuscript`
+(canonicalize + `starts_with` confinement).
+
+A single resolver (`reader_withheld_secret_values` in
+`crates/spindle-adapters/src/sqlite/service.rs`) enforces the reader-secret rule
+for both tools, and is deliberately stricter than the scene-context circle gate:
+a `secret` canonical fact is only surfaced once a linked `knowledge_fact` reveal
+row is `reader_visible` with a dated `learned_at` at or before the cursor. The
+standing circle-of-trust holder row a secret declaration writes (learned_at
+NULL) is dramatic irony, not a reader reveal, so it does not lift the veil.
+Operator-facing lookup/recap flows live in the `bible-librarian` skill.
+
 ## Quantity & economy continuity
 
 Money, named prices, and progression systems (LitRPG/cultivation) are tracked as

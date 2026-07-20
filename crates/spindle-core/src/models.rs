@@ -6045,6 +6045,78 @@ pub struct CompileManuscriptOutput {
     pub artifact_path: Option<String>,
 }
 
+/// Input for `export_recap` (evolution §3.8): a spoiler-bounded, reader-facing
+/// "previously on" recap of a book up to (and including) `through_chapter`. Pure
+/// read model over chapter summaries and narrative promises on the active
+/// branch; the cursor is the end of `through_chapter` in `book_number`, and the
+/// reader-secret rule (see the resolver's doc comment) governs what a fact/thread
+/// may name. The workspace write is opt-in and mirrors `compile_manuscript`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportRecapInput {
+    pub project_id: String,
+    pub book_number: i32,
+    /// Inclusive last chapter the recap covers. Everything established after the
+    /// end of this chapter (in this book) is withheld as a spoiler.
+    pub through_chapter: i32,
+    /// When true, the recap Markdown is also written to the project's workspace
+    /// artifacts directory under a deterministic filename, and the path is
+    /// returned in `artifact_path`.
+    #[serde(default)]
+    pub write_to_workspace: bool,
+}
+
+/// Output of `export_recap`: the recap Markdown plus counts and the opt-in
+/// artifact path. A book with no summarized chapters at/under the cursor yields
+/// a structured empty recap, not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportRecapOutput {
+    pub markdown: String,
+    /// Number of chapter summaries at or under the cursor folded into the recap.
+    pub chapter_count: usize,
+    /// Word count of the rendered recap Markdown.
+    pub word_count: usize,
+    /// Absolute path to the written artifact when `write_to_workspace` is set;
+    /// `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
+/// Input for `export_series_bible` (evolution §3.8): a spoiler-bounded,
+/// reader-facing series bible (characters, locations, glossary, factions,
+/// religions) as of an optional cursor. Pure read model over branch entities and
+/// placement-stamped character state; the reader-secret rule governs what may be
+/// named. The workspace write is opt-in and mirrors `compile_manuscript`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportSeriesBibleInput {
+    pub project_id: String,
+    /// Optional spoiler cursor. When present, everything established after this
+    /// placement is withheld and character state is taken as-of it. When absent,
+    /// the whole project is covered (cursor = +infinity) — only secrets never
+    /// revealed to the reader are withheld.
+    #[serde(default)]
+    pub through: Option<StoryPlacement>,
+    /// When true, the bible Markdown is also written to the project's workspace
+    /// artifacts directory under a deterministic filename, and the path is
+    /// returned in `artifact_path`.
+    #[serde(default)]
+    pub write_to_workspace: bool,
+}
+
+/// Output of `export_series_bible`: the bible Markdown plus counts and the opt-in
+/// artifact path. An empty project yields a structured empty bible, not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportSeriesBibleOutput {
+    pub markdown: String,
+    /// Number of characters rendered (those established at or under the cursor).
+    pub chapter_count: usize,
+    /// Word count of the rendered bible Markdown.
+    pub word_count: usize,
+    /// Absolute path to the written artifact when `write_to_workspace` is set;
+    /// `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
 /// A warning that a Spindle scene has diverged from its local source file.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DivergenceWarning {

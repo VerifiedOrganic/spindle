@@ -301,6 +301,42 @@ you don't have an id, pass explicit `book_number` + `chapter_number`.
 `save_summary` — call it when you want a structured per-chapter view (POV,
 beats, knowledge state) rather than just the prose summary.
 
+## Reader Artifacts (spoiler-bounded)
+
+Two read-only tools assemble **reader-facing** Markdown that is safe to hand to
+someone who has only read up to a point. Both are pure read models — no model
+calls — and both take an opt-in `write_to_workspace` that mirrors
+`compile_manuscript` (the file lands in the project's workspace `artifacts/`
+directory under a deterministic name).
+
+- `export_recap { project_id, book_number, through_chapter, write_to_workspace }`
+  — a "previously on" recap of one book up to (and including) `through_chapter`:
+  a story-so-far section from the chapter summaries, a "Paid off" section of
+  resolved promises, and a "Questions still hanging" section of open promises.
+  Use it to catch a reader up before the next book or chapter.
+- `export_series_bible { project_id, through?, write_to_workspace }` — a series
+  bible as of an optional `through` placement (absent = whole project):
+  character pages (role, summary, status/mood as-of the cursor, banded
+  relationships), locations, a sorted glossary of terms, and factions/religions
+  when present.
+
+**The spoiler rule (both tools).** Everything is bounded at a cursor = the end
+of `through_chapter` / `through` (whole book/project when absent). A fact,
+thread, summary line, character page, or glossary entry is only included if it
+is established at or before that cursor.
+
+Secrets are handled more strictly than in scene context. A secret canonical
+fact (registered with a `secrecy` scope) — and any line that names its value —
+is **withheld from the reader** until the author has placed a *reader-visible
+reveal*: a `record_knowledge` call carrying `secret_of_fact_id` (the linked
+fact), `reader_visible: true`, and a `learned_at` placement at or before the
+cursor. `reader_visible` is the **authorial dial** and the reveal's placement is
+the **reveal date**. A secret merely held by a character (declared via
+`register_canonical_fact { secrecy }`) is dramatic irony, not a reader reveal,
+so it stays hidden in these artifacts until you record that dated, reader-visible
+reveal. This differs from scene-context gating, which protects *characters* from
+knowing; reader artifacts protect the *reader* from spoilers.
+
 ## Pacing Dashboard
 
 When the user asks about pacing:
@@ -350,8 +386,10 @@ The research library can be browsed using these resources:
 ## Export
 
 When the user wants to export:
+- Reader recap → `export_recap` (spoiler-bounded "previously on"; see Reader Artifacts)
+- Reader-facing series bible → `export_series_bible` (spoiler-bounded; see Reader Artifacts)
 - Bible summary → Generate a comprehensive document using all entity summaries
-- Manuscript → Compile all scene full_text in order
+- Manuscript → `compile_manuscript` (assemble scene prose in order)
 - Character sheets → Detailed profiles for all characters
 - World guide → All world entities, rules, and maps
 
