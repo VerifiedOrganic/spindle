@@ -287,6 +287,34 @@ subagents, assess each candidate one at a time before forming the verdict.
 
 ---
 
+## Style learning from edits
+
+Hand-revising an agent-drafted scene is signal for the project's style profile.
+When a project opts in (`style_learning`), Spindle captures each operator edit
+over an agent draft as a *style-edit candidate* that feeds the existing
+style-refresh flow — no new tools.
+
+- **Enable**: set `style_learning` to `1` via `update_entity` on the project
+  (`changes: { "style_learning": 1 }`); `0` or unset disables it.
+- **What's captured**: an operator re-save of an agent-drafted scene with
+  changed prose (trim-compared). A second edit of the same scene replaces the
+  pending candidate (one per scene, latest wins). Agent-over-agent revise-loop
+  saves and operator-over-operator edits are not captured; scenes over 60k chars
+  are skipped.
+- **Review gate**: `preview_refresh_style_profile` lists pending candidates by
+  scene ref with a prose-free diff summary; `refresh_style_profile` feeds the
+  included edits as positive examples and marks them `consumed`. Pass
+  `dismiss_candidate_ids` to drop candidates instead. Nothing enters a profile
+  without you running refresh — the preview→refresh pair is the review gate.
+- **Explicit withholding**: explicit-rated candidates are withheld from refresh
+  unless the `style_analyze` route's agent declares `explicit`; the preview notes
+  the withholding and the candidates stay pending.
+
+See `docs/local-markdown-style-profiles.md` → "Style Learning from Edits" for
+the full rules.
+
+---
+
 ## References
 
 The shipped craft references most relevant when revising:

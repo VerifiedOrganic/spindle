@@ -84,6 +84,12 @@ use super::Repository;
 /// evicted FIFO. Mirrors the SurrealDB-era `MAX_GENERATION_RECEIPTS = 256`.
 const MAX_GENERATION_RECEIPTS: usize = 256;
 
+/// Degenerate-scene guard for style-learning capture (evolution §3.9). A scene
+/// whose agent draft or operator edit exceeds this many characters skips
+/// capture with a `tracing::warn` — a scene this large is not a clean style
+/// signal and would bloat the refresh corpus.
+const STYLE_EDIT_MAX_CHARS: usize = 60_000;
+
 /// In-memory record of one `continue_generation` / `revise_generation` call.
 /// Kept on the service instance so a subsequent `save_scene_draft` /
 /// `revise_generation` can resolve a `generation_id` back to the actual
@@ -20754,6 +20760,105 @@ impl SqliteSpindleService {
         ))
     }
 
+    /// Style-learning capture policy (evolution §3.9). Decides whether this
+    /// operator re-save is a style signal and, if so, stages/replaces the
+    /// candidate. Called only for operator (non-agent) UPDATE saves.
+    ///
+    /// Capture iff ALL hold:
+    ///   * the project has `style_learning` enabled;
+    ///   * the prose changed (byte compare after trim);
+    ///   * EITHER the prior version has AGENT provenance (`draft_origin` starts
+    ///     with `agent:`) — the fresh agent→operator edit — OR a pending
+    ///     candidate already exists for this scene (a subsequent operator edit
+    ///     of an already-captured pair, which replaces it).
+    ///
+    /// Provenance note (reported honestly): the only reliable DB signal for
+    /// agent authorship is `scene.draft_origin` starting with `agent:`, which is
+    /// stamped only on the explicit-agent draft save path. Non-explicit agent
+    /// drafts leave `draft_origin` NULL and are therefore NOT covered by
+    /// capture. To keep the operator-vs-operator boundary crisp, a capture
+    /// stamps `draft_origin = "operator"` so a later same-scene save is
+    /// recognized as operator-over-operator (replace, never a new pair).
+    ///
+    /// Degenerate guard: a scene whose agent draft OR operator edit exceeds
+    /// [`STYLE_EDIT_MAX_CHARS`] skips capture with a `tracing::warn` (the pair
+    /// would bloat the refresh corpus; scenes this large are not a clean style
+    /// signal).
+    async fn maybe_capture_style_edit(
+        &self,
+        branch_id: &str,
+        prior: &crate::sqlite::records::Scene,
+        scene: &crate::sqlite::records::Scene,
+        input: &SaveSceneDraftInput,
+    ) -> Result<()> {
+        if !self
+            .repository
+            .project_style_learning_enabled_public(&input.project_id)
+            .await?
+        {
+            return Ok(());
+        }
+        // Prose must have actually changed (trim-equal is not an edit).
+        if prior.full_text.trim() == scene.full_text.trim() {
+            return Ok(());
+        }
+
+        let prior_is_agent = prior
+            .draft_origin
+            .as_deref()
+            .is_some_and(|o| o.starts_with("agent:"));
+        let pending_exists = !self
+            .repository
+            .list_style_edit_candidates(&input.project_id, branch_id, Some("pending"))
+            .await?
+            .into_iter()
+            .filter(|c| c.scene_id == scene.id)
+            .collect::<Vec<_>>()
+            .is_empty();
+
+        // Agent→operator (fresh) or operator→operator (replace an existing pair).
+        // A pure operator-over-operator save with no prior agent draft and no
+        // pending candidate is NOT a style signal.
+        if !prior_is_agent && !pending_exists {
+            return Ok(());
+        }
+
+        // Degenerate guard: skip capture for pathologically large scenes.
+        if prior.full_text.chars().count() > STYLE_EDIT_MAX_CHARS
+            || scene.full_text.chars().count() > STYLE_EDIT_MAX_CHARS
+        {
+            tracing::warn!(
+                scene_id = %scene.id,
+                "style-edit capture skipped: scene exceeds {STYLE_EDIT_MAX_CHARS} chars"
+            );
+            return Ok(());
+        }
+
+        self.repository
+            .capture_style_edit_candidate(crate::sqlite::repository::CaptureStyleEditParams {
+                project_id: input.project_id.clone(),
+                branch_id: branch_id.to_string(),
+                scene_id: scene.id.clone(),
+                book_number: scene.book_number,
+                chapter_number: scene.chapter_number,
+                scene_order: scene.scene_order,
+                // The agent draft (contrast) is the PRIOR prose. On a replace,
+                // capture_style_edit_candidate preserves the original agent_draft
+                // and only updates operator_edit.
+                agent_draft: prior.full_text.clone(),
+                operator_edit: scene.full_text.clone(),
+                content_rating: scene.content_rating.trim().to_ascii_lowercase(),
+            })
+            .await?;
+
+        // Re-stamp provenance so a subsequent same-scene operator save is
+        // recognized as operator-over-operator (replace, not a fresh pair).
+        self.repository
+            .update_scene_draft_origin(&scene.id, "operator")
+            .await?;
+        Ok(())
+    }
+
     pub async fn save_scene_draft(
         &self,
         input: SaveSceneDraftInput,
@@ -20785,6 +20890,23 @@ impl SqliteSpindleService {
         let branch_id = self
             .repository
             .active_branch_id_public(&save_input.project_id)
+            .await?;
+
+        // Style-learning capture (evolution §3.9): snapshot the scene's prior
+        // state (provenance + prose) BEFORE this save overwrites it. Captured
+        // after the save succeeds. `draft_origin.is_some()` here means THIS save
+        // is itself an agent draft (the explicit-agent path stamped it above) —
+        // agent-over-agent, never captured.
+        let is_agent_save = draft_origin.is_some();
+        let prior_scene = self
+            .repository
+            .find_scene_by_natural_key(
+                &save_input.project_id,
+                &branch_id,
+                save_input.book_number,
+                save_input.chapter_number,
+                save_input.scene_order,
+            )
             .await?;
 
         // Knowledge-learned package (design §2.3 path 2): validate every secret
@@ -20892,6 +21014,21 @@ impl SqliteSpindleService {
                 .await?;
             scene = self.repository.get_scene(&scene.id).await?;
         }
+
+        // Style-learning capture (evolution §3.9). Only an OPERATOR re-save over
+        // an AGENT draft (or a subsequent operator edit of an already-captured
+        // pair) is a style signal. Best-effort — a capture failure must never
+        // fail the save.
+        if !is_agent_save
+            && !created
+            && let Some(prior) = prior_scene.as_ref()
+            && let Err(e) = self
+                .maybe_capture_style_edit(&branch_id, prior, &scene, &save_input)
+                .await
+        {
+            tracing::warn!(scene_id = %scene.id, error = %e, "style-edit capture failed");
+        }
+
         // Match SurrealDB semantics: first save returns "saved", subsequent
         // writes to the same (project, branch, scene_order) return "updated".
         let status = if created { "saved" } else { "updated" };
@@ -49331,6 +49468,626 @@ agent = "review-dead"
                 })
                 .await;
             assert!(err.is_err(), "lone book_number is rejected");
+        }
+    }
+
+    /// Style learning from operator edits (evolution §3.9, P5.4). Capture-side
+    /// tests: an operator re-save over an agent draft on an opted-in project
+    /// stages a candidate; the many no-capture cases stay empty.
+    mod style_learning_capture {
+        use super::*;
+
+        /// Create a project, save an initial scene, then stamp it with agent
+        /// provenance (`draft_origin = "agent:*"`) — the DB signal capture keys
+        /// on. Returns (project_id, branch_id, scene_id, agent prose).
+        async fn agent_drafted_scene(
+            svc: &SqliteSpindleService,
+            name: &str,
+            agent_prose: &str,
+        ) -> (String, String, String) {
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: name.to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "clean continuity".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            let saved = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 1,
+                    full_text: agent_prose.to_string(),
+                    summary: "opening".to_string(),
+                    content_rating: spindle_core::models::ContentRating::General,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            // Seed the agent-provenance signal the harness agent-draft path
+            // records (for explicit drafts) — the only DB signal capture keys on.
+            svc.repository
+                .update_scene_draft_origin(&saved.scene_id, "agent:test-agent")
+                .await
+                .unwrap();
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            (project.project_id, branch_id, saved.scene_id)
+        }
+
+        async fn enable_style_learning(svc: &SqliteSpindleService, project_id: &str) {
+            svc.update_entity(UpdateEntityInput {
+                entity_type: "project".to_string(),
+                entity_id: project_id.to_string(),
+                changes: serde_json::json!({ "style_learning": 1 }),
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn operator_resave(svc: &SqliteSpindleService, project_id: &str, prose: &str) {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: prose.to_string(),
+                summary: "opening".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        // Test 1: agent-drafted scene re-saved by operator with changed prose,
+        // project opted in → one pending candidate with both texts + rating;
+        // re-edit → replaced (still one, latest edit).
+        #[tokio::test]
+        async fn operator_edit_over_agent_draft_captures_pending_candidate() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project_id, branch_id, _scene_id) =
+                agent_drafted_scene(&svc, "learn", "The agent wrote this line plainly.").await;
+            enable_style_learning(&svc, &project_id).await;
+
+            operator_resave(
+                &svc,
+                &project_id,
+                "The operator rewrote this line with flair.",
+            )
+            .await;
+
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1, "one pending candidate captured");
+            let c = &pending[0];
+            assert_eq!(c.agent_draft, "The agent wrote this line plainly.");
+            assert_eq!(
+                c.operator_edit,
+                "The operator rewrote this line with flair."
+            );
+            assert_eq!(c.content_rating, "general");
+            assert_eq!(c.status, "pending");
+
+            // Re-edit: the SECOND operator save over the same agent draft REPLACES
+            // the pending candidate (one per scene — the latest edit is the signal).
+            operator_resave(
+                &svc,
+                &project_id,
+                "The operator revised it once more, sharper.",
+            )
+            .await;
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1, "still one candidate after re-edit");
+            assert_eq!(
+                pending[0].agent_draft, "The agent wrote this line plainly.",
+                "agent draft (contrast) is preserved across re-edits"
+            );
+            assert_eq!(
+                pending[0].operator_edit, "The operator revised it once more, sharper.",
+                "operator edit is the latest prose"
+            );
+        }
+
+        // Test 2a: opt-out project → no capture.
+        #[tokio::test]
+        async fn no_capture_when_project_opted_out() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project_id, branch_id, _scene_id) =
+                agent_drafted_scene(&svc, "optout", "Agent prose one.").await;
+            // Deliberately do NOT enable style_learning.
+            operator_resave(&svc, &project_id, "Operator prose two.").await;
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(pending.is_empty(), "opt-out project captures nothing");
+        }
+
+        // Test 2b: unchanged prose (byte-identical after trim) → no capture.
+        #[tokio::test]
+        async fn no_capture_when_prose_unchanged() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project_id, branch_id, _scene_id) =
+                agent_drafted_scene(&svc, "unchanged", "Identical prose.").await;
+            enable_style_learning(&svc, &project_id).await;
+            // Re-save the same prose with surrounding whitespace (trim-equal).
+            operator_resave(&svc, &project_id, "  Identical prose.  ").await;
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(pending.is_empty(), "trim-equal prose is not an edit");
+        }
+
+        // Test 2c: operator-over-operator → the SECOND operator save does not
+        // create a NEW candidate (only replaces the pending one from the agent
+        // draft). A fresh operator save with no prior agent draft captures nothing.
+        #[tokio::test]
+        async fn no_capture_operator_over_operator_without_agent_draft() {
+            let (_tmp, svc) = fresh_service_local().await;
+            // Create a project + scene with NO agent provenance (plain host save).
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "hostonly".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            enable_style_learning(&svc, &project.project_id).await;
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "Operator wrote the first draft.".to_string(),
+                summary: "s".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+            // Second operator save over an operator draft (no agent provenance).
+            operator_resave(
+                &svc,
+                &project.project_id,
+                "Operator edited the operator draft.",
+            )
+            .await;
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project.project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(
+                pending.is_empty(),
+                "operator-over-operator with no agent draft captures nothing"
+            );
+        }
+
+        // Test 2d: agent-over-agent (revise-loop re-save) → no capture. Both
+        // saves go through the explicit-agent generation_id path, which stamps
+        // draft_origin agent AND marks the save as an agent save
+        // (is_agent_save = true) — capture is short-circuited.
+        #[tokio::test]
+        async fn no_capture_agent_over_agent_via_generation_id() {
+            use spindle_core::models::ConfigureAgentsInput;
+            let (tmp, svc) = fresh_service_local().await;
+
+            // Configure an explicit-capable draft agent so the explicit save path
+            // (verified_explicit_save_receipt) accepts a seeded receipt. No CLI
+            // command is invoked — the receipt output is authoritative.
+            let config_path = tmp.path().join("agents.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "draft-agent"
+name = "Draft Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:1/v1"
+model = "drafter"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "draft-agent"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.to_string_lossy().to_string()),
+            })
+            .unwrap();
+
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "aoa".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            enable_style_learning(&svc, &project.project_id).await;
+
+            // First explicit agent draft via a seeded generation receipt.
+            let r1 = svc.register_generation_receipt(
+                "draft",
+                Some("explicit"),
+                "draft-agent",
+                "The agent drafted the gate scene, first pass.",
+            );
+            let saved = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 1,
+                    full_text: "ignored — server output is authoritative".to_string(),
+                    summary: "s".to_string(),
+                    content_rating: spindle_core::models::ContentRating::Explicit,
+                    generation_id: Some(r1.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(
+                saved.draft_origin.starts_with("agent:"),
+                "first save carries agent provenance"
+            );
+
+            // Second explicit agent draft (revise loop) via another receipt →
+            // agent-over-agent. is_agent_save = true short-circuits capture.
+            let r2 = svc.register_generation_receipt(
+                "draft",
+                Some("explicit"),
+                "draft-agent",
+                "The agent revised the gate scene, second pass, sharper.",
+            );
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "ignored — server output is authoritative".to_string(),
+                summary: "s".to_string(),
+                content_rating: spindle_core::models::ContentRating::Explicit,
+                generation_id: Some(r2.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project.project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(
+                pending.is_empty(),
+                "agent-over-agent re-save must not capture a style candidate"
+            );
+        }
+
+        // Test 6: a scene > 60k chars skips capture with a warn (degenerate guard).
+        #[tokio::test]
+        async fn oversized_scene_skips_capture() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let big_agent = "a".repeat(61_000);
+            let (project_id, branch_id, _scene_id) =
+                agent_drafted_scene(&svc, "big", &big_agent).await;
+            enable_style_learning(&svc, &project_id).await;
+            let big_operator = "b".repeat(61_000);
+            operator_resave(&svc, &project_id, &big_operator).await;
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(pending.is_empty(), "oversized scene skips capture");
+        }
+
+        // Test 5: pre-V0031 behavior — a freshly created project has NULL
+        // style_learning = disabled (no capture without an explicit opt-in).
+        #[tokio::test]
+        async fn new_project_style_learning_null_is_disabled() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let enabled = svc
+                .repository
+                .project_style_learning_enabled_public("project:does-not-exist-yet")
+                .await;
+            // A missing project is an error, not a silent enable.
+            assert!(enabled.is_err() || !enabled.unwrap());
+            let (project_id, _branch, _scene) =
+                agent_drafted_scene(&svc, "nullflag", "Agent prose.").await;
+            let enabled = svc
+                .repository
+                .project_style_learning_enabled_public(&project_id)
+                .await
+                .unwrap();
+            assert!(!enabled, "NULL style_learning reads as disabled");
+        }
+    }
+
+    /// Style learning from operator edits (evolution §3.9, P5.4). Feed-side
+    /// tests: pending candidates surface in the refresh preview (counts + refs,
+    /// no prose) and are consumed by refresh.
+    mod style_learning_refresh {
+        use super::*;
+        use spindle_core::style::{
+            CreateStyleProfileFromMarkdownInput, PreviewRefreshStyleProfileInput,
+            RefreshStyleProfileInput,
+        };
+
+        /// Create a project with an opted-in style-learning flag, a style
+        /// profile built from a small Markdown corpus, and an agent-drafted
+        /// scene the operator then edits (capturing one pending candidate).
+        /// Returns (project_id, branch_id, profile_id).
+        async fn project_with_profile_and_candidate(
+            svc: &SqliteSpindleService,
+            data_dir: &std::path::Path,
+            rating: spindle_core::models::ContentRating,
+        ) -> (String, String, String) {
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "refresh".to_string(),
+                    project_type: "novel".to_string(),
+                    genre: "fantasy".to_string(),
+                    reader_contract: ReaderContract {
+                        promise: "p".to_string(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            // Opt in to style learning.
+            svc.update_entity(UpdateEntityInput {
+                entity_type: "project".to_string(),
+                entity_id: project.project_id.clone(),
+                changes: serde_json::json!({ "style_learning": 1 }),
+            })
+            .await
+            .unwrap();
+
+            // Markdown corpus under the data_dir (an allowed root).
+            let md_path = data_dir.join("corpus.md");
+            std::fs::write(
+                &md_path,
+                "The wind moved slow across the plain. She watched it, unhurried, \
+                 and said nothing. The grass bent. The light held. A long breath \
+                 passed before the door opened and the day began again.",
+            )
+            .unwrap();
+            let created = svc
+                .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+                    project_id: project.project_id.clone(),
+                    profile_name: "House".to_string(),
+                    source_paths: vec![md_path.to_string_lossy().to_string()],
+                    recursive: None,
+                    include_globs: None,
+                    exclude_globs: None,
+                    max_files: None,
+                    max_bytes_per_file: None,
+                    max_total_words: None,
+                    apply: None,
+                    application_mode: None,
+                    source_sample_word_budget: None,
+                    metrics_only: Some(true),
+                    force_apply: None,
+                })
+                .await
+                .unwrap();
+
+            // Agent-drafted scene, then an operator edit → one pending candidate.
+            let saved = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 1,
+                    full_text: "Agent prose that reads flat and plain.".to_string(),
+                    summary: "s".to_string(),
+                    content_rating: rating.clone(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            svc.repository
+                .update_scene_draft_origin(&saved.scene_id, "agent:test-agent")
+                .await
+                .unwrap();
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "Operator prose that breathes and turns with care.".to_string(),
+                summary: "s".to_string(),
+                content_rating: rating,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+            let branch_id = svc
+                .repository
+                .active_branch_id_public(&project.project_id)
+                .await
+                .unwrap();
+            (project.project_id, branch_id, created.profile.profile_id)
+        }
+
+        // Test 3: preview surfaces candidates (count + refs, no full prose);
+        // refresh consumes → status consumed; consumed candidates absent from
+        // the next preview.
+        #[tokio::test]
+        async fn preview_surfaces_candidates_and_refresh_consumes_them() {
+            let (tmp, svc) = fresh_service_local().await;
+            let data_dir = svc.repository().data_dir().to_path_buf();
+            let (project_id, branch_id, profile_id) = project_with_profile_and_candidate(
+                &svc,
+                &data_dir,
+                spindle_core::models::ContentRating::General,
+            )
+            .await;
+
+            // Preview surfaces the candidate: count + ref, prose-free diff.
+            let preview = svc
+                .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+                    project_id: project_id.clone(),
+                    profile_id: profile_id.clone(),
+                    metrics_only: Some(true),
+                })
+                .await
+                .unwrap();
+            assert_eq!(preview.style_edit_candidates.included_count, 1);
+            assert_eq!(preview.style_edit_candidates.withheld_count, 0);
+            assert_eq!(preview.style_edit_candidates.candidates.len(), 1);
+            let cref = &preview.style_edit_candidates.candidates[0];
+            assert_eq!(cref.scene_ref, "1.1.1");
+            assert!(cref.included);
+            // The preview must NOT carry the full prose (metadata/diff only).
+            let serialized = serde_json::to_string(&preview).unwrap();
+            assert!(
+                !serialized.contains("Operator prose that breathes"),
+                "preview must not carry full operator prose"
+            );
+            assert!(
+                !serialized.contains("Agent prose that reads flat"),
+                "preview must not carry full agent prose"
+            );
+
+            // Refresh consumes the candidate.
+            let refreshed = svc
+                .refresh_style_profile(RefreshStyleProfileInput {
+                    project_id: project_id.clone(),
+                    profile_id: profile_id.clone(),
+                    apply_after_refresh: None,
+                    force_apply: None,
+                    metrics_only: Some(true),
+                    dismiss_candidate_ids: Vec::new(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(refreshed.consumed_candidate_ids.len(), 1);
+            assert_eq!(refreshed.consumed_candidate_ids[0], cref.candidate_id);
+
+            // The candidate is now consumed, not pending.
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert!(
+                pending.is_empty(),
+                "consumed candidate leaves the pending set"
+            );
+            let consumed = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("consumed"))
+                .await
+                .unwrap();
+            assert_eq!(consumed.len(), 1);
+
+            // The NEXT preview (on the refreshed profile) shows no candidates.
+            let next = svc
+                .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+                    project_id: project_id.clone(),
+                    profile_id: refreshed.new_profile.profile_id.clone(),
+                    metrics_only: Some(true),
+                })
+                .await
+                .unwrap();
+            assert_eq!(next.style_edit_candidates.included_count, 0);
+            drop(tmp);
+        }
+
+        // Dismissal path (evolution §3.9): a dismissed candidate is flipped to
+        // `dismissed`, not fed, and never resurfaces.
+        #[tokio::test]
+        async fn refresh_dismisses_named_candidates() {
+            let (tmp, svc) = fresh_service_local().await;
+            let data_dir = svc.repository().data_dir().to_path_buf();
+            let (project_id, branch_id, profile_id) = project_with_profile_and_candidate(
+                &svc,
+                &data_dir,
+                spindle_core::models::ContentRating::General,
+            )
+            .await;
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            let cid = pending[0].id.clone();
+
+            let refreshed = svc
+                .refresh_style_profile(RefreshStyleProfileInput {
+                    project_id: project_id.clone(),
+                    profile_id: profile_id.clone(),
+                    apply_after_refresh: None,
+                    force_apply: None,
+                    metrics_only: Some(true),
+                    dismiss_candidate_ids: vec![cid.clone()],
+                })
+                .await
+                .unwrap();
+            assert_eq!(refreshed.dismissed_candidate_ids, vec![cid.clone()]);
+            assert!(
+                refreshed.consumed_candidate_ids.is_empty(),
+                "a dismissed candidate is not also consumed"
+            );
+            let dismissed = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("dismissed"))
+                .await
+                .unwrap();
+            assert_eq!(dismissed.len(), 1);
+            drop(tmp);
         }
     }
 }

@@ -6542,3 +6542,305 @@ agent = "tame-analyst"
     server.await.unwrap();
     crate::remove_addr_file(&data_dir);
 }
+
+/// Style-refresh source-side rating discipline (evolution §3.9 / §4, P5.4):
+/// explicit style-edit candidates are withheld from the refresh sources unless
+/// the `style_analyze` route's resolved agent declares explicit. Withheld
+/// candidates stay pending; the preview notes the withholding. An
+/// explicit-cleared style agent includes and consumes them.
+///
+/// Test 4 of the P5.4 suite. Hermetic: a CLI mock provides the style-analyze
+/// completion so no network is touched; `style_ratings` toggles the agent's
+/// declared coverage.
+async fn style_refresh_rating_fixture(
+    style_ratings: &str,
+) -> (
+    TempDir,
+    SqliteSpindleService,
+    String, // project_id
+    String, // branch_id
+    String, // profile_id
+    String, // candidate_id
+) {
+    use spindle_core::models::ConfigureAgentsInput;
+    use spindle_core::style::CreateStyleProfileFromMarkdownInput;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("style_refresh.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // CLI mock for the style_analyze route: emit valid StyleProfileGuidance JSON.
+    let script_path = tmp.path().join("mock_style.sh");
+    std::fs::write(
+        &script_path,
+        r#"#!/bin/bash
+cat <<'EOF'
+{
+  "pov": "third_limited",
+  "tense": "past",
+  "do_rules": ["favor concrete verbs"],
+  "avoid_rules": ["avoid filter words"],
+  "sentence_rhythm": "varied",
+  "diction": "plain",
+  "dialogue_style": "sparse",
+  "narrative_distance": "close"
+}
+EOF
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    let config_path = tmp.path().join("spindle.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "style-agent"
+name = "Style Agent"
+provider = "cli"
+endpoint = "{}"
+model = "default"
+ratings = [{}]
+
+[[routing]]
+route = "style_analyze"
+agent = "style-agent"
+"#,
+            script_path.display(),
+            style_ratings
+        ),
+    )
+    .unwrap();
+
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo = Repository::with_model_router(pool, data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "StyleRefresh".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    // Opt in to style learning.
+    svc.update_entity(spindle_core::models::UpdateEntityInput {
+        entity_type: "project".into(),
+        entity_id: project.project_id.clone(),
+        changes: serde_json::json!({ "style_learning": 1 }),
+    })
+    .await
+    .unwrap();
+
+    // Markdown corpus for the profile.
+    let md_path = data_dir.join("corpus.md");
+    std::fs::write(
+        &md_path,
+        "The wind moved slow across the plain. She watched it and said nothing. \
+         The grass bent. The light held. A long breath passed before the door opened.",
+    )
+    .unwrap();
+    let created = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project.project_id.clone(),
+            profile_name: "House".into(),
+            source_paths: vec![md_path.to_string_lossy().to_string()],
+            recursive: None,
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: None,
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+
+    // An EXPLICIT-rated scene: agent draft (seed provenance) then operator edit.
+    // Benign prose keeps the explicit-sexual guard from tripping the save.
+    let saved = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            full_text: "The agent drafted a tense confrontation on the gate.".into(),
+            summary: "s".into(),
+            content_rating: ContentRating::Explicit,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .update_scene_draft_origin(&saved.scene_id, "agent:style-agent")
+        .await
+        .unwrap();
+    svc.save_scene_draft(SaveSceneDraftInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        scene_order: 1,
+        full_text: "The operator rewrote the confrontation with sharper, colder lines.".into(),
+        summary: "s".into(),
+        content_rating: ContentRating::Explicit,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let branch_id = svc
+        .repository()
+        .active_branch_id_public(&project.project_id)
+        .await
+        .unwrap();
+    let pending = svc
+        .repository()
+        .list_style_edit_candidates(&project.project_id, &branch_id, Some("pending"))
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1, "one explicit candidate captured");
+    assert_eq!(pending[0].content_rating, "explicit");
+    let candidate_id = pending[0].id.clone();
+
+    (
+        tmp,
+        svc,
+        project.project_id,
+        branch_id,
+        created.profile.profile_id,
+        candidate_id,
+    )
+}
+
+#[tokio::test]
+async fn explicit_candidate_withheld_when_style_route_not_explicit_cleared() {
+    use spindle_core::style::{PreviewRefreshStyleProfileInput, RefreshStyleProfileInput};
+
+    // Style agent declares general only — NOT explicit-cleared.
+    let (_tmp, svc, project_id, branch_id, profile_id, candidate_id) =
+        style_refresh_rating_fixture(r#""general""#).await;
+
+    let preview = svc
+        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile_id.clone(),
+            metrics_only: Some(true),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        preview.style_edit_candidates.included_count, 0,
+        "explicit candidate is not included"
+    );
+    assert_eq!(preview.style_edit_candidates.withheld_count, 1);
+    let note = preview
+        .style_edit_candidates
+        .withholding_note
+        .as_deref()
+        .unwrap_or("");
+    assert!(
+        note.contains("explicit") && note.contains("not explicit-cleared"),
+        "preview notes the withholding, got {note:?}"
+    );
+
+    // Refresh does NOT consume the withheld candidate; it stays pending.
+    let refreshed = svc
+        .refresh_style_profile(RefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
+            metrics_only: Some(true),
+            dismiss_candidate_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        refreshed.consumed_candidate_ids.is_empty(),
+        "withheld explicit candidate is not consumed"
+    );
+    let still_pending = svc
+        .repository()
+        .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+        .await
+        .unwrap();
+    assert_eq!(
+        still_pending.len(),
+        1,
+        "withheld candidate stays pending after refresh"
+    );
+    assert_eq!(still_pending[0].id, candidate_id);
+}
+
+#[tokio::test]
+async fn explicit_candidate_included_when_style_route_explicit_cleared() {
+    use spindle_core::style::{PreviewRefreshStyleProfileInput, RefreshStyleProfileInput};
+
+    // Style agent declares explicit — cleared.
+    let (_tmp, svc, project_id, branch_id, profile_id, candidate_id) =
+        style_refresh_rating_fixture(r#""general", "explicit""#).await;
+
+    let preview = svc
+        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile_id.clone(),
+            metrics_only: Some(true),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        preview.style_edit_candidates.included_count, 1,
+        "explicit candidate is included when the style route is explicit-cleared"
+    );
+    assert_eq!(preview.style_edit_candidates.withheld_count, 0);
+    assert!(preview.style_edit_candidates.withholding_note.is_none());
+
+    let refreshed = svc
+        .refresh_style_profile(RefreshStyleProfileInput {
+            project_id: project_id.clone(),
+            profile_id: profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
+            metrics_only: Some(true),
+            dismiss_candidate_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(refreshed.consumed_candidate_ids, vec![candidate_id]);
+    let consumed = svc
+        .repository()
+        .list_style_edit_candidates(&project_id, &branch_id, Some("consumed"))
+        .await
+        .unwrap();
+    assert_eq!(consumed.len(), 1);
+}

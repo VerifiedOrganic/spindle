@@ -10,12 +10,27 @@ use spindle_core::style::{
     CreateStyleProfileFromMarkdownOutput, GetStyleProfileInput, GetStyleProfileOutput,
     ListStyleProfilesInput, ListStyleProfilesOutput, PreviewRefreshStyleProfileInput,
     PreviewRefreshStyleProfileOutput, RefreshStyleProfileInput, RefreshStyleProfileOutput,
-    StyleCorpusSummary, StyleProfileApplyMode, StyleProfileCard, StyleProfileGuidance,
-    StyleProfileModelReceipt, StyleProfileSourcePolicy, StyleProfileStatus, StyleSourceRef,
+    StyleCorpusSummary, StyleEditCandidateRef, StyleEditCandidatesPreview, StyleProfileApplyMode,
+    StyleProfileCard, StyleProfileGuidance, StyleProfileModelReceipt, StyleProfileSourcePolicy,
+    StyleProfileStatus, StyleSourceRef,
 };
 use std::fs;
 
 pub const STYLE_ANALYZE_ROUTE: &str = "style_analyze";
+
+/// Result of resolving a project's pending style-edit candidates under the
+/// source-side rating discipline (evolution §3.9). Threads the preview section,
+/// the included candidates' positive-example corpus, and the included ids from
+/// the shared resolver into both `preview_refresh_style_profile` and
+/// `refresh_style_profile`.
+struct StyleEditCandidateResolution {
+    preview: StyleEditCandidatesPreview,
+    /// `(display_name, operator_edit)` positive examples for the extra-corpus
+    /// path. Only the operator edit is fed — the refresh corpus mechanism
+    /// accepts positive prose only.
+    included_corpus: Vec<(String, String)>,
+    included_ids: Vec<String>,
+}
 const MAX_STYLE_SYNTHESIS_SOURCE_WORDS: usize = 12_000;
 
 fn clean_json_response(raw: &str) -> &str {
@@ -53,6 +68,32 @@ impl SqliteSpindleService {
         name: &str,
         policy: &StyleProfileSourcePolicy,
         override_metrics_only: Option<bool>,
+    ) -> Result<StyleProfileCard> {
+        self.generate_candidate_style_profile_with_extra(
+            project_id,
+            name,
+            policy,
+            override_metrics_only,
+            &[],
+        )
+        .await
+    }
+
+    /// [`generate_candidate_style_profile`] plus additional in-memory corpus
+    /// texts appended to the analyzed corpus (evolution §3.9). Each
+    /// `(display_name, prose)` pair is parsed into style elements exactly like a
+    /// Markdown source file and folded into the metrics, chunks, and quality
+    /// scoring. Used by the refresh flow to feed operator style-edit candidates
+    /// (the `operator_edit` prose is the positive example) alongside the
+    /// profile's file sources. `extra_corpus` empty ⇒ identical to the
+    /// file-only path.
+    pub async fn generate_candidate_style_profile_with_extra(
+        &self,
+        project_id: &str,
+        name: &str,
+        policy: &StyleProfileSourcePolicy,
+        override_metrics_only: Option<bool>,
+        extra_corpus: &[(String, String)],
     ) -> Result<StyleProfileCard> {
         // 1. Validate project exists
         let _project = self.repository().get_project(project_id).await?;
@@ -284,6 +325,50 @@ impl SqliteSpindleService {
                     })
                     .to_string(),
                 ),
+                captured_at: Some(chrono::Utc::now().to_rfc3339()),
+            });
+        }
+
+        // In-memory extra corpus (evolution §3.9): operator style-edit examples
+        // folded into the corpus exactly like a Markdown source, so metrics,
+        // chunks, and quality scoring all reflect the operator's edits. The
+        // synthetic source_ref carries no filesystem path — it is not persisted
+        // as prose (source_text_persisted stays false).
+        for (display_name, prose) in extra_corpus {
+            let word_count = prose.split_whitespace().count();
+            if total_words + word_count > max_words {
+                skipped_source_count += 1;
+                source_refs.push(StyleSourceRef {
+                    display_name: display_name.clone(),
+                    canonical_path: format!("style-edit://{display_name}"),
+                    sha256: format!("{:x}", sha2::Sha256::digest(prose.as_bytes())),
+                    word_count,
+                    included: false,
+                    skip_reason: Some("exceeds max_total_words limit".to_string()),
+                    file_size: None,
+                    modified_at: None,
+                    glob_policy_metadata: None,
+                    captured_at: Some(chrono::Utc::now().to_rfc3339()),
+                });
+                continue;
+            }
+            let normalized = style_helper::normalize_markdown(prose);
+            let elements = style_helper::parse_elements(&normalized);
+            all_elements.extend(elements.clone());
+            source_elements.push((display_name.clone(), elements));
+            total_words += word_count;
+            total_characters += prose.len();
+            analyzed_source_count += 1;
+            source_refs.push(StyleSourceRef {
+                display_name: display_name.clone(),
+                canonical_path: format!("style-edit://{display_name}"),
+                sha256: format!("{:x}", sha2::Sha256::digest(prose.as_bytes())),
+                word_count,
+                included: true,
+                skip_reason: None,
+                file_size: None,
+                modified_at: None,
+                glob_policy_metadata: None,
                 captured_at: Some(chrono::Utc::now().to_rfc3339()),
             });
         }
@@ -863,6 +948,96 @@ impl SqliteSpindleService {
         })
     }
 
+    /// Resolve the project's pending style-edit candidates and apply the
+    /// source-side rating discipline (evolution §3.9 / §4). Returns the preview
+    /// section (counts + per-candidate refs + withholding note), the included
+    /// candidates' `operator_edit` prose as `(display_name, text)` corpus
+    /// sources for [`generate_candidate_style_profile_with_extra`], and the
+    /// included/withheld candidate ids.
+    ///
+    /// Rating discipline (import-precedent, SOURCE side): an EXPLICIT candidate
+    /// is withheld unless the non-prose-bearing `style_analyze` route's resolved
+    /// agent declares explicit. Style routes are non-prose-bearing, so the guard
+    /// works at the source (an explicit example never enters an analyzer that
+    /// never declared explicit coverage) rather than at dispatch. Withheld
+    /// candidates stay pending.
+    async fn resolve_style_edit_candidates(
+        &self,
+        project_id: &str,
+    ) -> Result<StyleEditCandidateResolution> {
+        let branch_id = self
+            .repository()
+            .active_branch_id_public(project_id)
+            .await?;
+        let pending = self
+            .repository()
+            .list_style_edit_candidates(project_id, &branch_id, Some("pending"))
+            .await?;
+
+        let style_route_clears_explicit = self
+            .repository()
+            .model_router()
+            .route_clears_rating(STYLE_ANALYZE_ROUTE, "explicit");
+
+        let mut refs = Vec::new();
+        let mut included_corpus = Vec::new();
+        let mut included_ids = Vec::new();
+        let mut withheld_ids = Vec::new();
+        for c in &pending {
+            let is_explicit = c.content_rating.trim().eq_ignore_ascii_case("explicit");
+            let included = !is_explicit || style_route_clears_explicit;
+            let scene_ref = format!("{}.{}.{}", c.book_number, c.chapter_number, c.scene_order);
+            let agent_chars = c.agent_draft.chars().count();
+            let op_chars = c.operator_edit.chars().count();
+            let diff_summary = format!(
+                "agent {} chars → operator {} chars (Δ {})",
+                agent_chars,
+                op_chars,
+                op_chars as i64 - agent_chars as i64
+            );
+            refs.push(StyleEditCandidateRef {
+                candidate_id: c.id.clone(),
+                scene_id: c.scene_id.clone(),
+                scene_ref,
+                content_rating: c.content_rating.clone(),
+                included,
+                diff_summary,
+            });
+            if included {
+                included_ids.push(c.id.clone());
+                included_corpus.push((
+                    format!("style-edit {}", c.scene_id),
+                    c.operator_edit.clone(),
+                ));
+            } else {
+                withheld_ids.push(c.id.clone());
+            }
+        }
+
+        let withholding_note = if withheld_ids.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{} explicit candidate{} withheld: style route not explicit-cleared",
+                withheld_ids.len(),
+                if withheld_ids.len() == 1 { "" } else { "s" }
+            ))
+        };
+
+        let preview = StyleEditCandidatesPreview {
+            included_count: included_ids.len(),
+            withheld_count: withheld_ids.len(),
+            candidates: refs,
+            withholding_note,
+        };
+
+        Ok(StyleEditCandidateResolution {
+            preview,
+            included_corpus,
+            included_ids,
+        })
+    }
+
     pub async fn preview_refresh_style_profile(
         &self,
         input: PreviewRefreshStyleProfileInput,
@@ -877,12 +1052,17 @@ impl SqliteSpindleService {
             return Err(anyhow!("Cannot preview refresh an archived style profile"));
         }
 
+        let candidate_resolution = self
+            .resolve_style_edit_candidates(&input.project_id)
+            .await?;
+
         let candidate = self
-            .generate_candidate_style_profile(
+            .generate_candidate_style_profile_with_extra(
                 &input.project_id,
                 &old_profile.name,
                 &old_profile.source_policy,
                 input.metrics_only,
+                &candidate_resolution.included_corpus,
             )
             .await?;
 
@@ -956,6 +1136,7 @@ impl SqliteSpindleService {
             metric_deltas,
             material_change,
             apply_safety,
+            style_edit_candidates: candidate_resolution.preview,
         })
     }
 
@@ -973,12 +1154,34 @@ impl SqliteSpindleService {
             return Err(anyhow!("Cannot refresh an archived style profile"));
         }
 
+        // Dismiss requested candidates FIRST so they are neither fed as examples
+        // nor left dangling (evolution §3.9). Only `pending` rows transition.
+        let dismissed_candidate_ids = if input.dismiss_candidate_ids.is_empty() {
+            Vec::new()
+        } else {
+            self.repository()
+                .set_style_edit_candidate_status(&input.dismiss_candidate_ids, "dismissed")
+                .await?;
+            input.dismiss_candidate_ids.clone()
+        };
+
+        // Resolve the remaining pending candidates under the rating discipline.
+        // The included candidates' operator_edit prose is the positive example
+        // fed alongside the profile's file sources. The refresh corpus mechanism
+        // ingests positive corpus only (it parses prose into style elements and
+        // metrics), so the agent_draft contrast is stored but not fed as text —
+        // reported: only operator_edit feeds refresh.
+        let candidate_resolution = self
+            .resolve_style_edit_candidates(&input.project_id)
+            .await?;
+
         let mut candidate = self
-            .generate_candidate_style_profile(
+            .generate_candidate_style_profile_with_extra(
                 &input.project_id,
                 &old_profile.name,
                 &old_profile.source_policy,
                 input.metrics_only,
+                &candidate_resolution.included_corpus,
             )
             .await?;
 
@@ -1008,6 +1211,16 @@ impl SqliteSpindleService {
         // Persist new profile
         self.repository().insert_style_profile(&candidate).await?;
 
+        // Mark the fed candidates consumed (evolution §3.9). They are now part
+        // of a profile version; a subsequent preview/refresh will not re-feed
+        // them. Withheld (explicit, not cleared) candidates stay pending.
+        let consumed_candidate_ids = candidate_resolution.included_ids.clone();
+        if !consumed_candidate_ids.is_empty() {
+            self.repository()
+                .set_style_edit_candidate_status(&consumed_candidate_ids, "consumed")
+                .await?;
+        }
+
         let mut applied = false;
         let mut application = None;
         if should_apply {
@@ -1026,6 +1239,8 @@ impl SqliteSpindleService {
             new_profile: candidate,
             applied,
             application,
+            consumed_candidate_ids,
+            dismissed_candidate_ids,
         })
     }
 

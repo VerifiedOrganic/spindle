@@ -29,7 +29,7 @@ pub use super::json_records::{
 // Project
 // =============================================================================
 
-pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice, active_style_profile_id";
+pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice, active_style_profile_id, style_learning";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -47,6 +47,12 @@ pub struct Project {
     pub narrator_voice: Option<StoredNarratorVoice>,
     #[serde(default)]
     pub active_style_profile_id: Option<String>,
+    /// Style-learning opt-in (migration V0031). `None` (pre-upgrade + default)
+    /// = disabled: no operator edit is ever captured as a style candidate. A
+    /// truthy integer (1) enables capture. Set via the `update_entity` column
+    /// path (`("project", "style_learning")` in the update allowlist).
+    #[serde(default)]
+    pub style_learning: Option<i64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Project {
@@ -65,6 +71,7 @@ impl<'a> TryFrom<&Row<'a>> for Project {
             updated_at: row::time(r, 8)?,
             narrator_voice: row::opt_json(r, 9)?,
             active_style_profile_id: row::opt_text(r, 10)?,
+            style_learning: row::opt_int(r, 11)?,
         })
     }
 }
@@ -3396,6 +3403,53 @@ impl StoredCanonDelta {
             created_at: self.created_at.to_rfc3339(),
             updated_at: self.updated_at.to_rfc3339(),
         }
+    }
+}
+
+pub const STYLE_EDIT_CANDIDATE_COLUMNS: &str = "id, project_id, branch_id, scene_id, book_number, \
+     chapter_number, scene_order, agent_draft, operator_edit, content_rating, status, \
+     created_at, updated_at";
+
+/// A staged before/after style-edit pair captured when the operator re-saves an
+/// agent-drafted scene with different prose (evolution §3.9, migration V0031).
+/// The `operator_edit` is the positive example fed into the style-profile
+/// refresh flow; the `agent_draft` is the contrast. Timestamps are the stored
+/// microsecond [`Timestamp`] (mirrors [`StoredCanonDelta`]).
+#[derive(Debug, Clone)]
+pub struct StoredStyleEditCandidate {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub scene_id: String,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub agent_draft: String,
+    pub operator_edit: String,
+    pub content_rating: String,
+    pub status: String,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredStyleEditCandidate {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            scene_id: row::text(r, 3)?,
+            book_number: row::int(r, 4)? as i32,
+            chapter_number: row::int(r, 5)? as i32,
+            scene_order: row::int(r, 6)? as i32,
+            agent_draft: row::text(r, 7)?,
+            operator_edit: row::text(r, 8)?,
+            content_rating: row::text(r, 9)?,
+            status: row::text(r, 10)?,
+            created_at: row::time(r, 11)?,
+            updated_at: row::time(r, 12)?,
+        })
     }
 }
 

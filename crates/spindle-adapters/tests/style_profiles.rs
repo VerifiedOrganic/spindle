@@ -3268,6 +3268,7 @@ async fn test_style_profile_refresh_workflow() {
             apply_after_refresh: Some(true),
             force_apply: Some(true),
             metrics_only: None,
+            dismiss_candidate_ids: Vec::new(),
         })
         .await
         .unwrap();
@@ -3343,6 +3344,7 @@ async fn test_style_profile_refresh_workflow() {
             apply_after_refresh: None,
             force_apply: None,
             metrics_only: None,
+            dismiss_candidate_ids: Vec::new(),
         })
         .await;
     assert!(

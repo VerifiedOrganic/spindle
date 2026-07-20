@@ -511,6 +511,32 @@ impl ModelRouter {
         Some(mine)
     }
 
+    /// Verify — without network I/O — whether a route's resolved agent declares
+    /// the given rating. Reuses the same config-level reachability as
+    /// [`draft_route_preflight`]: resolve the rating-aware route, map it to its
+    /// configured agent, and check the declared `ratings` list (ASCII-lowercase
+    /// compare). A route that falls back to a built-in local route has no agent,
+    /// serves every rating, and returns `true`.
+    ///
+    /// Used by the style-refresh source-side rating discipline (evolution §3.9 /
+    /// §4): explicit style-edit candidates are withheld from a refresh unless the
+    /// non-prose-bearing `style_analyze` route's agent declares explicit — the
+    /// filter protects at the SOURCE (an explicit example never reaches an
+    /// analyzer that never declared explicit coverage), mirroring the
+    /// prose-bearing dispatch gate.
+    pub fn route_clears_rating(&self, route_name: &str, rating: &str) -> bool {
+        let runtime = self.runtime.read().expect("model router read lock");
+        // "Declares the rating" — a missing API key means the DECLARED agent is
+        // unreachable, not that it fails to declare the rating; only an
+        // unresolvable route or an agent that does not declare the rating counts
+        // as "not cleared" for the source-side discipline.
+        match route_preflight(&runtime, route_name, rating).problem {
+            None | Some(DraftRoutePreflightProblem::MissingApiKey { .. }) => true,
+            Some(DraftRoutePreflightProblem::Unresolved)
+            | Some(DraftRoutePreflightProblem::RatingNotCovered) => false,
+        }
+    }
+
     pub fn list_agents(&self) -> ListAgentsOutput {
         let runtime = self.runtime.read().expect("model router read lock");
         ListAgentsOutput {
@@ -4416,6 +4442,79 @@ agent = "tame-agent"
         // route, which serves every rating and is never flagged.
         let router = ModelRouter::local_only();
         assert!(router.mine_fallback_preflight("explicit").is_none());
+    }
+
+    // ── Style-refresh source-side rating discipline (evolution §3.9 / §4) ────
+
+    #[test]
+    fn route_clears_rating_true_for_builtin_local_route() {
+        // A built-in local style_analyze route serves every rating.
+        let router = ModelRouter::local_only();
+        assert!(router.route_clears_rating("style_analyze", "explicit"));
+    }
+
+    #[test]
+    fn route_clears_rating_false_when_style_agent_lacks_explicit() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "style-agent"
+name = "Style Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "styler"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "style_analyze"
+agent = "style-agent"
+"####,
+        );
+        router.configure(Some(&path)).expect("configure");
+        assert!(
+            !router.route_clears_rating("style_analyze", "explicit"),
+            "style route agent without explicit is NOT cleared"
+        );
+        assert!(
+            router.route_clears_rating("style_analyze", "general"),
+            "style route agent WITH general IS cleared"
+        );
+    }
+
+    #[test]
+    fn route_clears_rating_true_when_style_agent_declares_explicit() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "style-agent"
+name = "Style Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "styler"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "style_analyze"
+agent = "style-agent"
+"####,
+        );
+        router.configure(Some(&path)).expect("configure");
+        assert!(
+            router.route_clears_rating("style_analyze", "explicit"),
+            "style route agent declaring explicit IS cleared"
+        );
     }
 
     // ── Rating-gated dispatch chokepoint (evolution §4 rules 1-2) ────────────

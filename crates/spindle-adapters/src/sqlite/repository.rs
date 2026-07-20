@@ -500,6 +500,23 @@ pub struct AppendQuantityStateParams {
     pub scene_order: i32,
 }
 
+/// Parameters for capturing an operator style-edit candidate (V0031, evolution
+/// §3.9). The `agent_draft` is the prose the operator edited over; the
+/// `operator_edit` is the resulting positive example fed into style refresh.
+#[derive(Debug, Clone)]
+pub struct CaptureStyleEditParams {
+    pub project_id: String,
+    pub branch_id: String,
+    pub scene_id: String,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub agent_draft: String,
+    pub operator_edit: String,
+    /// The scene's content rating at capture, lowercased.
+    pub content_rating: String,
+}
+
 /// Parameters for staging a proposed canon delta (ADR 0001 D2).
 #[derive(Debug, Clone)]
 pub struct StageCanonDeltaParams {
@@ -1896,6 +1913,177 @@ impl Repository {
                     rusqlite::params![now, scene_id],
                 )?;
                 Ok(affected as u64)
+            })
+            .await
+    }
+
+    // ── Style learning from operator edits (evolution §3.9, V0031) ────────────
+
+    /// Read a project's `style_learning` opt-in. `true` only when the column is
+    /// a truthy integer; NULL (pre-upgrade + default) and 0 both read as
+    /// disabled. Errors if the project row is absent (a missing project is not a
+    /// silent enable). Public wrapper used by the capture path and tests.
+    pub async fn project_style_learning_enabled_public(&self, project_id: &str) -> Result<bool> {
+        let project = self.get_project(project_id).await?;
+        Ok(project.style_learning.unwrap_or(0) != 0)
+    }
+
+    /// Capture (or replace) the pending style-edit candidate for a scene
+    /// (evolution §3.9). Enforces one PENDING candidate per scene per agent
+    /// draft: if a pending candidate already exists for this scene, its
+    /// `operator_edit` is UPDATED in place (the latest edit is the signal) while
+    /// its original `agent_draft` (the contrast) is preserved; otherwise a fresh
+    /// row is inserted. `consumed`/`dismissed` rows are terminal history and are
+    /// never touched.
+    pub async fn capture_style_edit_candidate(
+        &self,
+        params: CaptureStyleEditParams,
+    ) -> Result<crate::sqlite::records::StoredStyleEditCandidate> {
+        let CaptureStyleEditParams {
+            project_id,
+            branch_id,
+            scene_id,
+            book_number,
+            chapter_number,
+            scene_order,
+            agent_draft,
+            operator_edit,
+            content_rating,
+        } = params;
+        let scene_id_lookup = scene_id.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Replace-in-place when a pending candidate already exists for
+                // this scene (dedupe: latest operator edit over the same agent
+                // draft). One statement, atomic; a zero rowcount means insert.
+                let updated = conn.execute(
+                    "UPDATE style_edit_candidate \
+                     SET operator_edit = ?1, content_rating = ?2, updated_at = ?3 \
+                     WHERE scene_id = ?4 AND status = 'pending'",
+                    rusqlite::params![operator_edit, content_rating, now, scene_id],
+                )?;
+                if updated == 0 {
+                    let id = mint_id_local("style_edit_candidate");
+                    conn.execute(
+                        "INSERT INTO style_edit_candidate \
+                         (id, project_id, branch_id, scene_id, book_number, chapter_number, \
+                          scene_order, agent_draft, operator_edit, content_rating, status, \
+                          created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?11)",
+                        rusqlite::params![
+                            &id,
+                            &project_id,
+                            &branch_id,
+                            &scene_id,
+                            book_number,
+                            chapter_number,
+                            scene_order,
+                            &agent_draft,
+                            &operator_edit,
+                            &content_rating,
+                            now,
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        self.read_pending_style_edit_candidate_for_scene(&scene_id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("style_edit_candidate vanished after capture"))
+    }
+
+    async fn read_pending_style_edit_candidate_for_scene(
+        &self,
+        scene_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredStyleEditCandidate>> {
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM style_edit_candidate \
+                     WHERE scene_id = ?1 AND status = 'pending' ORDER BY updated_at DESC LIMIT 1",
+                    crate::sqlite::records::STYLE_EDIT_CANDIDATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&scene_id], |r| {
+                    crate::sqlite::records::StoredStyleEditCandidate::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// List style-edit candidates on a branch, optionally filtered by `status`.
+    /// Deterministic order: `(created_at, id)`.
+    pub async fn list_style_edit_candidates(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<crate::sqlite::records::StoredStyleEditCandidate>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let status = status.map(str::to_string);
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut clauses = String::from("project_id = ?1 AND branch_id = ?2");
+                let mut binds: Vec<&dyn rusqlite::ToSql> = vec![&project_id, &branch_id];
+                if let Some(status) = status.as_ref() {
+                    clauses.push_str(&format!(" AND status = ?{}", binds.len() + 1));
+                    binds.push(status);
+                }
+                let sql = format!(
+                    "SELECT {} FROM style_edit_candidate WHERE {clauses} ORDER BY created_at, id",
+                    crate::sqlite::records::STYLE_EDIT_CANDIDATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        crate::sqlite::records::StoredStyleEditCandidate::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Flip a set of PENDING candidates to a terminal status
+    /// (`consumed` after a refresh feeds them; `dismissed` when dropped). Only
+    /// `pending` rows transition — a decision is final. Returns the number of
+    /// rows flipped.
+    pub async fn set_style_edit_candidate_status(
+        &self,
+        candidate_ids: &[String],
+        new_status: &str,
+    ) -> Result<u64> {
+        if candidate_ids.is_empty() {
+            return Ok(0);
+        }
+        if !matches!(new_status, "consumed" | "dismissed") {
+            return Err(anyhow!(
+                "style-edit candidate status must be consumed|dismissed (got '{new_status}')"
+            ));
+        }
+        let ids: Vec<String> = candidate_ids.to_vec();
+        let new_status = new_status.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let mut affected = 0u64;
+                for id in &ids {
+                    affected += conn.execute(
+                        "UPDATE style_edit_candidate SET status = ?1, updated_at = ?2 \
+                         WHERE id = ?3 AND status = 'pending'",
+                        rusqlite::params![new_status, now, id],
+                    )? as u64;
+                }
+                Ok(affected)
             })
             .await
     }
@@ -13223,6 +13411,10 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("project", "name")
             | ("project", "genre")
             | ("project", "project_type")
+            // Style-learning opt-in (V0031): enable capturing operator edits as
+            // style-refresh candidates. 0/1 flag via update_entity_field's
+            // numeric path; NULL/absent = disabled (evolution §3.9).
+            | ("project", "style_learning")
             | ("book", "title")
             | ("chapter", "title")
             | ("character", "summary")

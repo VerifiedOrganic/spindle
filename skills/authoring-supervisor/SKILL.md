@@ -356,6 +356,13 @@ If drafting is blocked by errors (e.g., validator hard constraints or agent exec
 - To clear a scene block after operator inspection, call `authoring_resolve_block` with the exact next safe `target_phase` (`"draft_saved"`, `"changes_committed"`, or `"beats_annotated"`). Do not use it to skip checkpoint review.
 - To pause the run boundaries cleanly without losing progress, call `authoring_cancel_run`. A paused run will not advance through `authoring_execute_next`.
 
+## Style learning from edits (opt-in)
+
+When you hand-edit an agent-drafted scene, that edit can teach the project's style profile.
+- Enable per project by setting `style_learning` to `1` via `update_entity` (`changes: { "style_learning": 1 }`); unset/`0` disables it.
+- With it enabled, an operator re-save of an agent draft with changed prose is captured automatically as a pending style-edit candidate (no action needed).
+- Review and consume them through the existing flow: `preview_refresh_style_profile` lists the candidates (scene refs + a prose-free diff summary), and `refresh_style_profile` feeds them into the profile and marks them consumed. Explicit-rated candidates are withheld unless the `style_analyze` route is explicit-cleared. See `revision-manager` / `docs/local-markdown-style-profiles.md` for the full rules.
+
 ## Subagent orchestration (Claude Code / grok)
 
 Checkpoint review (step 5) is embarrassingly parallel: each sampled scene's
