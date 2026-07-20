@@ -382,7 +382,7 @@ provider = "openai-compatible"
 endpoint = "http://localhost:11434/v1"
 model = "mistral"
 max_context = 32000
-ratings = ["safe", "mature", "explicit"]
+ratings = ["general", "teen", "mature", "explicit"]
 quality_tier = "primary"
 capabilities = ["system_prompt"]
 
