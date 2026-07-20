@@ -3009,6 +3009,115 @@ impl ToolRouter {
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
 
+        Self::assemble_authoring_status_output(
+            repo,
+            run_id,
+            &run,
+            &outcome,
+            current_status,
+            blocked_reason,
+            next_action_str,
+        )
+    }
+
+    /// Read-only sibling of [`handle_authoring_status`] for viewer surfaces (the
+    /// operator console, evolution §3.7): reconcile the run in memory and build
+    /// the exact same [`AuthoringStatusOutput`], but **never persist** the
+    /// reconcile (no `save_authoring_run`). Run-id discovery matches the tool:
+    /// `None`/empty `run_id` resolves the project's latest run; a project with no
+    /// run returns `Ok(None)` (an honest empty state, not an error). This keeps
+    /// the console strictly read-only (I5) — a status read from a browser must
+    /// not mutate the run tables.
+    pub(crate) async fn authoring_status_readonly(
+        &self,
+        input: AuthoringStatusInput,
+    ) -> anyhow::Result<Option<AuthoringStatusOutput>> {
+        let project_id = input.project_id.clone();
+        let repo = self.service.repository();
+
+        let run_id = match input.run_id {
+            Some(rid) if !rid.is_empty() => rid,
+            _ => match repo.find_latest_authoring_run_id(&project_id).await? {
+                Some(rid) => rid,
+                None => return Ok(None), // no run yet — honest empty state
+            },
+        };
+
+        let Some((run, chapters, scenes, checkpoints)) = repo.get_authoring_run(&run_id).await?
+        else {
+            return Ok(None);
+        };
+
+        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+        let snapshot = self.authoring_project_snapshot(&harness_state).await?;
+        let outcome = reconcile_state(harness_state.clone(), &snapshot);
+        let next_action_str = outcome.next_action.to_string();
+
+        let mut blocked_reason = None;
+        let mut current_status = run.status.clone();
+        if outcome.has_errors() {
+            current_status = "blocked".to_string();
+            let err_msgs: Vec<String> = outcome
+                .findings
+                .iter()
+                .filter(|f| f.severity == spindle_harness::plan::FindingSeverity::Error)
+                .map(|f| f.message.clone())
+                .collect();
+            blocked_reason = Some(err_msgs.join("; "));
+        } else {
+            for ch in &harness_state.chapters {
+                for sc in &ch.scenes {
+                    if let Some(r) = &sc.blocked_reason {
+                        current_status = "blocked".to_string();
+                        blocked_reason = Some(format!(
+                            "Chapter {} scene {} blocked: {}",
+                            ch.chapter_number, sc.scene_order, r
+                        ));
+                    }
+                }
+            }
+        }
+        if outcome.next_action == NextAction::Complete {
+            current_status = "completed".to_string();
+        }
+        if matches!(
+            outcome.next_action,
+            NextAction::AwaitCheckpointReview { .. } | NextAction::AwaitResearch { .. }
+        ) {
+            current_status = "blocked".to_string();
+            if matches!(outcome.next_action, NextAction::AwaitResearch { .. }) {
+                blocked_reason = Some("await_research".to_string());
+            } else {
+                blocked_reason = Some("await_checkpoint_review".to_string());
+            }
+        }
+
+        Self::assemble_authoring_status_output(
+            repo,
+            run_id,
+            &run,
+            &outcome,
+            current_status,
+            blocked_reason,
+            next_action_str,
+        )
+        .map(Some)
+    }
+
+    /// Assemble the [`AuthoringStatusOutput`] DTO from a reconciled outcome. Pure
+    /// (no writes); shared by [`handle_authoring_status`] (which persists first)
+    /// and [`authoring_status_readonly`] (which never persists) so both surfaces
+    /// stay byte-identical in shape.
+    fn assemble_authoring_status_output(
+        repo: &spindle_adapters::sqlite::Repository,
+        run_id: String,
+        run: &spindle_adapters::sqlite::records::AuthoringRun,
+        outcome: &spindle_harness::plan::ReconcileOutcome,
+        current_status: String,
+        blocked_reason: Option<String>,
+        next_action_str: String,
+    ) -> anyhow::Result<AuthoringStatusOutput> {
+        let project_id = run.project_id.clone();
         let checkpoint_state = match outcome.next_action {
             NextAction::AwaitCheckpointReview { .. } => Some("await_review".to_string()),
             NextAction::RunCheckpoint { .. } => Some("run_pending".to_string()),

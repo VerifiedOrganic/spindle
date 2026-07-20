@@ -181,6 +181,14 @@ standing circle-of-trust holder row a secret declaration writes (learned_at
 NULL) is dramatic irony, not a reader reveal, so it does not lift the veil.
 Operator-facing lookup/recap flows live in the `bible-librarian` skill.
 
+The read-only operator console v1 (evolution §3.7) is served at `/console` when
+HTTP mode is on (`SPINDLE_HTTP_ADDR`): a single embedded HTML page (no build
+step, no external requests) that reads run status, the compiled manuscript, and
+the staged canon-delta / plan-amendment ratify queues through localhost-only
+`GET /console/api/*` service reads, and follows a run's event journal live over
+the existing `/events?topic=run:<id>` SSE. It never mutates (I5); ratification
+stays in the `decide_*` tools. Actions and the thread board are v2.
+
 ## Quantity & economy continuity
 
 Money, named prices, and progression systems (LitRPG/cultivation) are tracked as

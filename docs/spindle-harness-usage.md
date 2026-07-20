@@ -352,6 +352,51 @@ refusing to write harness state because initialization is not continuity-safe
 
 Fix the seed file and re-run init.
 
+### Console (read-only operator console v1)
+
+When Spindle runs in HTTP mode, a read-only operator console is served at
+`/console` on the same listener. It is a single embedded HTML page (no build
+step, no external requests — nothing leaves localhost) and needs nothing beyond
+a browser.
+
+**Enable it** by starting the server with `SPINDLE_HTTP_ADDR` set to a localhost
+address, then open the console:
+
+```bash
+SPINDLE_HTTP_ADDR=127.0.0.1:4321 cargo run -p spindle-mcp
+# then browse to:
+open http://127.0.0.1:4321/console
+```
+
+**What v1 shows** (four panes):
+
+- **Runs** — pick a project → the latest authoring run's chapter/scene/phase grid
+  (mine / verify / revise statuses, checkpoint states), plus a **live timeline**
+  that streams the run's event journal over SSE (`/events?topic=run:<id>`),
+  resuming automatically on reconnect and rendering any event kind — including
+  ones added in later phases — generically.
+- **Manuscript** — pick a project + book number → the compiled Markdown rendered
+  in a reading pane (via `compile_manuscript`; undrafted scenes are flagged).
+- **Canon queue** — the `staged` canon deltas awaiting ratification (class, scene
+  ref, confidence, evidence quote, payload). Read-only.
+- **Plan queue** — the `staged` plan amendments awaiting ratification (class,
+  target chapter, rationale, payload). Read-only.
+
+**Read-only + security posture.** The console never mutates anything. Its data
+comes from localhost-only `GET /console/api/*` endpoints that call the service
+layer thinly (the browser cannot practically speak the `/mcp` streamable-HTTP
+transport's session handshake with zero dependencies, so these GET reads are the
+sanctioned fallback). It is localhost-bound and unauthenticated — the same trust
+context as your own terminal. Ratify staged deltas/amendments with
+`decide_canon_deltas` / `decide_plan_amendments` from that terminal; console
+actions arrive in v2.
+
+**v2 roadmap.** Actions (ratify/reject deltas and amendments, resolve blocked
+checkpoints) via the `POST /mcp` transport, the thread board (promises ×
+chapters, arcs, plot lines, motif density — deferred until a promise/arc list
+surface exists), and the SvelteKit packaging decision (the v1 single-file page
+is the owner-flagged interim choice).
+
 ---
 
 ## Step 4: Check Status

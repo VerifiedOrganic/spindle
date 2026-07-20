@@ -1,0 +1,486 @@
+<!doctype html>
+<!--
+  Spindle Operator Console — v1 (read-only).
+
+  OWNER-FLAGGED V1 DECISION: this console is ONE committed HTML file (inline CSS +
+  JS, zero external requests — no CDNs, no fonts, nothing leaves localhost),
+  embedded via include_str! and served by the existing axum router under /console.
+  No node/npm, no build step, no new crates. SvelteKit is reconsidered at v2.
+
+  SCOPE (evolution-design §3.7 console v1), four panes:
+    1. Runs       — project picker -> authoring_status grid + live SSE timeline
+    2. Manuscript — book picker -> compile_manuscript reading pane
+    3. Canon queue    — list_canon_deltas status=staged (read-only)
+    4. Plan queue     — list_plan_amendments status=staged (read-only)
+
+  DEFERRED to v2 (documented deviation):
+    - The thread board (promises x chapters, arcs, plot lines, motif density) is
+      NOT shipped: no list surface for promises/arcs exists yet to read it from.
+    - All actions (ratify/reject deltas & amendments, resolve blocks) are v2 —
+      this page performs NO mutations. Ratification is via decide_canon_deltas /
+      decide_plan_amendments from the operator's terminal.
+    - v2 roadmap: actions + thread board + the SvelteKit packaging decision.
+
+  DATA PATH: the browser cannot practically speak the rmcp streamable-HTTP MCP
+  transport (initialize handshake + Mcp-Session-Id negotiation + SSE tool
+  responses) with zero dependencies and minimal JS, so this page reads through a
+  small set of localhost-only GET /console/api/* endpoints that call the SERVICE
+  layer thinly and read-only (the documented sanctioned fallback). The live
+  timeline uses the native EventSource against the existing /events?topic=run:<id>
+  SSE journal.
+
+  SECURITY POSTURE: localhost-bound like the whole HTTP surface, no auth,
+  read-only. Journal payloads are prose-free by ADR 0002; the manuscript / delta /
+  amendment panes DO show prose the operator already owns — same trust context as
+  the operator's own terminal.
+
+  DEFENSIVE RENDERING: every fetch failure renders an explicit error state; the
+  page never goes blank on a failed request, an empty project, or a dropped SSE.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spindle Operator Console</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --panel2: #23272f; --line: #313742;
+    --fg: #d7dbe2; --dim: #8b93a1; --accent: #6ea8fe; --ok: #5cd18b;
+    --warn: #e0b64a; --err: #e56b6b; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .badge {
+    font: 11px var(--mono); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 6px;
+  }
+  nav { display: flex; gap: 4px; margin-left: auto; }
+  nav button {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
+  }
+  nav button[aria-selected="true"] { background: var(--accent); color: #0c0f14; border-color: var(--accent); }
+  main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  label { color: var(--dim); font-size: 12px; }
+  select, input[type=number] {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; min-width: 120px;
+  }
+  button.refresh {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
+  }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  .muted { color: var(--dim); }
+  .err { color: var(--err); }
+  .empty { color: var(--dim); font-style: italic; padding: 12px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  .pill {
+    display: inline-block; font: 11px var(--mono); padding: 1px 7px; border-radius: 10px;
+    border: 1px solid var(--line); color: var(--dim);
+  }
+  .pill.pending { color: var(--dim); }
+  .pill.draft_saved, .pill.in_progress { color: var(--accent); border-color: var(--accent); }
+  .pill.changes_committed, .pill.beats_annotated, .pill.complete, .pill.completed, .pill.clean, .pill.staged { color: var(--ok); border-color: var(--ok); }
+  .pill.blocked, .pill.findings, .pill.error, .pill.skipped { color: var(--err); border-color: var(--err); }
+  .pill.high { color: var(--ok); } .pill.medium { color: var(--warn); } .pill.low { color: var(--dim); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .scene-cell { border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--panel2); font-size: 12px; }
+  .scene-cell .lbl { font: 12px var(--mono); color: var(--fg); margin-bottom: 4px; }
+  .kv { color: var(--dim); font-size: 11px; }
+  pre.reading {
+    white-space: pre-wrap; word-break: break-word; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 16px;
+    font: 13px/1.6 Georgia, "Times New Roman", serif; max-height: 70vh; overflow: auto;
+  }
+  .md h1 { font-size: 20px; margin: 18px 0 8px; }
+  .md h2 { font-size: 17px; margin: 16px 0 6px; }
+  .md h3 { font-size: 15px; margin: 14px 0 6px; }
+  .md p { margin: 8px 0; }
+  .evidence { font-style: italic; color: var(--dim); border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; }
+  pre.payload { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: 11px var(--mono); color: var(--dim); margin: 4px 0 0; max-height: 220px; overflow: auto; }
+  .note { background: #201d14; border: 1px solid var(--warn); color: var(--warn); border-radius: 6px; padding: 8px 12px; font-size: 12px; margin-bottom: 12px; }
+  #timeline { max-height: 320px; overflow: auto; font: 12px var(--mono); }
+  .ev { padding: 4px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  .ev .seq { color: var(--dim); min-width: 42px; }
+  .ev .kind { color: var(--accent); min-width: 180px; }
+  .ev .pl { color: var(--fg); word-break: break-word; }
+  .ev.unknown .kind { color: var(--warn); }
+  .sse-state { font: 11px var(--mono); color: var(--dim); margin-left: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Spindle Operator Console</h1>
+  <span class="badge">v1 · read-only · localhost</span>
+  <nav>
+    <button data-pane="runs" aria-selected="true">Runs</button>
+    <button data-pane="manuscript" aria-selected="false">Manuscript</button>
+    <button data-pane="canon" aria-selected="false">Canon queue</button>
+    <button data-pane="plan" aria-selected="false">Plan queue</button>
+  </nav>
+</header>
+<main>
+
+  <!-- ── Runs ─────────────────────────────────────────────────────────── -->
+  <section id="pane-runs" class="pane active">
+    <div class="row">
+      <label>Project</label>
+      <select id="runs-project"></select>
+      <button class="refresh" id="runs-refresh">Refresh</button>
+    </div>
+    <div class="card" id="runs-status"><div class="empty">Pick a project.</div></div>
+    <div class="card">
+      <div class="row" style="margin-bottom:6px">
+        <strong>Live timeline</strong>
+        <span class="sse-state" id="sse-state">idle</span>
+      </div>
+      <div id="timeline"><div class="empty">No run selected.</div></div>
+    </div>
+  </section>
+
+  <!-- ── Manuscript ───────────────────────────────────────────────────── -->
+  <section id="pane-manuscript" class="pane">
+    <div class="row">
+      <label>Project</label>
+      <select id="ms-project"></select>
+      <label>Book #</label>
+      <input type="number" id="ms-book" value="1" min="1" style="min-width:80px">
+      <button class="refresh" id="ms-refresh">Compile</button>
+    </div>
+    <div class="card" id="ms-out"><div class="empty">Pick a project and compile.</div></div>
+  </section>
+
+  <!-- ── Canon queue ──────────────────────────────────────────────────── -->
+  <section id="pane-canon" class="pane">
+    <div class="row">
+      <label>Project</label>
+      <select id="canon-project"></select>
+      <button class="refresh" id="canon-refresh">Refresh</button>
+    </div>
+    <div class="note">Read-only. Ratify via <code>decide_canon_deltas</code> (console actions arrive in v2).</div>
+    <div class="card" id="canon-out"><div class="empty">Pick a project.</div></div>
+  </section>
+
+  <!-- ── Plan queue ───────────────────────────────────────────────────── -->
+  <section id="pane-plan" class="pane">
+    <div class="row">
+      <label>Project</label>
+      <select id="plan-project"></select>
+      <button class="refresh" id="plan-refresh">Refresh</button>
+    </div>
+    <div class="note">Read-only. Ratify via <code>decide_plan_amendments</code> (console actions arrive in v2).</div>
+    <div class="card" id="plan-out"><div class="empty">Pick a project.</div></div>
+  </section>
+
+</main>
+<script>
+"use strict";
+// All state is module-local; no framework, no build. Every render path handles
+// the empty and error cases so a failed fetch never blanks a pane (defensive
+// rendering is the compensating control for having no JS test harness).
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
+// GET a JSON endpoint; throws on non-2xx so callers render an error state.
+async function getJSON(path) {
+  const res = await fetch(path, { headers: { "accept": "application/json" } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}${text ? " — " + text : ""}`);
+  }
+  return res.json();
+}
+
+function errorHTML(where, err) {
+  return `<div class="err">Failed to load ${esc(where)}: ${esc(err && err.message || err)}</div>`;
+}
+
+function pill(text) {
+  const cls = String(text || "").toLowerCase().replace(/[^a-z_]/g, "");
+  return `<span class="pill ${esc(cls)}">${esc(text)}</span>`;
+}
+
+// ── Project pickers (shared) ─────────────────────────────────────────────
+// Each pane has its own <select>; they load independently so one pane's fetch
+// failure never breaks the others.
+async function loadProjects(selectId, onChange) {
+  const sel = $(selectId);
+  try {
+    const data = await getJSON("/console/api/projects");
+    const projects = (data && data.projects) || [];
+    if (!projects.length) {
+      sel.innerHTML = `<option value="">(no projects)</option>`;
+      return [];
+    }
+    sel.innerHTML = projects
+      .map((p) => `<option value="${esc(p.project_id)}">${esc(p.name)} — ${esc(p.genre)}</option>`)
+      .join("");
+    sel.onchange = onChange;
+    return projects;
+  } catch (err) {
+    sel.innerHTML = `<option value="">(error)</option>`;
+    return { error: err };
+  }
+}
+
+// ── Runs pane ────────────────────────────────────────────────────────────
+let currentEventSource = null;
+
+async function renderRuns() {
+  const pid = $("runs-project").value;
+  const box = $("runs-status");
+  if (!pid) { box.innerHTML = `<div class="empty">Pick a project.</div>`; return; }
+  box.innerHTML = `<div class="muted">Loading run status…</div>`;
+  let data;
+  try {
+    data = await getJSON(`/console/api/status?project_id=${encodeURIComponent(pid)}`);
+  } catch (err) {
+    box.innerHTML = errorHTML("run status", err);
+    stopTimeline("error");
+    return;
+  }
+  if (!data.run_present || !data.run) {
+    box.innerHTML = `<div class="empty">No authoring run for this project yet.</div>`;
+    stopTimeline("no run");
+    return;
+  }
+  const run = data.run;
+  box.innerHTML = renderRunStatus(run);
+  startTimeline(run.run_id);
+}
+
+function renderRunStatus(run) {
+  const head = `
+    <div class="row" style="margin-bottom:8px">
+      <span class="kv" style="font-family:var(--mono)">${esc(run.run_id)}</span>
+      ${pill(run.status)}
+      <span class="kv">next: ${esc(run.next_action)}</span>
+      <span class="kv">ch ${esc(run.start_chapter)}–${esc(run.end_chapter)}</span>
+      <span class="kv">${esc(run.completed_chapter_count)}/${esc(run.total_chapter_count)} chapters</span>
+      ${run.blocked_reason ? `<span class="err">${esc(run.blocked_reason)}</span>` : ""}
+    </div>`;
+  const chapters = (run.chapters || []).map((ch) => {
+    const scenes = (ch.scenes || []).map((sc) => `
+      <div class="scene-cell">
+        <div class="lbl">${esc(ch.chapter_number)}.${esc(sc.scene_order)} ${pill(sc.phase)}</div>
+        ${sc.mine_status ? `<div class="kv">mine: ${pill(sc.mine_status)} ${esc(sc.mine_detail || "")}</div>` : ""}
+        ${sc.verify_status ? `<div class="kv">verify: ${pill(sc.verify_status)} ${esc(sc.verify_detail || "")}</div>` : ""}
+        ${sc.revise_attempts ? `<div class="kv">revise: ${esc(sc.revise_attempts)}</div>` : ""}
+        ${sc.blocked_reason ? `<div class="err">${esc(sc.blocked_reason)}</div>` : ""}
+      </div>`).join("");
+    return `
+      <div style="margin:10px 0">
+        <div style="margin-bottom:6px">Chapter ${esc(ch.chapter_number)} ${pill(ch.status)}
+          ${ch.summary_saved ? `<span class="kv">· summary saved</span>` : ""}
+          ${ch.replan_status ? `<span class="kv">· replan: ${pill(ch.replan_status)} ${esc(ch.replan_detail || "")}</span>` : ""}
+        </div>
+        <div class="grid">${scenes || '<span class="empty">no scenes</span>'}</div>
+      </div>`;
+  }).join("");
+  const cps = (run.checkpoint_reports || []).map((cp) => `
+    <tr>
+      <td>ch ${esc(cp.start_chapter)}–${esc(cp.end_chapter)}</td>
+      <td>${pill(cp.status)}</td>
+      <td>${cp.checkpoint_policy ? esc(cp.checkpoint_policy) : "manual"}</td>
+      <td>${cp.auto_outcome ? pill(cp.auto_outcome) : ""}</td>
+      <td class="kv">${esc((cp.pending_manual_scene_ids || []).join(", "))}</td>
+    </tr>`).join("");
+  const cpTable = cps
+    ? `<table><thead><tr><th>range</th><th>status</th><th>policy</th><th>auto</th><th>pending manual</th></tr></thead><tbody>${cps}</tbody></table>`
+    : "";
+  return head + chapters + (cpTable ? `<div style="margin-top:10px"><strong>Checkpoints</strong>${cpTable}</div>` : "");
+}
+
+function startTimeline(runId) {
+  stopTimeline("reconnecting");
+  const tl = $("timeline");
+  tl.innerHTML = "";
+  // The browser's native EventSource handles Last-Event-ID resume for us: on a
+  // dropped connection it auto-reconnects, sending the last seq it saw so the
+  // server replays only newer rows (ADR 0002 D4).
+  const es = new EventSource(`/events?topic=run:${encodeURIComponent(runId)}`);
+  currentEventSource = es;
+  es.onopen = () => setSse("live");
+  es.onerror = () => setSse("reconnecting…"); // EventSource retries automatically
+  // Known kinds from ADR 0002 D2. Consumers MUST ignore unknown kinds and
+  // unknown payload keys (ADR 0002 D3.2) — a forward-compat rule. We render any
+  // kind generically, so a kind added in a later phase shows up without a code
+  // change and never breaks the stream.
+  const KNOWN = new Set([
+    "run_started","scene_drafted","scene_verify_completed","scene_revised",
+    "scene_committed","scene_mined","deltas_decided","beats_annotated",
+    "chapter_summarized","checkpoint_created","checkpoint_auto_approved",
+    "checkpoint_blocked","checkpoint_reviewed","replan_proposed","pass_skipped",
+    "run_blocked","run_resumed","run_paused","run_completed",
+  ]);
+  const handler = (kind) => (e) => appendEvent(e.lastEventId, kind, e.data, KNOWN.has(kind));
+  KNOWN.forEach((k) => es.addEventListener(k, handler(k)));
+  // Generic listener for any kind not pre-registered (unknown-kind rule):
+  es.onmessage = (e) => {
+    // Default (unnamed) events only; named events are handled above.
+    appendEvent(e.lastEventId, "message", e.data, false);
+  };
+}
+
+function appendEvent(seq, kind, data, known) {
+  const tl = $("timeline");
+  const first = tl.querySelector(".empty");
+  if (first) tl.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "ev" + (known ? "" : " unknown");
+  div.innerHTML =
+    `<span class="seq">#${esc(seq)}</span>` +
+    `<span class="kind">${esc(kind)}${known ? "" : " (unknown)"}</span>` +
+    `<span class="pl">${esc(data)}</span>`;
+  tl.appendChild(div); // append-only
+  tl.scrollTop = tl.scrollHeight;
+}
+
+function setSse(state) { $("sse-state").textContent = state; }
+function stopTimeline(state) {
+  if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+  setSse(state || "idle");
+}
+
+// ── Manuscript pane ──────────────────────────────────────────────────────
+// ~30-line inline Markdown converter: headings + paragraphs only, no library.
+// Everything is escaped first, so this can never inject markup from prose.
+function renderMarkdown(md) {
+  const lines = String(md || "").split("\n");
+  let html = "", para = [];
+  const flush = () => { if (para.length) { html += `<p>${para.join(" ")}</p>`; para = []; } };
+  for (const raw of lines) {
+    const line = esc(raw);
+    const h = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (h) { flush(); const n = h[1].length; html += `<h${n}>${h[2]}</h${n}>`; }
+    else if (line.trim() === "") { flush(); }
+    else { para.push(line.trim()); }
+  }
+  flush();
+  return html;
+}
+
+async function renderManuscript() {
+  const pid = $("ms-project").value;
+  const book = parseInt($("ms-book").value, 10) || 1;
+  const box = $("ms-out");
+  if (!pid) { box.innerHTML = `<div class="empty">Pick a project.</div>`; return; }
+  box.innerHTML = `<div class="muted">Compiling…</div>`;
+  let data;
+  try {
+    data = await getJSON(`/console/api/manuscript?project_id=${encodeURIComponent(pid)}&book_number=${book}`);
+  } catch (err) { box.innerHTML = errorHTML("manuscript", err); return; }
+  const missing = (data.missing_scenes || []);
+  const head = `<div class="row"><span class="kv">${esc(data.scene_count)} scenes · ${esc(data.word_count)} words</span>
+    ${missing.length ? `<span class="err">${missing.length} undrafted: ${esc(missing.join(", "))}</span>` : ""}</div>`;
+  if (!data.markdown || !data.markdown.trim()) {
+    box.innerHTML = head + `<div class="empty">No drafted prose for this book yet.</div>`;
+    return;
+  }
+  box.innerHTML = head + `<div class="md">${renderMarkdown(data.markdown)}</div>`;
+}
+
+// ── Canon queue pane ─────────────────────────────────────────────────────
+async function renderCanon() {
+  const pid = $("canon-project").value;
+  const box = $("canon-out");
+  if (!pid) { box.innerHTML = `<div class="empty">Pick a project.</div>`; return; }
+  box.innerHTML = `<div class="muted">Loading staged canon deltas…</div>`;
+  let data;
+  try {
+    data = await getJSON(`/console/api/canon_deltas?project_id=${encodeURIComponent(pid)}&status=staged`);
+  } catch (err) { box.innerHTML = errorHTML("canon deltas", err); return; }
+  const deltas = (data.deltas || []);
+  if (!deltas.length) { box.innerHTML = `<div class="empty">No staged canon deltas.</div>`; return; }
+  box.innerHTML = deltas.map((d) => `
+    <div class="card" style="margin-bottom:10px">
+      <div class="row" style="margin-bottom:4px">
+        <strong>${esc(d.delta_class)}</strong>
+        ${pill(d.confidence)}
+        <span class="kv">scene ${esc(d.scene_id)}</span>
+        ${d.target_id ? `<span class="kv">→ ${esc(d.target_id)}</span>` : `<span class="kv">(new)</span>`}
+      </div>
+      <div class="evidence">${esc(d.evidence)}</div>
+      <pre class="payload">${esc(JSON.stringify(d.payload, null, 2))}</pre>
+    </div>`).join("");
+}
+
+// ── Plan queue pane ──────────────────────────────────────────────────────
+async function renderPlan() {
+  const pid = $("plan-project").value;
+  const box = $("plan-out");
+  if (!pid) { box.innerHTML = `<div class="empty">Pick a project.</div>`; return; }
+  box.innerHTML = `<div class="muted">Loading staged plan amendments…</div>`;
+  let data;
+  try {
+    data = await getJSON(`/console/api/plan_amendments?project_id=${encodeURIComponent(pid)}&status=staged`);
+  } catch (err) { box.innerHTML = errorHTML("plan amendments", err); return; }
+  const amendments = (data.amendments || []);
+  if (!amendments.length) { box.innerHTML = `<div class="empty">No staged plan amendments.</div>`; return; }
+  box.innerHTML = amendments.map((a) => `
+    <div class="card" style="margin-bottom:10px">
+      <div class="row" style="margin-bottom:4px">
+        <strong>${esc(a.amendment_class)}</strong>
+        ${pill(a.confidence)}
+        ${a.target_chapter != null ? `<span class="kv">target ch ${esc(a.target_chapter)}</span>` : ""}
+        <span class="kv">from ch ${esc(a.source_chapter)} (book ${esc(a.book_number)})</span>
+      </div>
+      <div class="evidence">${esc(a.rationale)}</div>
+      <pre class="payload">${esc(JSON.stringify(a.payload, null, 2))}</pre>
+    </div>`).join("");
+}
+
+// ── Pane switching + wiring ──────────────────────────────────────────────
+const paneRenderers = { runs: renderRuns, manuscript: renderManuscript, canon: renderCanon, plan: renderPlan };
+
+function switchPane(name) {
+  document.querySelectorAll("nav button").forEach((b) =>
+    b.setAttribute("aria-selected", String(b.dataset.pane === name)));
+  document.querySelectorAll(".pane").forEach((p) => p.classList.remove("active"));
+  const pane = $("pane-" + name);
+  if (pane) pane.classList.add("active");
+  // Runs owns the SSE stream; leaving it closes the stream (no background poll).
+  if (name !== "runs") stopTimeline("idle");
+  // Refetch on pane switch (no polling loops except the SSE stream itself).
+  const r = paneRenderers[name];
+  if (r) r();
+}
+
+document.querySelectorAll("nav button").forEach((b) =>
+  b.addEventListener("click", () => switchPane(b.dataset.pane)));
+
+$("runs-refresh").addEventListener("click", renderRuns);
+$("ms-refresh").addEventListener("click", renderManuscript);
+$("canon-refresh").addEventListener("click", renderCanon);
+$("plan-refresh").addEventListener("click", renderPlan);
+
+// Boot: load each pane's project picker; the Runs pane renders once loaded.
+(async function boot() {
+  await Promise.all([
+    loadProjects("runs-project", renderRuns),
+    loadProjects("ms-project", () => {}),
+    loadProjects("canon-project", renderCanon),
+    loadProjects("plan-project", renderPlan),
+  ]);
+  renderRuns();
+})();
+</script>
+</body>
+</html>
