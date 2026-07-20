@@ -175,6 +175,13 @@ resolves only to a non-explicit agent and asserts, against a post-gate dispatch
 recorder, that no request containing the explicit scene's prose or brief ever
 reached the uncleared agent (evolution design §4).
 
+The same rating-gated chokepoint now also covers the model-backed
+`check_consistency` deep tiers that carry scene prose — the intra-scene temporal
+check and the semantic world-rule check — which previously dispatched with
+`rating: None` and bypassed clearance; each now stamps the scene's rating and
+skips honestly (one `info` finding naming the route and rating) when the review
+agent does not declare it.
+
 ## Run journal (observability)
 
 Each authoring run appends an **append-only event journal** as it advances —

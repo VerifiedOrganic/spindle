@@ -11063,13 +11063,17 @@ impl SqliteSpindleService {
                 continue;
             }
 
+            // This pass carries scene prose, so it MUST stamp the scene's content
+            // rating (lowercased) — the rating-gated chokepoint then routes an
+            // explicit-rated scene only to an explicit-cleared agent (evolution
+            // §4). Previously `rating: None` bypassed clearance entirely.
             let model_violations = match self
                 .repository
                 .model_router()
                 .complete(&ModelRequest {
                     route: "review".to_string(),
                     prompt: build_world_rule_deep_check_prompt(scene, &applicable_rules),
-                    rating: None,
+                    rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
                     context: None,
                 })
                 .await
@@ -11079,7 +11083,23 @@ impl SqliteSpindleService {
                         heuristic_world_rule_violations(scene, &applicable_rules)
                     })
                 }
-                Ok(_) | Err(_) => heuristic_world_rule_violations(scene, &applicable_rules),
+                Ok(_) => heuristic_world_rule_violations(scene, &applicable_rules),
+                // Honest skip on a rating-clearance rejection: the `review` agent
+                // is not cleared for this scene's rating, so the prose never left.
+                // Emit one info finding that reads as SKIPPED (route + rating, no
+                // prose) and stop — every remaining scene of this rating would hit
+                // the same wall. Any OTHER error keeps the legacy heuristic
+                // fallback (transport-error behavior unchanged in this ticket).
+                Err(err)
+                    if matches!(
+                        err.downcast_ref::<crate::ai::RouteClearanceError>(),
+                        Some(crate::ai::RouteClearanceError::RatingNotCovered { .. })
+                    ) =>
+                {
+                    issues.push(world_rule_deep_skip_issue(&err));
+                    return Ok(issues);
+                }
+                Err(_) => heuristic_world_rule_violations(scene, &applicable_rules),
             };
 
             for violation in model_violations {
@@ -11136,13 +11156,17 @@ impl SqliteSpindleService {
             if scene.full_text.trim().is_empty() {
                 continue;
             }
+            // This pass carries scene prose, so it MUST stamp the scene's content
+            // rating (lowercased) — the rating-gated chokepoint then routes an
+            // explicit-rated scene only to an explicit-cleared agent (evolution
+            // §4). Previously `rating: None` bypassed clearance entirely.
             let findings = match self
                 .repository
                 .model_router()
                 .complete(&ModelRequest {
                     route: "review".to_string(),
                     prompt: build_temporal_deep_check_prompt(scene),
-                    rating: None,
+                    rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
                     context: None,
                 })
                 .await
@@ -11152,6 +11176,22 @@ impl SqliteSpindleService {
                 // a no-op unless a real review model returns structured findings.
                 Ok(response) => {
                     parse_deep_temporal_check_output(&response.output).unwrap_or_default()
+                }
+                // Honest skip on a rating-clearance rejection: the `review` agent
+                // is not cleared for this scene's rating, so the prose never left.
+                // Emit one info finding that reads as SKIPPED (route + rating, no
+                // prose) and stop — every remaining scene of this rating would hit
+                // the same wall. Any OTHER error (transport failure, missing
+                // route) stays SILENT: the legacy `Err(_) => Vec::new()` behavior
+                // is intentionally unchanged in this ticket.
+                Err(err)
+                    if matches!(
+                        err.downcast_ref::<crate::ai::RouteClearanceError>(),
+                        Some(crate::ai::RouteClearanceError::RatingNotCovered { .. })
+                    ) =>
+                {
+                    issues.push(temporal_deep_skip_issue(&err));
+                    return Ok(issues);
                 }
                 Err(_) => Vec::new(),
             };
@@ -23307,6 +23347,63 @@ fn secret_leak_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consiste
     }
 }
 
+/// Build the honest-skip `ConsistencyIssue` for the intra-scene temporal-
+/// coherence deep tier when the `review` route is refused by the rating-clearance
+/// gate. Same shape as [`secret_leak_skip_issue`]: names route + rating (ids
+/// only, never prose). This helper is ONLY used for the clearance-rejection case;
+/// a non-clearance transport error stays silent (the legacy `Err(_) => Vec::new()`
+/// behavior for the temporal tier is intentionally unchanged in this ticket).
+fn temporal_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
+    use spindle_core::models::ConsistencyIssue;
+    let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "temporal coherence deep check was SKIPPED: the `{route}` route is not cleared for \
+             rating `{rating}`. This scene was NOT audited for intra-scene time jumps."
+        ),
+        _ => "temporal coherence deep check was SKIPPED: no usable review route (the model call \
+              failed). This scene was NOT audited for intra-scene time jumps."
+            .to_string(),
+    };
+    ConsistencyIssue {
+        severity: "info".to_string(),
+        check_type: "temporal_coherence".to_string(),
+        message,
+        entity_ids: Vec::new(),
+        suggested_action: Some(
+            "configure a review model route cleared for the scene rating, then re-run this check"
+                .to_string(),
+        ),
+    }
+}
+
+/// Build the honest-skip `ConsistencyIssue` for the semantic world-rule deep
+/// tier when the `review` route is refused by the rating-clearance gate. Same
+/// shape as [`secret_leak_skip_issue`]: names route + rating (ids only, never
+/// prose). ONLY used for the clearance-rejection case; a non-clearance error
+/// keeps the legacy heuristic fallback (unchanged in this ticket).
+fn world_rule_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIssue {
+    use spindle_core::models::ConsistencyIssue;
+    let message = match err.downcast_ref::<crate::ai::RouteClearanceError>() {
+        Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
+            "world rule semantic deep check was SKIPPED: the `{route}` route is not cleared for \
+             rating `{rating}`. This scene was NOT audited for semantic world-rule violations."
+        ),
+        _ => "world rule semantic deep check was SKIPPED: no usable review route (the model call \
+              failed). This scene was NOT audited for semantic world-rule violations."
+            .to_string(),
+    };
+    ConsistencyIssue {
+        severity: "info".to_string(),
+        check_type: "world_rule_compliance".to_string(),
+        message,
+        entity_ids: Vec::new(),
+        suggested_action: Some(
+            "configure a review model route cleared for the scene rating, then re-run this check"
+                .to_string(),
+        ),
+    }
+}
+
 /// The maximum content rating across a set of scenes, ordered
 /// general < teen < mature < explicit, lowercased. Returns `None` for an empty
 /// slice.
@@ -31839,13 +31936,18 @@ rating = "explicit"
 
     /// Tier 2 precision: the model pass must not fabricate findings on coherent
     /// prose (the faked route returns an empty findings array).
+    ///
+    /// Hermetic via `fresh_service_local`: the temporal deep tier now stamps the
+    /// scene rating on its request, so it resolves through the rating-clearance
+    /// gate. `fresh_service` would read a dev machine's real `review` agent config
+    /// (which may not declare `general`) and honest-skip instead of running clean.
     #[tokio::test]
     async fn deep_check_clean_scene_has_no_temporal_finding() {
         use spindle_core::models::{
             CheckConsistencyInput, ConsistencyScopeInput, ContentRating, SaveSceneDraftInput,
         };
 
-        let (_tmp, svc) = fresh_service().await;
+        let (_tmp, svc) = fresh_service_local().await;
         let proj = svc
             .create_project(CreateProjectInput {
                 name: "deep-clean".into(),
@@ -31935,6 +32037,398 @@ rating = "explicit"
             )
             .is_err()
         );
+    }
+
+    /// Rating carriage of the two pre-existing prose-bearing deep tiers — the
+    /// intra-scene temporal check (`deep_temporal_coherence_issues`) and the
+    /// semantic world-rule check (`deep_world_rule_compliance_issues`). Both
+    /// dispatched with `rating: None`, bypassing the clearance chokepoint, so an
+    /// explicit scene's prose could reach a `review` agent that never declared
+    /// explicit coverage. These tests pin the fix: each per-scene dispatch now
+    /// carries the scene's `content_rating` lowercased (the secret_leak pattern),
+    /// and a `RatingNotCovered` rejection emits one honest-skip info finding.
+    ///
+    /// All hermetic: `fresh_service_local` + a TempDir `configure_agents` config,
+    /// and the dispatch recorder (`install_dispatch_recorder`) proves no prose
+    /// left for an uncleared agent.
+    mod deep_tier_rating_carriage {
+        use super::*;
+        use crate::ai::DispatchRecord;
+        use spindle_core::models::{
+            CheckConsistencyInput, ConfigureAgentsInput, ConsistencyScopeInput, ContentRating,
+            CreateWorldRuleInput, SaveSceneDraftInput,
+        };
+
+        /// A `review` agent declaring exactly `ratings` (write a rated agent so
+        /// clearance actually engages — a built-in local route serves every
+        /// rating and is never gated). Written to a TempDir and installed.
+        fn install_review_agent(tmp: &TempDir, svc: &SqliteSpindleService, ratings: &[&str]) {
+            let ratings_toml = ratings
+                .iter()
+                .map(|r| format!("\"{r}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let config_path = tmp.path().join("review-agent.toml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "review-rated"
+name = "Review Rated"
+provider = "local"
+endpoint = "local"
+model = "review-rated"
+ratings = [{ratings_toml}]
+
+[[routing]]
+route = "review"
+agent = "review-rated"
+"#
+                ),
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+        }
+
+        async fn seed_project(svc: &SqliteSpindleService, name: &str) -> String {
+            svc.create_project(CreateProjectInput {
+                name: name.into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap()
+            .project_id
+        }
+
+        async fn save_rated_scene(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            full_text: &str,
+            rating: ContentRating,
+        ) {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: full_text.into(),
+                summary: "s".into(),
+                content_rating: rating,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        fn temporal_input(project_id: &str) -> CheckConsistencyInput {
+            CheckConsistencyInput {
+                project_id: project_id.to_string(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["temporal_coherence".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(true),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            }
+        }
+
+        fn world_rule_input(project_id: &str) -> CheckConsistencyInput {
+            CheckConsistencyInput {
+                project_id: project_id.to_string(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["world_rule_compliance".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(true),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            }
+        }
+
+        // A project-wide world rule (no `established_in` placement) applies to
+        // every scene, so the deep world-rule tier dispatches for the scene.
+        async fn seed_world_rule(svc: &SqliteSpindleService, project_id: &str) {
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.to_string(),
+                rule_name: "no remote magic".into(),
+                rule_type: "magic".into(),
+                description: "Every spell requires physical contact with the target.".into(),
+                scan_pattern: None,
+                relevance_tags: Vec::new(),
+                established_in: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        const EXPLICIT_PROSE: &str = "He sat at the long table. MOCK_TEMPORAL_JUMP. UNIQUE_EXPLICIT_PROSE_SENTINEL. \
+             The lamps were lit and the room had gone cold around him.";
+
+        fn dispatched_prompts(records: &[DispatchRecord]) -> Vec<&str> {
+            records
+                .iter()
+                .filter_map(|r| match r {
+                    DispatchRecord::Dispatch { prompt, .. } => Some(prompt.as_str()),
+                    DispatchRecord::Rejection { .. } => None,
+                })
+                .collect()
+        }
+
+        fn skip_findings(
+            issues: &[spindle_core::models::ConsistencyIssue],
+            check_type: &str,
+        ) -> Vec<spindle_core::models::ConsistencyIssue> {
+            issues
+                .iter()
+                .filter(|i| {
+                    i.check_type == check_type
+                        && i.severity == "info"
+                        && i.message.to_lowercase().contains("skipped")
+                })
+                .cloned()
+                .collect()
+        }
+
+        // ── (a) temporal deep tier: RatingNotCovered honest-skip ───────────
+        /// An EXPLICIT scene routed to a `review` agent that declares only
+        /// `general` must NOT dispatch the explicit prose, and the temporal deep
+        /// tier must emit one skip finding naming route + rating.
+        #[tokio::test]
+        async fn temporal_deep_honest_skips_and_never_dispatches_uncleared_explicit_prose() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "temporal-uncleared").await;
+            install_review_agent(&tmp, &svc, &["general"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+
+            save_rated_scene(&svc, &project_id, EXPLICIT_PROSE, ContentRating::Explicit).await;
+
+            let out = svc
+                .check_consistency(temporal_input(&project_id))
+                .await
+                .unwrap();
+
+            // No Dispatch carried the explicit prose past the gate.
+            let records = log.lock().unwrap().clone();
+            for prompt in dispatched_prompts(&records) {
+                assert!(
+                    !prompt.contains("UNIQUE_EXPLICIT_PROSE_SENTINEL"),
+                    "explicit prose must never dispatch to an uncleared agent: {records:?}"
+                );
+            }
+
+            let skips = skip_findings(&out.issues, "temporal_coherence");
+            assert_eq!(
+                skips.len(),
+                1,
+                "exactly one temporal skip finding: {:?}",
+                out.issues
+            );
+            assert!(
+                skips[0].message.contains("`review`"),
+                "{}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.contains("`explicit`"),
+                "{}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.to_lowercase().contains("temporal"),
+                "the skip finding must name the temporal tier: {}",
+                skips[0].message
+            );
+        }
+
+        // ── (b) world-rule deep tier: RatingNotCovered honest-skip ─────────
+        #[tokio::test]
+        async fn world_rule_deep_honest_skips_and_never_dispatches_uncleared_explicit_prose() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "world-rule-uncleared").await;
+            seed_world_rule(&svc, &project_id).await;
+            install_review_agent(&tmp, &svc, &["general"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+
+            save_rated_scene(&svc, &project_id, EXPLICIT_PROSE, ContentRating::Explicit).await;
+
+            let out = svc
+                .check_consistency(world_rule_input(&project_id))
+                .await
+                .unwrap();
+
+            let records = log.lock().unwrap().clone();
+            for prompt in dispatched_prompts(&records) {
+                assert!(
+                    !prompt.contains("UNIQUE_EXPLICIT_PROSE_SENTINEL"),
+                    "explicit prose must never dispatch to an uncleared agent: {records:?}"
+                );
+            }
+
+            let skips = skip_findings(&out.issues, "world_rule_compliance");
+            assert_eq!(
+                skips.len(),
+                1,
+                "exactly one world-rule skip finding: {:?}",
+                out.issues
+            );
+            assert!(
+                skips[0].message.contains("`review`"),
+                "{}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.contains("`explicit`"),
+                "{}",
+                skips[0].message
+            );
+            assert!(
+                skips[0].message.to_lowercase().contains("world rule"),
+                "the skip finding must name the world-rule tier: {}",
+                skips[0].message
+            );
+        }
+
+        // ── (c) cleared config: deep tiers dispatch WITH the explicit rating ─
+        /// When the `review` agent declares `explicit`, the deep tiers clear the
+        /// gate and dispatch the explicit prose carrying `rating: Some("explicit")`.
+        #[tokio::test]
+        async fn deep_tiers_dispatch_with_explicit_rating_when_cleared() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "temporal-cleared").await;
+            seed_world_rule(&svc, &project_id).await;
+            install_review_agent(&tmp, &svc, &["general", "explicit"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+
+            save_rated_scene(&svc, &project_id, EXPLICIT_PROSE, ContentRating::Explicit).await;
+
+            let temporal = svc
+                .check_consistency(temporal_input(&project_id))
+                .await
+                .unwrap();
+            let world = svc
+                .check_consistency(world_rule_input(&project_id))
+                .await
+                .unwrap();
+
+            // No honest-skip fired for either tier — both cleared.
+            assert!(
+                skip_findings(&temporal.issues, "temporal_coherence").is_empty(),
+                "cleared temporal tier must not skip: {:?}",
+                temporal.issues
+            );
+            assert!(
+                skip_findings(&world.issues, "world_rule_compliance").is_empty(),
+                "cleared world-rule tier must not skip: {:?}",
+                world.issues
+            );
+
+            // At least one Dispatch carried the explicit prose AND the explicit rating.
+            let records = log.lock().unwrap().clone();
+            let explicit_dispatches: Vec<_> = records
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r,
+                        DispatchRecord::Dispatch { rating, prompt, .. }
+                            if rating.as_deref() == Some("explicit")
+                                && prompt.contains("UNIQUE_EXPLICIT_PROSE_SENTINEL")
+                    )
+                })
+                .collect();
+            assert!(
+                !explicit_dispatches.is_empty(),
+                "a cleared deep tier must dispatch with rating=explicit: {records:?}"
+            );
+            // No rejection was recorded — the cleared agent covers the rating.
+            assert!(
+                !records
+                    .iter()
+                    .any(|r| matches!(r, DispatchRecord::Rejection { .. })),
+                "no clearance rejection when the agent covers the rating: {records:?}"
+            );
+        }
+
+        // ── (d) common case: general scene + general-only agent still works ─
+        /// A GENERAL scene routed to a `general`-only agent must NOT skip: the
+        /// deep tiers dispatch normally (rating=general is covered).
+        #[tokio::test]
+        async fn general_scene_general_agent_no_regression() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project_id = seed_project(&svc, "temporal-general").await;
+            seed_world_rule(&svc, &project_id).await;
+            install_review_agent(&tmp, &svc, &["general"]);
+            let log = svc.repository.model_router().install_dispatch_recorder();
+
+            save_rated_scene(
+                &svc,
+                &project_id,
+                "He sat at the long table. MOCK_TEMPORAL_JUMP. The lamps were lit.",
+                ContentRating::General,
+            )
+            .await;
+
+            let temporal = svc
+                .check_consistency(temporal_input(&project_id))
+                .await
+                .unwrap();
+            let world = svc
+                .check_consistency(world_rule_input(&project_id))
+                .await
+                .unwrap();
+
+            assert!(
+                skip_findings(&temporal.issues, "temporal_coherence").is_empty(),
+                "general/general must not skip temporal: {:?}",
+                temporal.issues
+            );
+            assert!(
+                skip_findings(&world.issues, "world_rule_compliance").is_empty(),
+                "general/general must not skip world-rule: {:?}",
+                world.issues
+            );
+            // The general-rated dispatches carried rating=general and cleared.
+            let records = log.lock().unwrap().clone();
+            assert!(
+                records.iter().any(|r| matches!(
+                    r,
+                    DispatchRecord::Dispatch { rating, .. } if rating.as_deref() == Some("general")
+                )),
+                "a general dispatch must carry rating=general: {records:?}"
+            );
+            assert!(
+                !records
+                    .iter()
+                    .any(|r| matches!(r, DispatchRecord::Rejection { .. })),
+                "no rejection for a covered general rating: {records:?}"
+            );
+            // The model-backed temporal finding still surfaces (Tier 2 works).
+            assert!(
+                temporal
+                    .issues
+                    .iter()
+                    .any(|i| i.check_type == "temporal_coherence" && i.severity == "warning"),
+                "the general deep temporal tier must still surface findings: {:?}",
+                temporal.issues
+            );
+        }
     }
 
     /// Helper: project + opening scene + an Economy + a named price fact scoped
@@ -40096,6 +40590,56 @@ agent = "review-safe"
     fn secret_leak_skip_issue_generic_message_for_non_clearance_error() {
         let err = anyhow::anyhow!("timeout");
         let issue = super::secret_leak_skip_issue(&err);
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("no usable review route"));
+    }
+
+    #[test]
+    fn temporal_deep_skip_issue_names_route_and_rating_on_rating_not_covered() {
+        let err = anyhow::Error::new(crate::ai::RouteClearanceError::RatingNotCovered {
+            route: "review".to_string(),
+            rating: "explicit".to_string(),
+            agent_id: "reviewer".to_string(),
+        });
+        let issue = super::temporal_deep_skip_issue(&err);
+        assert_eq!(issue.check_type, "temporal_coherence");
+        assert_eq!(issue.severity, "info");
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("`review`"));
+        assert!(issue.message.contains("`explicit`"));
+        assert!(issue.message.contains("not cleared for rating"));
+        assert!(issue.message.to_lowercase().contains("temporal"));
+    }
+
+    #[test]
+    fn temporal_deep_skip_issue_generic_message_for_non_clearance_error() {
+        let err = anyhow::anyhow!("connection refused");
+        let issue = super::temporal_deep_skip_issue(&err);
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("no usable review route"));
+    }
+
+    #[test]
+    fn world_rule_deep_skip_issue_names_route_and_rating_on_rating_not_covered() {
+        let err = anyhow::Error::new(crate::ai::RouteClearanceError::RatingNotCovered {
+            route: "review".to_string(),
+            rating: "mature".to_string(),
+            agent_id: "reviewer".to_string(),
+        });
+        let issue = super::world_rule_deep_skip_issue(&err);
+        assert_eq!(issue.check_type, "world_rule_compliance");
+        assert_eq!(issue.severity, "info");
+        assert!(issue.message.contains("SKIPPED"));
+        assert!(issue.message.contains("`review`"));
+        assert!(issue.message.contains("`mature`"));
+        assert!(issue.message.contains("not cleared for rating"));
+        assert!(issue.message.to_lowercase().contains("world rule"));
+    }
+
+    #[test]
+    fn world_rule_deep_skip_issue_generic_message_for_non_clearance_error() {
+        let err = anyhow::anyhow!("timeout");
+        let issue = super::world_rule_deep_skip_issue(&err);
         assert!(issue.message.contains("SKIPPED"));
         assert!(issue.message.contains("no usable review route"));
     }

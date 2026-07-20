@@ -385,6 +385,7 @@ This section is normative. The current system, verified:
    helper wraps `resolve_route` and additionally verifies the resolved agent's `ratings` list
    covers the scene's rating (normalized compare). All harness/service pass dispatch goes
    through it. No call site may resolve a prose-bearing route directly.
+   *(Implementation refinement — landed:* the two pre-existing prose-bearing deep tiers that predate the chokepoint — the intra-scene temporal check (`deep_temporal_coherence_issues`) and the semantic world-rule check (`deep_world_rule_compliance_issues`) — now stamp each scene's `content_rating` on their `review` dispatch and honest-skip on `RatingNotCovered` (per-scene pattern, mirroring the secret-leak tier), closing the `rating: None` bypass the offload contract-test agent flagged so an explicit scene's prose can no longer reach a `review` agent that never declared explicit coverage.)*
 3. **Degradation ladder, per pass:** cleared role route → cleared `review` route (where the
    table in §2.3 allows) → **host fallback** (hybrid ethos, I2) → **skip + `pass_skipped`
    journal event + finding** (I8). At no point does prose reach an uncleared agent. There is
