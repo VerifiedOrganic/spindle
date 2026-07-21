@@ -80,9 +80,20 @@ use crate::ai::SearchDocument;
 
 use super::Repository;
 
-/// Cap on in-memory generation receipts. Once exceeded, oldest entries are
-/// evicted FIFO. Mirrors the SurrealDB-era `MAX_GENERATION_RECEIPTS = 256`.
+/// Cap on the in-memory generation-receipt cache. Once exceeded, oldest entries
+/// are evicted FIFO. Mirrors the SurrealDB-era `MAX_GENERATION_RECEIPTS = 256`.
+/// The cache is a read-through front for the persisted `generation_receipt`
+/// table (migration V0032); the DB is the source of truth across restarts.
 const MAX_GENERATION_RECEIPTS: usize = 256;
+
+/// Time-to-live for a persisted generation receipt (live-run bug 4c). The
+/// in-memory version carried NO wall-clock expiry — a receipt lived until the
+/// process died. Persisted receipts outlive the process, so an explicit bound
+/// replaces the process lifetime as the natural GC. 24h is long enough for any
+/// realistic draft→revise→save loop across a primary restart, short enough that
+/// abandoned receipts do not accumulate. Constant by decision (no per-call
+/// override); expiry is enforced on read and expired rows are swept lazily.
+const GENERATION_RECEIPT_TTL: chrono::Duration = chrono::Duration::hours(24);
 
 /// Degenerate-scene guard for style-learning capture (evolution §3.9). A scene
 /// whose agent draft or operator edit exceeds this many characters skips
@@ -3517,12 +3528,14 @@ impl SqliteSpindleService {
             )
             .await?;
         if output.route_name == "draft" && !output.output.trim().is_empty() {
-            let receipt = self.register_generation_receipt(
-                &output.route_name,
-                input.rating.as_deref(),
-                &output.model_name,
-                &output.output,
-            );
+            let receipt = self
+                .register_generation_receipt(
+                    &output.route_name,
+                    input.rating.as_deref(),
+                    &output.model_name,
+                    &output.output,
+                )
+                .await;
             output.generation_id = Some(receipt.id);
             output.generation_agent_id = Some(receipt.agent_id);
             output.generation_output_sha256 = Some(receipt.output_sha256);
@@ -12458,12 +12471,14 @@ impl SqliteSpindleService {
                 &input.prior_output,
             )
             .await?;
-        let receipt = self.register_generation_receipt(
-            &input.route,
-            input.rating.as_deref(),
-            &response.model_name,
-            &format!("{}{}", input.prior_output, response.output),
-        );
+        let receipt = self
+            .register_generation_receipt(
+                &input.route,
+                input.rating.as_deref(),
+                &response.model_name,
+                &format!("{}{}", input.prior_output, response.output),
+            )
+            .await;
         Ok(ContinueGenerationOutput {
             output: response.output,
             truncated: response.truncated,
@@ -12489,7 +12504,8 @@ impl SqliteSpindleService {
         use spindle_core::models::ReviseGenerationOutput;
 
         let source_receipt = self
-            .verified_revisable_draft_receipt(Some(&input.generation_id))?
+            .verified_revisable_draft_receipt(Some(&input.generation_id))
+            .await?
             .ok_or_else(|| anyhow::anyhow!("generation_id is required"))?;
         let edit_instructions = input.edit_instructions.trim();
         if edit_instructions.is_empty() {
@@ -12511,12 +12527,14 @@ impl SqliteSpindleService {
                 context: None,
             })
             .await?;
-        let receipt = self.register_generation_receipt(
-            &source_receipt.route,
-            source_receipt.rating.as_deref(),
-            &response.model_name,
-            &response.output,
-        );
+        let receipt = self
+            .register_generation_receipt(
+                &source_receipt.route,
+                source_receipt.rating.as_deref(),
+                &response.model_name,
+                &response.output,
+            )
+            .await;
 
         Ok(ReviseGenerationOutput {
             output: response.output,
@@ -12528,11 +12546,16 @@ impl SqliteSpindleService {
         })
     }
 
-    /// Register an in-memory receipt for a model-router output. Caches
-    /// up to `MAX_GENERATION_RECEIPTS`; oldest entries evict FIFO.
-    /// Mirrors the SurrealDB reference exactly so the `generation_id`
-    /// shape (`model_generation:{seq}:{12-char-sha-prefix}`) is stable.
-    fn register_generation_receipt(
+    /// Register a receipt for a model-router output. Persists the row in the
+    /// `generation_receipt` table (migration V0032) so the `generation_id`
+    /// survives a primary restart, and also seeds an in-memory read-through
+    /// cache (up to `MAX_GENERATION_RECEIPTS`, evicting oldest FIFO). Mirrors
+    /// the SurrealDB reference so the `generation_id` shape
+    /// (`model_generation:{seq}:{12-char-sha-prefix}`) is stable.
+    ///
+    /// The persisted row carries a `GENERATION_RECEIPT_TTL` expiry stamped from
+    /// the current wall clock; the `verified_*` lookups enforce it on read.
+    async fn register_generation_receipt(
         &self,
         route: &str,
         rating: Option<&str>,
@@ -12556,10 +12579,41 @@ impl SqliteSpindleService {
             route: route.to_string(),
             rating: rating.map(normalize_generation_rating),
             agent_id: agent_id.to_string(),
-            output_sha256,
-            output_text,
+            output_sha256: output_sha256.clone(),
+            output_text: output_text.clone(),
             explicit_capable_agent: self.agent_supports_rating(agent_id, "explicit"),
         };
+
+        // Persist (source of truth across restarts). A DB write failure must not
+        // silently drop the receipt into an unrecoverable state: the in-memory
+        // cache below still serves same-process reads, and a warn surfaces the
+        // degradation. (The cross-process guarantee is only lost if the write
+        // failed, which is itself logged.)
+        let created_at = chrono::Utc::now();
+        let expires_at = created_at + GENERATION_RECEIPT_TTL;
+        if let Err(err) = self
+            .repository
+            .insert_generation_receipt(
+                &id,
+                None,
+                None,
+                route,
+                agent_id,
+                receipt.rating.as_deref(),
+                receipt.explicit_capable_agent,
+                &output_sha256,
+                &output_text,
+                created_at,
+                expires_at,
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %err,
+                generation_id = %id,
+                "failed to persist generation receipt; it will not survive a restart"
+            );
+        }
 
         let mut receipts = self
             .generation_receipts
@@ -12593,6 +12647,51 @@ impl SqliteSpindleService {
             })
     }
 
+    /// Resolve a receipt by id: in-memory cache first (fast path, and the seam
+    /// tests poke to flip `explicit_capable_agent`), then the persisted
+    /// `generation_receipt` table (survives restarts). Expiry is enforced by the
+    /// repository read (expired rows are swept there), so a DB miss here means
+    /// the receipt is genuinely gone — unknown OR expired — and both map to the
+    /// same `was not found or has expired` error (message preserved). A DB hit
+    /// is folded into the cache so subsequent same-process reads are cheap.
+    async fn lookup_generation_receipt(
+        &self,
+        generation_id: &str,
+    ) -> Result<GenerationReceiptRecord> {
+        if let Some(cached) = self
+            .generation_receipts
+            .read()
+            .expect("generation receipts read lock")
+            .get(generation_id)
+            .cloned()
+        {
+            return Ok(cached);
+        }
+
+        let stored = self
+            .repository
+            .get_generation_receipt(generation_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("generation_id {generation_id:?} was not found or has expired")
+            })?;
+
+        let receipt = GenerationReceiptRecord {
+            id: stored.id,
+            route: stored.route,
+            rating: stored.rating,
+            agent_id: stored.agent_id,
+            output_sha256: stored.output_sha256,
+            output_text: stored.output_text,
+            explicit_capable_agent: stored.explicit_capable,
+        };
+        self.generation_receipts
+            .write()
+            .expect("generation receipts write lock")
+            .insert(receipt.id.clone(), receipt.clone());
+        Ok(receipt)
+    }
+
     /// Look up + validate a draft generation receipt by id. Used by
     /// `revise_generation` to confirm the receipt is suitable for revision
     /// through the model router.
@@ -12607,7 +12706,7 @@ impl SqliteSpindleService {
     /// `explicit_capable_agent` check is kept but applies only when the
     /// receipt's rating IS explicit — for lower ratings any agent that
     /// produced the draft is fine to revise it.
-    fn verified_revisable_draft_receipt(
+    async fn verified_revisable_draft_receipt(
         &self,
         generation_id: Option<&str>,
     ) -> Result<Option<GenerationReceiptRecord>> {
@@ -12618,15 +12717,7 @@ impl SqliteSpindleService {
             return Ok(None);
         };
 
-        let receipt = self
-            .generation_receipts
-            .read()
-            .expect("generation receipts read lock")
-            .get(generation_id)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("generation_id {generation_id:?} was not found or has expired")
-            })?;
+        let receipt = self.lookup_generation_receipt(generation_id).await?;
 
         if receipt.route != "draft" {
             anyhow::bail!(
@@ -12651,12 +12742,13 @@ impl SqliteSpindleService {
         Ok(Some(receipt))
     }
 
-    fn verified_explicit_save_receipt(
+    async fn verified_explicit_save_receipt(
         &self,
         generation_id: Option<&str>,
     ) -> Result<GenerationReceiptRecord> {
         let receipt = self
-            .verified_revisable_draft_receipt(generation_id)?
+            .verified_revisable_draft_receipt(generation_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("generation_id is required for explicit draft saves"))?;
         if receipt.rating.as_deref() != Some("explicit") {
             anyhow::bail!(
@@ -20923,8 +21015,9 @@ impl SqliteSpindleService {
                 // copy of the prose, a mismatch check may be reintroduced — but
                 // it MUST reject loudly (a structured error naming the mismatch),
                 // never silently substitute the receipt.
-                let receipt =
-                    self.verified_explicit_save_receipt(input.generation_id.as_deref())?;
+                let receipt = self
+                    .verified_explicit_save_receipt(input.generation_id.as_deref())
+                    .await?;
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             } else if crate::sqlite::import_service::contains_explicit_sexual_prose(
                 &input.full_text,
@@ -20943,7 +21036,9 @@ impl SqliteSpindleService {
             // an operator re-save is recognized as a style-contrast pair. The
             // client-supplied prose is authoritative here (only explicit prose is
             // server-held), so `full_text` is left untouched.
-            let receipt = self.verified_revisable_draft_receipt(input.generation_id.as_deref())?;
+            let receipt = self
+                .verified_revisable_draft_receipt(input.generation_id.as_deref())
+                .await?;
             if let Some(receipt) = receipt {
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             }
@@ -31097,12 +31192,14 @@ rating = "explicit"
         // Seed a mature-rated draft receipt directly (the local adapter
         // doesn't implement complete_continuation, so we can't go through
         // continue_generation; the private helper is in-module-accessible).
-        let receipt = svc.register_generation_receipt(
-            "draft",
-            Some("mature"),
-            "local-adapter-stub",
-            "Mara crossed the rain-slick alley, salt charm warm in her fist.",
-        );
+        let receipt = svc
+            .register_generation_receipt(
+                "draft",
+                Some("mature"),
+                "local-adapter-stub",
+                "Mara crossed the rain-slick alley, salt charm warm in her fist.",
+            )
+            .await;
 
         let outcome = svc
             .revise_generation(spindle_core::models::ReviseGenerationInput {
@@ -31134,12 +31231,14 @@ rating = "explicit"
     #[tokio::test]
     async fn revise_generation_still_blocks_explicit_from_non_explicit_agent() {
         let (_tmp, svc) = fresh_service_local().await;
-        let receipt = svc.register_generation_receipt(
-            "draft",
-            Some("explicit"),
-            "local-adapter-stub-no-explicit",
-            "Some explicit prose.",
-        );
+        let receipt = svc
+            .register_generation_receipt(
+                "draft",
+                Some("explicit"),
+                "local-adapter-stub-no-explicit",
+                "Some explicit prose.",
+            )
+            .await;
         let err = svc
             .revise_generation(spindle_core::models::ReviseGenerationInput {
                 generation_id: receipt.id.clone(),
@@ -31243,12 +31342,14 @@ rating = "explicit"
         // ("I'll bootstrap Spindle…") + a truncated turn fragment. It is NOT the
         // prose and must never be persisted.
         let receipt_output = "{\"ok\":I'll bootstrap Spindle then draft… [truncated turn fragment]";
-        let receipt = svc.register_generation_receipt(
-            "draft",
-            Some("explicit"),
-            "explicit-agent",
-            receipt_output,
-        );
+        let receipt = svc
+            .register_generation_receipt(
+                "draft",
+                Some("explicit"),
+                "explicit-agent",
+                receipt_output,
+            )
+            .await;
         {
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
@@ -31322,12 +31423,14 @@ rating = "explicit"
             })
             .await
             .unwrap();
-        let receipt = svc.register_generation_receipt(
-            "draft",
-            Some("mature"),
-            "mature-agent",
-            "Receipt narration that is NOT the prose.",
-        );
+        let receipt = svc
+            .register_generation_receipt(
+                "draft",
+                Some("mature"),
+                "mature-agent",
+                "Receipt narration that is NOT the prose.",
+            )
+            .await;
         let caller_full_text = "The mist rolled off the cliffs as she climbed the last switchback.";
 
         let out = svc
@@ -31379,13 +31482,10 @@ rating = "explicit"
             })
             .await
             .unwrap();
-        let seed_receipt = |svc: &SqliteSpindleService, output: &str| {
-            let receipt = svc.register_generation_receipt(
-                "draft",
-                Some("explicit"),
-                "explicit-agent",
-                output,
-            );
+        let seed_receipt = async |svc: &SqliteSpindleService, output: &str| {
+            let receipt = svc
+                .register_generation_receipt("draft", Some("explicit"), "explicit-agent", output)
+                .await;
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
                 .get_mut(&receipt.id)
@@ -31394,7 +31494,7 @@ rating = "explicit"
             receipt.id
         };
 
-        let first_receipt = seed_receipt(&svc, "first receipt narration");
+        let first_receipt = seed_receipt(&svc, "first receipt narration").await;
         let first_text = "First-pass prose for the scene.";
         svc.save_scene_draft(SaveSceneDraftInput {
             project_id: project.project_id.clone(),
@@ -31413,7 +31513,7 @@ rating = "explicit"
         .await
         .unwrap();
 
-        let revised_receipt = seed_receipt(&svc, "revised receipt narration");
+        let revised_receipt = seed_receipt(&svc, "revised receipt narration").await;
         let revised_text = "Revised prose after a surgical edit pass.";
         let out = svc
             .save_scene_draft(SaveSceneDraftInput {
@@ -31461,12 +31561,14 @@ rating = "explicit"
             })
             .await
             .unwrap();
-        let receipt = svc.register_generation_receipt(
-            "draft",
-            Some("mature"),
-            "mature-agent",
-            "Mature route output.",
-        );
+        let receipt = svc
+            .register_generation_receipt(
+                "draft",
+                Some("mature"),
+                "mature-agent",
+                "Mature route output.",
+            )
+            .await;
 
         let err = svc
             .save_scene_draft(SaveSceneDraftInput {
@@ -31489,6 +31591,228 @@ rating = "explicit"
             err.to_string().contains("not \"explicit\""),
             "expected explicit rating guard, got: {err}"
         );
+    }
+
+    // ── Bug 4c: generation receipts persist in the DB with a TTL ─────────────
+
+    /// Open a second, INDEPENDENT service instance over the same DB file — the
+    /// cross-process simulation. A fresh `SqlitePool` + `Repository` +
+    /// `SqliteSpindleService` shares no in-memory receipt cache with the first,
+    /// so anything a `verified_*` lookup resolves must have come from the DB.
+    async fn service_over_same_db(
+        db_path: &std::path::Path,
+        data_dir: &std::path::Path,
+    ) -> SqliteSpindleService {
+        use crate::ai::ModelRouter;
+        let pool = SqlitePool::open(db_path).await.unwrap();
+        let repo =
+            Repository::with_model_router(pool, data_dir.to_path_buf(), ModelRouter::local_only());
+        SqliteSpindleService::new(repo)
+    }
+
+    /// A receipt registered in service A must be verifiable in a SEPARATE
+    /// service B backed by the same DB file (the production restart scenario).
+    /// Red before 4c: B's in-memory cache is empty, so the lookup errors with
+    /// `was not found or has expired`.
+    #[tokio::test]
+    async fn generation_receipt_survives_across_service_instances() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("receipts.db");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let svc_a = service_over_same_db(&db_path, &data_dir).await;
+        let receipt = svc_a
+            .register_generation_receipt(
+                "draft",
+                Some("mature"),
+                "draft-agent",
+                "Prose the agent produced in process one.",
+            )
+            .await;
+
+        // Fresh instance (process two): no shared in-memory cache.
+        let svc_b = service_over_same_db(&db_path, &data_dir).await;
+        let resolved = svc_b
+            .verified_revisable_draft_receipt(Some(&receipt.id))
+            .await
+            .expect("lookup must not error")
+            .expect("receipt must resolve from the DB in a new process");
+        assert_eq!(resolved.id, receipt.id);
+        assert_eq!(resolved.route, "draft");
+        assert_eq!(resolved.rating.as_deref(), Some("mature"));
+        assert_eq!(resolved.agent_id, "draft-agent");
+        // output_text survives whole (load-bearing for revise_generation).
+        assert_eq!(
+            resolved.output_text,
+            "Prose the agent produced in process one."
+        );
+    }
+
+    /// An expired receipt (backdated `expires_at`) resolves to the exact
+    /// `was not found or has expired` error, and the expired row is deleted on
+    /// read (lazy cleanup). Red before 4c: no persistence, no expiry semantics.
+    #[tokio::test]
+    async fn generation_receipt_expiry_is_enforced_on_read_and_cleans_up() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("receipts.db");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let svc_a = service_over_same_db(&db_path, &data_dir).await;
+        let receipt = svc_a
+            .register_generation_receipt("draft", Some("mature"), "draft-agent", "Expiring prose.")
+            .await;
+
+        // Backdate expires_at into the past directly in the DB (deterministic,
+        // no clock injection needed — the row's own expiry is the seam).
+        let past = crate::sqlite::row::timestamp_to_micros(
+            chrono::Utc::now() - chrono::Duration::hours(1),
+        );
+        let id = receipt.id.clone();
+        svc_a
+            .repository()
+            .pool()
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE generation_receipt SET expires_at = ?1 WHERE id = ?2",
+                    rusqlite::params![past, id],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // A fresh instance (no cache) reads the expired row → not-found/expired.
+        let svc_b = service_over_same_db(&db_path, &data_dir).await;
+        let err = svc_b
+            .verified_revisable_draft_receipt(Some(&receipt.id))
+            .await
+            .expect_err("expired receipt must error");
+        assert!(
+            err.to_string().contains("was not found or has expired"),
+            "expected the exact expiry message, got: {err}"
+        );
+
+        // Lazy cleanup: the expired row is gone from the DB after the read.
+        let id = receipt.id.clone();
+        let remaining: i64 = svc_b
+            .repository()
+            .pool()
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM generation_receipt WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "expired receipt must be deleted on read");
+    }
+
+    /// End-to-end production scenario: register an explicit receipt in service
+    /// A, DROP A, open a fresh service B over the same DB, then explicit-save
+    /// with that generation_id → the save succeeds and the caller's prose
+    /// persists. This is the exact failure that started everything
+    /// (`generation_id "…" was not found or has expired` after a primary
+    /// restart forced the receipt-stub data-loss path).
+    #[tokio::test]
+    async fn explicit_save_succeeds_after_simulated_primary_restart() {
+        use spindle_core::models::ConfigureAgentsInput;
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("receipts.db");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Explicit-capable draft agent so verified_explicit_save_receipt accepts.
+        let config_path = tmp.path().join("agents.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "explicit-agent"
+name = "Explicit Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:1/v1"
+model = "drafter"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+"#,
+        )
+        .unwrap();
+
+        // Process one: configure, create project, register the explicit receipt.
+        let svc_a = service_over_same_db(&db_path, &data_dir).await;
+        svc_a
+            .configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.to_string_lossy().to_string()),
+            })
+            .unwrap();
+        let project = svc_a
+            .create_project(CreateProjectInput {
+                name: "restart-save".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "p".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let receipt = svc_a
+            .register_generation_receipt(
+                "draft",
+                Some("explicit"),
+                "explicit-agent",
+                "Agent narration — NOT the prose.",
+            )
+            .await;
+        let generation_id = receipt.id.clone();
+
+        // Primary restart: drop A entirely; a brand-new process (B) reconfigures.
+        drop(svc_a);
+        let svc_b = service_over_same_db(&db_path, &data_dir).await;
+        svc_b
+            .configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.to_string_lossy().to_string()),
+            })
+            .unwrap();
+
+        let caller_prose =
+            "The storm broke over the harbor as their hands finally met in the dark.";
+        let out = svc_b
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: caller_prose.to_string(),
+                summary: "Prose survives the restart.".to_string(),
+                content_rating: spindle_core::models::ContentRating::Explicit,
+                tone: None,
+                generation_id: Some(generation_id),
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .expect("explicit save must succeed against a receipt from the previous process");
+
+        let scene = svc_b.repository.get_scene(&out.scene_id).await.unwrap();
+        assert_eq!(
+            scene.full_text, caller_prose,
+            "the caller's prose must persist across the restart"
+        );
+        assert_eq!(out.draft_origin, "agent:explicit-agent");
     }
 
     /// Regression for the SQL crash where update_entity on a book row failed
@@ -50043,12 +50367,14 @@ agent = "draft-agent"
             enable_style_learning(&svc, &project.project_id).await;
 
             // First explicit agent draft via a seeded generation receipt.
-            let r1 = svc.register_generation_receipt(
-                "draft",
-                Some("explicit"),
-                "draft-agent",
-                "The agent drafted the gate scene, first pass.",
-            );
+            let r1 = svc
+                .register_generation_receipt(
+                    "draft",
+                    Some("explicit"),
+                    "draft-agent",
+                    "The agent drafted the gate scene, first pass.",
+                )
+                .await;
             let saved = svc
                 .save_scene_draft(SaveSceneDraftInput {
                     project_id: project.project_id.clone(),
@@ -50070,12 +50396,14 @@ agent = "draft-agent"
 
             // Second explicit agent draft (revise loop) via another receipt →
             // agent-over-agent. is_agent_save = true short-circuits capture.
-            let r2 = svc.register_generation_receipt(
-                "draft",
-                Some("explicit"),
-                "draft-agent",
-                "The agent revised the gate scene, second pass, sharper.",
-            );
+            let r2 = svc
+                .register_generation_receipt(
+                    "draft",
+                    Some("explicit"),
+                    "draft-agent",
+                    "The agent revised the gate scene, second pass, sharper.",
+                )
+                .await;
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project.project_id.clone(),
                 book_number: 1,
@@ -50204,12 +50532,14 @@ agent = "draft-agent"
                 .unwrap();
             // Seed a general-rated draft receipt (what the agent path registers
             // for a non-explicit scene).
-            let receipt = svc.register_generation_receipt(
-                "draft",
-                Some("general"),
-                "draft-agent",
-                "The agent drafted this general-rated watch scene.",
-            );
+            let receipt = svc
+                .register_generation_receipt(
+                    "draft",
+                    Some("general"),
+                    "draft-agent",
+                    "The agent drafted this general-rated watch scene.",
+                )
+                .await;
             let saved = svc
                 .save_scene_draft(SaveSceneDraftInput {
                     project_id: project.project_id.clone(),
@@ -50261,12 +50591,14 @@ agent = "draft-agent"
                 .unwrap();
             enable_style_learning(&svc, &project.project_id).await;
 
-            let receipt = svc.register_generation_receipt(
-                "draft",
-                Some("general"),
-                "draft-agent",
-                "The agent wrote this line plainly.",
-            );
+            let receipt = svc
+                .register_generation_receipt(
+                    "draft",
+                    Some("general"),
+                    "draft-agent",
+                    "The agent wrote this line plainly.",
+                )
+                .await;
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project.project_id.clone(),
                 book_number: 1,
@@ -50413,12 +50745,14 @@ agent = "draft-agent"
                 .unwrap();
             enable_style_learning(&svc, &project.project_id).await;
 
-            let r1 = svc.register_generation_receipt(
-                "draft",
-                Some("general"),
-                "draft-agent",
-                "The agent drafted the watch, first pass.",
-            );
+            let r1 = svc
+                .register_generation_receipt(
+                    "draft",
+                    Some("general"),
+                    "draft-agent",
+                    "The agent drafted the watch, first pass.",
+                )
+                .await;
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project.project_id.clone(),
                 book_number: 1,
@@ -50434,12 +50768,14 @@ agent = "draft-agent"
             .unwrap();
 
             // Revise loop re-save: a second agent draft (agent-over-agent).
-            let r2 = svc.register_generation_receipt(
-                "draft",
-                Some("general"),
-                "draft-agent",
-                "The agent revised the watch, second pass, sharper.",
-            );
+            let r2 = svc
+                .register_generation_receipt(
+                    "draft",
+                    Some("general"),
+                    "draft-agent",
+                    "The agent revised the watch, second pass, sharper.",
+                )
+                .await;
             let resaved = svc
                 .save_scene_draft(SaveSceneDraftInput {
                     project_id: project.project_id.clone(),

@@ -7477,3 +7477,118 @@ async fn resolve_block_redraft_resets_poisoned_scene_and_lists_in_error() {
     fx.ct.cancel();
     let _ = fx.server_handle.await;
 }
+
+// ── Bug 4a/4b: lazy primacy claiming + internal-listener survival ────────────
+
+/// 4a: a workspace with NO addr file (a server that started before init, or a
+/// non-primary process) must claim primacy lazily at dispatch time — writing the
+/// addr file and starting the internal listener — so dispatch resolves. Red
+/// before 4a: the resolution path errors with `no primary server found`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lazy_primacy_claim_when_no_addr_file() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let pool = SqlitePool::open(&tmp.path().join("lazy.db")).await.unwrap();
+    let svc = SqliteSpindleService::new(Repository::with_model_router(
+        pool,
+        data_dir.clone(),
+        ModelRouter::local_only(),
+    ));
+
+    // Pre-condition: no addr file exists — the pre-init / non-primary state.
+    let addr_path = data_dir.join("runtime").join("spindle.addr");
+    assert!(
+        !addr_path.exists(),
+        "precondition: workspace has no addr file yet"
+    );
+
+    // Dispatch-time resolution claims primacy on the spot.
+    let addr = crate::internal_listener::ensure_primary_addr(&svc, &data_dir)
+        .await
+        .expect("lazy claim must resolve a primary");
+
+    // The addr file was written and names the claimed listener.
+    assert!(addr_path.exists(), "lazy claim must write the addr file");
+    assert_eq!(crate::read_addr_file(&data_dir).unwrap(), addr);
+
+    // The claimed listener actually serves: /health responds.
+    let ok = reqwest::Client::new()
+        .get(format!("http://{addr}/health"))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    assert!(ok, "claimed internal listener must serve /health");
+
+    // Idempotent: a second resolution reuses the same claim (no new listener).
+    let addr2 = crate::internal_listener::ensure_primary_addr(&svc, &data_dir)
+        .await
+        .expect("second resolution");
+    assert_eq!(
+        addr, addr2,
+        "lazy claim must be idempotent within a process"
+    );
+
+    crate::internal_listener::shutdown_lazy_listener(&data_dir).await;
+}
+
+/// 4b: the internal listener is an accept loop — two SEQUENTIAL MCP sessions
+/// against one primary both succeed, and the addr file is still present after
+/// the first session closes. Red before 4b: the listener stopped serving (and
+/// dropped its addr file) after the first session ended, so the second failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn internal_listener_survives_sequential_sessions() {
+    use spindle_core::models::ListProjectsOutput;
+    use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let pool = SqlitePool::open(&tmp.path().join("survive.db"))
+        .await
+        .unwrap();
+    let svc = SqliteSpindleService::new(Repository::with_model_router(
+        pool,
+        data_dir.clone(),
+        ModelRouter::local_only(),
+    ));
+
+    // Claim primacy (starts the accept-loop listener + writes the addr file).
+    let addr = crate::internal_listener::ensure_primary_addr(&svc, &data_dir)
+        .await
+        .expect("claim");
+    let url = format!("http://{addr}/mcp");
+    let addr_path = data_dir.join("runtime").join("spindle.addr");
+
+    // Session 1: connect, run a full request, then drop the client (session close).
+    {
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url: url.clone() })
+            .await
+            .expect("session 1 connect");
+        let _out: ListProjectsOutput = client
+            .call_tool("list_projects", &serde_json::json!({}))
+            .await
+            .expect("session 1 list_projects");
+        // client dropped here → session 1 closes.
+    }
+
+    // The addr file must still be present after session 1 closes (bug 4b).
+    assert!(
+        addr_path.exists(),
+        "addr file must survive the first session close"
+    );
+
+    // Session 2: a fresh connection to the SAME listener must still work.
+    {
+        let client = McpHarnessClient::connect(&TransportConfig::Http { url })
+            .await
+            .expect("session 2 connect (listener must survive session 1)");
+        let _out: ListProjectsOutput = client
+            .call_tool("list_projects", &serde_json::json!({}))
+            .await
+            .expect("session 2 list_projects (listener must still serve)");
+    }
+
+    crate::internal_listener::shutdown_lazy_listener(&data_dir).await;
+}

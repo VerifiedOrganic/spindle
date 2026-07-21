@@ -3353,6 +3353,51 @@ impl<'a> TryFrom<&Row<'a>> for StoredRunEvent {
     }
 }
 
+pub const GENERATION_RECEIPT_COLUMNS: &str = "id, project_id, branch_id, route, \
+     agent_id, rating, explicit_capable, output_sha256, output_text, created_at, \
+     expires_at";
+
+/// One persisted generation receipt (migration V0032, live-run bug 4c). Rows
+/// are written by `register_generation_receipt` and read back — with expiry
+/// enforced — by the `verified_*` lookups so a receipt issued in one process
+/// survives a primary restart. `output_text` is stored whole because
+/// `revise_generation` still feeds it into the revision prompt (see the
+/// migration's storage-decision note). Timestamps are stored microsecond
+/// [`Timestamp`]s.
+#[derive(Debug, Clone)]
+pub struct StoredGenerationReceipt {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub route: String,
+    pub agent_id: String,
+    pub rating: Option<String>,
+    pub explicit_capable: bool,
+    pub output_sha256: String,
+    pub output_text: String,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredGenerationReceipt {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::opt_text(r, 1)?,
+            branch_id: row::opt_text(r, 2)?,
+            route: row::text(r, 3)?,
+            agent_id: row::text(r, 4)?,
+            rating: row::opt_text(r, 5)?,
+            explicit_capable: row::int(r, 6)? != 0,
+            output_sha256: row::text(r, 7)?,
+            output_text: row::text(r, 8)?,
+            created_at: row::time(r, 9)?,
+            expires_at: row::time(r, 10)?,
+        })
+    }
+}
+
 pub const CANON_DELTA_COLUMNS: &str = "id, project_id, branch_id, scene_id, \
      authoring_run_id, delta_class, target_id, payload, evidence, confidence, \
      status, decided_at, decided_by, created_at, updated_at";

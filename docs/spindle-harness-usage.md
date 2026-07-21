@@ -352,6 +352,36 @@ refusing to write harness state because initialization is not continuity-safe
 
 Fix the seed file and re-run init.
 
+### Primacy, the addr file, and HTTP mode
+
+Spindle's run-phase actions (mining, checkpoint execution, scene verify) dispatch
+back to the server's own MCP surface over HTTP. The executor discovers where to
+connect by reading `.spindle/runtime/spindle.addr`, which names the **primary's
+internal MCP listener**, and connecting to `http://<addr>/mcp`.
+
+Primacy is claimed in two ways:
+
+- **At startup** (fast path): the first stdio-mode process to open the DB becomes
+  primary, starts the internal listener (an accept loop that serves each session
+  to completion and keeps accepting — a session close never tears it down), and
+  writes the addr file. The addr file is removed only on real shutdown.
+- **Lazily at dispatch time**: if a process needs to dispatch but no live primary
+  owns the addr file yet (e.g. it started before the workspace was initialized,
+  or it came up as a secondary), it claims primacy on the spot — binding a
+  listener and atomically writing the addr file — then proceeds. The claim is
+  idempotent and race-safe: whoever wins the atomic addr-file create is primary;
+  a loser defers to the live winner. A stale addr file naming a dead listener is
+  reclaimed.
+
+**HTTP mode also claims primacy.** A server started with `SPINDLE_HTTP_ADDR`
+writes the addr file pointing at its own `SPINDLE_HTTP_ADDR` listener (removed on
+shutdown). This is deliberate: the server's own run-phase dispatch reads the addr
+file, not `SPINDLE_HTTP_ADDR`, so without it an `authoring_execute_next` served
+over HTTP would fail its dispatch arm with `no primary server found`. Because the
+HTTP `/mcp` listener serves the identical MCP surface, the addr file simply points
+at that same address. (External harnesses still connect via `--server-url`; the
+addr file exists for the server's own dispatch-back.)
+
 ### Console (read-only operator console v1)
 
 When Spindle runs in HTTP mode, a read-only operator console is served at

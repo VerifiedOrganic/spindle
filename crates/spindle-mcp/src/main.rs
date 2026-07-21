@@ -1,4 +1,5 @@
 mod http;
+mod internal_listener;
 mod json_utils;
 mod proxy;
 mod resources;
@@ -94,11 +95,26 @@ async fn main() -> anyhow::Result<()> {
     let config_path = ws.config_path.map(|p| p.display().to_string());
 
     // Explicit HTTP-only mode (no stdio, no proxy).
+    //
+    // HTTP-mode primacy decision (live-run bug 4, HTTP-mode arm): an HTTP-mode
+    // server that holds the DB ALSO claims primacy and writes the addr file.
+    // Rationale: the server's own run-phase actions (mining, checkpoint
+    // execution, scene verify) dispatch back to `/mcp` by reading the addr file
+    // (tools.rs), NOT by reading SPINDLE_HTTP_ADDR. Without the addr file an
+    // `authoring_execute_next` served over HTTP would fail its dispatch arm with
+    // `no primary server found` — exactly the stdio-mode bug, one transport over.
+    // Because HTTP mode's `/mcp` listener serves the identical MCP surface at a
+    // known address, the addr file simply points at that same address. The addr
+    // file is removed on shutdown. (The external harness still reaches the server
+    // via --server-url; the addr file serves the server's own dispatch-back.)
     if let Some(addr) = http_listen_addr()? {
         let db = init_sqlite(&db_path).await?;
         let service = build_service(db, &data_dir, config_path);
-        http::serve(service, addr).await?;
-        return Ok(());
+        write_addr_file(&data_dir, addr)?;
+        tracing::info!("http mode: claimed primacy; addr file points at {addr}/mcp");
+        let result = http::serve(service, addr).await;
+        remove_addr_file(&data_dir);
+        return result;
     }
 
     // Default: try to become primary, fall back to secondary with failover.
@@ -168,21 +184,19 @@ const DEFAULT_LOCAL_CONFIG: &str = r#"# Spindle local agent configuration
 # agent = "local-http"
 "#;
 
-/// Primary mode: owns the DB, starts an HTTP listener for secondaries,
-/// serves this session over stdio.
+/// Primary mode: owns the DB, starts the internal MCP listener for
+/// dispatch-back (and secondaries), serves this session over stdio.
+///
+/// The internal listener is an accept LOOP that serves each connection to
+/// completion and keeps accepting (bug 4b — a single internal session ending
+/// never tears it down). It runs for the whole process lifetime; the addr file
+/// is written on claim and removed only here on real shutdown (when this
+/// process's own stdio session ends — the primary's exit path).
 async fn run_primary(service: SpindleService, data_dir: &Path) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
+    let listener = internal_listener::spawn_internal_listener(service.clone()).await?;
+    let addr = listener.addr();
     write_addr_file(data_dir, addr)?;
     tracing::info!("primary: internal MCP listener on {addr}");
-
-    let ct = tokio_util::sync::CancellationToken::new();
-    let router = http::mcp_router(service.clone(), ct.clone());
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router)
-            .with_graceful_shutdown(async move { ct.cancelled_owned().await })
-            .await;
-    });
 
     let server = SpindleMcpServer::new(service);
     let running = server
@@ -191,7 +205,12 @@ async fn run_primary(service: SpindleService, data_dir: &Path) -> anyhow::Result
         .context("failed to start spindle mcp server")?;
     let _ = running.waiting().await;
 
+    // Real shutdown: this primary's stdio session ended. Stop the accept loop
+    // and drop the addr file so a successor can claim primacy. Also tear down
+    // any listener this process claimed lazily.
+    listener.shutdown();
     remove_addr_file(data_dir);
+    internal_listener::shutdown_lazy_listener(data_dir).await;
     Ok(())
 }
 
@@ -247,6 +266,8 @@ async fn run_secondary(data_dir: &Path, db_path: &Path) -> anyhow::Result<()> {
     }
 
     let _ = stdio_bridge.await;
+    // Real shutdown: tear down any listener this secondary claimed lazily.
+    internal_listener::shutdown_lazy_listener(data_dir).await;
     Ok(())
 }
 
@@ -288,7 +309,7 @@ pub async fn bridge_stdio(duplex: tokio::io::DuplexStream) -> anyhow::Result<()>
 
 // ── Addr file helpers ───────────────────────────────────────────────────────
 
-fn addr_file_path(data_dir: &Path) -> PathBuf {
+pub(crate) fn addr_file_path(data_dir: &Path) -> PathBuf {
     spindle_adapters::workspace::runtime_dir(data_dir).join("spindle.addr")
 }
 

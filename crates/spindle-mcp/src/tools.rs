@@ -3650,7 +3650,11 @@ impl ToolRouter {
                 .await
             }
             _ => {
-                let active_addr = crate::read_addr_file(data_dir)?;
+                // Lazy primacy claim (bug 4a): if no live primary owns the addr
+                // file yet, claim it here (bind the internal listener, write the
+                // addr file) and proceed. Idempotent + race-safe.
+                let active_addr =
+                    crate::internal_listener::ensure_primary_addr(&self.service, data_dir).await?;
                 let url = format!("http://{}/mcp", active_addr);
                 let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
                 execute_one(
@@ -3960,7 +3964,10 @@ impl ToolRouter {
         chapter_number: i32,
         scene_order: i32,
     ) -> anyhow::Result<Vec<(String, String)>> {
-        let active_addr = crate::read_addr_file(data_dir)?;
+        // Lazy primacy claim (bug 4a) — see the sibling call in
+        // authoring_execute_next's dispatch arm.
+        let active_addr =
+            crate::internal_listener::ensure_primary_addr(&self.service, data_dir).await?;
         let url = format!("http://{}/mcp", active_addr);
         let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
         let scope = spindle_core::models::ConsistencyScopeInput {
