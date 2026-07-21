@@ -231,6 +231,20 @@ pub struct ModelRoute {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub stop: Vec<String>,
+    /// True only for the built-in `default_routes()` entries — i.e. a route that
+    /// no operator agent config has claimed. The local stub for production
+    /// routes (`style_analyze`, `style_revise`, `research`) refuses to fabricate
+    /// output for a built-in default, erroring with `NoModelConfiguredError`
+    /// (live-run bug 6a). An operator who intentionally binds a local-stub agent
+    /// to one of these routes gets `builtin_default = false` and the stub serves
+    /// — the documented opt-in for genuinely-local test/dev setups.
+    ///
+    /// `#[serde(skip)]` keeps the field internal: it never appears in the
+    /// `bible://system/model-routes` resource and defaults to `false` on any
+    /// deserialize (a deserialized route is, by construction, not a built-in
+    /// default).
+    #[serde(skip)]
+    pub builtin_default: bool,
 }
 
 /// A resolved route entry plus the rating it serves (if any). Returned by
@@ -672,12 +686,20 @@ impl ModelRouter {
         };
 
         match route.adapter_kind.as_str() {
-            "local" => Ok(ModelResponse {
-                adapter_kind: route.adapter_kind.clone(),
-                model_name: route.model_name.clone(),
-                output: local_completion(route, &request.prompt),
-                truncated: false,
-            }),
+            "local" => {
+                // The local stub errors (rather than fabricating) for an
+                // unconfigured production route (bug 6a); the typed
+                // NoModelConfiguredError is preserved through anyhow so callers
+                // can downcast_ref to distinguish it from a transient failure.
+                let output =
+                    local_completion(route, &request.prompt).map_err(anyhow::Error::new)?;
+                Ok(ModelResponse {
+                    adapter_kind: route.adapter_kind.clone(),
+                    model_name: route.model_name.clone(),
+                    output,
+                    truncated: false,
+                })
+            }
             "cli" => self.run_cli(route, &request.prompt).await,
             "http" => {
                 self.run_http(&runtime, route, request.rating.as_deref(), &request.prompt)
@@ -1176,6 +1198,23 @@ pub enum RouteClearanceError {
     },
 }
 
+/// A production route (`style_analyze`, `style_revise`, `research`) resolved to
+/// the built-in local stub because no operator agent is configured for it. The
+/// stub refuses to fabricate plausible-shaped output for these routes (live-run
+/// bug 6a — a stub `style-analyze-local` profile once merged mock narrator
+/// guidance over a project's real voice, and `research-local` echoed prompts
+/// back as research). Callers surface this through their existing error paths
+/// (style/research tools report it) instead of silently ingesting fabrications.
+///
+/// Preserved through `anyhow` so callers can `downcast_ref` to distinguish an
+/// unconfigured route from a transient model error (which may still degrade to
+/// `NeedsReview` rather than failing the whole operation).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("no model configured for route '{route}' - configure an agent in .spindle/config.toml")]
+pub struct NoModelConfiguredError {
+    pub route: String,
+}
+
 /// Rating-gated dispatch chokepoint (evolution §4 rule 2). Wraps
 /// [`resolve_route`] and, for a prose-bearing route with a rating supplied,
 /// additionally verifies the resolved agent's declared `ratings` list covers
@@ -1573,6 +1612,10 @@ fn runtime_from_loaded_config(
                 max_tokens: rule.max_tokens,
                 temperature: rule.temperature,
                 stop: rule.stop.clone(),
+                // Operator-configured route: NOT a built-in default, so a
+                // local-stub agent bound here is an intentional opt-in and the
+                // stub serves rather than erroring (live-run bug 6a escape hatch).
+                builtin_default: false,
             };
             match rule.rating.as_deref() {
                 Some(rating) => {
@@ -1984,6 +2027,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "review".to_string(),
@@ -1994,6 +2038,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "research".to_string(),
@@ -2004,6 +2049,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "embedding".to_string(),
@@ -2014,6 +2060,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "import_extract".to_string(),
@@ -2024,6 +2071,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "import_synthesize".to_string(),
@@ -2034,6 +2082,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "import_validate".to_string(),
@@ -2044,6 +2093,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "style_analyze".to_string(),
@@ -2054,6 +2104,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "style_revise".to_string(),
@@ -2064,6 +2115,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
     ]
     .into_iter()
@@ -2154,13 +2206,32 @@ fn extract_reader_sim_prior_echo(prompt: &str) -> String {
     block.chars().take(40).collect()
 }
 
-fn local_completion(route: &ModelRoute, prompt: &str) -> String {
+/// Deterministic, network-free stand-in for a real model.
+///
+/// Most arms are load-bearing TEST infrastructure: the `review` arm's sentinel
+/// branches (temporal/mine/replan/reader-sim/promise/secret/purpose) and the
+/// research `MOCK_VAL`/`MOCK_PROSE` fixtures drive the whole deep-check and
+/// research test fleet, and the empty-array `review` fallbacks are the honest
+/// local-only degradation (no findings, never fabricated prose).
+///
+/// The PRODUCTION routes `style_analyze`, `style_revise`, and `research`,
+/// however, used to emit plausible-shaped fabrications for un-sentineled calls
+/// (mock style guidance; a prompt echo). When such a route is the built-in
+/// default — i.e. no operator agent is configured (live-run bug 6a) — the stub
+/// now returns [`NoModelConfiguredError`] instead. Two escape hatches keep the
+/// test fleet green: research honors its `MOCK_` sentinels, and an operator can
+/// bind a local-stub agent (`builtin_default = false`) to intentionally serve
+/// the stub for a genuinely-local setup.
+fn local_completion(route: &ModelRoute, prompt: &str) -> Result<String, NoModelConfiguredError> {
     let compact_prompt = prompt
         .split_whitespace()
         .take(48)
         .collect::<Vec<_>>()
         .join(" ");
-    match route.route_name.as_str() {
+    let no_model = || NoModelConfiguredError {
+        route: route.route_name.clone(),
+    };
+    let out = match route.route_name.as_str() {
         "review" => {
             // The intra-scene temporal-coherence deep check (Tier 2) reuses the
             // `review` route. Without a real review model configured, return
@@ -2372,7 +2443,12 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
 }"#
                 .to_string()
             } else {
-                format!("Local research adapter investigated: {compact_prompt}")
+                // Bug 6a: the research stub used to echo the prompt back as
+                // plausible research output. With no recognized `MOCK_` fixture
+                // sentinel there is no real research model to serve, so error
+                // instead of fabricating — this fails research_query/ingest
+                // honestly rather than persisting an echo as a claim.
+                return Err(no_model());
             }
         }
         "import_extract" => format!("Local import extraction adapter harvested: {compact_prompt}"),
@@ -2380,6 +2456,12 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
             format!("Local import synthesis adapter assembled: {compact_prompt}")
         }
         "import_validate" => format!("Local import validation adapter triaged: {compact_prompt}"),
+        // Bug 6a: an UNCONFIGURED style_analyze route (built-in default) must not
+        // fabricate a style profile — the stub's mock guidance once merged over
+        // a project's real narrator voice. Error instead; an operator who binds a
+        // local-stub agent (builtin_default = false) still gets the mock for
+        // genuinely-local test/dev setups.
+        "style_analyze" if route.builtin_default => return Err(no_model()),
         "style_analyze" => r#"{
   "summary": "Mock style profile guidance summary",
   "pov": "third_person_close",
@@ -2407,6 +2489,10 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
   "prompt_snippet": "Write in a contemplative past-tense close-POV style."
 }"#
         .to_string(),
+        // Bug 6a: an UNCONFIGURED style_revise route (built-in default) must not
+        // fabricate revision examples. Error; a configured local-stub agent still
+        // serves (builtin_default = false).
+        "style_revise" if route.builtin_default => return Err(no_model()),
         "style_revise" => {
             if prompt.contains("Return ONLY the revised text") {
                 if let Some(start) = prompt.find("Prose to Revise:\n") {
@@ -2436,7 +2522,8 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> String {
             }
         }
         _ => compact_prompt,
-    }
+    };
+    Ok(out)
 }
 
 fn token_counts(tokens: Vec<String>) -> BTreeMap<String, usize> {
@@ -3362,6 +3449,7 @@ enabled = false
             max_tokens: Some(256),
             temperature: Some(0.2),
             stop: Vec::new(),
+            builtin_default: false,
         };
         let routing_rule = RoutingRule {
             route: "review".to_string(),
@@ -3518,6 +3606,7 @@ enabled = false
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: false,
         }
     }
 

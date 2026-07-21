@@ -7277,7 +7277,7 @@ impl Repository {
             .read(move |conn| {
                 let sql = format!(
                     "SELECT {RESEARCH_SOURCE_COLUMNS} FROM research_source \
-                     WHERE project_id = ?1 ORDER BY created_at DESC"
+                     WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
                 let rows = stmt
@@ -7298,7 +7298,7 @@ impl Repository {
             .read(move |conn| {
                 let sql = format!(
                     "SELECT {RESEARCH_NOTE_COLUMNS} FROM research_note \
-                     WHERE project_id = ?1 ORDER BY created_at DESC"
+                     WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
                 let rows = stmt
@@ -7319,7 +7319,7 @@ impl Repository {
             .read(move |conn| {
                 let sql = format!(
                     "SELECT {RESEARCH_CLAIM_COLUMNS} FROM research_claim \
-                     WHERE project_id = ?1 ORDER BY created_at DESC"
+                     WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
                 let rows = stmt
@@ -7449,8 +7449,9 @@ impl Repository {
             .read(move |conn| {
                 let mut tags_set = std::collections::BTreeSet::new();
 
-                let mut stmt1 =
-                    conn.prepare_cached("SELECT tags FROM research_source WHERE project_id = ?1")?;
+                let mut stmt1 = conn.prepare_cached(
+                    "SELECT tags FROM research_source WHERE project_id = ?1 AND archived_at IS NULL",
+                )?;
                 let mut rows1 = stmt1.query([&project_id])?;
                 while let Some(row) = rows1.next()? {
                     let tags_json: String = row.get(0)?;
@@ -7461,8 +7462,9 @@ impl Repository {
                     }
                 }
 
-                let mut stmt2 =
-                    conn.prepare_cached("SELECT tags FROM research_note WHERE project_id = ?1")?;
+                let mut stmt2 = conn.prepare_cached(
+                    "SELECT tags FROM research_note WHERE project_id = ?1 AND archived_at IS NULL",
+                )?;
                 let mut rows2 = stmt2.query([&project_id])?;
                 while let Some(row) = rows2.next()? {
                     let tags_json: String = row.get(0)?;
@@ -7473,8 +7475,9 @@ impl Repository {
                     }
                 }
 
-                let mut stmt3 =
-                    conn.prepare_cached("SELECT tags FROM research_claim WHERE project_id = ?1")?;
+                let mut stmt3 = conn.prepare_cached(
+                    "SELECT tags FROM research_claim WHERE project_id = ?1 AND archived_at IS NULL",
+                )?;
                 let mut rows3 = stmt3.query([&project_id])?;
                 while let Some(row) = rows3.next()? {
                     let tags_json: String = row.get(0)?;
@@ -7547,7 +7550,7 @@ impl Repository {
                 if let Some(branch_id) = &branch_id {
                     let mut sources_stmt = conn.prepare_cached(
                         "SELECT id, title, url, author, reliability, tags, summary \
-                         FROM research_source WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL)"
+                         FROM research_source WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL"
                     )?;
                     let mut sources_rows = sources_stmt.query(rusqlite::params![&project_id, branch_id])?;
                     while let Some(row) = sources_rows.next()? {
@@ -7556,7 +7559,7 @@ impl Repository {
                     }
                 } else {
                     let mut sources_stmt = conn.prepare_cached(
-                        "SELECT id, title, url, author, reliability, tags, summary FROM research_source WHERE project_id = ?1"
+                        "SELECT id, title, url, author, reliability, tags, summary FROM research_source WHERE project_id = ?1 AND archived_at IS NULL"
                     )?;
                     let mut sources_rows = sources_stmt.query([&project_id])?;
                     while let Some(row) = sources_rows.next()? {
@@ -7612,7 +7615,7 @@ impl Repository {
                         let mut stmt = conn.prepare_cached(
                             "SELECT n.id, n.source_id, n.note, n.quote, n.locator, n.tags \
                              FROM research_note n JOIN fts_research_note f ON n.id = f.note_id \
-                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND (n.branch_id = ?3 OR n.branch_id IS NULL)"
+                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND (n.branch_id = ?3 OR n.branch_id IS NULL) AND n.archived_at IS NULL"
                         )?;
                         let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
                         while let Some(row) = rows.next()? {
@@ -7631,7 +7634,7 @@ impl Repository {
                         let mut stmt = conn.prepare_cached(
                             "SELECT n.id, n.source_id, n.note, n.quote, n.locator, n.tags \
                              FROM research_note n JOIN fts_research_note f ON n.id = f.note_id \
-                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2"
+                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND n.archived_at IS NULL"
                         )?;
                         let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
                         while let Some(row) = rows.next()? {
@@ -7651,12 +7654,12 @@ impl Repository {
                     let (sql, has_branch) = if branch_id.is_some() {
                         (
                             "SELECT id, source_id, note, quote, locator, tags FROM research_note \
-                             WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL)",
+                             WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL",
                             true,
                         )
                     } else {
                         (
-                            "SELECT id, source_id, note, quote, locator, tags FROM research_note WHERE project_id = ?1",
+                            "SELECT id, source_id, note, quote, locator, tags FROM research_note WHERE project_id = ?1 AND archived_at IS NULL",
                             false,
                         )
                     };
@@ -7696,7 +7699,7 @@ impl Repository {
                         let mut stmt = conn.prepare_cached(
                             "SELECT c.id, c.source_id, c.claim, c.topic, c.time_period, c.location, c.confidence, c.tags \
                              FROM research_claim c JOIN fts_research_claim f ON c.id = f.claim_id \
-                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND (c.branch_id = ?3 OR c.branch_id IS NULL)"
+                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND (c.branch_id = ?3 OR c.branch_id IS NULL) AND c.archived_at IS NULL"
                         )?;
                         let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
                         while let Some(row) = rows.next()? {
@@ -7717,7 +7720,7 @@ impl Repository {
                         let mut stmt = conn.prepare_cached(
                             "SELECT c.id, c.source_id, c.claim, c.topic, c.time_period, c.location, c.confidence, c.tags \
                              FROM research_claim c JOIN fts_research_claim f ON c.id = f.claim_id \
-                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2"
+                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND c.archived_at IS NULL"
                         )?;
                         let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
                         while let Some(row) = rows.next()? {
@@ -7739,13 +7742,13 @@ impl Repository {
                     let (sql, has_branch) = if branch_id.is_some() {
                         (
                             "SELECT id, source_id, claim, topic, time_period, location, confidence, tags \
-                             FROM research_claim WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL)",
+                             FROM research_claim WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL",
                             true,
                         )
                     } else {
                         (
                             "SELECT id, source_id, claim, topic, time_period, location, confidence, tags \
-                             FROM research_claim WHERE project_id = ?1",
+                             FROM research_claim WHERE project_id = ?1 AND archived_at IS NULL",
                             false,
                         )
                     };
@@ -13488,8 +13491,10 @@ async fn fts_search_named(
     .await
 }
 
-/// Tables that carry an `archived_at` column. Driven by the V0001 schema —
-/// see `crates/spindle-adapters/migrations/V0001__initial_schema.sql`.
+/// Tables that carry an `archived_at` column. Driven by the V0001 schema
+/// (`V0001__initial_schema.sql`) plus V0033, which added `archived_at` to the
+/// three research library tables so junk research entities are archivable
+/// (live-run bug 5).
 fn table_has_archived_at(table: &str) -> bool {
     matches!(
         table,
@@ -13503,6 +13508,9 @@ fn table_has_archived_at(table: &str) -> bool {
             | "motif"
             | "narrative_promise"
             | "character_arc"
+            | "research_source"
+            | "research_note"
+            | "research_claim"
     )
 }
 
@@ -16554,6 +16562,113 @@ mod tests {
         assert!(
             err.to_string().contains("no archived_at column"),
             "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_entity_supports_research_tables_and_sets_archived_at() {
+        // Live-run bug 5: `archive_entity` failed on research rows with
+        // "entity table 'research_claim' has no archived_at column", leaving
+        // junk research entities unremovable. After V0033 the three research
+        // tables carry an `archived_at` column and are in the archival
+        // allowlist, so archival succeeds and stamps the column.
+        let (_tmp, repo) = fresh_repo().await;
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let source = repo
+            .create_research_source(
+                &project.id,
+                Some(&branch.id),
+                "Junk Source",
+                "web",
+                None,
+                None,
+                None,
+                None,
+                None,
+                chrono::Utc::now(),
+                "uncertain",
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        let note = repo
+            .create_research_note(
+                &project.id,
+                Some(&source.id),
+                Some(&branch.id),
+                "Junk note",
+                None,
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        let claim = repo
+            .create_research_claim(
+                &project.id,
+                Some(&source.id),
+                Some(&note.id),
+                Some(&branch.id),
+                "Junk claim",
+                None,
+                None,
+                None,
+                "uncertain",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        for (table, id) in [
+            ("research_source", &source.id),
+            ("research_note", &note.id),
+            ("research_claim", &claim.id),
+        ] {
+            repo.archive_entity(table, id)
+                .await
+                .unwrap_or_else(|e| panic!("archiving {table} must succeed, got: {e}"));
+        }
+
+        assert!(
+            repo.get_research_source(&source.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "research_source archived_at must be set"
+        );
+        assert!(
+            repo.get_research_note(&note.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "research_note archived_at must be set"
+        );
+        assert!(
+            repo.get_research_claim(&claim.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "research_claim archived_at must be set"
         );
     }
 

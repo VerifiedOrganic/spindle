@@ -13489,31 +13489,24 @@ impl SqliteSpindleService {
         let mut parsed_data = match parsed {
             Ok(data) => data,
             Err(err) => {
-                if input.source_policy == Some(SourcePolicy::AllowUnsourcedLeads) {
-                    let lead_claim = spindle_core::models::ResearchClaimOutputItem {
-                        note_index: None,
-                        claim: format!("Raw research lead: {}", raw_response),
-                        topic: Some("Unparsed Lead".to_string()),
-                        time_period: None,
-                        location: None,
-                        confidence: "uncertain".to_string(),
-                        tags: vec!["unparsed".to_string()],
-                    };
-                    ResearchQueryOutputJson {
-                        summary: "Failed to parse structured JSON research. Raw output stored as an unsourced lead.".to_string(),
-                        sources: vec![],
-                        notes: vec![],
-                        claims: vec![lead_claim],
-                        tags: vec!["lead".to_string()],
-                        uncertainty_level: Some("uncertain".to_string()),
-                    }
-                } else {
-                    anyhow::bail!(
-                        "Model returned malformed JSON: {}. Response: {}",
-                        err,
-                        raw_response
-                    );
-                }
+                // Live-run bug 5: on parse failure we used to insert a junk
+                // "Unparsed Lead" claim whose body was the ENTIRE raw model
+                // output (tagged `unparsed`, confidence `uncertain`) whenever
+                // source_policy was AllowUnsourcedLeads, and return
+                // success-shaped output. That poisoned research_pack_for_scene
+                // and every research consumer with unstructured prose. Fail
+                // honestly instead — for BOTH source policies — with zero DB
+                // writes (this bail precedes every persistence call, and the
+                // research-log write below it, so nothing is stored). The caller
+                // can re-run; no structured research is fabricated from
+                // unparseable output.
+                anyhow::bail!(
+                    "research model returned unparseable output for query \"{}\": {}. \
+                     No research was ingested. Raw response: {}",
+                    input.query,
+                    err,
+                    raw_response
+                );
             }
         };
         extend_unique_tags(&mut parsed_data.tags, &input_tags);
@@ -31081,6 +31074,214 @@ rating = "explicit"
             out.warnings
                 .iter()
                 .any(|w| w.contains("prose-like material"))
+        );
+    }
+
+    /// Live-run bug 5: on parse failure `research_ingest_report` used to insert a
+    /// junk "Unparsed Lead" claim carrying the ENTIRE raw model output and return
+    /// success-shaped output. With no research agent configured, the built-in
+    /// local research stub errors (bug 6a), so ingest must surface a structured
+    /// error and write ZERO research rows — never a success-shaped result.
+    #[tokio::test]
+    async fn research_ingest_report_errors_on_unparseable_output_and_writes_nothing() {
+        use spindle_core::models::{
+            CreateProjectInput, ReaderContract, ResearchIngestReportInput, SourcePolicy,
+        };
+
+        let (_tmp, svc) = fresh_service_local().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Ingest Junk".into(),
+                project_type: "novel".into(),
+                genre: "historical-crime".into(),
+                reader_contract: ReaderContract {
+                    promise: "Gritty".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // No `MOCK_` sentinel: the local research stub returns a structured
+        // "no model configured" error rather than an echo. AllowUnsourcedLeads
+        // must NOT resurrect the junk "Unparsed Lead" fallback.
+        let err = svc
+            .research_ingest_report(ResearchIngestReportInput {
+                project_id: proj.project_id.clone(),
+                branch_id: None,
+                title: "Unparseable Report".into(),
+                report: "some free-form prose that is not structured research".into(),
+                tags: vec!["ingest-tag".into()],
+                rating: None,
+                source_policy: Some(SourcePolicy::AllowUnsourcedLeads),
+            })
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("Unparsed Lead"),
+            "ingest must not create a junk lead claim, got: {msg}"
+        );
+
+        // Zero research rows must have been written.
+        let claims = svc
+            .repository
+            .list_research_claims_by_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert!(
+            claims.is_empty(),
+            "no claims must be written on ingest failure, got: {claims:?}"
+        );
+        let sources = svc
+            .repository
+            .list_research_sources_by_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert!(
+            sources.is_empty(),
+            "no sources must be written on ingest failure, got: {sources:?}"
+        );
+    }
+
+    /// Live-run bug 6a: an unconfigured `research` route landed on the local
+    /// stub, which echoed the prompt back as plausible research output. With no
+    /// research agent configured (built-in default local stub) and no `MOCK_`
+    /// sentinel, `research_query` must fail with a structured error and write no
+    /// echo-derived research rows.
+    #[tokio::test]
+    async fn research_query_unconfigured_route_errors_instead_of_echoing() {
+        use spindle_core::models::{CreateProjectInput, ReaderContract, ResearchQueryInput};
+
+        let (_tmp, svc) = fresh_service_local().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Echo Guard".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "epic".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let err = svc
+            .research_query(ResearchQueryInput {
+                project_id: proj.project_id.clone(),
+                query: "what does decompression sickness feel like".into(),
+                context_hint: None,
+                branch_id: None,
+                rating: None,
+                tags: None,
+                scene_id: None,
+                store: true,
+                source_policy: None,
+            })
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no model configured for route 'research'"),
+            "expected structured no-model error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("Local research adapter investigated"),
+            "must not echo the prompt back, got: {msg}"
+        );
+
+        let claims = svc
+            .repository
+            .list_research_claims_by_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert!(claims.is_empty(), "no echo-ingest rows, got: {claims:?}");
+    }
+
+    /// Live-run bug 5: archived research rows must be excluded wherever research
+    /// is consumed — here `research_pack_for_scene`. A claim added then archived
+    /// must not appear in the pack.
+    #[tokio::test]
+    async fn research_pack_for_scene_excludes_archived_rows() {
+        use spindle_core::models::{
+            ArchiveEntityInput, CreateProjectInput, ReaderContract, ResearchAddClaimInput,
+            ResearchPackForSceneInput,
+        };
+
+        let (_tmp, svc) = fresh_service_local().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Pack Archive".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "epic".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let claim_out = svc
+            .research_add_claim(ResearchAddClaimInput {
+                project_id: proj.project_id.clone(),
+                source_id: None,
+                note_id: None,
+                branch_id: None,
+                claim: "Salt wards repel the mist".into(),
+                topic: Some("wards".into()),
+                time_period: None,
+                location: None,
+                confidence: "verified".into(),
+                tags: vec!["wards".into()],
+            })
+            .await
+            .unwrap();
+
+        // Present before archival.
+        let pack_before = svc
+            .research_pack_for_scene(ResearchPackForSceneInput {
+                project_id: proj.project_id.clone(),
+                branch_id: None,
+                scene_summary: None,
+                scene_location: None,
+                character_ids: vec![],
+                tags: vec!["wards".into()],
+                explicit_query: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(pack_before.claims.len(), 1, "claim present before archival");
+
+        svc.archive_entity(ArchiveEntityInput {
+            entity_type: "research_claim".into(),
+            entity_id: claim_out.claim_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        let pack_after = svc
+            .research_pack_for_scene(ResearchPackForSceneInput {
+                project_id: proj.project_id.clone(),
+                branch_id: None,
+                scene_summary: None,
+                scene_location: None,
+                character_ids: vec![],
+                tags: vec!["wards".into()],
+                explicit_query: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert!(
+            pack_after.claims.is_empty(),
+            "archived claim must be excluded from the pack, got: {:?}",
+            pack_after.claims
         );
     }
 
@@ -50827,6 +51028,47 @@ agent = "draft-agent"
             RefreshStyleProfileInput,
         };
 
+        /// A local-only service whose `style_analyze` route is EXPLICITLY bound
+        /// to a local-stub agent. The built-in default style stub now errors
+        /// (live-run bug 6a) so it cannot fabricate mock guidance over a real
+        /// narrator voice; binding a local-stub agent (`builtin_default = false`)
+        /// is the documented opt-in that makes the stub serve its deterministic
+        /// mock — exactly what these style-learning refresh tests need.
+        async fn fresh_service_with_local_style() -> (TempDir, SqliteSpindleService) {
+            use spindle_core::models::ConfigureAgentsInput;
+            let (tmp, svc) = fresh_service_local().await;
+            let config_path = tmp.path().join("style-agent.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "local-style"
+name = "Local Style Stub"
+provider = "local"
+endpoint = "local"
+model = "local-style"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "style_analyze"
+agent = "local-style"
+
+[[routing]]
+route = "style_revise"
+agent = "local-style"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+            (tmp, svc)
+        }
+
         /// Create a project with an opted-in style-learning flag, a style
         /// profile built from a small Markdown corpus, and an agent-drafted
         /// scene the operator then edits (capturing one pending candidate).
@@ -50931,7 +51173,7 @@ agent = "draft-agent"
         // the next preview.
         #[tokio::test]
         async fn preview_surfaces_candidates_and_refresh_consumes_them() {
-            let (tmp, svc) = fresh_service_local().await;
+            let (tmp, svc) = fresh_service_with_local_style().await;
             let data_dir = svc.repository().data_dir().to_path_buf();
             let (project_id, branch_id, profile_id) = project_with_profile_and_candidate(
                 &svc,
@@ -51015,7 +51257,7 @@ agent = "draft-agent"
         // `dismissed`, not fed, and never resurfaces.
         #[tokio::test]
         async fn refresh_dismisses_named_candidates() {
-            let (tmp, svc) = fresh_service_local().await;
+            let (tmp, svc) = fresh_service_with_local_style().await;
             let data_dir = svc.repository().data_dir().to_path_buf();
             let (project_id, branch_id, profile_id) = project_with_profile_and_candidate(
                 &svc,

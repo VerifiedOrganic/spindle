@@ -507,6 +507,21 @@ impl SqliteSpindleService {
         let mut final_guidance = StyleProfileGuidance::default();
         let mut receipt = None;
 
+        // Bug 6a: when NO style agent is configured the style_analyze route
+        // resolves to the built-in local stub, which now errors instead of
+        // fabricating mock guidance (which would otherwise merge over the
+        // project's real narrator voice on apply). Surface that structured error
+        // rather than silently degrading to NeedsReview with empty guidance —
+        // the operator must configure a style agent. A transient model error
+        // (a configured agent that fails a call) still degrades to NeedsReview.
+        let unconfigured_route = response_res.as_ref().err().is_some_and(|err| {
+            err.downcast_ref::<crate::ai::NoModelConfiguredError>()
+                .is_some()
+        });
+        if unconfigured_route {
+            return Err(response_res.unwrap_err());
+        }
+
         if let Ok(response) = response_res {
             receipt = Some(StyleProfileModelReceipt {
                 model_route: STYLE_ANALYZE_ROUTE.to_string(),

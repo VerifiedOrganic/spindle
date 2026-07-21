@@ -2778,7 +2778,7 @@ impl<'a> TryFrom<&Row<'a>> for AuthoringCheckpoint {
     }
 }
 
-pub const RESEARCH_SOURCE_COLUMNS: &str = "id, project_id, branch_id, title, source_type, url, file_path, author, publisher, published_date, accessed_at, reliability, tags, summary, created_at, updated_at";
+pub const RESEARCH_SOURCE_COLUMNS: &str = "id, project_id, branch_id, title, source_type, url, file_path, author, publisher, published_date, accessed_at, reliability, tags, summary, created_at, updated_at, archived_at";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchSource {
@@ -2798,6 +2798,9 @@ pub struct ResearchSource {
     pub summary: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Archival tombstone (V0033). `Some` means the row is archived and is
+    /// excluded from every research consumer (packing, search, listings).
+    pub archived_at: Option<Timestamp>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for ResearchSource {
@@ -2820,12 +2823,12 @@ impl<'a> TryFrom<&Row<'a>> for ResearchSource {
             summary: row::opt_text(r, 13)?,
             created_at: row::time(r, 14)?,
             updated_at: row::time(r, 15)?,
+            archived_at: row::opt_time(r, 16)?,
         })
     }
 }
 
-pub const RESEARCH_NOTE_COLUMNS: &str =
-    "id, project_id, source_id, branch_id, note, quote, locator, tags, created_at, updated_at";
+pub const RESEARCH_NOTE_COLUMNS: &str = "id, project_id, source_id, branch_id, note, quote, locator, tags, created_at, updated_at, archived_at";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchNote {
@@ -2839,6 +2842,8 @@ pub struct ResearchNote {
     pub tags: Vec<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Archival tombstone (V0033) — see [`ResearchSource::archived_at`].
+    pub archived_at: Option<Timestamp>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for ResearchNote {
@@ -2855,11 +2860,12 @@ impl<'a> TryFrom<&Row<'a>> for ResearchNote {
             tags: row::json(r, 7)?,
             created_at: row::time(r, 8)?,
             updated_at: row::time(r, 9)?,
+            archived_at: row::opt_time(r, 10)?,
         })
     }
 }
 
-pub const RESEARCH_CLAIM_COLUMNS: &str = "id, project_id, source_id, note_id, branch_id, claim, topic, time_period, location, confidence, tags, created_at, updated_at";
+pub const RESEARCH_CLAIM_COLUMNS: &str = "id, project_id, source_id, note_id, branch_id, claim, topic, time_period, location, confidence, tags, created_at, updated_at, archived_at";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchClaim {
@@ -2876,6 +2882,8 @@ pub struct ResearchClaim {
     pub tags: Vec<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Archival tombstone (V0033) — see [`ResearchSource::archived_at`].
+    pub archived_at: Option<Timestamp>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for ResearchClaim {
@@ -2895,6 +2903,7 @@ impl<'a> TryFrom<&Row<'a>> for ResearchClaim {
             tags: row::json(r, 10)?,
             created_at: row::time(r, 11)?,
             updated_at: row::time(r, 12)?,
+            archived_at: row::opt_time(r, 13)?,
         })
     }
 }

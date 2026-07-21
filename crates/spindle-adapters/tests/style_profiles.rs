@@ -14,12 +14,67 @@ use spindle_core::style::{
 };
 use tempfile::TempDir;
 
+/// A service whose `style_analyze` / `style_revise` routes are EXPLICITLY bound
+/// to a local-stub agent.
+///
+/// Live-run bug 6a: the built-in default local stub for these production routes
+/// now refuses to fabricate output (mock style guidance once merged over a
+/// project's real narrator voice). Binding a local-stub agent (a non-URL
+/// endpoint resolves to `adapter_kind = "local"`, and a configured route has
+/// `builtin_default = false`) is the documented opt-in that makes the stub serve
+/// its deterministic mock — exactly what these behavior tests need. All other
+/// routes stay as built-in defaults. See `fresh_service_no_style_agent` for the
+/// unconfigured-route path that reproduces the production incident.
 async fn fresh_service() -> (TempDir, SqliteSpindleService) {
+    use spindle_core::models::ConfigureAgentsInput;
     let tmp = TempDir::new().unwrap();
     let pool = SqlitePool::open(&tmp.path().join("svc.db")).await.unwrap();
     let data_dir = tmp.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
-    // Use local-only model router for deterministic test fallback
+    let repo = Repository::with_model_router(pool, data_dir, ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+
+    let config_path = tmp.path().join("style-agent.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "local-style"
+name = "Local Style Stub"
+provider = "local"
+endpoint = "local"
+model = "local-style"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "style_analyze"
+agent = "local-style"
+
+[[routing]]
+route = "style_revise"
+agent = "local-style"
+"#,
+    )
+    .unwrap();
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.display().to_string()),
+    })
+    .unwrap();
+
+    (tmp, svc)
+}
+
+/// A service with NO style agent configured — `style_analyze` / `style_revise`
+/// resolve to the built-in default local stub, which errors (bug 6a) instead of
+/// fabricating. Used to reproduce and guard the production incident.
+async fn fresh_service_no_style_agent() -> (TempDir, SqliteSpindleService) {
+    let tmp = TempDir::new().unwrap();
+    let pool = SqlitePool::open(&tmp.path().join("svc.db")).await.unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
     let repo = Repository::with_model_router(pool, data_dir, ModelRouter::local_only());
     (tmp, SqliteSpindleService::new(repo))
 }
@@ -179,6 +234,110 @@ async fn test_create_and_apply_style_profile_lifecycle() {
 
     // 7. Verify cache invalidation count is reported
     let _ = apply_out.invalidated_validator_findings;
+}
+
+/// Live-run bug 6a — the style-profile incident, reproduced.
+///
+/// With NO style agent configured, the `style_analyze` route resolves to the
+/// built-in local stub. OLD behavior: the stub returned "Mock style profile
+/// guidance summary" with `comedy_density: none`, and building/applying a
+/// profile merged that mock guidance over the project's REAL narrator voice.
+/// NEW behavior: the stub errors ("no model configured for route
+/// 'style_analyze'"), the operation fails honestly, and the project's narrator
+/// voice is left untouched — no fabrication reaches the reader contract.
+#[tokio::test]
+async fn refresh_style_profile_errors_when_style_route_unconfigured_and_leaves_voice_untouched() {
+    use spindle_core::models::SetNarratorVoiceInput;
+    use spindle_core::style::NarratorVoice;
+
+    let (tmp, svc) = fresh_service_no_style_agent().await;
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Real Voice Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = project_out.project_id;
+
+    // The project's REAL, operator-authored narrator voice. The mock stub would
+    // overwrite emotional_register with "brooding-and-reflective" and set
+    // comedy_density to "none" — the exact fabrication we are guarding against.
+    svc.set_narrator_voice(SetNarratorVoiceInput {
+        project_id: project_id.clone(),
+        narrator_voice: NarratorVoice {
+            comedy_density: Some("high — a laugh a page".to_string()),
+            pacing_feel: Some("punchy".to_string()),
+            interiority_ratio: None,
+            emotional_register: Some("funny-and-sarcastic".to_string()),
+            chapter_ending_style: None,
+            notes: Vec::new(),
+        },
+    })
+    .await
+    .unwrap();
+
+    // Build a style profile with apply=true. The style_analyze route is
+    // unconfigured, so this must fail with a structured error rather than
+    // fabricating + merging mock guidance.
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/style");
+    let src = base.join("fast-serial-chapter-1.md");
+    let dest = tmp.path().join("fast-serial-chapter-1.md");
+    std::fs::copy(&src, &dest).unwrap();
+
+    let err = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Should Fail".to_string(),
+            source_paths: vec![dest.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(true),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: Some(true),
+        })
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no model configured for route 'style_analyze'"),
+        "expected structured no-model error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("Mock style profile guidance"),
+        "must not surface fabricated mock guidance, got: {msg}"
+    );
+
+    // The real narrator voice is completely untouched — no mock merged in.
+    let project_after = svc.repository().get_project(&project_id).await.unwrap();
+    let voice = project_after
+        .narrator_voice
+        .map(|v| v.into_core())
+        .unwrap_or_default();
+    assert_eq!(
+        voice.emotional_register.as_deref(),
+        Some("funny-and-sarcastic"),
+        "narrator emotional_register must be untouched"
+    );
+    assert_eq!(
+        voice.comedy_density.as_deref(),
+        Some("high — a laugh a page"),
+        "narrator comedy_density must be untouched (not the mock 'none')"
+    );
+    assert_eq!(voice.pacing_feel.as_deref(), Some("punchy"));
 }
 
 #[tokio::test]
