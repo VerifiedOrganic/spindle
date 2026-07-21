@@ -6584,6 +6584,7 @@ where
     // finalization chokepoint: every tool served over stdio and HTTP flows
     // through here for both its input and output schema.
     strip_nonstandard_formats(&mut value);
+    strip_null_enum_values(&mut value);
     let object = value
         .as_object()
         .cloned()
@@ -6603,6 +6604,7 @@ fn scrub_output_schema_formats(tool: Tool) -> Tool {
     };
     let mut value = Value::Object((**output).clone());
     strip_nonstandard_formats(&mut value);
+    strip_null_enum_values(&mut value);
     let object = value
         .as_object()
         .cloned()
@@ -6640,6 +6642,41 @@ fn strip_nonstandard_formats(value: &mut Value) {
         Value::Array(items) => {
             for item in items {
                 strip_nonstandard_formats(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Remove `null` entries from `"enum"` arrays anywhere in a schema tree.
+///
+/// schemars emits `"enum": [..., null]` for `Option<Enum>` fields. MCP
+/// consumers vary: Anthropic tolerates the null entry; Moonshot's validator
+/// rejects it (observed live: `enum value (<nil>) does not match any type in
+/// [string]` at `properties.canonical_facts.items.properties.scope.enum`).
+/// Optionality is already expressed by the field's absence from `required`,
+/// and serde accepts explicit nulls for `Option` fields regardless of the
+/// advertised schema, so dropping the null tightens the advertisement without
+/// changing server behavior. An enum emptied by the removal is dropped.
+fn strip_null_enum_values(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let emptied = if let Some(Value::Array(items)) = map.get_mut("enum") {
+                items.retain(|v| !v.is_null());
+                items.is_empty()
+            } else {
+                false
+            };
+            if emptied {
+                map.remove("enum");
+            }
+            for child in map.values_mut() {
+                strip_null_enum_values(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_null_enum_values(item);
             }
         }
         _ => {}
@@ -7587,6 +7624,88 @@ mod tests {
     /// Recursively collect every `format` string value present anywhere in a
     /// schema JSON tree, tagged with the JSON-pointer-ish path where it lives.
     /// Used by the interop-sweep tests to name offenders precisely.
+    fn collect_null_enum_paths(value: &Value, path: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::Array(items)) = map.get("enum")
+                    && items.iter().any(Value::is_null)
+                {
+                    out.push(format!("{path}/enum"));
+                }
+                for (key, child) in map {
+                    collect_null_enum_paths(child, &format!("{path}/{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    collect_null_enum_paths(item, &format!("{path}[{idx}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Regression pin for the Moonshot rejection: `enum value (<nil>) does
+    /// not match any type in [string]`. No served schema may carry a null
+    /// enum entry, input or output, anywhere in the tree.
+    #[tokio::test]
+    async fn served_tool_schemas_carry_no_null_enum_values() {
+        let router = router().await;
+        let tools = router.list_tools();
+        assert!(!tools.is_empty(), "expected registered tools");
+
+        let mut offenders: Vec<String> = Vec::new();
+        for tool in &tools {
+            let input = Value::Object((*tool.input_schema).clone());
+            collect_null_enum_paths(&input, &format!("{}#input", tool.name), &mut offenders);
+            if let Some(output) = &tool.output_schema {
+                let output = Value::Object((**output).clone());
+                collect_null_enum_paths(&output, &format!("{}#output", tool.name), &mut offenders);
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "found {} enum arrays containing null in served schemas; sample:\n{}",
+            offenders.len(),
+            offenders
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn strip_null_enum_values_drops_nulls_and_empty_enums() {
+        let mut value = serde_json::json!({
+            "properties": {
+                "scope": {"type": "string", "enum": ["book", "chapter", null]},
+                "only_null": {"enum": [null]},
+                "clean": {"type": "string", "enum": ["a", "b"]},
+                "nested": {"items": {"anyOf": [{"enum": ["x", null]}]}}
+            }
+        });
+        strip_null_enum_values(&mut value);
+        assert_eq!(
+            value["properties"]["scope"]["enum"],
+            serde_json::json!(["book", "chapter"])
+        );
+        assert!(
+            value["properties"]["only_null"].get("enum").is_none(),
+            "an enum emptied by null-removal must be dropped entirely"
+        );
+        assert_eq!(
+            value["properties"]["clean"]["enum"],
+            serde_json::json!(["a", "b"])
+        );
+        assert_eq!(
+            value["properties"]["nested"]["items"]["anyOf"][0]["enum"],
+            serde_json::json!(["x"])
+        );
+    }
+
     fn collect_format_values(value: &Value, path: &str, out: &mut Vec<(String, String)>) {
         match value {
             Value::Object(map) => {
