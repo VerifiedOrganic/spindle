@@ -1,5 +1,6 @@
 pub mod canonical_facts;
 pub mod context_bundle;
+pub mod model_output;
 pub mod models;
 pub mod provenance;
 pub mod style;

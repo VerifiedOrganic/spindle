@@ -2372,6 +2372,37 @@ const UNIVERSAL_MOCK_AGENT_SCRIPT: &str = r#"#!/bin/bash
 ROUTE=$1
 PROMPT=$2
 if [ "$ROUTE" = "draft" ]; then
+  # BUG 3 fixture: a scene whose synopsis carries MOCK_DRAFT_JSONFREE gets a
+  # draft reply with NO JSON at all, so the harness parse fails every time. The
+  # test asserts the poisoned completion is cleared and the next execute
+  # re-dispatches (a second recorded dispatch) rather than re-parsing forever.
+  if echo "$PROMPT" | grep -q "MOCK_DRAFT_JSONFREE"; then
+    echo "I'll pull Spindle canon first, then draft. No JSON in this reply at all."
+    exit 0
+  fi
+  # BUG 2 fixture: a scene whose synopsis carries MOCK_DRAFT_NARRATION gets a
+  # grok-style reply — short narration + tool-call chatter, then the real JSON
+  # document at the TAIL. The tail-first extraction must recover it so the draft
+  # step completes.
+  if echo "$PROMPT" | grep -q "MOCK_DRAFT_NARRATION"; then
+    cat <<EOF
+I'll pull Spindle canon first, then draft the scene.
+Calling search_bible for the Ash Gate.
+Found it. Drafting now.
+
+{
+  "full_text": "Mara stood watch at the Ash Gate, clutching her salt charm.",
+  "summary": "Mara watch",
+  "tone": "grim",
+  "character_states": [],
+  "canonical_facts": [],
+  "relationship_updates": [],
+  "beats": [],
+  "continuity_notes": []
+}
+EOF
+    exit 0
+  fi
   TONE="grim"
   if echo "$PROMPT" | grep -q "Revision directives"; then
     if ! echo "$PROMPT" | grep -q "STUBBORN_SCENE"; then
@@ -6993,4 +7024,456 @@ async fn explicit_candidate_included_when_style_route_explicit_cleared() {
         .await
         .unwrap();
     assert_eq!(consumed.len(), 1);
+}
+
+/// Fixture for the draft-parse BUG 2/3 tests. Plans ONE explicit scene whose
+/// chapter synopsis carries `synopsis` (a mock-agent draft sentinel), starts the
+/// run, installs the dispatch recorder, and spins the harness HTTP server. An
+/// explicit scene routes to the configured (explicit-cleared) mock draft agent —
+/// the AUTOMATED draft path where `ensure_scene_package_ready` parses the draft
+/// output (unlike a general scene, which pauses for host draft).
+struct DraftParseFixture {
+    _tmp: TempDir,
+    _svc: SqliteSpindleService,
+    router: crate::tools::ToolRouter,
+    project_id: String,
+    run_id: String,
+    data_dir: std::path::PathBuf,
+    dispatch_log: std::sync::Arc<std::sync::Mutex<Vec<spindle_adapters::ai::DispatchRecord>>>,
+    ct: tokio_util::sync::CancellationToken,
+    server_handle: tokio::task::JoinHandle<()>,
+}
+
+async fn draft_parse_fixture(synopsis: &str) -> DraftParseFixture {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use spindle_core::models::ConfigureAgentsInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("draft_parse.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let script_path = universal_mock_agent_path();
+    let config_path = tmp.path().join("config.toml");
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+"#,
+        script = script_path.display(),
+    );
+    std::fs::write(&config_path, config_content).unwrap();
+    unsafe {
+        std::env::set_var(
+            "SPINDLE_MODEL_CLI_COMMAND",
+            script_path.to_string_lossy().to_string(),
+        );
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Draft Parse".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Poisoned drafts recover.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Oathbound warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Blackened wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: Some(mara.character_id.clone()),
+        synopsis: synopsis.into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "Mara takes the watch".into(),
+            beat_structure: Vec::new(),
+            character_ids: vec![mara.character_id.clone()],
+            location_id: Some(loc.location_id.clone()),
+            // Explicit → routes to the configured draft agent (automated path).
+            content_rating: Some(ContentRating::Explicit),
+            purpose: "establishing".into(),
+            research_required: Some(false),
+            ..Default::default()
+        }],
+    })
+    .await
+    .unwrap();
+
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        Arc::new(ToolSerializationState::default()),
+    );
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "checkpoint_interval": 1,
+    });
+    let start_res = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let start_val = start_res.structured_content.unwrap();
+    assert_eq!(
+        start_val["status"].as_str(),
+        Some("active"),
+        "run should start active: {start_val:?}"
+    );
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = CancellationToken::new();
+    let ct_clone1 = ct.clone();
+    let ct_clone2 = ct.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct_clone1))
+            .with_graceful_shutdown(async move { ct_clone2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    DraftParseFixture {
+        _tmp: tmp,
+        _svc: svc,
+        router,
+        project_id: project.project_id,
+        run_id,
+        data_dir,
+        dispatch_log,
+        ct,
+        server_handle,
+    }
+}
+
+fn count_draft_dispatches(
+    log: &std::sync::Arc<std::sync::Mutex<Vec<spindle_adapters::ai::DispatchRecord>>>,
+) -> usize {
+    use spindle_adapters::ai::DispatchRecord;
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(
+            |record| matches!(record, DispatchRecord::Dispatch { route, .. } if route == "draft"),
+        )
+        .count()
+}
+
+/// BUG 2 (item c): a draft whose mock output is narration + trailing JSON must
+/// parse and complete the draft step (the scene advances to draft_saved).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn draft_narration_wrapped_json_completes_the_draft_step() {
+    let fx = draft_parse_fixture("First watch. MOCK_DRAFT_NARRATION").await;
+    let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+
+    let exec = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        exec.is_error,
+        Some(false),
+        "execute must not error: {exec:?}"
+    );
+    let val = exec.structured_content.unwrap();
+    assert!(
+        val["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Saved draft for chapter 1 scene 1"),
+        "narration-wrapped draft should complete the draft step: {val:?}"
+    );
+
+    let status = fx
+        .router
+        .call_tool("authoring_status", Some(exec_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let status_val = status.structured_content.unwrap();
+    let phase = status_val["chapters"][0]["scenes"][0]["phase"]
+        .as_str()
+        .unwrap_or_default();
+    assert_eq!(
+        phase, "draft_saved",
+        "scene should be drafted: {status_val:?}"
+    );
+
+    fx.ct.cancel();
+    let _ = fx.server_handle.await;
+}
+
+/// BUG 3 (item d): a JSON-free draft fails the parse, and the poisoned
+/// completion is CLEARED so the next execute re-dispatches (a second recorded
+/// draft dispatch) rather than re-parsing the cached fragments forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn draft_parse_failure_clears_generation_and_next_execute_redispatches() {
+    let fx = draft_parse_fixture("First watch. MOCK_DRAFT_JSONFREE").await;
+    let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+
+    // First execute: the draft is JSON-free → the parse fails and the step
+    // returns an error tool result (draft_scene propagates the parse error).
+    let first = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first.is_error,
+        Some(true),
+        "JSON-free draft should surface a parse error: {first:?}"
+    );
+    let first_msg = format!("{:?}", first.content);
+    assert!(
+        first_msg.contains("was not valid scene JSON")
+            || first_msg.contains("model output was not valid JSON"),
+        "error should be the draft parse failure: {first_msg}"
+    );
+    let dispatches_after_first = count_draft_dispatches(&fx.dispatch_log);
+    assert_eq!(
+        dispatches_after_first, 1,
+        "exactly one draft dispatch after the first execute"
+    );
+
+    // The poisoned completion must have been cleared on disk.
+    let artifact_path = fx
+        .data_dir
+        .join("artifacts")
+        .join("scenes/chapter-0001/scene-001.json");
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&artifact_path).unwrap()).unwrap();
+    assert_eq!(
+        artifact["completion_fragments"].as_array().map(|a| a.len()),
+        Some(0),
+        "poisoned completion_fragments must be cleared: {artifact:?}"
+    );
+    assert!(
+        !artifact["last_parse_error"].is_null(),
+        "the parse error should be recorded for the operator"
+    );
+
+    // Second execute: because fragments were cleared, the harness re-dispatches
+    // a FRESH draft (a second recorded dispatch) instead of re-parsing. The
+    // sentinel still yields JSON-free output so it errors again — the proof is
+    // the SECOND recorded dispatch (before the fix, execute re-parsed the cache
+    // with zero new dispatches).
+    let _second = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let dispatches_after_second = count_draft_dispatches(&fx.dispatch_log);
+    assert_eq!(
+        dispatches_after_second, 2,
+        "the next execute must RE-DISPATCH a fresh draft, not re-parse the cache"
+    );
+
+    fx.ct.cancel();
+    let _ = fx.server_handle.await;
+}
+
+/// BUG 3 (item e): the explicit operator path. A poisoned (JSON-free) scene
+/// that never saved a draft is resolved with target `redraft`; the scene resets
+/// to pending-draft (artifact deleted) and the next execute re-dispatches a
+/// fresh draft. Invalid targets still error, and the whitelist message now lists
+/// redraft. (A poisoned draft never reaches `save_scene_draft`, so no persisted
+/// bible scene exists to reconcile back to draft_saved — the redraft is clean.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolve_block_redraft_resets_poisoned_scene_and_lists_in_error() {
+    let fx = draft_parse_fixture("First watch. MOCK_DRAFT_JSONFREE").await;
+    let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
+
+    // First execute poisons the scene: JSON-free draft → parse fails.
+    let first = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.is_error, Some(true), "poisoned draft must error");
+    let dispatches_after_draft = count_draft_dispatches(&fx.dispatch_log);
+    assert_eq!(dispatches_after_draft, 1);
+
+    // The scene artifact exists on disk (with the cleared, poisoned generation).
+    let artifact_path = fx
+        .data_dir
+        .join("artifacts")
+        .join("scenes/chapter-0001/scene-001.json");
+    assert!(artifact_path.exists(), "poisoned artifact should exist");
+
+    // An invalid target still errors, and the message now lists redraft.
+    let bad_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "target_phase": "nonsense",
+    });
+    let bad = fx
+        .router
+        .call_tool(
+            "authoring_resolve_block",
+            Some(bad_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let bad_msg = format!("{:?}", bad.content);
+    assert!(
+        bad_msg.contains("Invalid target phase") && bad_msg.contains("redraft"),
+        "invalid-target error must list redraft: {bad_msg}"
+    );
+
+    // Resolve with target redraft → scene resets to pending-draft; artifact gone.
+    let redraft_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "target_phase": "redraft",
+    });
+    let redraft = fx
+        .router
+        .call_tool(
+            "authoring_resolve_block",
+            Some(redraft_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        redraft.is_error,
+        Some(false),
+        "redraft must succeed: {redraft:?}"
+    );
+    let redraft_val = redraft.structured_content.unwrap();
+    assert!(
+        redraft_val["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pending-draft"),
+        "redraft should report the reset: {redraft_val:?}"
+    );
+    assert!(
+        !artifact_path.exists(),
+        "redraft must delete the poisoned artifact so the reuse path rebuilds fresh"
+    );
+
+    // Status confirms the scene is back to pending (no persisted scene to
+    // reconcile back to draft_saved).
+    let status = fx
+        .router
+        .call_tool("authoring_status", Some(exec_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    let status_val = status.structured_content.unwrap();
+    let phase = status_val["chapters"][0]["scenes"][0]["phase"]
+        .as_str()
+        .unwrap_or_default();
+    assert_eq!(
+        phase, "pending",
+        "redraft should reset to pending: {status_val:?}"
+    );
+
+    // Next execute re-dispatches a fresh draft (a second recorded dispatch),
+    // proving the redraft cleared the way for a new attempt.
+    let _second = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    let dispatches_after_redraft = count_draft_dispatches(&fx.dispatch_log);
+    assert_eq!(
+        dispatches_after_redraft, 2,
+        "redraft must force a fresh re-dispatch"
+    );
+
+    fx.ct.cancel();
+    let _ = fx.server_handle.await;
 }

@@ -34,7 +34,7 @@ The supervisor exposes 9 MCP tools through the `spindle-mcp` server:
 | `authoring_save_scene_draft` | Saves host-drafted prose plus its required structured continuity package. | `project_id`, `run_id`, scene placement, `full_text`, `summary`, `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes` | `run_id`, `scene_id`, `scene_artifact_path`, `structured_update_count` |
 | `authoring_record_checkpoint_audit` | Attaches the deep consistency result returned by a separate `check_consistency(deep_check=true)` call to a pending checkpoint. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `deep_consistency` | `run_id`, `status` |
 | `authoring_review_checkpoint` | Marks a checkpoint reviewed and appends directives to resume. | `project_id`, `run_id`, `start_chapter`, `end_chapter`, `directives` | `run_id`, `status` |
-| `authoring_resolve_block` | Clears a blocked scene after operator inspection and advances it to the next safe phase. | `project_id`, `run_id`, `chapter_number`, `scene_order`, `target_phase` | `run_id`, `status` |
+| `authoring_resolve_block` | Clears a blocked scene after operator inspection and advances it to the next safe phase, or resets a poisoned scene to pending-draft with `target_phase: "redraft"`. | `project_id`, `run_id`, `chapter_number`, `scene_order`, `target_phase` | `run_id`, `status` |
 | `authoring_cancel_run` | Pauses or cancels the active run without deleting progress. | `project_id`, `run_id` | `run_id`, `status` |
 
 Chapter plans are the source of truth for pre-draft scene requirements. Each
@@ -244,6 +244,18 @@ If the session or service restarts mid-run:
 3. Call `authoring_execute_next` to continue driving the drafting loop.
 
 Run statuses are `"active"`, `"blocked"`, `"completed"`, or `"paused"`. `authoring_cancel_run` sets `"paused"` and `authoring_execute_next` will not advance a paused run.
+
+### Recovering an Unparseable / Poisoned Draft
+If an automated draft comes back as unparseable model output (for example an
+agent that narrates around the JSON), `authoring_execute_next` reports the parse
+error. The harness now **discards the poisoned completion automatically**, so the
+next `authoring_execute_next` re-dispatches a fresh draft rather than re-parsing
+the cached output forever. If you want to force a clean re-draft explicitly —
+e.g. after fixing agent config — call `authoring_resolve_block` with
+`target_phase: "redraft"`. That resets the scene to pending-draft (clearing the
+stored generation, deleting the stale scene artifact, and clearing verify state)
+so the next execute re-drafts it from scratch. The forward-advance phases
+(`draft_saved`, `changes_committed`, `beats_annotated`) are unchanged.
 
 ### Draft Routing Semantics
 

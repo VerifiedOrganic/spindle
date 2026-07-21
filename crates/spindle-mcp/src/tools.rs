@@ -5067,25 +5067,42 @@ impl ToolRouter {
 
         let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
 
-        let parsed_phase = match input.target_phase.to_ascii_lowercase().as_str() {
-            "pending" => spindle_harness::state::ScenePhase::Pending,
-            "draft_saved" => spindle_harness::state::ScenePhase::DraftSaved,
-            "changes_committed" => spindle_harness::state::ScenePhase::ChangesCommitted,
-            "beats_annotated" => spindle_harness::state::ScenePhase::BeatsAnnotated,
-            _ => anyhow::bail!("Invalid target phase: {}", input.target_phase),
+        // `redraft` is not a forward phase: it resets a poisoned/unparseable
+        // scene BACK to pending-draft so the next execute re-drafts fresh (BUG
+        // 3). The forward phases stay unchanged; anything else errors, and the
+        // whitelist message now lists redraft.
+        let target = input.target_phase.to_ascii_lowercase();
+        let parsed_phase = match target.as_str() {
+            "pending" => Some(spindle_harness::state::ScenePhase::Pending),
+            "draft_saved" => Some(spindle_harness::state::ScenePhase::DraftSaved),
+            "changes_committed" => Some(spindle_harness::state::ScenePhase::ChangesCommitted),
+            "beats_annotated" => Some(spindle_harness::state::ScenePhase::BeatsAnnotated),
+            "redraft" => None,
+            _ => anyhow::bail!(
+                "Invalid target phase: {} (expected one of: pending, draft_saved, changes_committed, beats_annotated, redraft)",
+                input.target_phase
+            ),
         };
 
         let data_dir = repo.data_dir();
         let state_path = authoring_state_path(data_dir, &run_id);
         harness_state.save(&state_path)?;
 
-        let resolve_result = spindle_harness::operator::resolve_scene_block(
-            &mut harness_state,
-            &state_path,
-            input.chapter_number,
-            input.scene_order,
-            parsed_phase,
-        );
+        let resolve_result = match parsed_phase {
+            Some(phase) => spindle_harness::operator::resolve_scene_block(
+                &mut harness_state,
+                &state_path,
+                input.chapter_number,
+                input.scene_order,
+                phase,
+            ),
+            None => spindle_harness::operator::redraft_scene_block(
+                &mut harness_state,
+                &state_path,
+                input.chapter_number,
+                input.scene_order,
+            ),
+        };
 
         let _ = std::fs::remove_file(&state_path);
 
@@ -5114,6 +5131,13 @@ impl ToolRouter {
             map_harness_to_records(&run_id, &harness_state, &final_status, Some(run.created_at));
         repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
             .await?;
+
+        // Journal: resolve_block emits NOTHING — neither the pre-existing forward
+        // phases nor `redraft` journal a run event. The ADR D2 vocabulary has no
+        // kind for an operator manual scene reset, `pass_skipped` is for a run
+        // PASS being skipped (not an operator action), and inventing a kind is a
+        // one-way door (D3.4). `authoring_status` (DB state) stays the source of
+        // truth, so the reset is observable there without a journal entry.
 
         Ok(AuthoringResolveBlockOutput {
             run_id,

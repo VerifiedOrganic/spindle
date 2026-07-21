@@ -1266,7 +1266,12 @@ async fn ensure_scene_package_ready(
                     return Ok(());
                 }
                 Err(error) => {
+                    // BUG 3: record the failure, then DISCARD the poisoned
+                    // completion so the next execute re-dispatches fresh instead
+                    // of re-parsing the same cached fragments forever. The clear
+                    // is persisted before the error propagates.
                     artifact.last_parse_error = Some(error.to_string());
+                    artifact.clear_generation();
                     artifact_store.save_json(artifact_path, artifact)?;
                     return Err(error).with_context(|| {
                         format!(
@@ -1378,7 +1383,10 @@ async fn ensure_summary_package_ready(
                     return Ok(());
                 }
                 Err(error) => {
+                    // BUG 3 (mirror of the scene path): discard the poisoned
+                    // completion so the next execute re-dispatches fresh.
                     artifact.last_parse_error = Some(error.to_string());
+                    artifact.clear_generation();
                     artifact_store.save_json(artifact_path, artifact)?;
                     return Err(error).with_context(|| {
                         format!(
@@ -1994,7 +2002,27 @@ where
     } else {
         trimmed
     };
-    serde_json::from_str(candidate).context("model output was not valid JSON")
+    // Fast path: the candidate is already a clean JSON document.
+    match serde_json::from_str(candidate) {
+        Ok(value) => Ok(value),
+        Err(direct_err) => {
+            // grok-4.5 (and any narrating agent CLI) prepends prose before the
+            // JSON payload, which trails the narration (BUG 2). Recover the last
+            // balanced top-level object and retry. If no object exists this is
+            // genuinely JSON-free output, so preserve the original error string.
+            match spindle_core::model_output::extract_trailing_json_object(candidate) {
+                Some(object) => {
+                    let value =
+                        serde_json::from_str(object).context("model output was not valid JSON")?;
+                    tracing::debug!(
+                        "recovered trailing JSON object from narration-wrapped model output"
+                    );
+                    Ok(value)
+                }
+                None => Err(direct_err).context("model output was not valid JSON"),
+            }
+        }
+    }
 }
 
 fn validate_scene_package(
@@ -2171,6 +2199,44 @@ mod tests {
         NarrativePromiseDueSummary, ReaderContract, SceneContextBudgetMeta, SceneContextNovelLayer,
         SceneContextSceneLayer, StoryPlacement, WorldStateSummary,
     };
+
+    #[test]
+    fn parse_model_json_tolerates_grok_narration_before_the_payload() {
+        // grok-4.5 narrates before/between tool calls and places the JSON
+        // document at the tail. Feeding the whole concatenation to serde would
+        // fail with `expected value at line 1 column 1`; parse_model_json must
+        // recover the trailing object (BUG 2).
+        let raw = "I'll pull Spindle canon first, then draft the scene.\n\
+             Calling search_bible for the Ash Gate.\n\n\
+             {\"full_text\":\"Mara stood watch at the Ash Gate.\",\"summary\":\"Mara watch\",\"tone\":\"grim\"}";
+        let package: GeneratedScenePackage =
+            parse_model_json(raw).expect("grok narration + trailing JSON must parse");
+        assert_eq!(package.full_text, "Mara stood watch at the Ash Gate.");
+        assert_eq!(package.summary, "Mara watch");
+        assert_eq!(package.tone.as_deref(), Some("grim"));
+    }
+
+    #[test]
+    fn parse_model_json_still_errors_on_json_free_output() {
+        // Genuinely JSON-free output must keep failing with the existing error
+        // string (the salvage only fires when a balanced object exists).
+        let err = parse_model_json::<GeneratedScenePackage>(
+            "I'll pull Spindle canon first. No JSON here at all.",
+        )
+        .expect_err("json-free output must still error");
+        assert!(
+            err.to_string().contains("model output was not valid JSON"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_model_json_accepts_clean_json_unchanged() {
+        let raw = "{\"full_text\":\"clean\",\"summary\":\"s\"}";
+        let package: GeneratedScenePackage =
+            parse_model_json(raw).expect("clean JSON must still parse");
+        assert_eq!(package.full_text, "clean");
+    }
 
     fn sample_state() -> HarnessState {
         HarnessState {

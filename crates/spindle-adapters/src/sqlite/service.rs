@@ -25798,9 +25798,61 @@ fn extract_json_object(output: &str) -> Option<String> {
         trimmed.to_string()
     };
 
-    let start = without_fence.find('{')?;
-    let end = without_fence.rfind('}')?;
-    (start < end).then(|| without_fence[start..=end].to_string())
+    // grok-4.5 narrates before/between tool calls and places the JSON payload
+    // at the tail (BUG 2). Recover the last balanced top-level object, which is
+    // robust to braces in the narration and to multiple objects (takes the last
+    // complete one). Returns None only when no balanced object exists.
+    spindle_core::model_output::extract_trailing_json_object(&without_fence).map(str::to_string)
+}
+
+#[cfg(test)]
+mod extract_json_object_tests {
+    use super::extract_json_object;
+
+    #[test]
+    fn recovers_trailing_json_after_grok_narration() {
+        // grok narration before the payload — the concatenation the live run
+        // fed to serde and got `expected value at line 1 column 1`.
+        let output = "I'll pull Spindle canon first, then audit.\n\n{\"deltas\":[]}";
+        assert_eq!(
+            extract_json_object(output).as_deref(),
+            Some("{\"deltas\":[]}")
+        );
+    }
+
+    #[test]
+    fn narration_with_a_brace_does_not_start_the_span_too_early() {
+        // The old find('{')..rfind('}') span would start at the narration brace
+        // and produce an unparseable slice; tail-first ignores it.
+        let output = "note: the set is {incomplete here\nNow the answer:\n{\"findings\":[]}";
+        assert_eq!(
+            extract_json_object(output).as_deref(),
+            Some("{\"findings\":[]}")
+        );
+    }
+
+    #[test]
+    fn takes_the_last_complete_object_when_multiple_present() {
+        let output = "{\"a\":1} chatter about tools {\"deltas\":[]}";
+        assert_eq!(
+            extract_json_object(output).as_deref(),
+            Some("{\"deltas\":[]}")
+        );
+    }
+
+    #[test]
+    fn still_extracts_from_code_fence() {
+        let output = "```json\n{\"matches\":[]}\n```";
+        assert_eq!(
+            extract_json_object(output).as_deref(),
+            Some("{\"matches\":[]}")
+        );
+    }
+
+    #[test]
+    fn none_when_no_object_present() {
+        assert_eq!(extract_json_object("no json here at all"), None);
+    }
 }
 
 fn heuristic_world_rule_violations(

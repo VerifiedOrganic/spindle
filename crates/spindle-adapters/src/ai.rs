@@ -3582,6 +3582,46 @@ enabled = false
     }
 
     #[test]
+    fn grok_narrated_draft_text_recovers_the_trailing_json_payload() {
+        // BUG 2 fixture: grok-4.5 puts short narration + tool-call chatter into
+        // the envelope `.text` field, with the real JSON document at the tail.
+        // The adapter returns `.text` verbatim (prose routes need it whole); the
+        // downstream JSON seam (shared `extract_trailing_json_object`) recovers
+        // the payload. Feeding the whole `.text` to serde directly reproduces
+        // the live `expected value at line 1 column 1` failure first.
+        let payload = "{\"full_text\":\"Mara stood watch at the Ash Gate.\",\"summary\":\"Mara watch\",\"tone\":\"grim\"}";
+        let narrated_text = format!(
+            "I'll pull Spindle canon first, then draft.\\nCalling search_bible for the Ash Gate.\\nFound it — drafting now.\\n\\n{payload}"
+        );
+        let stdout = serde_json::json!({
+            "text": narrated_text,
+            "stopReason": "EndTurn",
+        })
+        .to_string();
+
+        let (text, truncated) = parse_grok_envelope(&stdout, true).expect("envelope parses");
+        assert!(!truncated);
+
+        // Direct serde parse of the narrated text fails the live way.
+        let direct: Result<serde_json::Value, _> = serde_json::from_str(&text);
+        let direct_err = direct.expect_err("narrated text must not parse directly");
+        assert!(
+            direct_err
+                .to_string()
+                .contains("expected value at line 1 column 1"),
+            "expected the live failure class, got: {direct_err}"
+        );
+
+        // The shared seam recovers the trailing object.
+        let recovered = spindle_core::model_output::extract_trailing_json_object(&text)
+            .expect("trailing JSON recovered from narration");
+        let value: serde_json::Value =
+            serde_json::from_str(recovered).expect("recovered object parses");
+        assert_eq!(value["full_text"], "Mara stood watch at the Ash Gate.");
+        assert_eq!(value["summary"], "Mara watch");
+    }
+
+    #[test]
     fn grok_system_prompt_layers_route_explicit_appendix_and_hint() {
         let route = grok_draft_route();
         let prompt = grok_system_prompt(&route, Some("explicit"), None);

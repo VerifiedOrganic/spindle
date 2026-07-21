@@ -287,6 +287,92 @@ pub fn resolve_scene_block(
     ))
 }
 
+/// Reset a scene to pending-draft so the next `authoring_execute_next`
+/// re-dispatches a fresh draft (BUG 3 operator path). Use when a draft is
+/// unparseable / poisoned and the automatic clear-on-failure was not enough
+/// (e.g. the operator wants a clean re-draft after editing config).
+///
+/// Semantics:
+/// - phase → `Pending`, `blocked_reason`, `scene_id`, and `draft_diagnostics`
+///   cleared;
+/// - the on-disk scene artifact is deleted so `load_or_create_scene_artifact`
+///   rebuilds it fresh (a stale artifact would otherwise resurrect the poisoned
+///   generation or a stale save-draft output on reuse);
+/// - verify state (`verify_status`, `verify_detail`, `last_finding_fingerprint`,
+///   `revise_attempts`, `revision_directives`) is cleared per the established
+///   column semantics — the prior draft's verify outcome no longer applies.
+///
+/// Unlike [`resolve_scene_block`], this does NOT require the scene to be
+/// currently blocked (a parse-failed scene stays `Pending` with no block set)
+/// and it moves the scene BACKWARD rather than one phase forward.
+pub fn redraft_scene_block(
+    state: &mut HarnessState,
+    state_path: &Path,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Result<String> {
+    let artifacts_root = artifacts_root(state_path, state);
+    let chapter = state
+        .chapters
+        .iter_mut()
+        .find(|chapter| chapter.chapter_number == chapter_number)
+        .with_context(|| format!("chapter {} not found in state", chapter_number))?;
+    let scene = chapter
+        .scenes
+        .iter_mut()
+        .find(|scene| scene.scene_order == scene_order)
+        .with_context(|| {
+            format!(
+                "scene {}.{} not found in state",
+                chapter_number, scene_order
+            )
+        })?;
+
+    // Delete the on-disk artifact so the reuse path rebuilds it fresh. Absence
+    // is fine (nothing to resurrect); other IO errors are real failures. A
+    // parse-failed draft writes the artifact to its deterministic path but never
+    // persists that path to the run tables (the error aborts before the run-state
+    // save), so fall back to the deterministic path when the state has no
+    // recorded artifact path — otherwise a poisoned artifact would survive.
+    let artifact_rel = scene.scene_artifact_path.clone().unwrap_or_else(|| {
+        crate::artifacts::ArtifactStore::scene_relative_path(chapter_number, scene_order)
+    });
+    let full_artifact_path = artifacts_root.join(&artifact_rel);
+    match std::fs::remove_file(&full_artifact_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to remove scene {}.{} artifact at {}",
+                    chapter_number,
+                    scene_order,
+                    full_artifact_path.display()
+                )
+            });
+        }
+    }
+
+    let previous_phase = phase_label(scene.phase);
+    scene.phase = ScenePhase::Pending;
+    scene.blocked_reason = None;
+    scene.scene_id = None;
+    scene.draft_diagnostics = None;
+    // Verify state no longer applies to a scene being re-drafted from scratch.
+    scene.verify_status = None;
+    scene.verify_detail = None;
+    scene.last_finding_fingerprint = None;
+    scene.revise_attempts = 0;
+    scene.revision_directives = None;
+
+    state.save(state_path)?;
+
+    Ok(format!(
+        "Reset scene {}.{} (was {}) to pending-draft; the next execute will re-draft it.",
+        chapter_number, scene_order, previous_phase
+    ))
+}
+
 fn append_directives(existing: &mut Vec<String>, directives: &[String]) -> usize {
     let mut added = 0;
     for directive in directives {
@@ -465,5 +551,66 @@ mod tests {
             ScenePhase::ChangesCommitted
         );
         assert!(state.chapters[0].scenes[0].blocked_reason.is_none());
+    }
+
+    #[test]
+    fn redraft_scene_block_resets_to_pending_and_deletes_artifact() {
+        let state_path = temp_state_path("redraft-scene-block");
+        let mut state = HarnessState::from_seed(seed(), "branch:main".to_string());
+        let artifact_rel = "scenes/chapter-0001/scene-001.json".to_string();
+        let artifact_path = artifacts_root(&state_path, &state).join(&artifact_rel);
+        fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("mkdirs");
+        fs::write(&artifact_path, "{\"poisoned\": true}").expect("write artifact");
+
+        let scene = &mut state.chapters[0].scenes[0];
+        *scene = SceneState {
+            scene_order: 1,
+            character_ids: vec!["character:pov".to_string()],
+            location_id: "location:test".to_string(),
+            content_rating: ContentRating::Teen,
+            tone: Some("tense".to_string()),
+            source_path: None,
+            phase: ScenePhase::Pending,
+            scene_id: Some("scene:1".to_string()),
+            scene_artifact_path: Some(artifact_rel),
+            draft_diagnostics: None,
+            blocked_reason: None,
+            verify_status: Some("findings".to_string()),
+            verify_detail: Some("2 finding(s)".to_string()),
+            last_finding_fingerprint: Some("fp".to_string()),
+            revise_attempts: 2,
+            revision_directives: Some("rework".to_string()),
+            ..Default::default()
+        };
+
+        let message = redraft_scene_block(&mut state, &state_path, 1, 1).expect("redraft");
+        assert!(message.contains("Reset scene 1.1"));
+
+        let scene = &state.chapters[0].scenes[0];
+        assert_eq!(scene.phase, ScenePhase::Pending);
+        assert!(scene.blocked_reason.is_none());
+        assert!(scene.scene_id.is_none());
+        assert!(scene.verify_status.is_none());
+        assert!(scene.verify_detail.is_none());
+        assert!(scene.last_finding_fingerprint.is_none());
+        assert_eq!(scene.revise_attempts, 0);
+        assert!(scene.revision_directives.is_none());
+        // The poisoned artifact is gone so the reuse path rebuilds fresh.
+        assert!(!artifact_path.exists(), "artifact must be deleted");
+    }
+
+    #[test]
+    fn redraft_scene_block_is_idempotent_when_artifact_already_absent() {
+        let state_path = temp_state_path("redraft-scene-block-noartifact");
+        let mut state = HarnessState::from_seed(seed(), "branch:main".to_string());
+        let scene = &mut state.chapters[0].scenes[0];
+        scene.scene_artifact_path = Some("scenes/chapter-0001/scene-001.json".to_string());
+        scene.phase = ScenePhase::Pending;
+
+        // No artifact file on disk — must not error.
+        let message = redraft_scene_block(&mut state, &state_path, 1, 1)
+            .expect("redraft with absent artifact");
+        assert!(message.contains("Reset scene 1.1"));
+        assert_eq!(state.chapters[0].scenes[0].phase, ScenePhase::Pending);
     }
 }

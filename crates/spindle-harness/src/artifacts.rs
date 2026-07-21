@@ -109,6 +109,25 @@ impl SceneGenerationArtifact {
     pub fn is_ready(&self) -> bool {
         self.package.is_some()
     }
+
+    /// Discard the stored generation so the next `ensure_scene_package_ready`
+    /// re-dispatches a fresh draft instead of re-parsing the cached (poisoned)
+    /// completion forever (BUG 3). Resets the generation receipt and restores the
+    /// `truncated == true` sentinel a freshly-created artifact carries, so the
+    /// scheduler treats the scene as pending-draft. Preserves the prompt and the
+    /// research context (source/note/claim ids and hash) — those are still valid
+    /// for the re-dispatch. Never touches `save_draft_output`; a scene that
+    /// already saved a draft is past this path.
+    pub fn clear_generation(&mut self) {
+        self.completion_fragments.clear();
+        self.truncated = true;
+        self.adapter_kind = None;
+        self.model_name = None;
+        self.generation_id = None;
+        self.generation_agent_id = None;
+        self.generation_output_sha256 = None;
+        self.package = None;
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -176,6 +195,17 @@ impl ChapterSummaryArtifact {
 
     pub fn is_ready(&self) -> bool {
         self.package.is_some()
+    }
+
+    /// Discard the stored generation so the next `ensure_summary_package_ready`
+    /// re-dispatches a fresh summary instead of re-parsing the cached (poisoned)
+    /// completion forever (BUG 3, mirror of the scene path).
+    pub fn clear_generation(&mut self) {
+        self.completion_fragments.clear();
+        self.truncated = true;
+        self.adapter_kind = None;
+        self.model_name = None;
+        self.package = None;
     }
 }
 
@@ -478,5 +508,74 @@ mod reader_sim_tests {
         }"#;
         let report: CheckpointReportArtifact = serde_json::from_str(raw).unwrap();
         assert!(report.reader_sim.is_none());
+    }
+}
+
+#[cfg(test)]
+mod clear_generation_tests {
+    use super::*;
+
+    #[test]
+    fn scene_clear_generation_resets_to_pending_draft_but_keeps_context() {
+        let mut artifact = SceneGenerationArtifact::new(
+            1,
+            1,
+            "draft".to_string(),
+            "agent:grok".to_string(),
+            Some("teen".to_string()),
+            "the prompt".to_string(),
+        );
+        // Simulate a completed-but-unparseable dispatch.
+        artifact.completion_fragments = vec!["narration then bad json".to_string()];
+        artifact.truncated = false;
+        artifact.adapter_kind = Some("grok".to_string());
+        artifact.model_name = Some("grok-4.5".to_string());
+        artifact.generation_id = Some("gen:1".to_string());
+        artifact.generation_agent_id = Some("agent:grok".to_string());
+        artifact.generation_output_sha256 = Some("deadbeef".to_string());
+        artifact.last_parse_error = Some("model output was not valid JSON".to_string());
+        artifact.research_source_ids = vec!["source:1".to_string()];
+        artifact.research_context_hash = Some("ctx".to_string());
+
+        artifact.clear_generation();
+
+        // Poisoned generation is gone; the scheduler re-dispatches fresh.
+        assert!(artifact.completion_fragments.is_empty());
+        assert!(
+            artifact.truncated,
+            "must restore the pending-draft sentinel"
+        );
+        assert!(artifact.generation_id.is_none());
+        assert!(artifact.generation_agent_id.is_none());
+        assert!(artifact.generation_output_sha256.is_none());
+        assert!(artifact.adapter_kind.is_none());
+        assert!(artifact.model_name.is_none());
+        assert!(artifact.package.is_none());
+        // Prompt and research context are still valid for the re-dispatch.
+        assert_eq!(artifact.prompt, "the prompt");
+        assert_eq!(artifact.research_source_ids, vec!["source:1".to_string()]);
+        assert_eq!(artifact.research_context_hash.as_deref(), Some("ctx"));
+    }
+
+    #[test]
+    fn summary_clear_generation_resets_to_pending() {
+        let mut artifact = ChapterSummaryArtifact::new(
+            1,
+            "summary".to_string(),
+            "agent:grok".to_string(),
+            "the prompt".to_string(),
+        );
+        artifact.completion_fragments = vec!["bad".to_string()];
+        artifact.truncated = false;
+        artifact.adapter_kind = Some("grok".to_string());
+        artifact.model_name = Some("grok-4.5".to_string());
+
+        artifact.clear_generation();
+
+        assert!(artifact.completion_fragments.is_empty());
+        assert!(artifact.truncated);
+        assert!(artifact.adapter_kind.is_none());
+        assert!(artifact.model_name.is_none());
+        assert_eq!(artifact.prompt, "the prompt");
     }
 }

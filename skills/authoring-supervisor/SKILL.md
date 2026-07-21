@@ -354,6 +354,7 @@ concise forward directives and continue.
 
 If drafting is blocked by errors (e.g., validator hard constraints or agent execution failures), the run status will be `"blocked"`.
 - To clear a scene block after operator inspection, call `authoring_resolve_block` with the exact next safe `target_phase` (`"draft_saved"`, `"changes_committed"`, or `"beats_annotated"`). Do not use it to skip checkpoint review.
+- If an automated draft is unparseable or poisoned (e.g. an agent narrated around the JSON and the parse failed), the harness discards the poisoned completion automatically, so the next `authoring_execute_next` re-dispatches a fresh draft. To force a clean re-draft explicitly, call `authoring_resolve_block` with `target_phase: "redraft"` — it resets the scene to pending-draft (clears the stored generation, deletes the stale artifact, clears verify state) so the next execute re-drafts it from scratch.
 - To pause the run boundaries cleanly without losing progress, call `authoring_cancel_run`. A paused run will not advance through `authoring_execute_next`.
 
 ## Style learning from edits (opt-in)
