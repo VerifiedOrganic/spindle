@@ -89,7 +89,9 @@ Current audit findings:
 - MCP still owns session defaulting, tool schema sanitization, lock scoping,
   and Grok skill-file installation. Those are transport/client-adapter
   concerns and should stay out of core unless they become reusable public
-  contracts.
+  contracts. Input and output tool schemas are scrubbed of schemars'
+  non-standard numeric `format` annotations (`uint`, `int32`, `float`, …) at
+  the generation seam so strict JSON-Schema clients do not warn per field.
 
 The service layer currently lives under:
 

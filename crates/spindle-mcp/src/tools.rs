@@ -6579,12 +6579,85 @@ where
     let mut value = serde_json::to_value(&schema).expect("schema to json");
     relax_session_default_fields(name, &mut value);
     sanitize_for_gemini(&mut value);
+    // Scrub schemars' non-standard numeric `format` annotations so strict
+    // JSON-Schema clients do not warn per count-typed field. This is the single
+    // finalization chokepoint: every tool served over stdio and HTTP flows
+    // through here for both its input and output schema.
+    strip_nonstandard_formats(&mut value);
     let object = value
         .as_object()
         .cloned()
         .unwrap_or_else(|| panic!("expected object schema for tool input"));
 
-    Tool::new(name, description, object).with_output_schema::<O>()
+    let tool = Tool::new(name, description, object).with_output_schema::<O>();
+    scrub_output_schema_formats(tool)
+}
+
+/// Apply [`strip_nonstandard_formats`] to a tool's already-generated output
+/// schema (rmcp builds it via its own draft-2020-12 generator, so it never
+/// passes through the input-schema scrub above). Returns the tool unchanged
+/// when it has no output schema.
+fn scrub_output_schema_formats(tool: Tool) -> Tool {
+    let Some(output) = tool.output_schema.as_ref() else {
+        return tool;
+    };
+    let mut value = Value::Object((**output).clone());
+    strip_nonstandard_formats(&mut value);
+    let object = value
+        .as_object()
+        .cloned()
+        .unwrap_or_else(|| panic!("expected object schema for tool output"));
+    tool.with_raw_output_schema(std::sync::Arc::new(object))
+}
+
+/// Recursively strip schemars' non-standard numeric `format` annotations from a
+/// JSON Schema value so strict JSON-Schema clients (Kimi Code and any
+/// spec-compliant validator) do not warn on every count-typed field.
+///
+/// Denylist rule (value-based, not key-position-based): remove any object's
+/// `"format"` key whose value is a schemars numeric format —
+/// `float`, `double`, or `^u?int\d*$` (`int`, `uint`, `int8`..`int64`,
+/// `uint8`..`uint64`). Standard formats (`date-time`, `uuid`, `uri`, `email`,
+/// `regex`, …) and any other future format are preserved. A JSON Schema
+/// document cannot contain a data object with a coincidental numeric-format
+/// `"format"` value, so matching on the value is safe. Structure is otherwise
+/// untouched — types, properties, `$defs`, `required`, descriptions stay
+/// byte-identical.
+fn strip_nonstandard_formats(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if map
+                .get("format")
+                .and_then(Value::as_str)
+                .is_some_and(is_nonstandard_numeric_format)
+            {
+                map.remove("format");
+            }
+            for child in map.values_mut() {
+                strip_nonstandard_formats(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_nonstandard_formats(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns true for schemars' non-standard numeric `format` values: `float`,
+/// `double`, or `int`/`uint` optionally followed by only digits (`int8`,
+/// `uint16`, `int32`, `uint64`, …). Matches the regex `^(u?int\d*|float|double)$`.
+fn is_nonstandard_numeric_format(s: &str) -> bool {
+    if s == "float" || s == "double" {
+        return true;
+    }
+    let rest = match s.strip_prefix("uint").or_else(|| s.strip_prefix("int")) {
+        Some(rest) => rest,
+        None => return false,
+    };
+    rest.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Post-process a JSON Schema value to be compatible with Gemini's strict subset.
@@ -7509,6 +7582,241 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Recursively collect every `format` string value present anywhere in a
+    /// schema JSON tree, tagged with the JSON-pointer-ish path where it lives.
+    /// Used by the interop-sweep tests to name offenders precisely.
+    fn collect_format_values(value: &Value, path: &str, out: &mut Vec<(String, String)>) {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    if k == "format"
+                        && let Value::String(s) = v
+                    {
+                        out.push((format!("{path}/format"), s.clone()));
+                    }
+                    collect_format_values(v, &format!("{path}/{k}"), out);
+                }
+            }
+            Value::Array(arr) => {
+                for (i, v) in arr.iter().enumerate() {
+                    collect_format_values(v, &format!("{path}/{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The denylist of schemars' non-standard numeric `format` values that
+    /// strict JSON-Schema clients (Kimi Code et al.) warn about.
+    fn is_denylisted_numeric_format(s: &str) -> bool {
+        matches!(s, "float" | "double")
+            || (s
+                .strip_prefix("int")
+                .or_else(|| s.strip_prefix("uint"))
+                .is_some_and(|rest| {
+                    // `int`/`uint` alone, or followed only by digits (int8..64, uint8..64)
+                    rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit())
+                })
+                && (s.starts_with("int") || s.starts_with("uint")))
+    }
+
+    /// REGRESSION PIN: every registered tool's input AND output schema, as
+    /// served over MCP, must contain zero denylisted numeric `format` values
+    /// anywhere in the JSON tree. This catches any future count-heavy tool that
+    /// reintroduces schemars' non-standard formats at the serving seam.
+    #[tokio::test(flavor = "current_thread")]
+    async fn served_tool_schemas_carry_no_nonstandard_numeric_formats() {
+        let router = router().await;
+        let tools = router.list_tools();
+        assert!(!tools.is_empty(), "expected registered tools");
+
+        let mut offenders: Vec<String> = Vec::new();
+        for tool in &tools {
+            let input = Value::Object((*tool.input_schema).clone());
+            let mut found = Vec::new();
+            collect_format_values(&input, &format!("{}#input", tool.name), &mut found);
+            if let Some(output) = &tool.output_schema {
+                let output = Value::Object((**output).clone());
+                collect_format_values(&output, &format!("{}#output", tool.name), &mut found);
+            }
+            for (path, fmt) in found {
+                if is_denylisted_numeric_format(&fmt) {
+                    offenders.push(format!("{path} = \"{fmt}\""));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "found {} non-standard numeric `format` annotations in served schemas; sample:\n{}",
+            offenders.len(),
+            offenders
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// INTEGRATION-SHAPE PIN: `import_hydrate_bible`'s output schema carries
+    /// `ImportHydrationRecordCount` (a `$defs` subschema of `usize` counts) —
+    /// exactly the shape whose `#/$defs/ImportHydrationRecordCount/properties/created`
+    /// path Kimi Code warned about. Assert the previously-observed paths are clean
+    /// while the surrounding structure (the $def, its properties) survives intact.
+    #[tokio::test(flavor = "current_thread")]
+    async fn import_hydrate_bible_output_schema_is_format_clean() {
+        let router = router().await;
+        let tools = router.list_tools();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "import_hydrate_bible")
+            .expect("import_hydrate_bible tool");
+        let output = tool
+            .output_schema
+            .as_ref()
+            .expect("import_hydrate_bible has an output schema");
+        let output = Value::Object((**output).clone());
+
+        // Structure preserved: the $def and its count properties still exist.
+        let created = output
+            .pointer("/$defs/ImportHydrationRecordCount/properties/created")
+            .expect("ImportHydrationRecordCount.created property must survive scrubbing");
+        assert_eq!(
+            created.get("type").and_then(Value::as_str),
+            Some("integer"),
+            "count property keeps its integer type"
+        );
+        // The offending format is gone from every observed path.
+        assert!(
+            created.get("format").is_none(),
+            "created must not carry a non-standard `format`: {created}"
+        );
+
+        // Whole-tree sweep on this specific schema.
+        let mut found = Vec::new();
+        collect_format_values(&output, "#", &mut found);
+        let offenders: Vec<_> = found
+            .into_iter()
+            .filter(|(_, f)| is_denylisted_numeric_format(f))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "import_hydrate_bible output schema still has numeric formats: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn strip_nonstandard_formats_removes_denylisted_numeric_formats() {
+        // Nested $defs, anyOf branches, arrays-of-schemas, items,
+        // additionalProperties — the scrubber must reach all of them.
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "created": {"type": "integer", "format": "uint"},
+                "ratio": {"type": "number", "format": "double"},
+                "count32": {"type": "integer", "format": "uint32"},
+                "signed": {"type": "integer", "format": "int64"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "integer", "format": "uint8"}
+                },
+                "maybe": {
+                    "anyOf": [
+                        {"type": "integer", "format": "int16"},
+                        {"type": "null"}
+                    ]
+                },
+                "extra": {
+                    "type": "object",
+                    "additionalProperties": {"type": "integer", "format": "usize"}
+                }
+            },
+            "$defs": {
+                "Row": {
+                    "type": "object",
+                    "properties": {
+                        "n": {"type": "integer", "format": "uint64"},
+                        "f": {"type": "number", "format": "float"}
+                    }
+                }
+            }
+        });
+
+        strip_nonstandard_formats(&mut schema);
+
+        // No denylisted format survives anywhere.
+        let mut found = Vec::new();
+        collect_format_values(&schema, "#", &mut found);
+        let survivors: Vec<_> = found
+            .iter()
+            .filter(|(_, f)| is_denylisted_numeric_format(f))
+            .collect();
+        assert!(
+            survivors.is_empty(),
+            "denylisted formats survived scrubbing: {survivors:?}"
+        );
+
+        // Note: "usize" is not `^u?int\d*$`, so it is intentionally NOT stripped
+        // by the denylist. Assert it is untouched (schemars does not emit it, but
+        // this documents the exact denylist boundary).
+        assert_eq!(
+            schema.pointer("/properties/extra/additionalProperties/format"),
+            Some(&Value::String("usize".to_string())),
+            "usize is outside the numeric denylist and must be preserved"
+        );
+
+        // Structure is otherwise byte-identical: types, properties, $defs remain.
+        assert_eq!(
+            schema.pointer("/properties/created/type"),
+            Some(&Value::String("integer".to_string()))
+        );
+        assert!(schema.pointer("/$defs/Row/properties/n").is_some());
+        assert!(schema.pointer("/properties/maybe/anyOf/0/type").is_some());
+        assert!(schema.pointer("/properties/tags/items/type").is_some());
+    }
+
+    #[test]
+    fn strip_nonstandard_formats_preserves_standard_formats() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "when": {"type": "string", "format": "date-time"},
+                "id": {"type": "string", "format": "uuid"},
+                "link": {"type": "string", "format": "uri"},
+                "mail": {"type": "string", "format": "email"},
+                "pat": {"type": "string", "format": "regex"}
+            }
+        });
+        let before = schema.clone();
+        strip_nonstandard_formats(&mut schema);
+        assert_eq!(
+            schema, before,
+            "standard string formats must survive untouched"
+        );
+    }
+
+    #[test]
+    fn strip_nonstandard_formats_ignores_unrelated_format_valued_data() {
+        // A `format` key whose value is NOT a denylisted numeric string must be
+        // left alone — e.g. a description literal or an unrelated enum member.
+        // (A schema document cannot contain a data object with a coincidental
+        // numeric-format-valued "format" key, so the value-based rule is safe.)
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "output": {"type": "string", "format": "markdown"},
+                "note": {"type": "string", "description": "format: uint is a warning"}
+            }
+        });
+        let before = schema.clone();
+        strip_nonstandard_formats(&mut schema);
+        assert_eq!(
+            schema, before,
+            "non-denylisted format values and description text must be preserved"
+        );
     }
 
     #[test]
