@@ -13117,6 +13117,45 @@ impl SqliteSpindleService {
         let genre_brief = style_directive.render_markdown().unwrap_or_default();
 
         let rounds = input.rounds.unwrap_or(2).clamp(1, 3);
+        // Review-currency top-up (defect item 8): rounds accumulate across
+        // reviews of the SAME prose version. A prior `current` review whose
+        // fingerprint still matches contributes its rounds and the new rounds
+        // continue the numbering — so a rounds=1 top-up satisfies a two-round
+        // gate without re-running the whole review. A stale row or a changed
+        // fingerprint starts the count over.
+        let scene_fingerprint = scene_revision_fingerprint(&scene);
+        let prior_rounds: Vec<DualPersonaReviewRound> = match self
+            .repository
+            .get_dual_persona_review(&branch_id, &input.scene_id)
+            .await?
+        {
+            Some(existing)
+                if existing.status == "current"
+                    && existing.scene_revision_fingerprint == scene_fingerprint =>
+            {
+                // Persisted shape is {"rounds": [StoredDualPersonaReviewRound]}.
+                existing
+                    .review_rounds
+                    .get("rounds")
+                    .cloned()
+                    .and_then(|rounds| {
+                        serde_json::from_value::<
+                            Vec<crate::sqlite::json_records::StoredDualPersonaReviewRound>,
+                        >(rounds)
+                        .ok()
+                    })
+                    .map(|rounds| {
+                        rounds
+                            .into_iter()
+                            .map(crate::sqlite::json_records::StoredDualPersonaReviewRound::into_core)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        let completed_rounds = prior_rounds.len();
+
         let mut review_rounds = Vec::new();
         let review_rating = Some(scene.content_rating.clone());
         let review_context = Some(crate::ai::RequestContext {
@@ -13125,7 +13164,7 @@ impl SqliteSpindleService {
             chapter_id: Some(format!("{}.{}", scene.book_number, scene.chapter_number)),
             scene_id: Some(scene.id.clone()),
         });
-        for round in 1..=rounds {
+        for round in (completed_rounds + 1)..=(completed_rounds + rounds) {
             let literary = self
                 .repository
                 .model_router()
@@ -13308,16 +13347,17 @@ impl SqliteSpindleService {
             });
         }
 
-        let fingerprint = scene_revision_fingerprint(&scene);
+        let mut all_rounds = prior_rounds;
+        all_rounds.extend(review_rounds);
         let persisted = self
             .repository
             .upsert_dual_persona_review(crate::sqlite::repository::UpsertDualPersonaReviewParams {
                 project_id: input.project_id.clone(),
                 branch_id: branch_id.clone(),
                 scene_id: input.scene_id.clone(),
-                rounds_completed: review_rounds.len(),
-                review_rounds: review_rounds.clone(),
-                scene_revision_fingerprint: fingerprint,
+                rounds_completed: all_rounds.len(),
+                review_rounds: all_rounds.clone(),
+                scene_revision_fingerprint: scene_fingerprint,
                 status: "current".to_string(),
             })
             .await?;
@@ -13325,10 +13365,10 @@ impl SqliteSpindleService {
         Ok(RunDualPersonaReviewOutput {
             scene_id: input.scene_id,
             branch_id,
-            rounds_completed: review_rounds.len(),
+            rounds_completed: all_rounds.len(),
             review_id: persisted.id,
             status: persisted.status,
-            review_rounds,
+            review_rounds: all_rounds,
         })
     }
 
@@ -17868,6 +17908,8 @@ impl SqliteSpindleService {
             CreateNarrativePromiseInput, RecordKnowledgeInput, UpdateRelationshipInput,
         };
 
+        let normalized = self.normalize_canon_delta_payload(delta, payload).await?;
+        let payload = &normalized;
         let scene = &delta.scene_id;
         match delta.delta_class.as_str() {
             "canonical_fact" => {
@@ -18027,6 +18069,8 @@ impl SqliteSpindleService {
             UpdateRelationshipInput,
         };
 
+        let normalized = self.normalize_canon_delta_payload(delta, payload).await?;
+        let payload = &normalized;
         match delta.delta_class.as_str() {
             "canonical_fact" => {
                 let input = self.build_register_fact_input(delta, payload).await?;
@@ -18239,6 +18283,122 @@ impl SqliteSpindleService {
 
     // ── Canon-delta payload helpers ──────────────────────────────────────────
 
+    /// Normalize a staged (or operator-edited) canon-delta payload into the
+    /// shape the class DTO expects (defect item 4). The miner routinely emits
+    /// bare ULIDs without table prefixes, plural table/kind names,
+    /// `description` where a create DTO wants `summary`/`definition`, explicit
+    /// null profile structs, and a free-string `planted_at`. Normalizing here —
+    /// used by BOTH pre-flight and apply, so they always see the same payload —
+    /// keeps previously staged rows ratifiable instead of forcing manual `edit`
+    /// reconstruction. Non-object payloads pass through untouched; the class
+    /// handlers report those.
+    async fn normalize_canon_delta_payload(
+        &self,
+        delta: &crate::sqlite::records::StoredCanonDelta,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let serde_json::Value::Object(map) = payload else {
+            return Ok(payload.clone());
+        };
+        let mut object = map.clone();
+
+        match delta.delta_class.as_str() {
+            "promise_planted" => {
+                // A free-string (or missing/null) planted_at coerces to the
+                // mined scene's placement; the miner's string survives as the
+                // placement note. A string planned_payoff has no placement to
+                // coerce to — it moves into `notes` so nothing is dropped.
+                let needs_placement = matches!(
+                    object.get("planted_at"),
+                    None | Some(serde_json::Value::Null) | Some(serde_json::Value::String(_))
+                );
+                if needs_placement {
+                    let note = object
+                        .get("planted_at")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .map(str::to_string);
+                    let scene = self.repository.get_scene(&delta.scene_id).await?;
+                    object.insert(
+                        "planted_at".to_string(),
+                        serde_json::json!({
+                            "book_number": scene.book_number,
+                            "chapter_number": scene.chapter_number,
+                            "scene_order": scene.scene_order,
+                            "note": note,
+                        }),
+                    );
+                }
+                if let Some(serde_json::Value::String(payoff)) = object.get("planned_payoff") {
+                    let payoff = payoff.clone();
+                    object.remove("planned_payoff");
+                    if !payoff.trim().is_empty() {
+                        let notes = object
+                            .entry("notes".to_string())
+                            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                        if let serde_json::Value::Array(notes) = notes {
+                            notes.push(serde_json::Value::String(format!(
+                                "planned payoff: {payoff}"
+                            )));
+                        }
+                    }
+                }
+            }
+            "canonical_fact" | "quantity_change" => {
+                if let Some(serde_json::Value::String(table)) = object.get("subject_table") {
+                    let singular = canon_singularize_table(table);
+                    object.insert(
+                        "subject_table".to_string(),
+                        serde_json::Value::String(singular),
+                    );
+                }
+            }
+            "character_state" | "knowledge_learned" => {
+                canon_prefix_payload_id(&mut object, "character_id", "character");
+            }
+            "relationship_shift" => {
+                canon_prefix_payload_id(&mut object, "character_a_id", "character");
+                canon_prefix_payload_id(&mut object, "character_b_id", "character");
+            }
+            "entity_candidate" => {
+                if let Some(serde_json::Value::String(kind)) = object.get("kind") {
+                    let singular = canon_singularize_table(kind);
+                    object.insert("kind".to_string(), serde_json::Value::String(singular));
+                }
+                let kind = object
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                match kind.as_str() {
+                    "character" => {
+                        canon_rename_missing(&mut object, "description", "summary");
+                        object
+                            .entry("role".to_string())
+                            .or_insert_with(|| serde_json::Value::String("minor".to_string()));
+                        // Null profile structs are the miner's way of saying
+                        // "unknown"; drop the keys so the DTO defaults apply.
+                        canon_drop_null(&mut object, "voice_profile");
+                        canon_drop_null(&mut object, "emotional_profile");
+                        canon_drop_null(&mut object, "initial_state");
+                    }
+                    "location" => {
+                        canon_rename_missing(&mut object, "description", "summary");
+                        canon_drop_null(&mut object, "initial_state");
+                    }
+                    "term" => {
+                        canon_rename_missing(&mut object, "name", "term_text");
+                        canon_rename_missing(&mut object, "description", "definition");
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
+        Ok(serde_json::Value::Object(object))
+    }
+
     /// Merge the delta's provenance (project_id + the mined scene's
     /// book_number/chapter_number/scene_order + scene_id) into the payload
     /// object, then deserialize into the target DTO. Provenance is injected only
@@ -18341,6 +18501,7 @@ impl SqliteSpindleService {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| delta.target_id.clone())
+            .map(|id| canon_prefix_id(&id, "narrative_promise"))
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "promise delta '{}' has no narrative_promise_id (payload or target_id)",
@@ -18375,6 +18536,7 @@ impl SqliteSpindleService {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| delta.target_id.clone())
+            .map(|id| canon_prefix_id(&id, "conflict"))
             .ok_or_else(|| anyhow::anyhow!("conflict delta '{}' has no conflict_id", delta.id))
     }
 
@@ -18388,6 +18550,7 @@ impl SqliteSpindleService {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| delta.target_id.clone())
+            .map(|id| canon_prefix_id(&id, "character_arc"))
             .ok_or_else(|| anyhow::anyhow!("arc delta '{}' has no character_arc_id", delta.id))
     }
 
@@ -24919,10 +25082,15 @@ fn build_world_rule_deep_check_prompt(
         "You are performing a semantic world-rule compliance audit for a novel scene.\n\
          Check whether the scene appears to violate any already-established world rules.\n\
          Ignore rules the scene simply does not engage with.\n\
+         The scene's declared content rating is authoritative: judge any rating-scoped \
+         mandate (e.g. requirements that apply to \"explicit\" scenes) against the scene's \
+         declared rating tier, not against the intensity of what happens on the page. A \
+         mandate scoped to a rating the scene does not declare is not violated by this scene.\n\
          Return strict JSON only.\n\n\
          Scene id: {}\n\
          Scene summary: {}\n\
          Scene tone: {}\n\
+         Scene content rating: {}\n\
          Scene text:\n{}\n\n\
          Established rules:\n{}\n\n\
          Return this exact shape:\n\
@@ -24931,6 +25099,7 @@ fn build_world_rule_deep_check_prompt(
         scene.id,
         scene.summary,
         scene.tone.as_deref().unwrap_or("unspecified"),
+        scene.content_rating.trim().to_ascii_lowercase(),
         scene.full_text,
         rules_block
     )
@@ -25517,6 +25686,83 @@ fn parse_canon_mine_output(output: &str) -> anyhow::Result<Vec<RawCanonDelta>> {
 ///
 /// `confidence` normalizes to `high|medium|low`, defaulting to `low` when the
 /// model omits/garbles it (a low-confidence proposal is still stageable).
+/// Prefix a bare record key with its class's table (defect item 4): the miner
+/// emits `"01KT..."` where the repository stores `"conflict:01KT..."`. Ids that
+/// already carry any `table:` prefix pass through untouched, so an operator
+/// edit is never re-prefixed.
+fn canon_prefix_id(id: &str, table: &str) -> String {
+    let trimmed = id.trim();
+    if trimmed.is_empty() || trimmed.contains(':') {
+        trimmed.to_string()
+    } else {
+        format!("{table}:{trimmed}")
+    }
+}
+
+/// Prefix a bare id sitting at `key` in a payload object (see [`canon_prefix_id`]).
+fn canon_prefix_payload_id(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    table: &str,
+) {
+    if let Some(serde_json::Value::String(id)) = object.get(key) {
+        let prefixed = canon_prefix_id(id, table);
+        if &prefixed != id {
+            object.insert(key.to_string(), serde_json::Value::String(prefixed));
+        }
+    }
+}
+
+/// Map a plural table/kind name the miner emits (`"characters"`) onto the
+/// singular the DTOs and record ids use (`"character"`). Unknown names pass
+/// through lowercased so genuinely wrong values still fail loudly downstream.
+fn canon_singularize_table(table: &str) -> String {
+    let lower = table.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "characters" => "character",
+        "locations" => "location",
+        "scenes" => "scene",
+        "factions" => "faction",
+        "terms" => "term",
+        "conflicts" => "conflict",
+        "themes" => "theme",
+        "motifs" => "motif",
+        "religions" => "religion",
+        "economies" => "economy",
+        "plot_lines" => "plot_line",
+        "world_rules" => "world_rule",
+        "relationships" => "relationship",
+        "projects" => "project",
+        "books" => "book",
+        "chapters" => "chapter",
+        _ => return lower,
+    }
+    .to_string()
+}
+
+/// Move `from` to `to` when `to` is absent/null — the miner says `description`
+/// where a create DTO wants `summary`/`definition` (defect item 4).
+fn canon_rename_missing(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    from: &str,
+    to: &str,
+) {
+    let to_missing = matches!(object.get(to), None | Some(serde_json::Value::Null));
+    if to_missing
+        && let Some(value) = object.remove(from)
+        && !value.is_null()
+    {
+        object.insert(to.to_string(), value);
+    }
+}
+
+/// Remove an explicit-null key so the DTO's serde default applies.
+fn canon_drop_null(object: &mut serde_json::Map<String, serde_json::Value>, key: &str) {
+    if matches!(object.get(key), Some(serde_json::Value::Null)) {
+        object.remove(key);
+    }
+}
+
 fn validate_canon_delta(
     raw: &RawCanonDelta,
     scene_prose: &str,
@@ -30215,6 +30461,113 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn dual_persona_review_rounds_top_up_across_calls_on_same_prose() {
+        // Defect item 8: the checkpoint gate needs status=current AND
+        // rounds_completed >= 2, but a rounds=1 review followed by another
+        // rounds=1 review of the SAME prose previously REPLACED the row
+        // (rounds stuck at 1), forcing a full 2-round re-run. Rounds must
+        // accumulate across reviews of the same prose version, and reset only
+        // when the prose actually changes.
+        use spindle_core::models::{ContentRating, RunDualPersonaReviewInput, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service_local().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Review Topup".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let saved = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "First version of the prose.".into(),
+                summary: "sketch".into(),
+                content_rating: ContentRating::General,
+                tone: Some("wry".into()),
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let review_input = RunDualPersonaReviewInput {
+            project_id: proj.project_id.clone(),
+            branch_id: None,
+            scene_id: saved.scene_id.clone(),
+            rounds: Some(1),
+        };
+        let first = svc
+            .run_dual_persona_review(review_input.clone())
+            .await
+            .unwrap();
+        assert_eq!(first.rounds_completed, 1);
+
+        // Second single-round review of the SAME prose tops up to 2 rounds.
+        let second = svc
+            .run_dual_persona_review(review_input.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            second.rounds_completed, 2,
+            "a rounds=1 review of unchanged prose must top up, not replace"
+        );
+        assert_eq!(second.status, "current");
+        assert_eq!(second.review_rounds.len(), 2);
+        assert_eq!(second.review_rounds[0].round, 1);
+        assert_eq!(second.review_rounds[1].round, 2);
+
+        // The persisted row satisfies the checkpoint gate shape.
+        let branch = svc
+            .repository()
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+        let row = svc
+            .repository()
+            .get_dual_persona_review(&branch.id, &saved.scene_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.rounds_completed, 2);
+        assert_eq!(row.status, "current");
+
+        // Changing the prose invalidates currency: the next review starts over.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Second version of the prose, revised.".into(),
+            summary: "sketch".into(),
+            content_rating: ContentRating::General,
+            tone: Some("wry".into()),
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let third = svc.run_dual_persona_review(review_input).await.unwrap();
+        assert_eq!(
+            third.rounds_completed, 1,
+            "changed prose must reset the cumulative round count"
+        );
+    }
+
     /// End-to-end genre-voice enforcement (the brief's test case): an
     /// NSFW Comedy Webnovel must surface its style contract prominently, flag a
     /// literary scene at the save gate, the validator, and the review — and let
@@ -33270,6 +33623,114 @@ agent = "explicit-agent"
         assert!(
             briefing.scene_context.is_some(),
             "scene_context should be folded in when scene_order + character_ids + location_id are pinned"
+        );
+    }
+
+    #[tokio::test]
+    async fn briefing_lists_immediately_preceding_chapter_summary() {
+        // Defect item 9: briefing chapter 12 right after chapter 11's summary
+        // was persisted on the same branch reported "Recent chapter summaries:
+        // None recorded before this chapter". The preceding chapter's summary
+        // must appear in both the structured output and the markdown.
+        use spindle_core::models::{
+            ContentRating, ContextFormat, CreateChapterInput, GetChapterBriefingInput,
+            SaveSceneDraftInput, SaveSummaryInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Briefing Recency".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        for chapter_number in [11, 12] {
+            svc.create_chapter(CreateChapterInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(chapter_number),
+                title: None,
+            })
+            .await
+            .unwrap();
+        }
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 11,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Chapter eleven prose.".into(),
+            summary: "ch11 scene".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        svc.save_summary(SaveSummaryInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 11,
+            entity_type: None,
+            entity_id: None,
+            summary: "Chapter 11: the drawer stayed shut.".into(),
+            key_events: vec!["drawer held".into()],
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let briefing = svc
+            .get_chapter_briefing(GetChapterBriefingInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 12,
+                scene_order: None,
+                character_ids: Vec::new(),
+                location_id: None,
+                format: Some(ContextFormat::Markdown),
+                budget_tokens: None,
+                recent_chapter_limit: None,
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            briefing
+                .recent_chapter_summaries
+                .iter()
+                .any(|summary| summary.book_number == 1 && summary.chapter_number == 11),
+            "chapter 11's summary must be listed for chapter 12's briefing: {:?}",
+            briefing.recent_chapter_summaries
+        );
+        assert!(
+            briefing
+                .briefing_markdown
+                .contains("Book 1 Chapter 11: Chapter 11: the drawer stayed shut."),
+            "markdown must render the preceding summary, got:\n{}",
+            briefing.briefing_markdown
+        );
+        assert!(
+            !briefing
+                .briefing_markdown
+                .contains("None recorded before this chapter"),
+            "markdown must not claim no summaries exist:\n{}",
+            briefing.briefing_markdown
         );
     }
 
@@ -48244,6 +48705,56 @@ agent = "review-dead"
     // These exercise the apply-dispatcher (ADR 0001 D3): pre-flight-all,
     // per-class apply to the SAME existing write tool, decision recording, and
     // the honesty guarantees (finality, atomicity, mid-apply-failure).
+    #[test]
+    fn world_rule_deep_check_prompt_carries_scene_content_rating() {
+        // Defect item 7: rating-scoped rule mandates (e.g. "explicit scenes
+        // must …") were judged without knowing the scene's declared rating, so
+        // a Mature scene was audited as if it were Explicit. The prompt must
+        // name the scene's content rating and scope rating-conditional
+        // mandates to it.
+        let scene = crate::sqlite::records::Scene {
+            id: "scene:s1".to_string(),
+            project_id: "project:p1".to_string(),
+            branch_id: "bible_branch:main".to_string(),
+            book_id: "book:b1".to_string(),
+            chapter_id: "chapter:c1".to_string(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            full_text: "They closed the door.".to_string(),
+            summary: "An intimate scene.".to_string(),
+            content_rating: "mature".to_string(),
+            tone: None,
+            draft_origin: None,
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            updated_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            location_id: None,
+        };
+        let rule = crate::sqlite::records::WorldRule {
+            id: "world_rule:limits".to_string(),
+            project_id: "project:p1".to_string(),
+            branch_id: "bible_branch:main".to_string(),
+            rule_name: "Content Hard Limits".to_string(),
+            rule_type: "tone".to_string(),
+            description: "Explicit scenes must be rendered fully on-page.".to_string(),
+            established_in: None,
+            relevance_tags: None,
+            scan_pattern: None,
+            notes: None,
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            updated_at: None,
+        };
+        let prompt = build_world_rule_deep_check_prompt(&scene, &[&rule]);
+        assert!(
+            prompt.contains("Scene content rating: mature"),
+            "prompt must carry the scene's declared rating:\n{prompt}"
+        );
+        assert!(
+            prompt.to_lowercase().contains("rating"),
+            "prompt must instruct rating-scoped judgement:\n{prompt}"
+        );
+    }
+
     mod ratify {
         use super::*;
         use crate::sqlite::repository::StageCanonDeltaParams;
@@ -48329,6 +48840,279 @@ agent = "review-dead"
             .await
             .unwrap()
             .character_id
+        }
+
+        // ── Miner-payload normalization (defect item 4) ─────────────────────
+        // The miner emits payload shapes the strict DTOs reject: bare ULIDs
+        // without table prefixes, plural subject tables, `description` instead
+        // of `summary`, missing role, null voice/emotional profiles, and a
+        // free-string planted_at. The dispatcher normalizes these so already-
+        // staged rows stay ratifiable.
+
+        #[tokio::test]
+        async fn bare_ulid_promise_id_is_prefixed_and_applies() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Bare Promise").await;
+            let promise = svc
+                .create_narrative_promise(CreateNarrativePromiseInput {
+                    project_id: project.project_id.clone(),
+                    promise_type: "mystery".to_string(),
+                    description: "The drawer will open".to_string(),
+                    planted_at: StoryPlacement {
+                        book_number: 1,
+                        chapter_number: 1,
+                        scene_order: Some(1),
+                        note: None,
+                    },
+                    planned_payoff: None,
+                    notes: Vec::new(),
+                })
+                .await
+                .unwrap();
+            let bare_key = promise
+                .narrative_promise_id
+                .strip_prefix("narrative_promise:")
+                .expect("promise ids are table-prefixed")
+                .to_string();
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "promise_payoff_candidate",
+                None,
+                serde_json::json!({
+                    "narrative_promise_id": bare_key,
+                    "proposed_status": "paid_off"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                out.applied_count, 1,
+                "bare ULID must be normalized to the class's table prefix: {out:?}"
+            );
+            let updated = svc
+                .repository()
+                .get_narrative_promise(&promise.narrative_promise_id)
+                .await
+                .unwrap();
+            assert_eq!(updated.status, "paid_off");
+        }
+
+        #[tokio::test]
+        async fn bare_ulid_conflict_id_is_prefixed_and_applies() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Bare Conflict").await;
+            let conflict = svc
+                .create_conflict(CreateConflictInput {
+                    project_id: project.project_id.clone(),
+                    name: "The siege".to_string(),
+                    conflict_type: "external".to_string(),
+                    stakes: "the gate".to_string(),
+                    escalation_stages: Vec::new(),
+                    expected_total_cycles: None,
+                    try_fail_cycles: Vec::new(),
+                    stated_consequences: Vec::new(),
+                })
+                .await
+                .unwrap();
+            let bare_key = conflict
+                .conflict_id
+                .strip_prefix("conflict:")
+                .expect("conflict ids are table-prefixed")
+                .to_string();
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "try_fail_cycle",
+                None,
+                serde_json::json!({
+                    "conflict_id": bare_key,
+                    "label": "storm the wall",
+                    "outcome": "fail"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                out.applied_count, 1,
+                "bare conflict ULID must be normalized: {out:?}"
+            );
+            let updated = svc
+                .repository()
+                .get_conflict(&conflict.conflict_id)
+                .await
+                .unwrap();
+            assert_eq!(updated.try_fail_cycles.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn plural_subject_table_is_normalized_to_singular() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Plural Table").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "canonical_fact",
+                None,
+                serde_json::json!({
+                    "subject_table": "characters",
+                    "predicate": "eye_color",
+                    "value_text": "grey"
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.applied_count, 1, "{out:?}");
+            let fact_id = out.results[0].applied_record_id.as_deref().unwrap();
+            let fact = svc.repository().get_canonical_fact(fact_id).await.unwrap();
+            assert_eq!(
+                fact.subject_table, "character",
+                "plural subject_table must be stored singular"
+            );
+        }
+
+        #[tokio::test]
+        async fn minimal_miner_entity_candidate_character_applies() {
+            // The miner emits {kind,name,description} with explicit null
+            // profiles. The dispatcher maps description→summary, defaults
+            // role to "minor", and tolerates null/missing voice_profile and
+            // emotional_profile.
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify Miner Entity").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "entity_candidate",
+                None,
+                serde_json::json!({
+                    "kind": "characters",
+                    "name": "The grey-eyed stranger",
+                    "description": "A stranger with grey eyes seen at the door.",
+                    "voice_profile": null,
+                    "emotional_profile": null
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                out.applied_count, 1,
+                "minimal miner payload must be normalized and applied: {out:?}"
+            );
+            let character_id = out.results[0].applied_record_id.as_deref().unwrap();
+            let character = svc.repository().get_character(character_id).await.unwrap();
+            assert_eq!(character.name, "The grey-eyed stranger");
+            assert_eq!(
+                character.summary,
+                "A stranger with grey eyes seen at the door."
+            );
+            assert_eq!(character.role, "minor");
+        }
+
+        #[tokio::test]
+        async fn string_planted_at_is_coerced_to_mined_scene_placement() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project, scene_id, _) = project_with_scene(&svc, "Ratify String Plant").await;
+            let delta_id = stage(
+                &svc,
+                &project.project_id,
+                &scene_id,
+                "promise_planted",
+                None,
+                serde_json::json!({
+                    "promise_type": "vow",
+                    "description": "She will make the call.",
+                    "planted_at": "Tomorrow I call. Once."
+                }),
+            )
+            .await;
+
+            let out = svc
+                .decide_canon_deltas(DecideCanonDeltasInput {
+                    project_id: project.project_id.clone(),
+                    decisions: vec![CanonDeltaDecisionInput {
+                        delta_id,
+                        action: "apply".to_string(),
+                        edit: None,
+                        note: None,
+                    }],
+                    decided_by: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                out.applied_count, 1,
+                "free-string planted_at must coerce to the mined scene's placement: {out:?}"
+            );
+            let promise_id = out.results[0].applied_record_id.as_deref().unwrap();
+            let promise = svc
+                .repository()
+                .get_narrative_promise(promise_id)
+                .await
+                .unwrap();
+            assert_eq!(promise.planted_at.book_number, 1);
+            assert_eq!(promise.planted_at.chapter_number, 1);
+            assert_eq!(promise.planted_at.scene_order, Some(1));
+            assert_eq!(
+                promise.planted_at.note.as_deref(),
+                Some("Tomorrow I call. Once."),
+                "the miner's free-string placement is preserved as the note"
+            );
         }
 
         #[tokio::test]

@@ -906,6 +906,29 @@ async fn save_chapter_summary(
     )
     .await?;
 
+    // Stale-artifact guard (defect item 2, CLI mirror of the MCP executor): a
+    // prior save_summary_output is idempotency proof only while the
+    // chapter_summary row it references still exists on the branch. An artifact
+    // left by an earlier pass over a since-deleted row would otherwise mark the
+    // step done without persisting anything and silently reuse old summary
+    // content. Clear it and regenerate from the current scene packages.
+    if let Some(output) = artifact.save_summary_output.clone() {
+        let row_exists = client
+            .chapter_summary_row_exists(
+                &state.project_id,
+                state.book_number,
+                chapter_number,
+                &output.chapter_summary_id,
+            )
+            .await?;
+        if !row_exists {
+            artifact.clear_generation();
+            artifact.save_summary_output = None;
+            artifact.last_parse_error = None;
+            artifact_store.save_json(&artifact_path, &artifact)?;
+        }
+    }
+
     if artifact.save_summary_output.is_none() {
         ensure_summary_package_ready(client, artifact_store, &mut artifact, &artifact_path).await?;
         let package = artifact

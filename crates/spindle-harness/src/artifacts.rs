@@ -169,6 +169,13 @@ pub struct ChapterSummaryArtifact {
     pub package: Option<GeneratedChapterSummaryPackage>,
     #[serde(default)]
     pub save_summary_output: Option<SaveSummaryOutput>,
+    /// The authoring run that produced this artifact. An artifact found on disk
+    /// with a DIFFERENT run id is residue from an earlier pass — its package and
+    /// save_summary_output must not be honored as idempotency proof for the
+    /// current run (defect item 2). `None` on artifacts written before stamping
+    /// existed (those fall back to the persisted-row existence check).
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 impl ChapterSummaryArtifact {
@@ -186,6 +193,7 @@ impl ChapterSummaryArtifact {
             last_parse_error: None,
             package: None,
             save_summary_output: None,
+            run_id: None,
         }
     }
 

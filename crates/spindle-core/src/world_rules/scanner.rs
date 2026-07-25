@@ -14,7 +14,10 @@ const VIOLATION_CONTEXT_RADIUS: usize = 80;
 
 /// Words in the prose surrounding a pattern hit that promote severity from
 /// Possible to Likely. Kept intentionally conservative: these are unambiguous
-/// markers of intent to violate. Match is case-insensitive.
+/// markers of intent to violate. Match is case-insensitive. "without" and
+/// "despite" were removed (defect item 6): they are ordinary function words —
+/// "went quiet without dying" is not a violation admission — and promoted far
+/// more neutral prose than they caught.
 const VIOLATION_CONTEXT_MARKERS: &[&str] = &[
     "violate",
     "violates",
@@ -29,8 +32,6 @@ const VIOLATION_CONTEXT_MARKERS: &[&str] = &[
     "ignores",
     "ignored",
     "ignoring",
-    "without",
-    "despite",
     "circumvent",
     "circumvents",
     "bypass",
@@ -337,6 +338,28 @@ mod tests {
             hits[0].severity,
             WorldRuleSeverity::Possible,
             "neutral prose must not be promoted to Likely by rule metadata"
+        );
+    }
+
+    #[test]
+    fn bare_without_near_hit_does_not_promote_to_likely() {
+        // Defect item 6: "the comedy went quiet without dying" was promoted to
+        // Likely because "without" sat in the context window. "without" (and
+        // "despite") are ordinary function words, not unambiguous markers of
+        // intent to violate — a neutral sentence must stay Possible.
+        let prose = "The comedy went quiet without dying, and the room held it.";
+        let rules = vec![make_rule(
+            "world_rule:tone",
+            "comedy",
+            "Tone Mandate",
+            "The narration must remain a comedy",
+        )];
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].severity,
+            WorldRuleSeverity::Possible,
+            "'without' alone must not read as a violation admission"
         );
     }
 

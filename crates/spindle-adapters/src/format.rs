@@ -3194,9 +3194,14 @@ pub fn build_chapter_briefing_bundle(
             .to_string(),
         json!({ "book_outline": book_outline }),
     )));
+    // Priority 190 (defect item 9): the story-so-far is core drafting
+    // continuity — it must outlive the whole-book outline, active threads, and
+    // the chapter plan under budget pressure. At its old priority (50) it was
+    // trimmed nearly first and the re-rendered briefing then claimed no
+    // summaries were recorded.
     bundle.push_section(Box::new(SceneContextBundleSection::new(
         "recent_chapter_summaries",
-        SectionKind::Supplementary(50),
+        SectionKind::Supplementary(190),
         format_recent_chapter_summaries_markdown(recent_chapter_summaries)
             .trim_start_matches('\n')
             .to_string(),
@@ -3229,7 +3234,12 @@ pub fn apply_chapter_briefing_bundle_trims(
         match section_id.as_str() {
             "canonical_facts" => canonical_facts.clear(),
             "continuity_sheets" => continuity_sheets.clear(),
-            "recent_chapter_summaries" => recent_chapter_summaries.clear(),
+            // Keep the single most recent summary (the list arrives newest
+            // first): clearing everything made the briefing claim "None
+            // recorded before this chapter" while summaries existed but were
+            // trimmed for budget (defect item 9). The final line-boundary
+            // truncation still bounds the total.
+            "recent_chapter_summaries" => recent_chapter_summaries.truncate(1),
             "chapter_outline" => *chapter_outline = None,
             "book_outline" => *book_outline = None,
             "chapter_plan" => *chapter_plan = None,
@@ -4864,6 +4874,58 @@ mod intensity_trend_expectation_tests {
         assert!(
             directive.contains("curve expects 0.60 here"),
             "position past range clamps to nearest point: {directive}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod briefing_trim_tests {
+    use super::*;
+
+    fn summary(chapter_number: i32) -> ChapterSummaryBriefing {
+        ChapterSummaryBriefing {
+            book_number: 1,
+            chapter_number,
+            summary: format!("Chapter {chapter_number} happened."),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        }
+    }
+
+    /// Defect item 9: budget trims cleared the whole recent-summaries list, so
+    /// the re-rendered briefing claimed "None recorded before this chapter"
+    /// even though the preceding chapter's summary row existed. A trim must
+    /// keep the single most recent summary (the list arrives newest-first).
+    #[test]
+    fn budget_trim_keeps_the_most_recent_chapter_summary() {
+        let mut canonical_facts = Vec::new();
+        let mut continuity_sheets = Vec::new();
+        let mut recent = vec![summary(11), summary(10), summary(9)];
+        let mut chapter_outline = None;
+        let mut book_outline = None;
+        let mut chapter_plan = None;
+        let mut active_threads = Vec::new();
+        let mut scene_context = None;
+
+        apply_chapter_briefing_bundle_trims(
+            &["recent_chapter_summaries".to_string()],
+            &mut canonical_facts,
+            &mut continuity_sheets,
+            &mut recent,
+            &mut chapter_outline,
+            &mut book_outline,
+            &mut chapter_plan,
+            &mut active_threads,
+            &mut scene_context,
+        );
+
+        assert_eq!(
+            recent.iter().map(|s| s.chapter_number).collect::<Vec<_>>(),
+            vec![11],
+            "the immediately preceding chapter's summary must survive a budget trim"
         );
     }
 }

@@ -138,10 +138,16 @@ const TRANSITION_MARKERS: &[&str] = &[
     "soon after",
     "by the time",
     "by morning",
+    "by breakfast",
     "by noon",
     "by midday",
+    "by lunch",
+    "by luncheon",
     "by afternoon",
     "by evening",
+    "by supper",
+    "by dinner",
+    "by midnight",
     "by nightfall",
     "by night",
     "by dawn",
@@ -314,7 +320,8 @@ fn band_label(band: i16) -> &'static str {
 }
 
 /// Collect time-of-day anchors in document order, word-boundary matched, with
-/// "good <band>" greetings filtered and overlapping matches deduped.
+/// "good <band>" greetings, deadline idioms, gnomic statements, and
+/// retrospective clauses filtered, and overlapping matches deduped.
 fn extract_band_anchors(lower: &str) -> Vec<BandAnchor> {
     let mut anchors: Vec<BandAnchor> = Vec::new();
     for &(phrase, band) in TIME_OF_DAY_BANDS {
@@ -329,6 +336,23 @@ fn extract_band_anchors(lower: &str) -> Vec<BandAnchor> {
             // A "good morning" / "good night" greeting is dialogue ritual, not
             // a time-of-day anchor.
             if lower[..start].ends_with("good ") {
+                continue;
+            }
+            // "before lunch" / "before dawn" is a deadline idiom (relative
+            // time), not the scene's clock (defect item 6).
+            if lower[..start].ends_with("before ") {
+                continue;
+            }
+            // A present-tense copula right after the token ("second breakfast
+            // is a governing institution") marks a gnomic/habitual statement,
+            // not scene time (defect item 6).
+            if lower[end..].starts_with(" is ") || lower[end..].starts_with(" are ") {
+                continue;
+            }
+            // A contracted past perfect anywhere in the sentence ("I'd faced
+            // it down … at midnight") marks the clause as retrospective — its
+            // time tokens describe the past, not scene-now (defect item 6).
+            if sentence_is_retrospective(lower, start, end) {
                 continue;
             }
             anchors.push(BandAnchor { start, end, band });
@@ -364,10 +388,81 @@ fn clock_time_regex() -> Option<&'static regex::Regex> {
     .as_ref()
 }
 
+/// Lazily-compiled regex for spelled-out "N in the morning/afternoon/evening"
+/// clock phrases ("two in the morning"). Parsed as a clock hour so the small
+/// hours read as night, not the bare "morning" band inside the phrase (defect
+/// item 6). `None` if compilation fails (the scan skips these — never panics).
+fn phrase_clock_regex() -> Option<&'static regex::Regex> {
+    static RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::RegexBuilder::new(
+            r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+in\s+the\s+(morning|afternoon|evening)\b",
+        )
+        .case_insensitive(true)
+        .build()
+        .ok()
+    })
+    .as_ref()
+}
+
+fn parse_hour_word(word: &str) -> Option<i32> {
+    match word {
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
+        "ten" => Some(10),
+        "eleven" => Some(11),
+        "twelve" => Some(12),
+        other => other.parse::<i32>().ok().filter(|h| (1..=12).contains(h)),
+    }
+}
+
 /// Extract explicit meridian clock times as time-of-day anchors, mapping the
 /// hour to the same band scale as the word lexicon.
 fn extract_clock_anchors(lower: &str) -> Vec<BandAnchor> {
     let mut anchors = Vec::new();
+    if let Some(re) = phrase_clock_regex() {
+        for caps in re.captures_iter(lower) {
+            let (Some(whole), Some(hour_match), Some(part)) =
+                (caps.get(0), caps.get(1), caps.get(2))
+            else {
+                continue;
+            };
+            let Some(hour) = parse_hour_word(hour_match.as_str()) else {
+                continue;
+            };
+            // "in the morning" is what a speaker says for a.m. hours — small
+            // hours (1–4) land in the night band via the hour scale, later
+            // hours in first-light/morning. Afternoon/evening read as p.m.
+            let hour24 = match part.as_str() {
+                "morning" => {
+                    if hour == 12 {
+                        0
+                    } else {
+                        hour
+                    }
+                }
+                _ => {
+                    if hour == 12 {
+                        12
+                    } else {
+                        hour + 12
+                    }
+                }
+            };
+            anchors.push(BandAnchor {
+                start: whole.start(),
+                end: whole.end(),
+                band: hour_to_band(hour24),
+            });
+        }
+    }
     let Some(re) = clock_time_regex() else {
         return anchors;
     };
@@ -461,6 +556,25 @@ fn is_scene_break_line(trimmed: &str) -> bool {
         }
     }
     has_separator
+}
+
+/// True when the sentence containing `[start, end)` carries a contracted past
+/// perfect ("i'd", "she'd", …): the clause is retrospective, so its time tokens
+/// describe the past rather than scene-now (defect item 6). Straight and curly
+/// apostrophes both match. Deliberately narrower than bare "had" — "Night had
+/// fallen" is standard scene-time narration and must keep anchoring.
+fn sentence_is_retrospective(lower: &str, start: usize, end: usize) -> bool {
+    // '.', '!', '?', '\n' are single-byte, so +1 stays on a char boundary.
+    let sentence_start = lower[..start]
+        .rfind(['.', '!', '?', '\n'])
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+    let sentence_end = lower[end..]
+        .find(['.', '!', '?', '\n'])
+        .map(|pos| end + pos)
+        .unwrap_or(lower.len());
+    let sentence = &lower[sentence_start..sentence_end];
+    sentence.contains("'d ") || sentence.contains("’d ")
 }
 
 /// True when the `[start, end)` slice of `s` is bounded by non-word characters
@@ -602,6 +716,68 @@ mod tests {
             hits.is_empty(),
             "coarse precision must suppress findings: {kinds:?}",
             kinds = kinds(&hits)
+        );
+    }
+
+    // ── Idiom / retrospective false positives (defect item 6) ──
+
+    #[test]
+    fn deadline_idiom_before_lunch_is_not_an_anchor() {
+        // "before lunch" in "ended a career with a shrug before lunch" is a
+        // deadline idiom describing capability, not the scene's clock. It must
+        // not anchor midday and then read the scene's real night as a skip.
+        let hits = scan(
+            "The man could end a career with a shrug before lunch. The night \
+             pressed close around the tavern as he said it.",
+        );
+        assert!(
+            hits.is_empty(),
+            "'before <meal>' deadline idiom must not anchor time: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn small_hours_clock_phrase_reads_as_night_not_morning() {
+        // "two in the morning" is the small hours of the night; the bare
+        // "morning" token inside the phrase must not fire a night->morning
+        // drift inside a night section.
+        let hits = scan(
+            "The night watch dragged on and the fire burned low. By two in the \
+             morning the coals had gone grey.",
+        );
+        assert!(
+            hits.is_empty(),
+            "'N in the morning' must map by hour, not the word 'morning': {hits:?}"
+        );
+    }
+
+    #[test]
+    fn gnomic_present_statement_is_not_an_anchor() {
+        // "second breakfast is a governing institution" is a gnomic (habitual
+        // present) statement, not the scene's clock; it must not read as a
+        // backward jump inside an afternoon passage.
+        let hits = scan(
+            "The afternoon light slanted across the table. In this household, \
+             second breakfast is a governing institution.",
+        );
+        assert!(
+            hits.is_empty(),
+            "a present-copula gnomic statement must not anchor time: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn retrospective_contracted_clause_is_not_an_anchor() {
+        // A past-perfect contraction ("I'd", "she'd") marks the sentence as
+        // retrospective; its time tokens describe the past, not scene-now, and
+        // must not flag in either direction inside a morning section.
+        let hits = scan(
+            "The morning light filled the kitchen. I'd faced it down in the \
+             top drawer at midnight. By breakfast she'd demoted it to a coaster.",
+        );
+        assert!(
+            hits.is_empty(),
+            "retrospective contracted clauses must not anchor time: {hits:?}"
         );
     }
 

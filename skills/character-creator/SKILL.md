@@ -143,14 +143,17 @@ Call `create_character` with the full typed input:
 ```
 project_id, name, summary, role,
 realm: Option<String>,
-voice_profile: CharacterVoiceProfileData,
-emotional_profile: CharacterEmotionalProfileData,
+voice_profile: CharacterVoiceProfileData,        // optional: omit/null → empty profile
+emotional_profile: CharacterEmotionalProfileData, // optional: omit/null → empty profile
 initial_state: Option<CharacterStatePatch>
 ```
 
-Voice and emotional profiles are required at create time and may be edited
-later with `set_character_voice_profile` (voice) or by appending state patches
-via `commit_character_state` (mutable emotional state, goals, status).
+Voice and emotional profiles are optional at create time (omit them or pass
+null for minor characters — they default to empty profiles) and may be added
+or edited later with `set_character_voice_profile` (voice) or by appending
+state patches via `commit_character_state` (mutable emotional state, goals,
+status). For major characters, provide both up front so downstream voice
+checks are grounded.
 
 ---
 

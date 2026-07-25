@@ -287,12 +287,16 @@ fn review_checkpoint_command(command: ReviewCheckpointCommand) -> Result<()> {
 
 fn resolve_scene_block_command(command: ResolveSceneBlockCommand) -> Result<()> {
     let mut state = HarnessState::load(&command.state)?;
+    // The offline CLI cannot reconcile against Spindle to detect a run-level
+    // block, so only scene-level blocks are resolvable here; the MCP tool
+    // (authoring_resolve_block) covers the run-level case.
     let message = resolve_scene_block(
         &mut state,
         &command.state,
         command.chapter_number,
         command.scene_order,
         command.target_phase.to_state_phase(),
+        false,
     )?;
     println!("{message}");
     Ok(())

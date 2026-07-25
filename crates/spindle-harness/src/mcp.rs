@@ -327,6 +327,28 @@ impl McpHarnessClient {
         self.call_tool("save_summary", input).await
     }
 
+    /// True when the chapter_summary row with `chapter_summary_id` still exists
+    /// for (book, chapter) on the project's active branch. Used by the
+    /// save-summary step's stale-artifact guard (defect item 2): a summary
+    /// artifact's save_summary_output is idempotency proof only while the row
+    /// it references is really persisted.
+    pub async fn chapter_summary_row_exists(
+        &self,
+        project_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        chapter_summary_id: &str,
+    ) -> Result<bool> {
+        let summaries: Vec<ChapterSummaryRowResource> = self
+            .read_json_resource(format!("bible://projects/{project_id}/chapter-summaries"))
+            .await?;
+        Ok(summaries.iter().any(|summary| {
+            summary.book_number == book_number
+                && summary.chapter_number == chapter_number
+                && summary.id == chapter_summary_id
+        }))
+    }
+
     pub async fn check_consistency(
         &self,
         input: &CheckConsistencyInput,
@@ -563,6 +585,13 @@ struct ChapterSceneResource {
 
 #[derive(Debug, serde::Deserialize)]
 struct ChapterSummaryResource {
+    book_number: i32,
+    chapter_number: i32,
+}
+
+#[derive(serde::Deserialize)]
+struct ChapterSummaryRowResource {
+    id: String,
     book_number: i32,
     chapter_number: i32,
 }

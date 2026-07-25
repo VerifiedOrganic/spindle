@@ -3025,6 +3025,380 @@ async fn pre_upgrade_run_row_opens_and_resumes_with_null_policy_disabled() {
 }
 
 // =============================================================================
+// Residue reconciliation over pre-existing content (defect items 1–3)
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_over_preexisting_prose_and_summary_adopts_and_proceeds() {
+    // Defect item 1: a chapter drafted OUTSIDE any run (prose saved via the
+    // plain save_scene_draft tool, summary via save_summary) must not deadlock
+    // a fresh run on "persisted summary but scenes not beats_annotated". The
+    // first execute adopts the pre-existing reality (scenes beats_annotated,
+    // summary_saved=true) and proceeds straight to the chapter's checkpoint.
+    let fx = mining_run_fixture("", None).await;
+
+    let save_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "Out-of-band prose: Mara held the gate through the night.",
+        "summary": "Mara holds the gate.",
+        "content_rating": "general",
+        "tone": "grim"
+    });
+    let saved = fx
+        .router
+        .call_tool("save_scene_draft", Some(save_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(saved.is_error, Some(false), "out-of-band save failed");
+
+    let summary_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "summary": "Chapter 1: the gate holds.",
+        "key_events": ["gate held"],
+        "character_changes": [],
+        "relationship_shifts": [],
+        "arc_advances": [],
+        "promise_events": []
+    });
+    let summarized = fx
+        .router
+        .call_tool("save_summary", Some(summary_args.as_object().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        summarized.is_error,
+        Some(false),
+        "out-of-band summary failed"
+    );
+
+    let exec = execute_next(&fx).await;
+    assert_ne!(
+        exec["message"].as_str(),
+        Some("Execution blocked by errors."),
+        "pre-existing content must be adopted, not blocked: {exec:?}"
+    );
+    assert!(
+        exec["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("run checkpoint"),
+        "adopted chapter should proceed to its checkpoint, got {exec:?}"
+    );
+
+    let st = status(&fx).await;
+    let chapter = &st["chapters"][0];
+    assert_eq!(
+        chapter["scenes"][0]["phase"].as_str(),
+        Some("beats_annotated"),
+        "adopted scene must sit at beats_annotated: {st:?}"
+    );
+    assert_eq!(
+        chapter["summary_saved"].as_bool(),
+        Some(true),
+        "adopted chapter must be summary_saved: {st:?}"
+    );
+
+    shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_summary_artifact_from_prior_pass_is_regenerated_not_reused() {
+    // Defect item 2: a summaries/chapter-0001.json artifact left behind by an
+    // earlier pass — whose save_summary_output references a chapter_summary
+    // row that no longer exists — must NOT count as idempotency proof. The
+    // save-summary step must regenerate from the current scene packages and
+    // persist a real row, otherwise the run marks summary_saved with no
+    // persisted summary and blocks on the next execute.
+    let fx = mining_run_fixture("", None).await;
+
+    let artifacts_root = fx.data_dir.join("artifacts");
+    let stale_rel = spindle_harness::artifacts::ArtifactStore::summary_relative_path(1);
+    let stale_path = artifacts_root.join(&stale_rel);
+    std::fs::create_dir_all(stale_path.parent().unwrap()).unwrap();
+    let mut stale = spindle_harness::artifacts::ChapterSummaryArtifact::new(
+        1,
+        "in-process".to_string(),
+        "deterministic-summary".to_string(),
+        "Artifact from an earlier out-of-band pass.".to_string(),
+    );
+    stale.truncated = false;
+    stale.package = Some(spindle_harness::artifacts::GeneratedChapterSummaryPackage {
+        summary: "OLD STALE SUMMARY".to_string(),
+        key_events: vec!["stale event".to_string()],
+        character_changes: vec![],
+        relationship_shifts: vec![],
+        arc_advances: vec![],
+        promise_events: vec![],
+    });
+    stale.save_summary_output = Some(spindle_core::models::SaveSummaryOutput {
+        chapter_summary_id: "chapter_summary:vanished".to_string(),
+    });
+    std::fs::write(&stale_path, serde_json::to_string_pretty(&stale).unwrap()).unwrap();
+
+    host_draft_and_save_scene_1(&fx, "Fresh prose for a fresh summary.").await;
+    let commit = execute_next(&fx).await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes"),
+        "{commit:?}"
+    );
+    let beats = execute_next(&fx).await;
+    assert!(
+        beats["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats"),
+        "{beats:?}"
+    );
+    let summary_step = execute_next(&fx).await;
+    assert!(
+        summary_step["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("save summary"),
+        "{summary_step:?}"
+    );
+
+    let branch = fx
+        .svc
+        .repository()
+        .get_active_branch(&fx.project_id)
+        .await
+        .unwrap();
+    let row = fx
+        .svc
+        .repository()
+        .get_chapter_summary(&fx.project_id, &branch.id, 1, 1)
+        .await
+        .unwrap()
+        .expect("save-summary step must persist a chapter_summary row on the current branch");
+    assert_ne!(
+        row.summary, "OLD STALE SUMMARY",
+        "stale artifact content must not be reused for new prose"
+    );
+
+    // The run must be able to continue (previously: blocked with "marked
+    // summary_saved in state but no persisted summary exists").
+    let next = execute_next(&fx).await;
+    assert_ne!(
+        next["message"].as_str(),
+        Some("Execution blocked by errors."),
+        "run must not block after summary regeneration: {next:?}"
+    );
+
+    shutdown(fx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checkpoint_revision_resave_invalidates_summary_and_pipeline_regenerates() {
+    // Defect item 3: the documented revise-during-await_checkpoint_review flow
+    // (authoring_save_scene_draft → recommit) resets the scene to draft_saved
+    // while the chapter's freshly persisted summary row still exists. The
+    // re-save must invalidate that summary (row + harness flag) so the next
+    // execute resumes the pipeline instead of blocking on the residue rule,
+    // and the pipeline regenerates the summary after checkpoint approval.
+    let fx = mining_run_fixture("", None).await;
+    let repo = fx.svc.repository();
+
+    host_draft_and_save_scene_1(&fx, "First-pass prose at the gate.").await;
+    let mut reached_checkpoint = false;
+    for _ in 0..6 {
+        let out = execute_next(&fx).await;
+        if out["executed_action"]
+            .as_str()
+            .unwrap_or("")
+            .contains("run checkpoint")
+        {
+            reached_checkpoint = true;
+            break;
+        }
+    }
+    assert!(reached_checkpoint, "run never reached its checkpoint");
+
+    let branch = repo.get_active_branch(&fx.project_id).await.unwrap();
+    assert!(
+        repo.get_chapter_summary(&fx.project_id, &branch.id, 1, 1)
+            .await
+            .unwrap()
+            .is_some(),
+        "summary row must exist before the revision"
+    );
+
+    // Operator revises the scene during await_checkpoint_review.
+    let resave_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "Revised prose: the gate holds, but barely.",
+        "summary": "revised",
+        "content_rating": "general",
+        "tone": "grim",
+        "continuity_notes": ["Revision during checkpoint review; no canon changes."]
+    });
+    let resaved = fx
+        .router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(resave_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resaved.is_error, Some(false), "revision re-save failed");
+
+    // The stale summary row is gone and the harness flag is reset.
+    assert!(
+        repo.get_chapter_summary(&fx.project_id, &branch.id, 1, 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "re-save must delete the now-stale chapter summary row"
+    );
+    let st = status(&fx).await;
+    assert_eq!(
+        st["chapters"][0]["summary_saved"].as_bool(),
+        Some(false),
+        "re-save must reset summary_saved: {st:?}"
+    );
+
+    // The next execute must NOT trip the residue rule; the checkpoint is still
+    // awaiting review.
+    let exec = execute_next(&fx).await;
+    assert_ne!(
+        exec["message"].as_str(),
+        Some("Execution blocked by errors."),
+        "re-save during checkpoint review must not block the run: {exec:?}"
+    );
+    assert!(
+        exec["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("await checkpoint review"),
+        "checkpoint should still be pending review: {exec:?}"
+    );
+
+    // Approve the checkpoint (deep audit + sampled reviews + operator review).
+    let deep_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "scope": {
+            "scope_type": "chapter_range",
+            "book_number": null,
+            "start_book_number": 1,
+            "start_chapter_number": 1,
+            "end_book_number": 1,
+            "end_chapter_number": 1
+        },
+        "checks": [],
+        "severity_filter": [],
+        "deep_check": true,
+        "subjects": []
+    });
+    let deep = fx
+        .router
+        .call_tool("check_consistency", Some(deep_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let audit_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "deep_consistency": deep
+    });
+    let audit = fx
+        .router
+        .call_tool(
+            "authoring_record_checkpoint_audit",
+            Some(audit_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(audit.is_error, Some(false));
+
+    let report_rel = st["checkpoint_reports"][0]["report_artifact_path"]
+        .as_str()
+        .unwrap();
+    let report_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fx.data_dir.join("artifacts").join(report_rel)).unwrap(),
+    )
+    .unwrap();
+    for scene_id in report_json["sampled_scene_ids"].as_array().unwrap() {
+        let review_args = serde_json::json!({
+            "project_id": fx.project_id,
+            "scene_id": scene_id,
+            "rounds": 2
+        });
+        let review = fx
+            .router
+            .call_tool(
+                "run_dual_persona_review",
+                Some(review_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(review.is_error, Some(false));
+    }
+    let review_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "start_chapter": 1,
+        "end_chapter": 1,
+        "directives": ["Keep the revision."]
+    });
+    let reviewed = fx
+        .router
+        .call_tool(
+            "authoring_review_checkpoint",
+            Some(review_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reviewed.is_error,
+        Some(false),
+        "checkpoint review failed: {reviewed:?}"
+    );
+
+    // Post-approval the pipeline re-commits the revised scene and regenerates
+    // the chapter summary.
+    let mut resummarized = false;
+    for _ in 0..6 {
+        let out = execute_next(&fx).await;
+        if out["executed_action"]
+            .as_str()
+            .unwrap_or("")
+            .contains("save summary")
+        {
+            resummarized = true;
+            break;
+        }
+    }
+    assert!(
+        resummarized,
+        "pipeline never regenerated the chapter summary"
+    );
+    assert!(
+        repo.get_chapter_summary(&fx.project_id, &branch.id, 1, 1)
+            .await
+            .unwrap()
+            .is_some(),
+        "regenerated summary row must exist after post-approval pipeline"
+    );
+
+    shutdown(fx).await;
+}
+
+// =============================================================================
 // Living-outline replan integration (ADR 0003, evolution §3.5 — P4)
 // =============================================================================
 

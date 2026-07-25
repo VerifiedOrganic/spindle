@@ -618,6 +618,19 @@ fn reconcile_persisted_scenes(
     }
 }
 
+/// True when the harness has recorded actual run work on this scene — a saved
+/// artifact, verify/mine outcomes, spent revise budget, diagnostics, or a
+/// block. A scene whose phase was merely promoted from persisted bible reality
+/// (pre-existing prose from outside any run) carries none of these.
+fn scene_has_run_evidence(scene: &crate::state::SceneState) -> bool {
+    scene.scene_artifact_path.is_some()
+        || scene.draft_diagnostics.is_some()
+        || scene.blocked_reason.is_some()
+        || scene.verify_status.is_some()
+        || scene.mine_status.is_some()
+        || scene.revise_attempts > 0
+}
+
 fn reconcile_summary_state(
     chapter: &mut crate::state::ChapterState,
     summary_exists: bool,
@@ -640,6 +653,32 @@ fn reconcile_summary_state(
                     ),
                 ));
             }
+        } else if chapter.scenes.iter().all(|scene| {
+            scene.phase == ScenePhase::BeatsAnnotated
+                || (matches!(
+                    scene.phase,
+                    ScenePhase::DraftSaved | ScenePhase::ChangesCommitted
+                ) && !scene_has_run_evidence(scene))
+        }) {
+            // Adopt pre-existing reality (defect item 1): the chapter has a
+            // persisted summary, every scene has persisted prose, and the run
+            // recorded no work of its own on the lagging scenes — they were
+            // promoted from bible reality (this pass or a previous, stuck
+            // one). Mark them beats_annotated and the summary saved so the
+            // run continues from what already exists instead of deadlocking.
+            // Deliberate: adopted scenes skip in-run commit/mine/beats — the
+            // prose predates the run; mine adopted scenes manually if needed.
+            for scene in &mut chapter.scenes {
+                scene.phase = ScenePhase::BeatsAnnotated;
+            }
+            chapter.summary_saved = true;
+            findings.push(Finding::info(
+                "adopted_preexisting_chapter",
+                format!(
+                    "chapter {} has pre-existing prose and a persisted summary from outside this run; adopted scenes as beats_annotated and marked summary_saved",
+                    chapter.chapter_number
+                ),
+            ));
         } else {
             findings.push(Finding::error(
                 "summary_phase_mismatch",
@@ -720,13 +759,23 @@ fn validate_checkpoint_history(state: &HarnessState, findings: &mut Vec<Finding>
 }
 
 fn validate_completion_order(state: &HarnessState, findings: &mut Vec<Finding>) {
-    let mut saw_incomplete = false;
+    // Chapters normally complete strictly in order, but the documented
+    // revise-during-checkpoint flow legitimately REOPENS a completed chapter
+    // (summary invalidated, a scene back to draft_saved) while later chapters
+    // in the same range stay complete. A reopened chapter has scene progress;
+    // a chapter the loop somehow skipped entirely has none — only the latter
+    // is corruption worth blocking on.
+    let mut saw_untouched_incomplete = false;
     for chapter in &state.chapters {
         if !chapter.summary_saved {
-            saw_incomplete = true;
+            let untouched = chapter
+                .scenes
+                .iter()
+                .all(|scene| scene.phase == ScenePhase::Pending);
+            saw_untouched_incomplete = saw_untouched_incomplete || untouched;
             continue;
         }
-        if saw_incomplete {
+        if saw_untouched_incomplete {
             findings.push(Finding::error(
                 "completion_gap",
                 format!(
@@ -1124,7 +1173,9 @@ mod tests {
     }
 
     #[test]
-    fn summary_without_beats_is_blocked() {
+    fn summary_without_scene_prose_is_blocked() {
+        // A persisted summary with NO persisted scene prose is genuinely
+        // inconsistent: there is nothing to adopt, so the residue rule holds.
         let state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
         let mut snapshot = snapshot();
         snapshot.summarized_chapters.insert(1);
@@ -1132,6 +1183,142 @@ mod tests {
         let outcome = reconcile_state(state, &snapshot);
         assert!(outcome.has_errors());
         assert_eq!(outcome.next_action, NextAction::Blocked);
+    }
+
+    // ── Residue reconciliation: adopt pre-existing content (defect item 1) ──
+
+    /// A snapshot where chapter 1's scene exists in the bible AND the chapter
+    /// has a persisted summary — the "earlier out-of-band pass" shape.
+    fn preexisting_content_snapshot() -> ProjectSnapshot {
+        let mut snapshot = snapshot();
+        snapshot.summarized_chapters.insert(1);
+        snapshot
+            .chapters
+            .get_mut(&1)
+            .expect("chapter 1")
+            .scenes
+            .insert(
+                1,
+                PersistedScene {
+                    scene_id: "scene:1".to_string(),
+                    scene_order: 1,
+                },
+            );
+        snapshot
+    }
+
+    #[test]
+    fn fresh_run_adopts_preexisting_prose_and_summary_as_complete() {
+        // A brand-new run over a chapter that already has bible prose and a
+        // persisted chapter summary must ADOPT that reality: scenes land at
+        // beats_annotated, summary_saved flips true, and the run proceeds
+        // (here: straight to the chapter's checkpoint) instead of blocking on
+        // "persisted summary but scenes not beats_annotated".
+        let state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        let outcome = reconcile_state(state, &preexisting_content_snapshot());
+
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
+        let chapter = outcome.state.chapter(1).expect("chapter");
+        assert_eq!(chapter.scenes[0].phase, ScenePhase::BeatsAnnotated);
+        assert!(chapter.summary_saved);
+        assert_eq!(
+            outcome.next_action,
+            NextAction::RunCheckpoint {
+                start_chapter: 1,
+                end_chapter: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn stuck_run_with_promoted_draft_saved_scenes_adopts_on_next_reconcile() {
+        // A run that already deadlocked persisted its scenes at draft_saved
+        // (the promotion outcome) with NO run-recorded artifact. The next
+        // reconcile must recognize "no run evidence" and adopt, un-sticking
+        // the run without direct SQLite surgery.
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::DraftSaved;
+
+        let outcome = reconcile_state(state, &preexisting_content_snapshot());
+
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
+        let chapter = outcome.state.chapter(1).expect("chapter");
+        assert_eq!(chapter.scenes[0].phase, ScenePhase::BeatsAnnotated);
+        assert!(chapter.summary_saved);
+    }
+
+    #[test]
+    fn run_authored_draft_with_artifact_still_trips_residue_rule() {
+        // A scene the RUN drafted (scene_artifact_path recorded) that sits at
+        // draft_saved while a persisted summary exists is genuinely
+        // inconsistent mid-pipeline state — the residue rule must still block;
+        // adoption only applies to scenes with no run evidence.
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::DraftSaved;
+        chapter.scenes[0].scene_artifact_path =
+            Some("scenes/chapter-0001/scene-001.json".to_string());
+
+        let outcome = reconcile_state(state, &preexisting_content_snapshot());
+        assert!(outcome.has_errors(), "{:?}", outcome.findings);
+        assert!(
+            outcome
+                .findings
+                .iter()
+                .any(|finding| finding.code == "summary_phase_mismatch"),
+            "{:?}",
+            outcome.findings
+        );
+        assert_eq!(outcome.next_action, NextAction::Blocked);
+    }
+
+    #[test]
+    fn reopened_chapter_before_complete_later_chapter_is_not_a_completion_gap() {
+        // Chapter 1 was completed, checkpointed, then reopened for revision
+        // (summary invalidated, scene back to draft_saved) while chapter 2 in
+        // the same checkpoint range stayed complete. That is the documented
+        // revise-during-checkpoint flow, not corruption — no completion_gap
+        // error. (A chapter with zero progress before a complete one still
+        // errors.)
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        {
+            let chapter1 = state.chapter_mut(1).expect("chapter 1");
+            chapter1.scenes[0].scene_id = Some("scene:1".to_string());
+            chapter1.scenes[0].phase = ScenePhase::DraftSaved;
+            chapter1.scenes[0].scene_artifact_path =
+                Some("scenes/chapter-0001/scene-001.json".to_string());
+            chapter1.summary_saved = false;
+        }
+        {
+            let chapter2 = state.chapter_mut(2).expect("chapter 2");
+            chapter2.scenes[0].scene_id = Some("scene:2".to_string());
+            chapter2.scenes[0].phase = ScenePhase::BeatsAnnotated;
+            chapter2.summary_saved = true;
+        }
+        state.normalize();
+
+        let mut findings = Vec::new();
+        validate_completion_order(&state, &mut findings);
+        assert!(
+            findings.iter().all(|f| f.code != "completion_gap"),
+            "reopened chapter must not trip completion_gap: {findings:?}"
+        );
+
+        // Zero-progress chapter 1 before complete chapter 2 is still an error.
+        let chapter1 = state.chapter_mut(1).expect("chapter 1");
+        chapter1.scenes[0].phase = ScenePhase::Pending;
+        chapter1.scenes[0].scene_id = None;
+        chapter1.scenes[0].scene_artifact_path = None;
+        state.normalize();
+        let mut findings = Vec::new();
+        validate_completion_order(&state, &mut findings);
+        assert!(
+            findings.iter().any(|f| f.code == "completion_gap"),
+            "a skipped chapter must still trip completion_gap: {findings:?}"
+        );
     }
 
     #[test]

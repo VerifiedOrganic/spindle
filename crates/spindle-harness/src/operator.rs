@@ -203,12 +203,25 @@ pub fn review_checkpoint(
     ))
 }
 
+/// Advance a blocked scene one phase forward after operator review.
+///
+/// Two block levels license the advance (defect item 1c):
+/// - scene-level: `scene.blocked_reason` is set — the classic path; the scene's
+///   recorded artifact must exist on disk.
+/// - run-level: the scene itself is not blocked but the RUN is
+///   (`run_level_blocked`, e.g. reconcile findings such as summary residue).
+///   Pre-existing-prose scenes have no artifact, so the artifact requirement
+///   applies only when the scene actually recorded one.
+///
+/// A truly unblocked scene in an unblocked run is refused — there is nothing
+/// for an operator to resolve.
 pub fn resolve_scene_block(
     state: &mut HarnessState,
     state_path: &Path,
     chapter_number: i32,
     scene_order: i32,
     target_phase: ScenePhase,
+    run_level_blocked: bool,
 ) -> Result<String> {
     let artifacts_root = artifacts_root(state_path, state);
     let chapter = state
@@ -227,12 +240,16 @@ pub fn resolve_scene_block(
             )
         })?;
 
-    let blocked_reason = scene.blocked_reason.clone().with_context(|| {
-        format!(
-            "scene {}.{} is not currently blocked for operator review",
-            chapter_number, scene_order
-        )
-    })?;
+    let blocked_reason = scene.blocked_reason.clone();
+    if blocked_reason.is_none() && !run_level_blocked {
+        anyhow::bail!(
+            "scene {}.{} has no scene-level block and the run has no run-level block; \
+             authoring_resolve_block only advances a scene that is blocked itself or \
+             sits in a run blocked by reconcile findings",
+            chapter_number,
+            scene_order
+        );
+    }
 
     let expected_phase = next_scene_phase(scene.phase).with_context(|| {
         format!(
@@ -250,20 +267,29 @@ pub fn resolve_scene_block(
         );
     }
 
-    let artifact_path = scene.scene_artifact_path.clone().with_context(|| {
-        format!(
-            "scene {}.{} has no artifact path; cannot advance safely",
-            chapter_number, scene_order
-        )
-    })?;
-    let full_artifact_path = artifacts_root.join(artifact_path);
-    if !full_artifact_path.exists() {
-        anyhow::bail!(
-            "scene {}.{} artifact does not exist at {}",
-            chapter_number,
-            scene_order,
-            full_artifact_path.display()
-        );
+    // A scene-level block always has a run-recorded artifact and must keep it.
+    // Under a run-level block the scene may predate the run (no artifact); when
+    // one IS recorded it still has to exist — a dangling path is corruption.
+    match scene.scene_artifact_path.clone() {
+        Some(artifact_path) => {
+            let full_artifact_path = artifacts_root.join(artifact_path);
+            if !full_artifact_path.exists() {
+                anyhow::bail!(
+                    "scene {}.{} artifact does not exist at {}",
+                    chapter_number,
+                    scene_order,
+                    full_artifact_path.display()
+                );
+            }
+        }
+        None if blocked_reason.is_some() => {
+            anyhow::bail!(
+                "scene {}.{} has no artifact path; cannot advance safely",
+                chapter_number,
+                scene_order
+            );
+        }
+        None => {}
     }
 
     if scene.scene_id.is_none() {
@@ -283,7 +309,7 @@ pub fn resolve_scene_block(
         chapter_number,
         scene_order,
         phase_label(target_phase),
-        blocked_reason
+        blocked_reason.unwrap_or_else(|| "run-level block (reconcile findings)".to_string())
     ))
 }
 
@@ -541,9 +567,15 @@ mod tests {
             ..Default::default()
         };
 
-        let message =
-            resolve_scene_block(&mut state, &state_path, 1, 1, ScenePhase::ChangesCommitted)
-                .expect("resolve scene block");
+        let message = resolve_scene_block(
+            &mut state,
+            &state_path,
+            1,
+            1,
+            ScenePhase::ChangesCommitted,
+            false,
+        )
+        .expect("resolve scene block");
 
         assert!(message.contains("Advanced scene 1.1"));
         assert_eq!(
@@ -597,6 +629,67 @@ mod tests {
         assert!(scene.revision_directives.is_none());
         // The poisoned artifact is gone so the reuse path rebuilds fresh.
         assert!(!artifact_path.exists(), "artifact must be deleted");
+    }
+
+    // ── Run-level-block override (defect item 1c) ──
+
+    #[test]
+    fn resolve_scene_block_advances_unblocked_scene_when_run_is_blocked() {
+        // The block can live at RUN level (reconcile errors) with no
+        // scene.blocked_reason set. The operator must still be able to advance
+        // a scene forward one phase — including a pre-existing-prose scene
+        // that has NO artifact (the prose came from outside any run).
+        let state_path = temp_state_path("resolve-run-level-block");
+        let mut state = HarnessState::from_seed(seed(), "branch:main".to_string());
+        let scene = &mut state.chapters[0].scenes[0];
+        scene.phase = ScenePhase::DraftSaved;
+        scene.scene_id = Some("scene:1".to_string());
+        scene.scene_artifact_path = None;
+        scene.blocked_reason = None;
+
+        let message = resolve_scene_block(
+            &mut state,
+            &state_path,
+            1,
+            1,
+            ScenePhase::ChangesCommitted,
+            true,
+        )
+        .expect("run-level block must allow a forward advance");
+
+        assert!(message.contains("Advanced scene 1.1"), "{message}");
+        assert!(message.contains("run-level block"), "{message}");
+        assert_eq!(
+            state.chapters[0].scenes[0].phase,
+            ScenePhase::ChangesCommitted
+        );
+    }
+
+    #[test]
+    fn resolve_scene_block_refusal_names_both_block_levels() {
+        // A truly unblocked run + unblocked scene still refuses, and the error
+        // text must distinguish scene-level from run-level blocks so the
+        // operator knows why the tool declined.
+        let state_path = temp_state_path("resolve-no-block");
+        let mut state = HarnessState::from_seed(seed(), "branch:main".to_string());
+        let scene = &mut state.chapters[0].scenes[0];
+        scene.phase = ScenePhase::DraftSaved;
+        scene.scene_id = Some("scene:1".to_string());
+
+        let err = resolve_scene_block(
+            &mut state,
+            &state_path,
+            1,
+            1,
+            ScenePhase::ChangesCommitted,
+            false,
+        )
+        .expect_err("an unblocked scene in an unblocked run must refuse");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("scene-level") && text.contains("run-level"),
+            "refusal must explain both block levels: {text}"
+        );
     }
 
     #[test]

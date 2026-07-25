@@ -3646,6 +3646,7 @@ impl ToolRouter {
                     &state_path,
                     outcome.state,
                     *chapter_number,
+                    &run_id,
                 )
                 .await
             }
@@ -3898,6 +3899,50 @@ impl ToolRouter {
         live_scene.tone = input.tone.clone();
         live_scene.source_path = input.source_path.clone();
         live_scene.blocked_reason = None;
+
+        // Summary invalidation (defect item 3): re-saving a scene in a chapter
+        // whose summary was already persisted (the documented revise-during-
+        // checkpoint flow) leaves that summary describing prose that no longer
+        // exists. Delete the row and the summary artifact and clear the harness
+        // flags so the pipeline regenerates both after the scene recommits —
+        // otherwise the next execute blocks on the summary residue rule.
+        let chapter_state = &mut harness_state.chapters[chapter_index];
+        let persisted_summary = repo
+            .get_chapter_summary(
+                &project_id,
+                &harness_state.active_branch_id,
+                input.book_number,
+                input.chapter_number,
+            )
+            .await?;
+        if chapter_state.summary_saved || persisted_summary.is_some() {
+            repo.delete_chapter_summaries_for_chapter(
+                &project_id,
+                &harness_state.active_branch_id,
+                input.book_number,
+                input.chapter_number,
+            )
+            .await?;
+            let summary_rel = chapter_state
+                .summary_artifact_path
+                .clone()
+                .unwrap_or_else(|| ArtifactStore::summary_relative_path(input.chapter_number));
+            let summary_path = artifact_store.root().join(&summary_rel);
+            match std::fs::remove_file(&summary_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "failed to remove stale summary artifact at {}",
+                            summary_path.display()
+                        )
+                    });
+                }
+            }
+            chapter_state.summary_saved = false;
+            chapter_state.summary_artifact_path = None;
+        }
 
         let (updated_run, updated_ch, updated_sc, updated_cp) =
             map_harness_to_records(&run_id, &harness_state, &run.status, Some(run.created_at));
@@ -4189,6 +4234,7 @@ impl ToolRouter {
         state_path: &Path,
         mut state: HarnessState,
         chapter_number: i32,
+        run_id: &str,
     ) -> anyhow::Result<ExecutionResult> {
         let artifact_store = ArtifactStore::new(authoring_artifacts_root(state_path, &state));
         let chapter_index = state
@@ -4229,6 +4275,38 @@ impl ToolRouter {
                 chapter_number
             );
         }
+
+        // Stale-artifact guard (defect item 2): an on-disk artifact counts as
+        // idempotency proof ONLY if it belongs to this run and the
+        // chapter_summary row its save_summary_output references still exists
+        // on the run's branch. An artifact from an earlier pass (different or
+        // unstamped run_id, row since deleted) would otherwise mark
+        // summary_saved without persisting anything AND silently reuse old-pass
+        // summary content for new prose. Discard its outputs and regenerate
+        // from the current scene packages.
+        let foreign_run = artifact.run_id.as_deref().is_some_and(|id| id != run_id);
+        let dangling_output = match artifact.save_summary_output.as_ref() {
+            Some(output) if !foreign_run => {
+                let existing = self
+                    .service
+                    .repository()
+                    .get_chapter_summary(
+                        &state.project_id,
+                        &state.active_branch_id,
+                        state.book_number,
+                        chapter_number,
+                    )
+                    .await?;
+                existing.is_none_or(|row| row.id != output.chapter_summary_id)
+            }
+            _ => false,
+        };
+        if foreign_run || dangling_output {
+            artifact.clear_generation();
+            artifact.save_summary_output = None;
+            artifact.last_parse_error = None;
+        }
+        artifact.run_id = Some(run_id.to_string());
 
         let package = match artifact.package.clone() {
             Some(package) => package,
@@ -5095,6 +5173,15 @@ impl ToolRouter {
         let state_path = authoring_state_path(data_dir, &run_id);
         harness_state.save(&state_path)?;
 
+        // Distinguish scene-level from run-level blocks (defect item 1c): the
+        // reconcile pass against live Spindle state is what raises run-level
+        // errors (residue rules, branch mismatch, …). When it has errors, a
+        // forward advance is allowed even on a scene with no blocked_reason.
+        let run_level_blocked = {
+            let snapshot = self.authoring_project_snapshot(&harness_state).await?;
+            reconcile_state(harness_state.clone(), &snapshot).has_errors()
+        };
+
         let resolve_result = match parsed_phase {
             Some(phase) => spindle_harness::operator::resolve_scene_block(
                 &mut harness_state,
@@ -5102,6 +5189,7 @@ impl ToolRouter {
                 input.chapter_number,
                 input.scene_order,
                 phase,
+                run_level_blocked,
             ),
             None => spindle_harness::operator::redraft_scene_block(
                 &mut harness_state,

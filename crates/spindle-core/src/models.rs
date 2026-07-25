@@ -12,6 +12,19 @@ fn default_true() -> bool {
     true
 }
 
+/// Deserialize an explicit JSON `null` (or a missing field, combined with
+/// `#[serde(default)]`) into the type's default. Miners and permissive clients
+/// send `null` for "unknown" struct fields; rejecting that with
+/// "invalid type: null, expected struct …" makes optional-by-intent fields
+/// hard-required in practice.
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, JsonSchema, PartialEq, Eq, Default)]
 pub enum ContentRating {
     #[default]
@@ -90,7 +103,7 @@ pub struct FlexRange {
     pub high: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterVoiceProfileData {
     #[serde(default)]
     pub tone: Option<String>,
@@ -110,7 +123,7 @@ pub struct CharacterVoiceProfileData {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterEmotionalProfileData {
     #[serde(default)]
     pub base_emotions: BTreeMap<String, serde_json::Value>,
@@ -1083,7 +1096,12 @@ pub struct CreateCharacterInput {
     pub summary: String,
     pub role: String,
     pub realm: Option<String>,
+    /// Optional (defect item 5): minor characters rarely arrive with a voice
+    /// profile. Missing AND explicit null both default to an empty profile.
+    #[serde(default, deserialize_with = "null_to_default")]
     pub voice_profile: CharacterVoiceProfileData,
+    /// Optional (defect item 5), same null/missing tolerance as voice_profile.
+    #[serde(default, deserialize_with = "null_to_default")]
     pub emotional_profile: CharacterEmotionalProfileData,
     pub initial_state: Option<CharacterStatePatch>,
 }
@@ -7387,6 +7405,34 @@ pub struct DecideCanonDeltasOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_character_accepts_null_and_missing_profiles() {
+        // Defect item 5: voice_profile and emotional_profile must be optional —
+        // explicit null (what the canon miner emits for a minor character) and
+        // omission both deserialize to empty defaults.
+        let with_nulls: CreateCharacterInput = serde_json::from_value(serde_json::json!({
+            "project_id": "project:p1",
+            "name": "The stranger",
+            "summary": "A stranger.",
+            "role": "minor",
+            "voice_profile": null,
+            "emotional_profile": null
+        }))
+        .expect("null profiles must deserialize");
+        assert!(with_nulls.voice_profile.tone.is_none());
+        assert!(with_nulls.emotional_profile.base_emotions.is_empty());
+
+        let with_missing: CreateCharacterInput = serde_json::from_value(serde_json::json!({
+            "project_id": "project:p1",
+            "name": "The stranger",
+            "summary": "A stranger.",
+            "role": "minor"
+        }))
+        .expect("missing profiles must deserialize");
+        assert!(with_missing.voice_profile.vocabulary.is_empty());
+        assert!(with_missing.emotional_profile.suppressed.is_empty());
+    }
 
     #[test]
     fn scene_verify_checks_is_deduped_and_excludes_deep_only_checks() {
