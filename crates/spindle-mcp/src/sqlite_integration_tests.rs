@@ -1863,6 +1863,17 @@ async fn test_two_independent_book_workspaces() {
 /// project with a single explicit-rated planned scene in book 1 / chapter 1,
 /// and return the ToolRouter plus project id ready for `authoring_prepare_run`.
 async fn preflight_fixture(config_toml: &str) -> (TempDir, crate::tools::ToolRouter, String) {
+    preflight_fixture_with_ratings(config_toml, &[ContentRating::Explicit]).await
+}
+
+/// As [`preflight_fixture`], but plans one scene per entry in `scene_ratings`
+/// so a run can span several DISTINCT ratings. Preflight is supposed to check
+/// coverage over the set of planned scene ratings, which a single-scene fixture
+/// cannot distinguish from checking one rating.
+async fn preflight_fixture_with_ratings(
+    config_toml: &str,
+    scene_ratings: &[ContentRating],
+) -> (TempDir, crate::tools::ToolRouter, String) {
     use crate::tools::{ToolRouter, ToolSerializationState};
     use spindle_core::models::ConfigureAgentsInput;
     use std::sync::Arc;
@@ -1955,16 +1966,20 @@ async fn preflight_fixture(config_toml: &str) -> (TempDir, crate::tools::ToolRou
         target_theme_ids: Vec::new(),
         target_conflict_ids: Vec::new(),
         target_plot_line_ids: Vec::new(),
-        scenes: vec![PlanChapterSceneInput {
-            scene_order: 1,
-            summary: "Mara meets the beast".into(),
-            beat_structure: Vec::new(),
-            character_ids: vec![mara.character_id.clone()],
-            location_id: Some(loc.location_id.clone()),
-            content_rating: Some(ContentRating::Explicit),
-            purpose: "climax".into(),
-            ..Default::default()
-        }],
+        scenes: scene_ratings
+            .iter()
+            .enumerate()
+            .map(|(index, rating)| PlanChapterSceneInput {
+                scene_order: index as i32 + 1,
+                summary: format!("Mara meets the beast ({index})"),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(rating.clone()),
+                purpose: "climax".into(),
+                ..Default::default()
+            })
+            .collect(),
     })
     .await
     .unwrap();
@@ -2033,6 +2048,122 @@ agent = "tame-draft"
             s.contains("draft") && s.contains("explicit")
         }),
         "expected a missing_requirements entry naming route draft + rating explicit, got {reqs:?}"
+    );
+}
+
+/// Mixed-rating run, split agents: a default agent serving general/teen/mature
+/// plus an uncensored agent bound to `draft` for explicit only. Every planned
+/// rating has a home, so preflight must clear the run — the General scenes must
+/// NOT be dragged onto the explicit agent's coverage requirement, and the
+/// Explicit scene must not be judged against the default agent's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_passes_for_mixed_rating_chapter_with_split_agents() {
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "default-agent"
+name = "Default Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen", "mature"]
+
+[[agents]]
+id = "explicit-agent"
+name = "Uncensored Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "draft"
+agent = "default-agent"
+
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+rating = "explicit"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture_with_ratings(
+        config,
+        &[
+            ContentRating::General,
+            ContentRating::General,
+            ContentRating::Explicit,
+        ],
+    )
+    .await;
+    let val = call_prepare(&router, &project_id).await;
+
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(true),
+        "a mixed chapter whose every planned rating has a route must clear: {val:?}"
+    );
+    assert!(
+        val["missing_requirements"]
+            .as_array()
+            .is_none_or(|reqs| reqs.is_empty()),
+        "no requirement should be missing: {val:?}"
+    );
+}
+
+/// The other half of the mixed-rating contract: adding one Explicit scene to an
+/// otherwise-General chapter DOES require explicit draft coverage. Without a
+/// per-rating override, the default agent (general/teen/mature) is what the
+/// explicit scene would resolve to, and it does not cover explicit — so the run
+/// blocks, and the complaint names explicit rather than the ratings that are
+/// fine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_run_blocks_mixed_chapter_when_only_the_explicit_scene_lacks_coverage() {
+    let config = r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "default-agent"
+name = "Default Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "draft"
+agent = "default-agent"
+"#;
+    let (_tmp, router, project_id) = preflight_fixture_with_ratings(
+        config,
+        &[
+            ContentRating::General,
+            ContentRating::General,
+            ContentRating::Explicit,
+        ],
+    )
+    .await;
+    let val = call_prepare(&router, &project_id).await;
+
+    assert_eq!(
+        val["ready_to_draft"].as_bool(),
+        Some(false),
+        "one uncovered explicit scene must block the run: {val:?}"
+    );
+    let reqs = val["missing_requirements"].as_array().unwrap();
+    assert!(
+        reqs.iter().any(|r| {
+            let s = r.as_str().unwrap();
+            s.contains("draft") && s.contains("explicit")
+        }),
+        "expected a requirement naming route draft + rating explicit, got {reqs:?}"
+    );
+    // The covered ratings must not be reported as gaps — that would push the
+    // operator toward routing the whole chapter at the explicit agent.
+    assert!(
+        !reqs.iter().any(|r| r.as_str().unwrap().contains("general")),
+        "general scenes are covered and must not appear as gaps: {reqs:?}"
     );
 }
 

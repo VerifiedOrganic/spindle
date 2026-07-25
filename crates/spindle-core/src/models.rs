@@ -1302,12 +1302,32 @@ pub struct SceneContextNovelLayer {
 /// Closing excerpt of the scene immediately preceding the one being drafted,
 /// surfaced in scene context so the scene-to-scene prose hand-off (exit beat,
 /// emotional register, physical continuity) is visible to the drafting agent.
+///
+/// # Cross-rating elision
+///
+/// A mixed-rating chapter can place an Explicit scene next to a General one.
+/// Because this context is assembled into a draft prompt that is then dispatched
+/// to the route serving the *target* scene's rating, handing over an explicit
+/// neighbour's prose verbatim would transmit explicit material to an agent that
+/// is not cleared for it — the exact leak the rating-gated dispatch chokepoint
+/// exists to prevent. So when the neighbour is explicit and the target scene is
+/// not (or its rating cannot be established), `excerpt` carries the neighbour's
+/// stored summary instead of its prose and [`Self::elided_reason`] explains the
+/// substitution. See `docs/spindle-agent-config.md` ("Mixed-rating chapters").
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreviousSceneTail {
     pub scene_id: String,
     pub chapter_number: i32,
     pub scene_order: i32,
+    /// The neighbour's closing prose — or, when `elided_reason` is set, its
+    /// non-explicit summary standing in for that prose.
     pub excerpt: String,
+    /// Set when `excerpt` is a rating-elided substitute rather than the
+    /// neighbour's actual closing prose. `None` on an ordinary hand-off, so a
+    /// caller can tell an elided tail from a faithful one instead of silently
+    /// reading a summary as prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elided_reason: Option<String>,
 }
 
 /// A narrative thread (theme, conflict, plot line, or theme-connected motif)

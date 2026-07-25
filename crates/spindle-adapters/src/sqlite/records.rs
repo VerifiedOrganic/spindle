@@ -3364,7 +3364,7 @@ impl<'a> TryFrom<&Row<'a>> for StoredRunEvent {
 
 pub const GENERATION_RECEIPT_COLUMNS: &str = "id, project_id, branch_id, route, \
      agent_id, rating, explicit_capable, output_sha256, output_text, created_at, \
-     expires_at";
+     expires_at, claimed_scene_key";
 
 /// One persisted generation receipt (migration V0032, live-run bug 4c). Rows
 /// are written by `register_generation_receipt` and read back — with expiry
@@ -3386,6 +3386,14 @@ pub struct StoredGenerationReceipt {
     pub output_text: String,
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
+    /// The one scene this receipt has been spent authorizing, as the
+    /// `{project_id}|{book}|{chapter}|{scene_order}` natural key (migration
+    /// V0034). `None` = unclaimed. Bound by the first explicit
+    /// `save_scene_draft` that presents the receipt; a later explicit save on a
+    /// DIFFERENT scene is then rejected, so one clearance cannot blanket-
+    /// authorize a chapter. See the migration for why binding happens on first
+    /// use rather than at mint time.
+    pub claimed_scene_key: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for StoredGenerationReceipt {
@@ -3403,6 +3411,7 @@ impl<'a> TryFrom<&Row<'a>> for StoredGenerationReceipt {
             output_text: row::text(r, 8)?,
             created_at: row::time(r, 9)?,
             expires_at: row::time(r, 10)?,
+            claimed_scene_key: row::opt_text(r, 11)?,
         })
     }
 }

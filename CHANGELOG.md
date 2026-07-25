@@ -9,8 +9,32 @@
   support (e.g. Kimi): they return the same content as the `bible://skills/*`
   and `bible://references/*` resources and are available in every tool profile.
 
+### Security
+
+- An explicit generation receipt now authorizes exactly one scene. The first
+  explicit `save_scene_draft` presenting a `generation_id` binds it to that
+  scene's `(book, chapter, scene_order)` placement (migration V0034); a later
+  explicit save on a *different* scene is rejected before any prose is
+  persisted. Re-saving the same scene with the same receipt stays legal, so
+  retries and operator re-saves still work. Previously one trip through the
+  explicit-capable agent blanket-authorized explicit saves across every other
+  scene, each stamped `agent:{id}` as though that agent had produced it.
+- `get_scene_context` no longer hands an explicit scene's prose to a
+  non-explicit drafting agent. When the preceding scene is Explicit and the
+  scene being drafted is not, `previous_scene_tail.excerpt` carries the
+  neighbour's summary instead of its closing prose and the new
+  `elided_reason` field explains the substitution. Elision is a rating
+  boundary, not a blanket filter — an Explicit scene following an Explicit one
+  still receives the real prose — and it fails closed when the target scene's
+  rating cannot be established. See "Mixed-rating chapters" in
+  `docs/spindle-agent-config.md`.
+
 ### Fixed
 
+- `docs/spindle-agent-config.md` no longer claims `save_scene_draft` persists
+  the server-held generation output for explicit saves. The caller's
+  `full_text` has been authoritative since the receipt-stub data-loss fix; the
+  receipt is provenance only.
 - `create_pacing_config` and `create_pacing_curve` no longer fail with
   "pacing_config not found" / "pacing_curve not found" when a row already
   exists for the project+branch (the upsert conflict path re-read by the

@@ -2560,6 +2560,53 @@ impl Repository {
             .await
     }
 
+    /// Bind a generation receipt to the one scene it authorizes, or confirm it
+    /// is already bound to that same scene (migration V0034).
+    ///
+    /// Returns `Ok(None)` when the receipt is now claimed by `scene_key` —
+    /// either because this call bound a previously-unclaimed receipt, or
+    /// because it was already bound to this very scene (an idempotent re-save).
+    /// Returns `Ok(Some(other_key))` when the receipt is already spent on a
+    /// DIFFERENT scene; the caller rejects the save and names that scene.
+    ///
+    /// The claim is a single conditional UPDATE so two concurrent explicit
+    /// saves racing for the same receipt cannot both win: SQLite serializes the
+    /// writes, the loser matches zero rows and reads back the winner's key.
+    pub async fn claim_generation_receipt_for_scene(
+        &self,
+        id: &str,
+        scene_key: &str,
+    ) -> Result<Option<String>> {
+        let id = id.to_string();
+        let scene_key = scene_key.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let claimed = conn.execute(
+                    "UPDATE generation_receipt SET claimed_scene_key = ?2 \
+                     WHERE id = ?1 \
+                       AND (claimed_scene_key IS NULL OR claimed_scene_key = ?2)",
+                    rusqlite::params![id, scene_key],
+                )?;
+                if claimed > 0 {
+                    return Ok(None);
+                }
+                // Zero rows updated: either the receipt is claimed elsewhere, or
+                // it no longer exists (expired and swept between the verify and
+                // this claim). Report the conflicting key when there is one; a
+                // vanished receipt is not a claim conflict and falls through.
+                let mut stmt = conn.prepare_cached(
+                    "SELECT claimed_scene_key FROM generation_receipt WHERE id = ?1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![id])?;
+                match rows.next()? {
+                    Some(row) => Ok(row.get::<_, Option<String>>(0)?),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
     pub async fn upsert_timeline_event_clock(
         &self,
         timeline_event_id: &str,

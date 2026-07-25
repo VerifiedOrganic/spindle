@@ -1500,6 +1500,16 @@ pub fn format_scene_context_previous_scene_tail_markdown(
     let Some(tail) = tail else {
         return String::new();
     };
+    // A rating-elided tail carries the neighbour's SUMMARY, not its prose. The
+    // "…" prefix used for a real tail would present that summary as the scene's
+    // closing lines and invite the agent to continue from it verbatim, so the
+    // elided form is labelled instead.
+    if let Some(reason) = tail.elided_reason.as_deref() {
+        return format!(
+            "\n## PREVIOUS SCENE (closing)\nCh {}.{} [prose withheld — {}]\nSummary: {}",
+            tail.chapter_number, tail.scene_order, reason, tail.excerpt
+        );
+    }
     format!(
         "\n## PREVIOUS SCENE (closing)\nCh {}.{}: …{}",
         tail.chapter_number, tail.scene_order, tail.excerpt

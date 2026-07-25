@@ -193,6 +193,65 @@ Validation rules enforced by the loader:
 Inspect the loaded rules through the `bible://config/routing` resource. The
 `rating` and `system_prompt` fields are surfaced on each rule when configured.
 
+## Mixed-rating chapters
+
+Rating is a property of the **scene**, not the chapter, book, or run. A chapter
+planned as General, General, Explicit dispatches its first two scenes to the
+default agent and only the third to the explicit-capable one. Nothing collapses
+those three ratings into a single chapter-level value.
+
+The rating travels from `plan_chapter`'s per-scene `content_rating` through the
+stored chapter plan, into the authoring run's per-scene state, and reaches the
+router at dispatch time for each scene individually — for drafting, for
+continuations, and for review (`run_dual_persona_review` and the checkpoint deep
+tiers pass the saved scene's own `content_rating`). To route a mixed chapter you
+need one `[[routing]]` default rule plus one `rating = "explicit"` override, as
+in the example above; nothing per-chapter is required.
+
+### Preflight over the planned rating set
+
+`authoring_prepare_run` / `authoring_start_run` compute the set of **distinct**
+ratings across every planned scene in the chapter range, then check route
+coverage once per rating. So:
+
+- Adding one Explicit scene to an otherwise-General chapter **does** require an
+  explicit-capable `draft` route; the run blocks without one, and the reported
+  `missing_requirements` entry names `explicit`.
+- It does **not** require the General scenes to be servable by that explicit
+  agent, and it does not report the covered ratings as gaps.
+
+The same per-rating pass runs for the `mine` route (under
+`mining_policy: "propose_all"`) and the `review` route (under the auto checkpoint
+policies).
+
+### Context does not cross the rating boundary
+
+Per-scene routing would be hollow if the prompt smuggled the prose across
+anyway. Drafting a General scene that follows an Explicit one assembles context —
+including the previous scene's closing prose — and dispatches it to the *General*
+route, i.e. an agent the operator never cleared for explicit content.
+
+So `get_scene_context` elides across that boundary: when the preceding scene is
+Explicit and the scene being drafted is not, `previous_scene_tail.excerpt`
+carries the neighbour's stored **summary** instead of its prose, and
+`elided_reason` explains the substitution. The markdown rendering labels it
+rather than presenting it as closing lines:
+
+```
+## PREVIOUS SCENE (closing)
+Ch 1.2 [prose withheld — previous scene is explicit; this scene is rated
+general and drafts on a route that may not be cleared for explicit content,
+so its closing prose is replaced by the scene summary]
+Summary: Mara and the smith finally give in.
+```
+
+Elision is a rating boundary, not a blanket filter — an Explicit scene following
+an Explicit one still receives the real closing prose, because it routes to the
+cleared agent. The policy **fails closed**: if the target scene has no planned
+rating and has not been drafted (so its clearance cannot be established), the
+explicit neighbour is elided rather than gambled. Planning your scenes' ratings
+is what restores the full hand-off.
+
 ## Import routes and content
 
 The manuscript-import routes (`import_extract`, `import_synthesize`) carry your
@@ -454,13 +513,34 @@ invoke any write tools.
 the completed output (`prior_output + output`), including the resolved route,
 rating, agent id, and output hash. When `save_scene_draft` receives explicit
 sexual prose (`content_rating: "explicit"` plus explicit sexual language), it
-rejects the save unless the caller passes that receipt's `generation_id`. For
-valid explicit generation receipts, Spindle persists the server-held generation
-output instead of trusting caller-resubmitted bytes. The receipt must be from:
+rejects the save unless the caller passes that receipt's `generation_id`. The
+receipt must be from:
 
 - `route: "draft"`
 - `rating: "explicit"`
 - an agent whose `ratings` includes `"explicit"`
+
+The receipt is **provenance only**. The caller's `full_text` is authoritative
+and is what Spindle persists; the receipt proves the save was authorized by a
+cleared, explicit-capable draft generation and supplies the `agent:{id}` stamp.
+Spindle does not substitute the receipt's output for your prose — in practice a
+receipt carries agent narration and truncated turn fragments alongside the
+prose, so treating it as the source of truth silently destroyed real drafts.
+
+**One receipt authorizes one scene.** The first explicit save presenting a
+receipt binds it to that scene's `(book, chapter, scene_order)` placement.
+Re-saving the *same* scene with the same `generation_id` stays legal, so retries
+and re-saves work. Presenting it for a *different* scene is rejected:
+
+```
+generation_id "model_generation:7:a1b2c3d4e5f6" already authorized a different
+scene (book 1, chapter 1, scene 3); each explicit save needs its own receipt
+```
+
+This matters most in mixed-rating chapters (below): without it, a single trip
+through the explicit-capable agent would blanket-authorize explicit saves across
+every neighbouring scene, each stamped `agent:{id}` as though that agent had
+written it.
 
 This is a hard server-side gate. Explicit sexual scene text must be produced
 through the explicit draft route and saved with the returned `generation_id`.

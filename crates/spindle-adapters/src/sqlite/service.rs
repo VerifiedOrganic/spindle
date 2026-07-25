@@ -7314,15 +7314,91 @@ impl SqliteSpindleService {
                 None
             };
 
-            previous_scene.and_then(|scene| {
-                let excerpt = crate::format::scene_closing_excerpt(&scene.full_text);
-                excerpt.map(|excerpt| spindle_core::models::PreviousSceneTail {
-                    scene_id: scene.id,
-                    chapter_number: scene.chapter_number,
-                    scene_order: scene.scene_order,
-                    excerpt,
-                })
-            })
+            // Cross-rating elision. This context is assembled into a draft
+            // prompt that is dispatched to whichever route serves the TARGET
+            // scene's rating. Handing an explicit neighbour's prose to a
+            // general-rated target would therefore transmit explicit material
+            // to an agent the operator never cleared for it — routing the
+            // dispatch correctly is worthless if the payload smuggles the prose
+            // across anyway. So when the neighbour is explicit and the target is
+            // not, substitute the neighbour's (non-explicit) summary and say so.
+            //
+            // Fail closed on an unknown target rating: an undrafted, unplanned
+            // scene gives us nothing to prove clearance with, and guessing
+            // "probably fine" is exactly the wrong default for this invariant.
+            //
+            // The target rating is resolved ONLY when the neighbour is actually
+            // explicit. Resolving it eagerly would put a scene lookup plus a
+            // full chapter-plan scan on every scene-context call in every
+            // project, to answer a question that only matters for the rare
+            // explicit neighbour.
+            match previous_scene {
+                Some(scene) if scene.content_rating.trim().eq_ignore_ascii_case("explicit") => {
+                    let target_rating = self
+                        .resolve_target_scene_rating(
+                            &input.project_id,
+                            &active_branch.id,
+                            input.book_number,
+                            input.chapter_number,
+                            input.scene_order,
+                        )
+                        .await?;
+                    let target_is_explicit = target_rating
+                        .as_deref()
+                        .is_some_and(|rating| rating.eq_ignore_ascii_case("explicit"));
+                    if target_is_explicit {
+                        // Same clearance on both sides: the real prose goes over.
+                        crate::format::scene_closing_excerpt(&scene.full_text).map(|excerpt| {
+                            spindle_core::models::PreviousSceneTail {
+                                scene_id: scene.id,
+                                chapter_number: scene.chapter_number,
+                                scene_order: scene.scene_order,
+                                excerpt,
+                                elided_reason: None,
+                            }
+                        })
+                    } else {
+                        let reason = match target_rating.as_deref() {
+                            Some(rating) => format!(
+                                "previous scene is explicit; this scene is rated {rating} and \
+                                 drafts on a route that may not be cleared for explicit content, \
+                                 so its closing prose is replaced by the scene summary"
+                            ),
+                            None => "previous scene is explicit and this scene has no planned \
+                                     content rating, so its closing prose is replaced by the \
+                                     scene summary until the rating is known"
+                                .to_string(),
+                        };
+                        // The summary is authored at a non-explicit register and
+                        // is what preserves the hand-off; an empty one degrades
+                        // to no tail rather than falling back to the prose.
+                        let summary = scene.summary.trim();
+                        if summary.is_empty() {
+                            None
+                        } else {
+                            Some(spindle_core::models::PreviousSceneTail {
+                                scene_id: scene.id,
+                                chapter_number: scene.chapter_number,
+                                scene_order: scene.scene_order,
+                                excerpt: summary.to_string(),
+                                elided_reason: Some(reason),
+                            })
+                        }
+                    }
+                }
+                Some(scene) => {
+                    crate::format::scene_closing_excerpt(&scene.full_text).map(|excerpt| {
+                        spindle_core::models::PreviousSceneTail {
+                            scene_id: scene.id,
+                            chapter_number: scene.chapter_number,
+                            scene_order: scene.scene_order,
+                            excerpt,
+                            elided_reason: None,
+                        }
+                    })
+                }
+                None => None,
+            }
         } else {
             None
         };
@@ -21107,6 +21183,58 @@ impl SqliteSpindleService {
         Ok(())
     }
 
+    /// Best-effort content rating of the scene a caller is assembling context
+    /// for, used by the cross-rating elision in `get_scene_context`.
+    ///
+    /// Two sources, in order of authority:
+    ///   1. The drafted scene row, when it already exists (a re-draft/revision).
+    ///   2. The chapter plan's per-scene `content_rating` — the only source for
+    ///      a scene that has not been drafted yet, which is the normal state
+    ///      when an agent asks for drafting context.
+    ///
+    /// `None` means "cannot establish", which callers must treat as
+    /// not-cleared rather than as permission.
+    async fn resolve_target_scene_rating(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> Result<Option<String>> {
+        if let Some(scene) = self
+            .repository
+            .find_scene_by_natural_key(
+                project_id,
+                branch_id,
+                book_number,
+                chapter_number,
+                scene_order,
+            )
+            .await?
+        {
+            let rating = scene.content_rating.trim();
+            if !rating.is_empty() {
+                return Ok(Some(rating.to_ascii_lowercase()));
+            }
+        }
+
+        let planned = self
+            .repository
+            .list_chapter_plans_by_project(project_id)
+            .await?
+            .into_iter()
+            .find(|plan| plan.book_number == book_number && plan.chapter_number == chapter_number)
+            .and_then(|plan| {
+                plan.scenes
+                    .into_iter()
+                    .find(|scene| scene.scene_order == scene_order)
+            })
+            .and_then(|scene| scene.content_rating)
+            .map(|rating| rating.as_str().to_ascii_lowercase());
+        Ok(planned)
+    }
+
     pub async fn save_scene_draft(
         &self,
         input: SaveSceneDraftInput,
@@ -21174,6 +21302,31 @@ impl SqliteSpindleService {
                 let receipt = self
                     .verified_explicit_save_receipt(input.generation_id.as_deref())
                     .await?;
+                // One clearance authorizes ONE scene (migration V0034). Bind the
+                // receipt to this scene on first use; a receipt already spent on
+                // a different scene is rejected BEFORE the prose is persisted, so
+                // a rejected replay leaves no partial write behind.
+                //
+                // Without this, a single trip through the explicit-capable agent
+                // blanket-authorized explicit saves across every other scene —
+                // each stamped `agent:<id>` as though that agent had written it.
+                // In a mixed-rating chapter that quietly undoes per-scene
+                // routing: the one legitimately-cleared scene's receipt gets
+                // spent on its General neighbours.
+                let scene_key = explicit_receipt_scene_key(&input);
+                if let Some(claimed_by) = self
+                    .repository
+                    .claim_generation_receipt_for_scene(&receipt.id, &scene_key)
+                    .await?
+                {
+                    anyhow::bail!(
+                        "generation_id {:?} already authorized a different scene ({}); \
+                         each explicit save needs its own receipt — call continue_generation \
+                         with route \"draft\" and rating \"explicit\" for this scene",
+                        receipt.id,
+                        describe_receipt_scene_key(&claimed_by)
+                    );
+                }
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             } else if crate::sqlite::import_service::contains_explicit_sexual_prose(
                 &input.full_text,
@@ -23666,6 +23819,31 @@ fn summarize_branch_impact(
 
 fn normalize_generation_rating(rating: &str) -> String {
     rating.trim().to_ascii_lowercase()
+}
+
+/// Natural key identifying the one scene an explicit generation receipt is
+/// spent on (migration V0034). Built from the same
+/// `(book_number, chapter_number, scene_order)` fields
+/// `Repository::persist_scene` treats as authoritative placement, so the claim
+/// always names the scene the save actually writes.
+fn explicit_receipt_scene_key(input: &SaveSceneDraftInput) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        input.project_id, input.book_number, input.chapter_number, input.scene_order
+    )
+}
+
+/// Render a stored claim key back into something an operator can act on. Falls
+/// back to the raw key if it is not the expected 4-part shape, so a future key
+/// format change degrades to "unhelpful but honest" rather than a panic.
+fn describe_receipt_scene_key(key: &str) -> String {
+    let parts: Vec<&str> = key.split('|').collect();
+    match parts.as_slice() {
+        [_project, book, chapter, scene] => {
+            format!("book {book}, chapter {chapter}, scene {scene}")
+        }
+        _ => key.to_string(),
+    }
 }
 
 fn normalized_generation_text(text: &str) -> String {
@@ -31956,6 +32134,122 @@ rating = "explicit"
         );
     }
 
+    /// Seed a project plus an explicit-capable `draft` receipt for the
+    /// receipt-claim tests.
+    async fn explicit_receipt_claim_fixture() -> (TempDir, SqliteSpindleService, String, String) {
+        let (tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "receipt-claim".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-gated drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let receipt = svc
+            .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed output")
+            .await;
+        {
+            let mut receipts = svc.generation_receipts.write().unwrap();
+            receipts
+                .get_mut(&receipt.id)
+                .expect("seeded receipt")
+                .explicit_capable_agent = true;
+        }
+        (tmp, svc, project.project_id, receipt.id)
+    }
+
+    fn explicit_save(
+        project_id: &str,
+        scene_order: i32,
+        generation_id: &str,
+    ) -> SaveSceneDraftInput {
+        SaveSceneDraftInput {
+            project_id: project_id.to_string(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order,
+            full_text: "Her breath caught as he took her, slow and deliberate.".to_string(),
+            summary: format!("Explicit scene {scene_order}."),
+            content_rating: spindle_core::models::ContentRating::Explicit,
+            tone: None,
+            generation_id: Some(generation_id.to_string()),
+            source_path: None,
+            ..Default::default()
+        }
+    }
+
+    /// One explicit clearance authorizes ONE scene. A receipt minted for scene 1
+    /// must not be replayed to authorize explicit prose on scene 2 — otherwise a
+    /// single trip through the explicit-capable agent blanket-authorizes an
+    /// entire chapter of explicit saves that agent never produced.
+    #[tokio::test]
+    async fn explicit_receipt_cannot_authorize_a_second_scene() {
+        let (_tmp, svc, project_id, receipt_id) = explicit_receipt_claim_fixture().await;
+
+        svc.save_scene_draft(explicit_save(&project_id, 1, &receipt_id))
+            .await
+            .expect("first explicit save claims the receipt");
+
+        let err = svc
+            .save_scene_draft(explicit_save(&project_id, 2, &receipt_id))
+            .await
+            .expect_err("replaying the receipt on a different scene must be rejected");
+        assert!(
+            err.to_string().contains("already authorized"),
+            "expected a receipt-claim error naming the bound scene, got: {err}"
+        );
+    }
+
+    /// Bind-on-first-use must not break idempotent retries: re-saving the SAME
+    /// scene with the same receipt (transient failure retry, operator re-save of
+    /// the same draft) stays legal.
+    #[tokio::test]
+    async fn explicit_receipt_may_be_reused_for_the_same_scene() {
+        let (_tmp, svc, project_id, receipt_id) = explicit_receipt_claim_fixture().await;
+
+        let first = svc
+            .save_scene_draft(explicit_save(&project_id, 1, &receipt_id))
+            .await
+            .expect("first explicit save claims the receipt");
+        let second = svc
+            .save_scene_draft(explicit_save(&project_id, 1, &receipt_id))
+            .await
+            .expect("re-saving the same scene with its own receipt must stay legal");
+
+        assert_eq!(
+            first.scene_id, second.scene_id,
+            "the retry should land on the same scene"
+        );
+        assert_eq!(second.draft_origin, "agent:explicit-agent");
+    }
+
+    /// The claim is an explicit-path guard. A non-explicit save presenting the
+    /// same receipt for provenance must not be scene-bound by it — those saves
+    /// are not gated in the first place.
+    #[tokio::test]
+    async fn non_explicit_saves_do_not_consume_the_receipt_claim() {
+        let (_tmp, svc, project_id, receipt_id) = explicit_receipt_claim_fixture().await;
+
+        svc.save_scene_draft(SaveSceneDraftInput {
+            content_rating: spindle_core::models::ContentRating::General,
+            full_text: "The muster formed at dawn along the frost-cracked wall.".to_string(),
+            ..explicit_save(&project_id, 1, &receipt_id)
+        })
+        .await
+        .expect("non-explicit save with a receipt is provenance only");
+
+        svc.save_scene_draft(explicit_save(&project_id, 2, &receipt_id))
+            .await
+            .expect("the unclaimed receipt is still available to its explicit scene");
+    }
+
     /// Bug-4 guard: the NON-explicit agent-draft path (a valid `draft`-route
     /// receipt at a lower rating) must also treat the caller's `full_text` as
     /// authoritative — it only stamps `agent:<id>` provenance and never rewrites
@@ -33498,6 +33792,375 @@ agent = "explicit-agent"
             ctx.novel.previous_scene_tail.is_none(),
             "previous_scene_tail must be absent when the sections filter omits it"
         );
+    }
+
+    /// Save an explicit scene 1 and plan scene 2 at `planned_rating`, then
+    /// resolve scene 2's context. Shared by the cross-rating elision tests so
+    /// each only asserts on the tail it gets back.
+    async fn explicit_neighbor_tail_for_planned_scene_two(
+        planned_rating: Option<spindle_core::models::ContentRating>,
+    ) -> Option<spindle_core::models::PreviousSceneTail> {
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, PlanChapterInput,
+            PlanChapterSceneInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc, project_id, character_id, location_id) =
+            previous_scene_tail_fixture().await;
+
+        // Scene 1 is explicit and its closing prose is exactly what must not
+        // reach a non-explicit drafting agent.
+        let receipt = svc
+            .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed")
+            .await;
+        {
+            let mut receipts = svc.generation_receipts.write().unwrap();
+            receipts
+                .get_mut(&receipt.id)
+                .expect("seeded receipt")
+                .explicit_capable_agent = true;
+        }
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: EXPLICIT_NEIGHBOR_PROSE.into(),
+            summary: "Mara and the smith finally give in.".into(),
+            content_rating: ContentRating::Explicit,
+            tone: None,
+            generation_id: Some(receipt.id.clone()),
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        // The plan is the only place scene 2's rating exists — it has not been
+        // drafted yet, which is exactly the state a drafting agent asks for
+        // context in.
+        if let Some(rating) = planned_rating {
+            svc.plan_chapter(PlanChapterInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                pov_character_id: Some(character_id.clone()),
+                synopsis: "Aftermath at the gate.".into(),
+                target_theme_ids: Vec::new(),
+                target_conflict_ids: Vec::new(),
+                target_plot_line_ids: Vec::new(),
+                scenes: vec![
+                    PlanChapterSceneInput {
+                        scene_order: 1,
+                        summary: "Mara and the smith finally give in.".into(),
+                        beat_structure: Vec::new(),
+                        character_ids: vec![character_id.clone()],
+                        location_id: Some(location_id.clone()),
+                        content_rating: Some(ContentRating::Explicit),
+                        purpose: "Consummate the arc.".into(),
+                        research_required: None,
+                        research_tags: Vec::new(),
+                        explicit_query: None,
+                    },
+                    PlanChapterSceneInput {
+                        scene_order: 2,
+                        summary: "Dawn muster on the wall.".into(),
+                        beat_structure: Vec::new(),
+                        character_ids: vec![character_id.clone()],
+                        location_id: Some(location_id.clone()),
+                        content_rating: Some(rating),
+                        purpose: "Return to the siege plot.".into(),
+                        research_required: None,
+                        research_tags: Vec::new(),
+                        explicit_query: None,
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+        }
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                character_ids: vec![character_id.clone()],
+                max_character_count: None,
+                location_id: location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(8000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        ctx.novel.previous_scene_tail
+    }
+
+    /// Prose used as the explicit neighbour in the elision tests. The assertion
+    /// below keys on this exact string never appearing in a non-explicit
+    /// scene's context.
+    const EXPLICIT_NEIGHBOR_PROSE: &str = "She pulled him down and took him inside her, \
+         the forge heat nothing to the heat of his mouth on her breast as she came.";
+
+    /// A General-rated scene that follows an Explicit one must NOT receive the
+    /// explicit neighbour's prose: that context is assembled into a draft prompt
+    /// dispatched to the general-rated (non-explicit-capable) agent. The tail is
+    /// replaced by the neighbour's stored summary and marked elided.
+    #[tokio::test]
+    async fn previous_scene_tail_elides_explicit_prose_for_general_scene() {
+        use spindle_core::models::ContentRating;
+
+        let tail = explicit_neighbor_tail_for_planned_scene_two(Some(ContentRating::General))
+            .await
+            .expect("a general scene should still get a handoff, just not the prose");
+
+        assert!(
+            !tail.excerpt.contains("inside her"),
+            "explicit neighbour prose leaked into a general-rated scene's context: {}",
+            tail.excerpt
+        );
+        assert!(
+            tail.excerpt.contains("finally give in"),
+            "elided tail should fall back to the neighbour's summary, got: {}",
+            tail.excerpt
+        );
+        assert!(
+            tail.elided_reason.is_some(),
+            "an elided tail must say so rather than look like an absent one"
+        );
+    }
+
+    /// The mirror case: an Explicit scene following an Explicit one routes to
+    /// the explicit-capable agent, so the real closing prose must still come
+    /// through. Elision is a rating boundary, not a blanket filter.
+    #[tokio::test]
+    async fn previous_scene_tail_keeps_explicit_prose_for_explicit_scene() {
+        use spindle_core::models::ContentRating;
+
+        let tail = explicit_neighbor_tail_for_planned_scene_two(Some(ContentRating::Explicit))
+            .await
+            .expect("an explicit scene should get the real tail");
+
+        assert!(
+            tail.excerpt.contains("inside her"),
+            "an explicit scene must still receive its explicit neighbour's prose"
+        );
+        assert!(
+            tail.elided_reason.is_none(),
+            "same-clearance handoff must not be marked elided"
+        );
+    }
+
+    /// Fail-closed: when the target scene has no planned rating (no plan row,
+    /// no drafted scene), spindle cannot prove the receiving agent is cleared,
+    /// so the explicit neighbour is elided rather than gambled.
+    #[tokio::test]
+    async fn previous_scene_tail_elides_explicit_prose_when_target_rating_unknown() {
+        let tail = explicit_neighbor_tail_for_planned_scene_two(None)
+            .await
+            .expect("unknown-rating target should still get the summary handoff");
+
+        assert!(
+            !tail.excerpt.contains("inside her"),
+            "unknown target rating must fail closed, not leak explicit prose"
+        );
+        assert!(tail.elided_reason.is_some());
+    }
+
+    /// The mixed-rating chapter contract: one Explicit scene sitting among
+    /// General ones must be the ONLY scene that reaches the explicit-capable
+    /// agent. Its neighbours stay on the default agent.
+    ///
+    /// This is the acceptance test for per-scene routing. It drives the real
+    /// seam — the planned scene's `content_rating` read back out of the stored
+    /// chapter plan, handed to the router exactly as the drafting path hands it
+    /// over — and asserts on the router's own dispatch recorder, so it proves
+    /// which agent each scene actually reached rather than restating routing
+    /// logic. A chapter-level or run-level rating collapse (drafting the whole
+    /// chapter as Explicit because one scene is, or refusing the Explicit scene
+    /// because the chapter reads General) fails it in one direction or the other.
+    ///
+    /// Hermetic: `fresh_service_local` + a TempDir agent config. The `local`
+    /// adapter cannot serve a continuation, so the model calls error — but the
+    /// dispatch is recorded at the clearance gate BEFORE the adapter runs, which
+    /// is the seam under test.
+    mod mixed_rating_chapter_routing {
+        use super::*;
+        use crate::ai::DispatchRecord;
+        use spindle_core::models::{
+            ConfigureAgentsInput, ContentRating, ContinueGenerationInput, PlanChapterInput,
+            PlanChapterSceneInput,
+        };
+
+        /// Two drafting agents, the shape the task describes: a default agent
+        /// serving general/teen/mature, and a separate uncensored agent serving
+        /// only explicit, bound to `draft` via a per-rating override.
+        fn install_split_rating_agents(tmp: &TempDir, svc: &SqliteSpindleService) {
+            let config_path = tmp.path().join("split-rating.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "default-agent"
+name = "Default Agent"
+provider = "local"
+endpoint = "local"
+model = "default-agent"
+ratings = ["general", "teen", "mature"]
+
+[[agents]]
+id = "explicit-agent"
+name = "Uncensored Agent"
+provider = "local"
+endpoint = "local"
+model = "explicit-agent"
+ratings = ["explicit"]
+
+[[routing]]
+route = "draft"
+agent = "default-agent"
+
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+rating = "explicit"
+"#,
+            )
+            .unwrap();
+            svc.configure_agents(ConfigureAgentsInput {
+                config_path: Some(config_path.display().to_string()),
+            })
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn each_scene_drafts_through_the_agent_for_its_own_rating() {
+            let (tmp, svc) = fresh_service_local().await;
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: "mixed-rating".into(),
+                    project_type: "novel".into(),
+                    genre: "fantasy".into(),
+                    reader_contract: ReaderContract {
+                        promise: "One hot scene, the rest on the wall.".into(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            install_split_rating_agents(&tmp, &svc);
+
+            // General, General, Explicit — the chapter shape from the brief.
+            let planned = [
+                (1, ContentRating::General, "Muster on the wall."),
+                (2, ContentRating::General, "The war council argues."),
+                (3, ContentRating::Explicit, "Mara and the smith, after."),
+            ];
+            svc.plan_chapter(PlanChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                pov_character_id: None,
+                synopsis: "Siege prep, then the night before.".into(),
+                target_theme_ids: Vec::new(),
+                target_conflict_ids: Vec::new(),
+                target_plot_line_ids: Vec::new(),
+                scenes: planned
+                    .iter()
+                    .map(|(order, rating, summary)| PlanChapterSceneInput {
+                        scene_order: *order,
+                        summary: (*summary).into(),
+                        beat_structure: Vec::new(),
+                        character_ids: Vec::new(),
+                        location_id: None,
+                        content_rating: Some(rating.clone()),
+                        purpose: "Advance the siege.".into(),
+                        research_required: None,
+                        research_tags: Vec::new(),
+                        explicit_query: None,
+                    })
+                    .collect(),
+            })
+            .await
+            .unwrap();
+
+            // Read the ratings back out of the STORED plan rather than reusing
+            // the input: the plan round-trip is part of what's under test.
+            let stored = svc
+                .repository
+                .list_chapter_plans_by_project(&project.project_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|plan| plan.book_number == 1 && plan.chapter_number == 1)
+                .expect("chapter plan should persist");
+
+            let log = svc.repository.model_router().install_dispatch_recorder();
+            for scene in &stored.scenes {
+                let rating = scene
+                    .content_rating
+                    .as_ref()
+                    .map(|rating| rating.as_str().to_ascii_lowercase())
+                    .expect("every planned scene carries its own rating");
+                // Errors are expected — `local` cannot continue a generation.
+                // The dispatch is recorded at the clearance gate regardless.
+                let _ = svc
+                    .continue_generation(ContinueGenerationInput {
+                        route: "draft".into(),
+                        original_prompt: format!("Draft scene {}", scene.scene_order),
+                        prior_output: String::new(),
+                        rating: Some(rating),
+                        project_id: Some(project.project_id.clone()),
+                        book_id: None,
+                        chapter_id: None,
+                        scene_id: None,
+                    })
+                    .await;
+            }
+
+            let dispatched: Vec<(String, String)> = log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|record| match record {
+                    DispatchRecord::Dispatch { agent, rating, .. } => {
+                        Some((agent.clone(), rating.clone().unwrap_or_default()))
+                    }
+                    DispatchRecord::Rejection { .. } => None,
+                })
+                .collect();
+
+            assert_eq!(
+                dispatched,
+                vec![
+                    ("default-agent".to_string(), "general".to_string()),
+                    ("default-agent".to_string(), "general".to_string()),
+                    ("explicit-agent".to_string(), "explicit".to_string()),
+                ],
+                "each scene must dispatch to the agent serving its OWN rating; \
+                 got {dispatched:?}"
+            );
+
+            // No clearance rejection: the explicit scene found its agent, and
+            // the general scenes were never pushed at one that would refuse.
+            assert!(
+                log.lock()
+                    .unwrap()
+                    .iter()
+                    .all(|record| !matches!(record, DispatchRecord::Rejection { .. })),
+                "a correctly-routed mixed chapter should produce no clearance rejections"
+            );
+        }
     }
 
     #[tokio::test]
