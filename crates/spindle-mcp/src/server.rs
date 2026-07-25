@@ -102,7 +102,9 @@ impl ServerHandler for SpindleMcpServer {
 
 Grok users: `init_grok_skills` now defaults to installing into your global `~/.grok/skills/` (recommended). Pass `global=false` + `target_dir` only if you specifically want repo-scoped adapters. This gives you the full set of Spindle skills (spindle, spindle-scene-writer, spindle-character-creator, etc.) as first-class Grok skills.
 
-Model routes are exposed as read-only resources under `bible://system/model-routes`. Direct entity resources can be read with the `bible://{table}:{id}` template, for example `bible://scene:xyz789`."
+Model routes are exposed as read-only resources under `bible://system/model-routes`. Direct entity resources can be read with the `bible://{table}:{id}` template, for example `bible://scene:xyz789`.
+
+MCP clients without resource support (e.g. Kimi): use the `list_skills`, `get_skill`, and `get_reference` tools — they return the same content as the `bible://skills/*` and `bible://references/*` resources."
                     .to_string(),
             )
             .with_server_info(Implementation::new("spindle", env!("CARGO_PKG_VERSION")))

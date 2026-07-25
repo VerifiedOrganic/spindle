@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- New `list_skills`, `get_skill`, and `get_reference` MCP tools expose the
+  embedded workflow skills and craft references to clients without MCP resource
+  support (e.g. Kimi): they return the same content as the `bible://skills/*`
+  and `bible://references/*` resources and are available in every tool profile.
+
 ### Fixed
 
 - Authoring runs no longer deadlock over pre-existing content: a chapter with

@@ -115,6 +115,8 @@
 //! | `bible://projects/{id}/books` | `list_book_chapters` | Resource lists all books; tool returns chapters for one book |
 //! | `bible://projects/{id}/chapters/{b}/{c}/scenes` | `list_chapter_scenes` | Resource is cached, tool requires explicit project+chapter params |
 //! | `bible://config/agents` | `list_agents` | Same data; resource is cached |
+//! | `bible://skills/{name}` | `get_skill` | Same content; tool works for clients without resource support |
+//! | `bible://references/{name}` | `get_reference` | Same content; tool works for clients without resource support |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -214,6 +216,9 @@ impl ToolRouter {
             "import" => &[
                 "create_project",
                 "list_projects",
+                "list_skills",
+                "get_skill",
+                "get_reference",
                 "import_manuscript",
                 "import_status",
                 "import_extract_entities",
@@ -252,6 +257,9 @@ impl ToolRouter {
             "write" => &[
                 "create_project",
                 "list_projects",
+                "list_skills",
+                "get_skill",
+                "get_reference",
                 "create_book",
                 "create_chapter",
                 "create_character",
@@ -361,6 +369,9 @@ impl ToolRouter {
             "minimal" => &[
                 "create_project",
                 "list_projects",
+                "list_skills",
+                "get_skill",
+                "get_reference",
                 "search_bible",
                 "find_scenes_referencing",
                 "get_writer_state",
@@ -744,6 +755,18 @@ impl ToolRouter {
             tool::<InitGrokSkillsInput, InitGrokSkillsOutput>(
                 "init_grok_skills",
                 "Initialize Grok-compatible Spindle skill adapters. By default installs into ~/.grok/skills/ (global). Pass global=false + target_dir if you want repo-scoped adapters instead. This makes all bible://skills/* (scene-writer, character-creator, etc.) work as first-class skills in Grok.",
+            ),
+            tool::<EmptyInput, ListSkillsOutput>(
+                "list_skills",
+                "List the embedded Spindle workflow skills and craft references. Tool equivalent of browsing bible://skills/* and bible://references/*; use get_skill / get_reference to read one.",
+            ),
+            tool::<GetSkillInput, GetSkillOutput>(
+                "get_skill",
+                "Return the full content of an embedded Spindle skill. Tool equivalent of reading bible://skills/{name}; call this to load a workflow such as scene-writer or character-creator.",
+            ),
+            tool::<GetReferenceInput, GetReferenceOutput>(
+                "get_reference",
+                "Return the full content of an embedded craft reference. Tool equivalent of reading bible://references/{name}.",
             ),
             tool::<TestAgentInput, TestAgentOutput>(
                 "test_agent",
@@ -1803,6 +1826,48 @@ impl ToolRouter {
                 }
                 Err(error) => Err(error),
             },
+            "list_skills" => structured_result(&ListSkillsOutput {
+                skills: spindle_adapters::list_skills()
+                    .iter()
+                    .map(|skill| SkillSummary {
+                        name: skill.name.to_string(),
+                        kind: "skill".to_string(),
+                    })
+                    .collect(),
+                references: spindle_adapters::list_references()
+                    .iter()
+                    .map(|reference| SkillSummary {
+                        name: reference.name.to_string(),
+                        kind: "reference".to_string(),
+                    })
+                    .collect(),
+            }),
+            "get_skill" => match parse_arguments::<GetSkillInput>(arguments) {
+                Ok(input) => match spindle_adapters::get_skill(&input.name) {
+                    Some(skill) => structured_result(&GetSkillOutput {
+                        name: skill.name.to_string(),
+                        markdown: skill.markdown.to_string(),
+                    }),
+                    None => Ok(structured_error_result(&anyhow::anyhow!(
+                        "unknown skill: {} (use list_skills to see available skills)",
+                        input.name
+                    ))),
+                },
+                Err(error) => Err(error),
+            },
+            "get_reference" => match parse_arguments::<GetReferenceInput>(arguments) {
+                Ok(input) => match spindle_adapters::get_reference(&input.name) {
+                    Some(reference) => structured_result(&GetReferenceOutput {
+                        name: reference.name.to_string(),
+                        markdown: reference.markdown.to_string(),
+                    }),
+                    None => Ok(structured_error_result(&anyhow::anyhow!(
+                        "unknown reference: {} (use list_skills to see available references)",
+                        input.name
+                    ))),
+                },
+                Err(error) => Err(error),
+            },
             "test_agent" => {
                 self.invoke(arguments, |input| self.service.test_agent(input))
                     .await
@@ -2098,6 +2163,9 @@ fn tool_requires_session_serialization(name: &str) -> bool {
         name,
         "list_projects"
             | "list_agents"
+            | "list_skills"
+            | "get_skill"
+            | "get_reference"
             | "agent_routing_config"
             | "test_agent"
             | "continue_generation"
@@ -2177,6 +2245,9 @@ fn tool_requires_project_context(name: &str) -> bool {
             | "set_active_project"
             | "import_manuscript"
             | "list_agents"
+            | "list_skills"
+            | "get_skill"
+            | "get_reference"
             | "agent_routing_config"
             | "test_agent"
             | "continue_generation"
@@ -7511,12 +7582,155 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_skills_returns_embedded_skills_and_references() {
+        let router = router().await;
+
+        let result = router
+            .call_tool("list_skills", None)
+            .await
+            .expect("tool call should return result");
+
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("list_skills should use structured content");
+        let skill_names: Vec<&str> = content["skills"]
+            .as_array()
+            .expect("skills array")
+            .iter()
+            .filter_map(|skill| skill["name"].as_str())
+            .collect();
+        for expected in [
+            "scene-writer",
+            "character-creator",
+            "worldbuilder",
+            "authoring-supervisor",
+        ] {
+            assert!(
+                skill_names.contains(&expected),
+                "missing skill {expected} in: {skill_names:?}"
+            );
+        }
+        let reference_names: Vec<&str> = content["references"]
+            .as_array()
+            .expect("references array")
+            .iter()
+            .filter_map(|reference| reference["name"].as_str())
+            .collect();
+        assert!(
+            reference_names.contains(&"anti-slop"),
+            "missing reference anti-slop in: {reference_names:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_skill_returns_markdown_and_unknown_skill_errors() {
+        let router = router().await;
+        let mut args = serde_json::Map::new();
+        args.insert("name".to_string(), "scene-writer".into());
+
+        let result = router
+            .call_tool("get_skill", Some(&args))
+            .await
+            .expect("tool call should return result");
+
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("get_skill should use structured content");
+        assert_eq!(content["name"].as_str(), Some("scene-writer"));
+        assert!(
+            content["markdown"]
+                .as_str()
+                .is_some_and(|markdown| !markdown.is_empty()),
+            "markdown should be non-empty"
+        );
+
+        args.insert("name".to_string(), "not-a-skill".into());
+        let result = router
+            .call_tool("get_skill", Some(&args))
+            .await
+            .expect("tool call should return result");
+        assert_eq!(result.is_error, Some(true));
+        let text = format!("{:?}", result.content.first().expect("error content"));
+        assert!(
+            text.contains("unknown skill: not-a-skill"),
+            "expected error text in: {text}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_reference_returns_markdown_and_unknown_reference_errors() {
+        let router = router().await;
+        let mut args = serde_json::Map::new();
+        args.insert("name".to_string(), "anti-slop".into());
+
+        let result = router
+            .call_tool("get_reference", Some(&args))
+            .await
+            .expect("tool call should return result");
+
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("get_reference should use structured content");
+        assert_eq!(content["name"].as_str(), Some("anti-slop"));
+        assert!(
+            content["markdown"]
+                .as_str()
+                .is_some_and(|markdown| !markdown.is_empty()),
+            "markdown should be non-empty"
+        );
+
+        args.insert("name".to_string(), "not-a-reference".into());
+        let result = router
+            .call_tool("get_reference", Some(&args))
+            .await
+            .expect("tool call should return result");
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn skill_tools_are_listed_in_every_tool_profile() {
+        for profile in ["import", "write", "minimal"] {
+            let temp = tempdir().expect("temp dir");
+            let db = SqlitePool::open(&temp.path().join("router.db"))
+                .await
+                .expect("db init");
+            let data_dir = temp.keep();
+            let router = ToolRouter::with_tool_profile_and_serialization(
+                SpindleService::new(SpindleRepository::with_model_router(
+                    db,
+                    data_dir,
+                    ModelRouter::local_only(),
+                )),
+                Some(profile.to_string()),
+                Arc::new(ToolSerializationState::default()),
+            );
+            let names: Vec<String> = router
+                .list_tools()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            for tool_name in ["list_skills", "get_skill", "get_reference"] {
+                assert!(
+                    names.iter().any(|name| name == tool_name),
+                    "profile {profile} is missing tool {tool_name}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn session_serialization_is_enabled_for_mutating_tools() {
         assert!(tool_requires_session_serialization("save_scene_draft"));
         assert!(tool_requires_session_serialization("commit_scene_changes"));
         assert!(!tool_requires_session_serialization("get_writer_state"));
         assert!(!tool_requires_session_serialization("get_scene_context"));
+        assert!(!tool_requires_session_serialization("list_skills"));
+        assert!(!tool_requires_session_serialization("get_skill"));
+        assert!(!tool_requires_session_serialization("get_reference"));
     }
 
     #[test]

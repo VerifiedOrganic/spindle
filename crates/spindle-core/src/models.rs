@@ -5316,6 +5316,43 @@ pub struct InitGrokSkillsOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SkillSummary {
+    pub name: String,
+    /// "skill" or "reference".
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListSkillsOutput {
+    pub skills: Vec<SkillSummary>,
+    pub references: Vec<SkillSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetSkillInput {
+    /// Skill name as returned by `list_skills` (e.g. "scene-writer").
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetSkillOutput {
+    pub name: String,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetReferenceInput {
+    /// Craft reference name as returned by `list_skills` (e.g. "anti-slop").
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetReferenceOutput {
+    pub name: String,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigureAgentsOutput {
     pub source_path: Option<String>,
     pub agents_loaded: usize,
