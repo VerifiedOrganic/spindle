@@ -11,6 +11,11 @@
 
 ### Fixed
 
+- `create_pacing_config` and `create_pacing_curve` no longer fail with
+  "pacing_config not found" / "pacing_curve not found" when a row already
+  exists for the project+branch (the upsert conflict path re-read by the
+  freshly minted id, which the kept row never had; the read-back now uses the
+  upsert key, and recreating returns the original row id).
 - Authoring runs no longer deadlock over pre-existing content: a chapter with
   persisted prose and a persisted summary from outside any run is adopted on
   reconcile (scenes `beats_annotated`, `summary_saved` set) instead of blocking

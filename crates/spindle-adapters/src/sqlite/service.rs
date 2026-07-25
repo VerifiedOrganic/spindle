@@ -40100,6 +40100,79 @@ agent = "review-dead"
     }
 
     #[tokio::test]
+    async fn create_pacing_config_and_curve_upsert_instead_of_failing_on_recreate() {
+        use spindle_core::models::{CreatePacingConfigInput, CreatePacingCurveInput};
+        use std::collections::BTreeMap;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "pace-upsert".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let first = svc
+            .create_pacing_config(CreatePacingConfigInput {
+                project_id: proj.project_id.clone(),
+                total_planned_books: 1,
+                avg_chapters_per_book: 10,
+                avg_scenes_per_chapter: 3,
+                tension_model: "rising".into(),
+            })
+            .await
+            .unwrap();
+        // Regression: the upsert conflict path used to re-read by the freshly
+        // minted id and fail with "pacing_config not found".
+        let second = svc
+            .create_pacing_config(CreatePacingConfigInput {
+                project_id: proj.project_id.clone(),
+                total_planned_books: 3,
+                avg_chapters_per_book: 12,
+                avg_scenes_per_chapter: 4,
+                tension_model: "wave".into(),
+            })
+            .await
+            .expect("re-creating a pacing config should upsert, not fail");
+        assert_eq!(
+            first.pacing_config_id, second.pacing_config_id,
+            "upsert keeps the original row id"
+        );
+
+        let curve_first = svc
+            .create_pacing_curve(CreatePacingCurveInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                act_breakpoints: BTreeMap::from([("act1".to_string(), 0.25)]),
+                scene_type_density: BTreeMap::new(),
+                intensity_points: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let curve_second = svc
+            .create_pacing_curve(CreatePacingCurveInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                act_breakpoints: BTreeMap::from([("act1".to_string(), 0.3)]),
+                scene_type_density: BTreeMap::new(),
+                intensity_points: Vec::new(),
+            })
+            .await
+            .expect("re-creating a pacing curve should upsert, not fail");
+        assert_eq!(
+            curve_first.pacing_curve_id, curve_second.pacing_curve_id,
+            "upsert keeps the original row id"
+        );
+    }
+
+    #[tokio::test]
     async fn merge_branch_carries_canonical_fact_canon() {
         use crate::sqlite::repository::CreateCanonicalFactParams;
         use spindle_core::models::{

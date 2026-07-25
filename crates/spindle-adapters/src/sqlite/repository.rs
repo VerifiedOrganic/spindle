@@ -8370,8 +8370,8 @@ impl Repository {
     ) -> Result<PacingConfig> {
         let branch_id = self.active_branch_id(&input.project_id).await?;
         let id = mint_id("pacing_config");
-        let id_out = id.clone();
         let project_id = input.project_id.clone();
+        let branch_id_out = branch_id.clone();
         let total_planned_books = input.total_planned_books;
         let avg_chapters = input.avg_chapters_per_book;
         let avg_scenes = input.avg_scenes_per_chapter;
@@ -8399,7 +8399,10 @@ impl Repository {
                 Ok(())
             })
             .await?;
-        self.get_pacing_config(&id_out).await
+        // Read back by the upsert key, not the minted id: on the conflict path the
+        // pre-existing row keeps its original id, so the minted id may not exist.
+        self.get_pacing_config_for_branch(&input.project_id, &branch_id_out)
+            .await
     }
 
     pub async fn get_pacing_config(&self, id: &str) -> Result<PacingConfig> {
@@ -8417,11 +8420,33 @@ impl Repository {
             .ok_or_else(|| anyhow!("pacing_config not found"))
     }
 
+    async fn get_pacing_config_for_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<PacingConfig> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {PACING_CONFIG_COLUMNS} FROM pacing_config \
+                     WHERE project_id = ?1 AND branch_id = ?2"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&project_id, &branch_id], |r| PacingConfig::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("pacing_config not found"))
+    }
+
     pub async fn create_pacing_curve(&self, input: &CreatePacingCurveInput) -> Result<PacingCurve> {
         let branch_id = self.active_branch_id(&input.project_id).await?;
         let id = mint_id("pacing_curve");
-        let id_out = id.clone();
         let project_id = input.project_id.clone();
+        let branch_id_out = branch_id.clone();
         let book_number = input.book_number;
         let act_breakpoints_json = serde_json::to_string(&input.act_breakpoints)?;
         let scene_density_json = serde_json::to_string(&input.scene_type_density)?;
@@ -8461,7 +8486,10 @@ impl Repository {
                 Ok(())
             })
             .await?;
-        self.get_pacing_curve(&id_out).await
+        // Read back by the upsert key, not the minted id: on the conflict path the
+        // pre-existing row keeps its original id, so the minted id may not exist.
+        self.get_pacing_curve_for_branch(&input.project_id, &branch_id_out, book_number)
+            .await
     }
 
     pub async fn get_pacing_curve(&self, id: &str) -> Result<PacingCurve> {
@@ -8473,6 +8501,32 @@ impl Repository {
                 let mut stmt = conn.prepare_cached(&sql)?;
                 stmt.query_row([&id], |r| PacingCurve::try_from(r))
                     .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("pacing_curve not found"))
+    }
+
+    async fn get_pacing_curve_for_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+    ) -> Result<PacingCurve> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {PACING_CURVE_COLUMNS} FROM pacing_curve \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(
+                    rusqlite::params![&project_id, &branch_id, book_number],
+                    |r| PacingCurve::try_from(r),
+                )
+                .optional_inner()
             })
             .await?
             .ok_or_else(|| anyhow!("pacing_curve not found"))
