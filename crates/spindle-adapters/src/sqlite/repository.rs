@@ -2560,53 +2560,6 @@ impl Repository {
             .await
     }
 
-    /// Bind a generation receipt to the one scene it authorizes, or confirm it
-    /// is already bound to that same scene (migration V0034).
-    ///
-    /// Returns `Ok(None)` when the receipt is now claimed by `scene_key` —
-    /// either because this call bound a previously-unclaimed receipt, or
-    /// because it was already bound to this very scene (an idempotent re-save).
-    /// Returns `Ok(Some(other_key))` when the receipt is already spent on a
-    /// DIFFERENT scene; the caller rejects the save and names that scene.
-    ///
-    /// The claim is a single conditional UPDATE so two concurrent explicit
-    /// saves racing for the same receipt cannot both win: SQLite serializes the
-    /// writes, the loser matches zero rows and reads back the winner's key.
-    pub async fn claim_generation_receipt_for_scene(
-        &self,
-        id: &str,
-        scene_key: &str,
-    ) -> Result<Option<String>> {
-        let id = id.to_string();
-        let scene_key = scene_key.to_string();
-        self.inner
-            .pool
-            .write(move |conn| {
-                let claimed = conn.execute(
-                    "UPDATE generation_receipt SET claimed_scene_key = ?2 \
-                     WHERE id = ?1 \
-                       AND (claimed_scene_key IS NULL OR claimed_scene_key = ?2)",
-                    rusqlite::params![id, scene_key],
-                )?;
-                if claimed > 0 {
-                    return Ok(None);
-                }
-                // Zero rows updated: either the receipt is claimed elsewhere, or
-                // it no longer exists (expired and swept between the verify and
-                // this claim). Report the conflicting key when there is one; a
-                // vanished receipt is not a claim conflict and falls through.
-                let mut stmt = conn.prepare_cached(
-                    "SELECT claimed_scene_key FROM generation_receipt WHERE id = ?1",
-                )?;
-                let mut rows = stmt.query(rusqlite::params![id])?;
-                match rows.next()? {
-                    Some(row) => Ok(row.get::<_, Option<String>>(0)?),
-                    None => Ok(None),
-                }
-            })
-            .await
-    }
-
     pub async fn upsert_timeline_event_clock(
         &self,
         timeline_event_id: &str,
@@ -2824,6 +2777,41 @@ impl Repository {
                 let mut stmt = conn.prepare_cached(&sql)?;
                 let rows = stmt
                     .query_map([&chapter_id], |r| Scene::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// The active-spine scenes of one chapter. This is the ONE chapter-scoped
+    /// spine predicate: `book`/`chapter` rows are branch-shared, so a
+    /// `chapter_id`-only filter leaks every branch's variant rows into the
+    /// listing (the live bug that showed three rows at one `scene_order`).
+    /// Every surface that reports or addresses the spine of a chapter —
+    /// `list_chapter_scenes`, `list_book_chapters`, `compile_manuscript` via
+    /// `list_scenes_by_project_and_branch`, and `find_scene_by_natural_key` —
+    /// filters on the same `branch_id`, so the listing, the compiled
+    /// manuscript, and the position resolver can never disagree about which
+    /// scenes are in the spine.
+    pub async fn list_scenes_by_chapter_and_branch(
+        &self,
+        chapter_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<Scene>> {
+        let chapter_id = chapter_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {SCENE_COLUMNS} FROM scene \
+                     WHERE chapter_id = ?1 AND branch_id = ?2 ORDER BY scene_order"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&chapter_id, &branch_id], |r| {
+                        Scene::try_from(r)
+                    })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             })
@@ -3050,7 +3038,28 @@ impl Repository {
         branch_id: &str,
         input: &SaveSceneDraftInput,
     ) -> Result<(Scene, bool)> {
-        self.persist_scene(project_id, branch_id, input, true).await
+        self.persist_scene(project_id, branch_id, input, true, None)
+            .await
+    }
+
+    /// Like `save_scene_draft`, but additionally binds an explicit generation
+    /// receipt to the saved scene (migration V0034) in the SAME transaction as
+    /// the scene write. The claim commits if and only if the save commits: a
+    /// save that fails at any point (bad placement, constraint violation,
+    /// claim conflict) rolls the claim back and the receipt stays unbound and
+    /// reusable. This closes the live-run hole where a FAILED save had
+    /// already burned the receipt on the bogus placement.
+    pub async fn save_scene_draft_with_receipt_claim(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        input: &SaveSceneDraftInput,
+        receipt_id: &str,
+        scene_key: &str,
+    ) -> Result<(Scene, bool)> {
+        let claim = (receipt_id.to_string(), scene_key.to_string());
+        self.persist_scene(project_id, branch_id, input, true, Some(claim))
+            .await
     }
 
     pub async fn update_scene_draft_origin(
@@ -3083,6 +3092,7 @@ impl Repository {
         branch_id: &str,
         input: &SaveSceneDraftInput,
         mark_reviews_stale_on_update: bool,
+        receipt_claim: Option<(String, String)>,
     ) -> Result<(Scene, bool)> {
         // Bound the placement so it cannot collide in the packed story-position
         // ordering (see `format::SCENE_RADIX` / `CHAPTER_RADIX`). Without this a
@@ -3138,6 +3148,7 @@ impl Repository {
         let chapter_number = input.chapter_number;
         let scene_order = input.scene_order;
         let location_id = input.location_id.clone();
+        let receipt_claim_owned = receipt_claim;
 
         if let Some(existing) = existing {
             // UPDATE path: snapshot the previous prose into scene_version when
@@ -3166,6 +3177,12 @@ impl Repository {
                 .pool
                 .write(move |conn| {
                     let tx = conn.transaction()?;
+                    // The receipt claim commits with the scene write or not at
+                    // all (migration V0034 + the failed-save regression).
+                    if let Some((receipt_id, scene_key)) = receipt_claim_owned.as_ref() {
+                        claim_generation_receipt_in_tx(&tx, receipt_id, scene_key)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+                    }
                     if let Some(v) = next_version_number {
                         let version_id = mint_id_local("scene_version");
                         tx.execute(
@@ -3228,14 +3245,21 @@ impl Repository {
             let updated = self.get_scene(&existing.id).await?;
             Ok((updated, false))
         } else {
-            // INSERT path: brand-new scene at this natural key.
+            // INSERT path: brand-new scene at this natural key. Wrapped in a
+            // transaction so the optional receipt claim commits atomically
+            // with the scene row (or not at all).
             let scene_id = mint_id("scene");
             let scene_id_lookup = scene_id.clone();
             let rating_owned = content_rating.to_string();
             self.inner
                 .pool
                 .write(move |conn| {
-                    conn.execute(
+                    let tx = conn.transaction()?;
+                    if let Some((receipt_id, scene_key)) = receipt_claim_owned.as_ref() {
+                        claim_generation_receipt_in_tx(&tx, receipt_id, scene_key)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+                    }
+                    tx.execute(
                         "INSERT INTO scene (id, project_id, branch_id, book_id, chapter_id, \
                          book_number, chapter_number, scene_order, full_text, summary, \
                          content_rating, tone, draft_origin, location_id, created_at, updated_at) \
@@ -3257,6 +3281,7 @@ impl Repository {
                             now,
                         ],
                     )?;
+                    tx.commit()?;
                     Ok(())
                 })
                 .await?;
@@ -13631,6 +13656,10 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             // style-refresh candidates. 0/1 flag via update_entity_field's
             // numeric path; NULL/absent = disabled (evolution §3.9).
             | ("project", "style_learning")
+            // Stub-scene word floor (V0036): the minimum scene length the
+            // preflight/compile/consistency stub gates enforce. NULL/absent =
+            // the built-in default floor.
+            | ("project", "min_scene_word_count")
             | ("book", "title")
             | ("chapter", "title")
             | ("character", "summary")
@@ -13702,6 +13731,81 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
 /// behavior — separate name avoids the captured-symbol headache.
 fn mint_id_local(table: &str) -> String {
     mint_id(table)
+}
+
+/// Bind a generation receipt to the one scene it authorizes (migration
+/// V0034), INSIDE the caller's transaction so the claim commits if and only
+/// if the scene write commits. A save that fails after this point rolls the
+/// claim back and the receipt stays unbound and reusable — the live-run bug
+/// was a standalone claim that survived a failed save and burned the receipt
+/// on the bogus placement.
+///
+/// An idempotent re-save of the same scene matches the
+/// `claimed_scene_key = ?2` arm and passes. A receipt already spent on a
+/// DIFFERENT scene matches zero rows; the conflicting key is read back and
+/// the save is rejected with the operator-facing message. Two concurrent
+/// saves racing for one receipt cannot both win: SQLite serializes the write
+/// transactions, so the loser sees the winner's claim and bails.
+fn claim_generation_receipt_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    receipt_id: &str,
+    scene_key: &str,
+) -> anyhow::Result<()> {
+    let claimed = tx.execute(
+        "UPDATE generation_receipt SET claimed_scene_key = ?2 \
+         WHERE id = ?1 \
+           AND (claimed_scene_key IS NULL OR claimed_scene_key = ?2)",
+        rusqlite::params![receipt_id, scene_key],
+    )?;
+    if claimed > 0 {
+        return Ok(());
+    }
+    // Zero rows updated: either the receipt is claimed elsewhere, or it no
+    // longer exists (expired and swept between the verify and this claim).
+    let mut stmt =
+        tx.prepare_cached("SELECT claimed_scene_key FROM generation_receipt WHERE id = ?1")?;
+    let mut rows = stmt.query(rusqlite::params![receipt_id])?;
+    match rows.next()? {
+        Some(row) => {
+            let claimed_key = row.get::<_, Option<String>>(0)?;
+            match claimed_key {
+                Some(key) if key != scene_key => anyhow::bail!(
+                    "generation_id {:?} already authorized a different scene ({}); \
+                     each explicit save needs its own receipt — call continue_generation \
+                     with route \"draft\" and rating \"explicit\" for this scene",
+                    receipt_id,
+                    describe_receipt_scene_key(&key)
+                ),
+                // Claimed by this very scene: idempotent re-save (matched
+                // above normally; reached only on a racing writer).
+                Some(_) => Ok(()),
+                // Unclaimed but the UPDATE matched nothing: the receipt row
+                // vanished between verification and claim (expiry sweep).
+                None => anyhow::bail!(
+                    "generation_id {:?} was not found or has expired",
+                    receipt_id
+                ),
+            }
+        }
+        None => anyhow::bail!(
+            "generation_id {:?} was not found or has expired",
+            receipt_id
+        ),
+    }
+}
+
+/// Render a stored claim key back into something an operator can act on.
+/// Falls back to the raw key if it is not the expected 4-part shape, so a
+/// future key format change degrades to "unhelpful but honest" rather than a
+/// panic.
+pub(crate) fn describe_receipt_scene_key(key: &str) -> String {
+    let parts: Vec<&str> = key.split('|').collect();
+    match parts.as_slice() {
+        [_project, book, chapter, scene] => {
+            format!("book {book}, chapter {chapter}, scene {scene}")
+        }
+        _ => key.to_string(),
+    }
 }
 
 /// Shared body for `list_X_by_project_and_branch` methods. Captures the

@@ -29,7 +29,7 @@ pub use super::json_records::{
 // Project
 // =============================================================================
 
-pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice, active_style_profile_id, style_learning";
+pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice, active_style_profile_id, style_learning, min_scene_word_count";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -53,6 +53,12 @@ pub struct Project {
     /// path (`("project", "style_learning")` in the update allowlist).
     #[serde(default)]
     pub style_learning: Option<i64>,
+    /// Minimum scene word count for the stub-scene gates (migration V0036).
+    /// `None` (pre-upgrade + default) = the built-in floor of
+    /// `DEFAULT_MIN_SCENE_WORD_COUNT`. Set via the `update_entity` column
+    /// path (`("project", "min_scene_word_count")` in the update allowlist).
+    #[serde(default)]
+    pub min_scene_word_count: Option<i64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Project {
@@ -72,6 +78,7 @@ impl<'a> TryFrom<&Row<'a>> for Project {
             narrator_voice: row::opt_json(r, 9)?,
             active_style_profile_id: row::opt_text(r, 10)?,
             style_learning: row::opt_int(r, 11)?,
+            min_scene_word_count: row::opt_int(r, 12)?,
         })
     }
 }

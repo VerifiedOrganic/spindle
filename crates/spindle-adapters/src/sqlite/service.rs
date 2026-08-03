@@ -101,6 +101,95 @@ const GENERATION_RECEIPT_TTL: chrono::Duration = chrono::Duration::hours(24);
 /// signal and would bloat the refresh corpus.
 const STYLE_EDIT_MAX_CHARS: usize = 60_000;
 
+/// Built-in minimum scene word count for the stub-scene gates (migration
+/// V0036). A live run shipped scenes whose `full_text` was literally
+/// "placeholder" (1 word) and a 5-word fragment to EPUB: every gate only
+/// checked `full_text.trim().is_empty()`. Scenes below this floor — or whose
+/// body matches `PLACEHOLDER_BODY_MARKERS` — are now flagged by
+/// `preflight_book_export` (Blocking `scene_stub_text`), `compile_manuscript`
+/// (`stub_scenes`), and `check_consistency` (`scene_stub_text` warnings).
+/// Per-project override: `project.min_scene_word_count` via `update_entity`.
+/// 20 matches the existing "draft is too thin for a confident prose review"
+/// heuristic; a legitimately shorter scene (flash interstitials) lowers the
+/// floor for its project rather than weakening every project.
+const DEFAULT_MIN_SCENE_WORD_COUNT: usize = 20;
+
+/// Whole-body placeholder markers. Compared against the FULLY NORMALIZED
+/// body (trimmed, outer punctuation/brackets stripped, lowercased, inner
+/// whitespace collapsed), so only a scene whose ENTIRE body is one of these
+/// — e.g. literally "placeholder" or "[TODO]" — matches; real prose that
+/// merely contains the word never does.
+const PLACEHOLDER_BODY_MARKERS: &[&str] = &[
+    "placeholder",
+    "todo",
+    "tbd",
+    "fixme",
+    "tk",
+    "lorem ipsum",
+    "coming soon",
+    "not yet drafted",
+    "not yet written",
+    "scene goes here",
+    "insert scene here",
+    "draft to come",
+];
+
+fn normalize_body_for_placeholder_match(full_text: &str) -> String {
+    let stripped = full_text
+        .trim()
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '[' | ']'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | '"'
+                    | '\''
+                    | '.'
+                    | '!'
+                    | '?'
+                    | ','
+                    | ';'
+                    | ':'
+                    | '*'
+                    | '_'
+                    | '-'
+                    | '~'
+            )
+        })
+        .trim();
+    stripped
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Why a scene body is a stub, if it is one: a placeholder body regardless
+/// of length, or prose below `min_words`. Whitespace-only bodies count as
+/// having no prose (the empty-text gate reports them separately).
+fn scene_stub_reason(full_text: &str, min_words: usize) -> Option<String> {
+    let words = full_text.split_whitespace().count();
+    if words == 0 {
+        return Some("scene has no prose".to_string());
+    }
+    let normalized = normalize_body_for_placeholder_match(full_text);
+    if PLACEHOLDER_BODY_MARKERS.contains(&normalized.as_str()) {
+        return Some(format!("body is placeholder text ({normalized:?})"));
+    }
+    if words < min_words {
+        return Some(format!(
+            "only {words} {words_word} (project minimum is {min_words})",
+            words_word = if words == 1 { "word" } else { "words" }
+        ));
+    }
+    None
+}
+
 /// In-memory record of one `continue_generation` / `revise_generation` call.
 /// Kept on the service instance so a subsequent `save_scene_draft` /
 /// `revise_generation` can resolve a `generation_id` back to the actual
@@ -1542,6 +1631,32 @@ impl SqliteSpindleService {
             .repository
             .ensure_chapter(&input.project_id, book.book_number, chapter_number)
             .await?;
+        // Persist the title. The ensure path can return a PRE-EXISTING
+        // untitled chapter (e.g. the book-1 chapter-1 row create_project
+        // mints), so fill a missing title but never clobber one the operator
+        // already set. The live bug silently dropped this field and
+        // preflight later reported chapter_missing_title for a chapter that
+        // was created with a title.
+        if let Some(title) = input
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            && chapter
+                .title
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+        {
+            self.repository
+                .update_entity_field(
+                    "chapter",
+                    &chapter.id,
+                    "title",
+                    serde_json::Value::String(title.to_string()),
+                )
+                .await?;
+        }
         Ok(CreateChapterOutput {
             chapter_id: chapter.id,
             book_number: chapter.book_number,
@@ -2368,6 +2483,78 @@ impl SqliteSpindleService {
         Ok(FindScenesReferencingOutput { results })
     }
 
+    /// Resolve the active-branch scene a destructive tool acts on.
+    ///
+    /// `scene_id` takes precedence: it names the exact row and can never
+    /// act on a different scene sharing a position — the hazard of
+    /// position-only addressing when duplicates or orphans exist. The row
+    /// must belong to the project and sit on the ACTIVE branch (these tools
+    /// are documented active-branch tools); position fields, when also
+    /// supplied, must agree with the row's actual placement. Position-only
+    /// resolution keeps the pre-existing natural-key lookup.
+    async fn resolve_active_branch_scene(
+        &self,
+        project_id: &str,
+        active_branch_id: &str,
+        scene_id: Option<&str>,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> Result<super::records::Scene> {
+        match scene_id {
+            Some(scene_id) => {
+                let scene = self.repository.get_scene(scene_id).await?;
+                if scene.project_id != project_id {
+                    anyhow::bail!("scene does not belong to the requested project");
+                }
+                if scene.branch_id != active_branch_id {
+                    anyhow::bail!(
+                        "scene {} is on branch {}, not the active branch; \
+                         this tool only acts on active-branch scenes",
+                        scene_id,
+                        scene.branch_id
+                    );
+                }
+                if book_number > 0 && book_number != scene.book_number {
+                    anyhow::bail!(
+                        "scene_id {} is in book {}, which does not match book_number {}",
+                        scene_id,
+                        scene.book_number,
+                        book_number
+                    );
+                }
+                if chapter_number > 0 && chapter_number != scene.chapter_number {
+                    anyhow::bail!(
+                        "scene_id {} is in chapter {}, which does not match chapter_number {}",
+                        scene_id,
+                        scene.chapter_number,
+                        chapter_number
+                    );
+                }
+                if scene_order > 0 && scene_order != scene.scene_order {
+                    anyhow::bail!(
+                        "scene_id {} is scene {}, which does not match scene_order {}",
+                        scene_id,
+                        scene.scene_order,
+                        scene_order
+                    );
+                }
+                Ok(scene)
+            }
+            None => self
+                .repository
+                .find_scene_by_natural_key(
+                    project_id,
+                    active_branch_id,
+                    book_number,
+                    chapter_number,
+                    scene_order,
+                )
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("scene not found at requested position")),
+        }
+    }
+
     pub async fn move_scene(&self, input: MoveSceneInput) -> Result<MoveSceneOutput> {
         let project = self.repository.get_project(&input.project_id).await?;
         let branch_id = project
@@ -2375,16 +2562,32 @@ impl SqliteSpindleService {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("project has no active branch"))?;
         let scene = self
-            .repository
-            .find_scene_by_natural_key(
+            .resolve_active_branch_scene(
                 &input.project_id,
                 &branch_id,
+                input.scene_id.as_deref(),
                 input.from_book_number,
                 input.from_chapter_number,
                 input.from_scene_order,
             )
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("source scene not found"))?;
+            .await
+            .map_err(|err| {
+                // Preserve the historical message for position lookups that
+                // simply miss.
+                if input.scene_id.is_none()
+                    && err.to_string() == "scene not found at requested position"
+                {
+                    anyhow::anyhow!("source scene not found")
+                } else {
+                    err
+                }
+            })?;
+        // All downstream logic keys off the scene's ACTUAL placement, so a
+        // scene_id-addressed move stays correct with the from_* fields
+        // omitted.
+        let from_book_number = scene.book_number;
+        let from_chapter_number = scene.chapter_number;
+        let from_scene_order = scene.scene_order;
         let dest_book = self
             .repository
             .ensure_book(&input.project_id, input.to_book_number)
@@ -2415,22 +2618,15 @@ impl SqliteSpindleService {
         // findings (canonical_fact_prose_drift, retcon_reachability) for the
         // moved scene and everything at/after the earlier of the source and
         // destination positions are now stale. Resolve them so they recompute.
-        let from_index = crate::format::story_index(
-            input.from_book_number,
-            input.from_chapter_number,
-            input.from_scene_order,
-        );
+        let from_index =
+            crate::format::story_index(from_book_number, from_chapter_number, from_scene_order);
         let to_index = crate::format::story_index(
             input.to_book_number,
             input.to_chapter_number,
             input.to_scene_order,
         );
         let (earliest_book, earliest_chapter, earliest_order) = if from_index <= to_index {
-            (
-                input.from_book_number,
-                input.from_chapter_number,
-                input.from_scene_order,
-            )
+            (from_book_number, from_chapter_number, from_scene_order)
         } else {
             (
                 input.to_book_number,
@@ -2463,18 +2659,18 @@ impl SqliteSpindleService {
             .find_scene_by_natural_key(
                 &input.project_id,
                 &branch_id,
-                input.from_book_number,
-                input.from_chapter_number,
-                input.from_scene_order + 1,
+                from_book_number,
+                from_chapter_number,
+                from_scene_order + 1,
             )
             .await?;
         Ok(MoveSceneOutput {
             scene_id: moved.id,
             branch_id,
             status: "moved".to_string(),
-            from_book_number: input.from_book_number,
-            from_chapter_number: input.from_chapter_number,
-            from_scene_order: input.from_scene_order,
+            from_book_number,
+            from_chapter_number,
+            from_scene_order,
             to_book_number: input.to_book_number,
             to_chapter_number: input.to_chapter_number,
             to_scene_order: input.to_scene_order,
@@ -2489,16 +2685,21 @@ impl SqliteSpindleService {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("project has no active branch"))?;
         let scene = self
-            .repository
-            .find_scene_by_natural_key(
+            .resolve_active_branch_scene(
                 &input.project_id,
                 &branch_id,
+                input.scene_id.as_deref(),
                 input.book_number,
                 input.chapter_number,
                 input.scene_order,
             )
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("scene not found at requested position"))?;
+            .await?;
+        // Downstream sweep and gap detection key off the row's ACTUAL
+        // placement, so scene_id-addressed deletes stay correct with the
+        // position fields omitted.
+        let book_number = scene.book_number;
+        let chapter_number = scene.chapter_number;
+        let scene_order = scene.scene_order;
         let deleted_id = scene.id.clone();
         let scene_branch_id = scene.branch_id.clone();
         self.repository.delete_scene(&scene.id).await?;
@@ -2512,9 +2713,9 @@ impl SqliteSpindleService {
                 .list_scenes_after_position(
                     &input.project_id,
                     &branch_id,
-                    input.book_number,
-                    input.chapter_number,
-                    input.scene_order,
+                    book_number,
+                    chapter_number,
+                    scene_order,
                 )
                 .await?
                 .into_iter()
@@ -2531,9 +2732,9 @@ impl SqliteSpindleService {
             .find_scene_by_natural_key(
                 &input.project_id,
                 &branch_id,
-                input.book_number,
-                input.chapter_number,
-                input.scene_order + 1,
+                book_number,
+                chapter_number,
+                scene_order + 1,
             )
             .await?;
         Ok(DeleteSceneOutput {
@@ -2554,6 +2755,7 @@ impl SqliteSpindleService {
         let standard = self
             .delete_scene(DeleteSceneInput {
                 project_id: input.project_id,
+                scene_id: input.scene_id,
                 book_number: input.book_number,
                 chapter_number: input.chapter_number,
                 scene_order: input.scene_order,
@@ -3208,7 +3410,16 @@ impl SqliteSpindleService {
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("chapter not found"))?
         };
-        let scenes = self.repository.list_scenes_by_chapter(&chapter.id).await?;
+        // The spine read shares ONE branch-scoped predicate with
+        // `compile_manuscript` and the position resolver
+        // (`Repository::list_scenes_by_chapter_and_branch`). A chapter_id-only
+        // read here used to leak other branches' variant rows into the listing
+        // — the live bug that showed three scenes at one `scene_order` and led
+        // an operator to position-delete the real scene.
+        let scenes = self
+            .repository
+            .list_scenes_by_chapter_and_branch(&chapter.id, &branch_id)
+            .await?;
         let scene_entries = scenes
             .into_iter()
             .map(|s| spindle_core::models::SceneSpineEntry {
@@ -3228,15 +3439,66 @@ impl SqliteSpindleService {
             })
             .collect();
         Ok(ListChapterScenesOutput {
-            project_id: input.project_id,
-            branch_id,
+            project_id: input.project_id.clone(),
+            branch_id: branch_id.clone(),
             book_id: chapter.book_id,
-            chapter_id: chapter.id,
+            chapter_id: chapter.id.clone(),
             book_number: chapter.book_number,
             chapter_number: chapter.chapter_number,
             title: chapter.title,
             scenes: scene_entries,
+            unresolved_alternatives: self
+                .unresolved_alternatives_for_chapter(&input.project_id, &chapter.id, &branch_id)
+                .await?,
         })
+    }
+
+    /// Scenes in this chapter that live on `alternative`-type branches other
+    /// than the active branch — the never-promoted output of
+    /// `generate_alternatives`. Reported beside the spine listing so the
+    /// operator can see abandoned alternatives without those rows ever being
+    /// mistaken for spine scenes (they are not rendered by
+    /// `compile_manuscript` and not addressable by position).
+    async fn unresolved_alternatives_for_chapter(
+        &self,
+        project_id: &str,
+        chapter_id: &str,
+        active_branch_id: &str,
+    ) -> Result<Vec<spindle_core::models::UnresolvedAlternativeEntry>> {
+        let alternative_branches: std::collections::BTreeMap<String, String> = self
+            .repository
+            .list_branches_by_project(project_id)
+            .await?
+            .into_iter()
+            .filter(|branch| branch.branch_type.as_deref() == Some("alternative"))
+            .map(|branch| (branch.id, branch.name))
+            .collect();
+        let mut entries = Vec::new();
+        for scene in self
+            .repository
+            .list_scenes_by_chapter(chapter_id)
+            .await?
+            .into_iter()
+            .filter(|scene| scene.branch_id != active_branch_id)
+        {
+            let Some(branch_name) = alternative_branches.get(&scene.branch_id) else {
+                continue;
+            };
+            entries.push(spindle_core::models::UnresolvedAlternativeEntry {
+                scene_id: scene.id,
+                branch_id: scene.branch_id,
+                branch_name: branch_name.clone(),
+                scene_order: scene.scene_order,
+                word_count: scene.full_text.split_whitespace().count(),
+                summary_first_line: scene.summary.lines().next().unwrap_or("").to_string(),
+            });
+        }
+        entries.sort_by(|a, b| {
+            a.scene_order
+                .cmp(&b.scene_order)
+                .then_with(|| a.scene_id.cmp(&b.scene_id))
+        });
+        Ok(entries)
     }
 
     pub async fn list_book_chapters(
@@ -3259,7 +3521,12 @@ impl SqliteSpindleService {
         let chapters = self.repository.list_chapters_by_book(&book.id).await?;
         let mut chapter_entries = Vec::with_capacity(chapters.len());
         for ch in chapters {
-            let scenes = self.repository.list_scenes_by_chapter(&ch.id).await?;
+            // Same branch-scoped spine predicate as `list_chapter_scenes` —
+            // the book spine must never show other branches' variant rows.
+            let scenes = self
+                .repository
+                .list_scenes_by_chapter_and_branch(&ch.id, &branch_id)
+                .await?;
             chapter_entries.push(spindle_core::models::ChapterSpineEntry {
                 chapter_id: ch.id,
                 chapter_number: ch.chapter_number,
@@ -8046,7 +8313,7 @@ impl SqliteSpindleService {
         use std::collections::{BTreeMap, BTreeSet};
 
         let project_id = input.project_id.clone();
-        self.repository.get_project(&project_id).await?;
+        let project = self.repository.get_project(&project_id).await?;
         let active_branch = self.repository.get_active_branch(&project_id).await?;
         let mut issues: Vec<ConsistencyIssue> = Vec::new();
         let requested_checks_set = requested_checks(&input.checks);
@@ -8110,6 +8377,38 @@ impl SqliteSpindleService {
                     entity_ids: issue.entity_ids,
                     suggested_action: issue.suggested_action,
                 });
+            }
+        }
+
+        // Stub-scene gate (migration V0036): placeholder bodies and prose
+        // below the project word floor. A live run shipped such scenes to
+        // EPUB while consistency reported clean. Severity is `info`, not
+        // `warning`: stubbiness is a manuscript-readiness state observation,
+        // not an in-story consistency violation, and the authoring loop's
+        // checkpoint policies approve/block on errors+warnings — the HARD
+        // gate against shipping stubs is the Blocking `scene_stub_text`
+        // preflight issue, which export enforces.
+        if should_run_check(&requested_checks_set, "scene_stub_text") {
+            let min_scene_words = project
+                .min_scene_word_count
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(DEFAULT_MIN_SCENE_WORD_COUNT);
+            for scene in &scenes {
+                if let Some(reason) = scene_stub_reason(&scene.full_text, min_scene_words) {
+                    issues.push(ConsistencyIssue {
+                        severity: "info".to_string(),
+                        check_type: "scene_stub_text".to_string(),
+                        message: format!(
+                            "Book {} chapter {} scene {} looks like a stub: {reason}",
+                            scene.book_number, scene.chapter_number, scene.scene_order
+                        ),
+                        entity_ids: vec![scene.id.clone()],
+                        suggested_action: Some(
+                            "Draft the scene fully, or delete it if it is abandoned.".to_string(),
+                        ),
+                    });
+                }
             }
         }
 
@@ -15372,6 +15671,13 @@ impl SqliteSpindleService {
         use spindle_core::models::{ExportIssue, ExportIssueSeverity};
         use std::collections::BTreeSet;
 
+        let project = self.repository.get_project(project_id).await?;
+        let min_scene_words = project
+            .min_scene_word_count
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_MIN_SCENE_WORD_COUNT);
+
         let all_books = self.repository.list_books_by_project(project_id).await?;
         let books_to_export: Vec<_> = match book_number {
             Some(number) => all_books
@@ -15473,6 +15779,25 @@ impl SqliteSpindleService {
                             code: "scene_empty_text".to_string(),
                             message: format!(
                                 "Book {} chapter {} scene {} has empty text.",
+                                book.book_number, chapter.chapter_number, scene.scene_order
+                            ),
+                            book_number: Some(book.book_number),
+                            chapter_number: Some(chapter.chapter_number),
+                            scene_order: Some(scene.scene_order),
+                        });
+                    } else if let Some(reason) =
+                        scene_stub_reason(&scene.full_text, min_scene_words)
+                    {
+                        // Blocking on purpose: the live-run failure shipped an
+                        // EPUB whose scene bodies were literally "placeholder"
+                        // because no gate looked past empty text. The floor is
+                        // per-project configurable, so a legitimately short
+                        // scene lowers the floor rather than weakening the gate.
+                        issues.push(ExportIssue {
+                            severity: ExportIssueSeverity::Blocking,
+                            code: "scene_stub_text".to_string(),
+                            message: format!(
+                                "Book {} chapter {} scene {} looks like a stub: {reason}.",
                                 book.book_number, chapter.chapter_number, scene.scene_order
                             ),
                             book_number: Some(book.book_number),
@@ -16271,7 +16596,12 @@ impl SqliteSpindleService {
     ) -> Result<spindle_core::models::CompileManuscriptOutput> {
         use spindle_core::models::CompileManuscriptOutput;
 
-        self.repository.get_project(&input.project_id).await?;
+        let project = self.repository.get_project(&input.project_id).await?;
+        let min_scene_words = project
+            .min_scene_word_count
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_MIN_SCENE_WORD_COUNT);
         let active_branch = self.repository.get_active_branch(&input.project_id).await?;
 
         // Chapters of the requested book, in order, filtered to the (optional)
@@ -16335,6 +16665,7 @@ impl SqliteSpindleService {
         let mut prose_parts: Vec<String> = Vec::new();
         let mut scene_count = 0usize;
         let mut missing_scenes: Vec<String> = Vec::new();
+        let mut stub_scenes: Vec<String> = Vec::new();
 
         for chapter in &chapters {
             let chapter_number = chapter.chapter_number;
@@ -16367,6 +16698,12 @@ impl SqliteSpindleService {
                         markdown.push_str("\n\n");
                         prose_parts.push(scene.full_text.clone());
                         scene_count += 1;
+                        // Stub scenes still render — but the compiled document
+                        // must name them so they are never read as finished
+                        // prose (the live run shipped "placeholder" bodies).
+                        if scene_stub_reason(&scene.full_text, min_scene_words).is_some() {
+                            stub_scenes.push(format!("{chapter_number}.{scene_order}"));
+                        }
                     }
                     None => {
                         markdown.push_str(&format!(
@@ -16407,6 +16744,7 @@ impl SqliteSpindleService {
             scene_count,
             word_count,
             missing_scenes,
+            stub_scenes,
             artifact_path,
         })
     }
@@ -21239,10 +21577,46 @@ impl SqliteSpindleService {
         &self,
         input: SaveSceneDraftInput,
     ) -> Result<SaveSceneDraftOutput> {
-        // The caller's prose is authoritative at every rating; `save_input` is a
-        // clone of the request used verbatim for the persist (no field is ever
-        // rewritten from a receipt — see the explicit branch below).
-        let save_input = input.clone();
+        // Resolve placement BEFORE anything else runs. `chapter_id` is
+        // documented as sufficient: derive the numeric placement from the
+        // existing chapter. Naming neither is a validation error — silently
+        // defaulting to book/chapter 0 here is what let a failed save burn an
+        // explicit receipt on a `book 0, chapter 0` claim in the live run.
+        // `save_input` carries the resolved placement everywhere downstream
+        // (persist, receipt claim key, prior-scene lookup). The caller's
+        // prose is authoritative at every rating; no field is ever rewritten
+        // from a receipt (see the explicit branch below).
+        let mut save_input = input.clone();
+        if let Some(chapter_id) = input.chapter_id.as_deref() {
+            let chapter = self.repository.get_chapter(chapter_id).await?;
+            if chapter.project_id != input.project_id {
+                anyhow::bail!("chapter does not belong to the requested project");
+            }
+            if input.book_number > 0 && input.book_number != chapter.book_number {
+                anyhow::bail!(
+                    "chapter_id {} does not match book_number {}",
+                    chapter_id,
+                    input.book_number
+                );
+            }
+            if input.chapter_number > 0 && input.chapter_number != chapter.chapter_number {
+                anyhow::bail!(
+                    "chapter_id {} does not match chapter_number {}",
+                    chapter_id,
+                    input.chapter_number
+                );
+            }
+            save_input.book_number = chapter.book_number;
+            save_input.chapter_number = chapter.chapter_number;
+        } else if input.book_number <= 0 || input.chapter_number <= 0 {
+            anyhow::bail!(
+                "save_scene_draft requires chapter_id or both book_number and chapter_number"
+            );
+        }
+        // The explicit-path receipt claim, deferred to the scene's own save
+        // transaction below (receipt id, scene key). `None` for every
+        // non-explicit save.
+        let mut receipt_claim: Option<(String, String)> = None;
         // Provenance vocabulary (see the `draft_origin` field on
         // `crate::sqlite::records::Scene` for the canonical definition):
         //   * `agent:<agent-id>` — the run's draft agent authored this prose.
@@ -21302,31 +21676,49 @@ impl SqliteSpindleService {
                 let receipt = self
                     .verified_explicit_save_receipt(input.generation_id.as_deref())
                     .await?;
-                // One clearance authorizes ONE scene (migration V0034). Bind the
-                // receipt to this scene on first use; a receipt already spent on
-                // a different scene is rejected BEFORE the prose is persisted, so
-                // a rejected replay leaves no partial write behind.
+                // One clearance authorizes ONE scene (migration V0034). The
+                // claim is bound INSIDE the scene's save transaction below, so
+                // it commits if and only if the save commits — a save that
+                // fails (bad placement, constraint violation, claim conflict)
+                // leaves the receipt unbound and reusable. The old standalone
+                // claim ran before validation and burned the receipt on
+                // `book 0, chapter 0` when the save then failed. Key the claim
+                // on the RESOLVED placement, and reject a receipt already
+                // spent on a different scene atomically with the write, so a
+                // rejected replay still leaves no partial write behind.
                 //
-                // Without this, a single trip through the explicit-capable agent
-                // blanket-authorized explicit saves across every other scene —
-                // each stamped `agent:<id>` as though that agent had written it.
-                // In a mixed-rating chapter that quietly undoes per-scene
-                // routing: the one legitimately-cleared scene's receipt gets
-                // spent on its General neighbours.
-                let scene_key = explicit_receipt_scene_key(&input);
-                if let Some(claimed_by) = self
-                    .repository
-                    .claim_generation_receipt_for_scene(&receipt.id, &scene_key)
-                    .await?
-                {
-                    anyhow::bail!(
-                        "generation_id {:?} already authorized a different scene ({}); \
-                         each explicit save needs its own receipt — call continue_generation \
-                         with route \"draft\" and rating \"explicit\" for this scene",
-                        receipt.id,
-                        describe_receipt_scene_key(&claimed_by)
-                    );
+                // Without the claim, a single trip through the explicit-capable
+                // agent blanket-authorized explicit saves across every other
+                // scene — each stamped `agent:<id>` as though that agent had
+                // written it. In a mixed-rating chapter that quietly undoes
+                // per-scene routing: the one legitimately-cleared scene's
+                // receipt gets spent on its General neighbours.
+                let scene_key = explicit_receipt_scene_key(&save_input);
+                // Pre-flight a receipt already spent on ANOTHER scene so the
+                // rejection lands with the operator-facing message BEFORE any
+                // write is attempted. This read is UX only — the binding
+                // itself is enforced inside the save transaction below, where
+                // a racing writer can never double-spend the receipt.
+                match self.repository.get_generation_receipt(&receipt.id).await? {
+                    Some(stored) => {
+                        if let Some(claimed_key) = stored.claimed_scene_key.as_deref()
+                            && claimed_key != scene_key
+                        {
+                            anyhow::bail!(
+                                "generation_id {:?} already authorized a different scene ({}); \
+                                 each explicit save needs its own receipt — call continue_generation \
+                                 with route \"draft\" and rating \"explicit\" for this scene",
+                                receipt.id,
+                                crate::sqlite::repository::describe_receipt_scene_key(claimed_key)
+                            );
+                        }
+                    }
+                    None => anyhow::bail!(
+                        "generation_id {:?} was not found or has expired",
+                        receipt.id
+                    ),
                 }
+                receipt_claim = Some((receipt.id.clone(), scene_key));
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             } else if crate::sqlite::import_service::contains_explicit_sexual_prose(
                 &input.full_text,
@@ -21411,10 +21803,24 @@ impl SqliteSpindleService {
             }
         }
 
-        let (mut scene, created) = self
-            .repository
-            .save_scene_draft(&save_input.project_id, &branch_id, &save_input)
-            .await?;
+        let (mut scene, created) = match receipt_claim {
+            Some((receipt_id, scene_key)) => {
+                self.repository
+                    .save_scene_draft_with_receipt_claim(
+                        &save_input.project_id,
+                        &branch_id,
+                        &save_input,
+                        &receipt_id,
+                        &scene_key,
+                    )
+                    .await?
+            }
+            None => {
+                self.repository
+                    .save_scene_draft(&save_input.project_id, &branch_id, &save_input)
+                    .await?
+            }
+        };
 
         // Record the knowledge_learned package (design §2.3 path 2). Each entry
         // is written through the SAME service path record_knowledge uses, stamped
@@ -23831,19 +24237,6 @@ fn explicit_receipt_scene_key(input: &SaveSceneDraftInput) -> String {
         "{}|{}|{}|{}",
         input.project_id, input.book_number, input.chapter_number, input.scene_order
     )
-}
-
-/// Render a stored claim key back into something an operator can act on. Falls
-/// back to the raw key if it is not the expected 4-part shape, so a future key
-/// format change degrades to "unhelpful but honest" rather than a panic.
-fn describe_receipt_scene_key(key: &str) -> String {
-    let parts: Vec<&str> = key.split('|').collect();
-    match parts.as_slice() {
-        [_project, book, chapter, scene] => {
-            format!("book {book}, chapter {chapter}, scene {scene}")
-        }
-        _ => key.to_string(),
-    }
 }
 
 fn normalized_generation_text(text: &str) -> String {
@@ -29339,6 +29732,131 @@ mod tests {
         );
     }
 
+    /// Live-run bug: `create_chapter` accepted a `title` and returned success,
+    /// but never persisted it — a later `preflight_book_export` then reported
+    /// `chapter_missing_title` for the very chapter that was created with one.
+    #[tokio::test]
+    async fn create_chapter_persists_title() {
+        use spindle_core::models::{ContentRating, PreflightBookExportInput, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Title Persist".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(2),
+                title: Some("Prologue: Sol System, Off-Season".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let chapter = svc.repository.get_chapter(&out.chapter_id).await.unwrap();
+        assert_eq!(
+            chapter.title.as_deref(),
+            Some("Prologue: Sol System, Off-Season"),
+            "create_chapter must persist the title it accepts"
+        );
+
+        // The preflight that surfaced the live bug must no longer flag the
+        // titled chapter.
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 2,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "The station lights hummed over empty docks.".into(),
+            summary: "prologue".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let preflight = svc
+            .preflight_book_export(PreflightBookExportInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                start_chapter_number: Some(2),
+                end_chapter_number: Some(2),
+            })
+            .await
+            .unwrap();
+        assert!(
+            preflight
+                .issues
+                .iter()
+                .all(|issue| issue.code != "chapter_missing_title"),
+            "a chapter created with a title must not be flagged chapter_missing_title, got {:?}",
+            preflight.issues
+        );
+    }
+
+    /// A chapter that ALREADY has a title keeps it when `create_chapter` is
+    /// called again for the same slot with a different one — the ensure path
+    /// fills in a missing title, it never clobbers an existing one.
+    #[tokio::test]
+    async fn create_chapter_does_not_clobber_an_existing_title() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Title Keep".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        svc.create_chapter(spindle_core::models::CreateChapterInput {
+            project_id: proj.project_id.clone(),
+            book_number: Some(1),
+            book_id: None,
+            chapter_number: Some(2),
+            title: Some("First Title".to_string()),
+        })
+        .await
+        .unwrap();
+        let again = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(2),
+                title: Some("Second Title".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let chapter = svc.repository.get_chapter(&again.chapter_id).await.unwrap();
+        assert_eq!(
+            chapter.title.as_deref(),
+            Some("First Title"),
+            "create_chapter must not overwrite an existing chapter title"
+        );
+    }
+
     #[tokio::test]
     async fn preflight_book_export_flags_blocking_and_warning_issues() {
         use spindle_core::models::{
@@ -29409,6 +29927,263 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("requires both"));
+    }
+
+    /// Seed one chapter with a placeholder scene (literal "placeholder",
+    /// 1 word), a too-thin scene (5 words), and a healthy scene — the exact
+    /// shape that shipped to EPUB in the live run while every gate reported
+    /// clean.
+    async fn chapter_with_stub_scenes(svc: &SqliteSpindleService, project_id: &str) {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+        for (scene_order, body) in [
+            (1, "placeholder"),
+            (2, "She waited for the dawn."),
+            (
+                3,
+                "The wardens lined the wall at first light, their breath fogging in the cold as the bells began to ring across the city.",
+            ),
+        ] {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: project_id.to_string(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order,
+                full_text: body.into(),
+                summary: format!("scene {scene_order}"),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Live-run bug: scenes whose `full_text` was literally "placeholder"
+    /// (1 word) or a handful of words passed `preflight_book_export` with
+    /// `issues: []` and an EPUB was exported and read before anyone noticed.
+    /// Stub scenes must be flagged Blocking so the export gate stops them.
+    #[tokio::test]
+    async fn preflight_flags_placeholder_and_thin_scenes_as_blocking() {
+        use spindle_core::models::{ExportIssueSeverity, PreflightBookExportInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Stub Gate".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        chapter_with_stub_scenes(&svc, &proj.project_id).await;
+
+        let out = svc
+            .preflight_book_export(PreflightBookExportInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                start_chapter_number: None,
+                end_chapter_number: None,
+            })
+            .await
+            .unwrap();
+
+        let stub_issues: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|issue| issue.code == "scene_stub_text")
+            .collect();
+        let flagged_orders: Vec<i32> = stub_issues
+            .iter()
+            .map(|issue| issue.scene_order.unwrap_or(-1))
+            .collect();
+        assert!(
+            flagged_orders.contains(&1),
+            "the literal \"placeholder\" scene must be flagged, issues: {:?}",
+            out.issues
+        );
+        assert!(
+            flagged_orders.contains(&2),
+            "the 5-word scene must be flagged below the word floor, issues: {:?}",
+            out.issues
+        );
+        assert!(
+            !flagged_orders.contains(&3),
+            "the healthy scene must not be flagged, issues: {:?}",
+            out.issues
+        );
+        assert!(
+            stub_issues
+                .iter()
+                .all(|issue| matches!(issue.severity, ExportIssueSeverity::Blocking)),
+            "stub scenes must block export so they cannot ship to EPUB unnoticed"
+        );
+    }
+
+    /// `compile_manuscript` must name stub scenes in a dedicated field —
+    /// they render into the Markdown, but the compiled document may never
+    /// silently present them as finished prose.
+    #[tokio::test]
+    async fn compile_manuscript_reports_stub_scenes() {
+        use spindle_core::models::CompileManuscriptInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Stub Compile".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        chapter_with_stub_scenes(&svc, &proj.project_id).await;
+
+        let out = svc
+            .compile_manuscript(CompileManuscriptInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                start_chapter: None,
+                end_chapter: None,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.scene_count, 3, "all drafted scenes still render");
+        assert!(
+            out.missing_scenes.is_empty(),
+            "stub scenes exist, so nothing is missing"
+        );
+        assert_eq!(
+            out.stub_scenes,
+            vec!["1.1".to_string(), "1.2".to_string()],
+            "the placeholder and thin scenes must be reported as stubs"
+        );
+    }
+
+    /// `check_consistency` must surface stub scenes too — the live run
+    /// reported 0 errors on a book containing literal placeholders.
+    #[tokio::test]
+    async fn check_consistency_flags_stub_scenes() {
+        use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Stub Consistency".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        chapter_with_stub_scenes(&svc, &proj.project_id).await;
+
+        let out = svc
+            .check_consistency(CheckConsistencyInput {
+                project_id: proj.project_id.clone(),
+                scope: ConsistencyScopeInput::book(1),
+                checks: vec!["scene_stub_text".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+
+        let stub_issues: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|issue| issue.check_type == "scene_stub_text")
+            .collect();
+        assert_eq!(
+            stub_issues.len(),
+            2,
+            "the placeholder and thin scenes must be flagged, got: {:?}",
+            out.issues
+        );
+        // Info, not warning/error: stubbiness is a manuscript-readiness
+        // observation, and the authoring loop's checkpoint policies gate on
+        // errors+warnings. The hard gate is the Blocking preflight issue.
+        assert!(
+            stub_issues.iter().all(|issue| issue.severity == "info"),
+            "stub findings are info: {stub_issues:?}"
+        );
+    }
+
+    /// The word floor is a per-project setting (`project.min_scene_word_count`
+    /// via update_entity), defaulting to 20 words. Placeholder bodies stay
+    /// flagged regardless of any floor.
+    #[tokio::test]
+    async fn project_min_scene_word_count_floor_is_configurable() {
+        use spindle_core::models::{PreflightBookExportInput, UpdateEntityInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Stub Floor".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        chapter_with_stub_scenes(&svc, &proj.project_id).await;
+
+        // Lower the floor to 3 words: the 5-word scene is now legitimate,
+        // the literal placeholder is still a placeholder.
+        svc.update_entity(UpdateEntityInput {
+            entity_type: "project".to_string(),
+            entity_id: proj.project_id.clone(),
+            changes: serde_json::json!({ "min_scene_word_count": 3 }),
+        })
+        .await
+        .unwrap();
+
+        let out = svc
+            .preflight_book_export(PreflightBookExportInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                start_chapter_number: None,
+                end_chapter_number: None,
+            })
+            .await
+            .unwrap();
+        let flagged_orders: Vec<i32> = out
+            .issues
+            .iter()
+            .filter(|issue| issue.code == "scene_stub_text")
+            .map(|issue| issue.scene_order.unwrap_or(-1))
+            .collect();
+        assert_eq!(
+            flagged_orders,
+            vec![1],
+            "only the placeholder scene stays flagged at a 3-word floor, got {:?}",
+            out.issues
+        );
     }
 
     /// Variant of `fresh_service` whose data dir is a real `.spindle`
@@ -31836,13 +32611,16 @@ rating = "explicit"
             })
             .await
             .unwrap();
+        // The scene body clears the stub gate's word floor so the export
+        // exercises the happy path (the gate itself is covered by
+        // preflight_flags_placeholder_and_thin_scenes_as_blocking).
         svc.save_scene_draft(SaveSceneDraftInput {
             project_id: proj.project_id.clone(),
             book_number: 1,
             chapter_number: 1,
             chapter_id: None,
             scene_order: 1,
-            full_text: "Mara stood at the Ash Gate.".into(),
+            full_text: "Mara stood at the Ash Gate while the last light bled out of the sky and the wardens lit the wall torches one by one.".into(),
             summary: "stage".into(),
             content_rating: ContentRating::General,
             tone: None,
@@ -32248,6 +33026,252 @@ rating = "explicit"
         svc.save_scene_draft(explicit_save(&project_id, 2, &receipt_id))
             .await
             .expect("the unclaimed receipt is still available to its explicit scene");
+    }
+
+    /// Live-run bug: an explicit save that FAILED (bogus placement) bound the
+    /// receipt to the bogus scene key and burned it, forcing a full
+    /// regeneration of explicit prose that had already been produced and paid
+    /// for. The claim must be transactional with the save: a failed save
+    /// leaves the receipt unbound and reusable.
+    #[tokio::test]
+    async fn failed_explicit_save_leaves_receipt_unbound_and_reusable() {
+        let (_tmp, svc, project_id, receipt_id) = explicit_receipt_claim_fixture().await;
+
+        // Book 99 does not exist — the save fails during placement resolution.
+        let failed = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                book_number: 99,
+                ..explicit_save(&project_id, 2, &receipt_id)
+            })
+            .await
+            .expect_err("a save into a nonexistent book must fail");
+        assert!(
+            failed.to_string().contains("book 99 not found"),
+            "expected the placement failure, got: {failed}"
+        );
+
+        // The receipt must still be usable for the scene it was minted for.
+        svc.save_scene_draft(explicit_save(&project_id, 2, &receipt_id))
+            .await
+            .expect("a failed save must not consume the receipt");
+    }
+
+    /// `chapter_id` is documented as sufficient placement for
+    /// `save_scene_draft`: Spindle must resolve book/chapter from the existing
+    /// chapter instead of defaulting the numbers to 0 (which corrupted receipt
+    /// claims in the live run: `book 0 not found for project`).
+    #[tokio::test]
+    async fn save_scene_draft_resolves_placement_from_chapter_id() {
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "chapter-id-placement".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "p".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let chapter = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: Some(2),
+                book_id: None,
+                chapter_number: Some(1),
+                title: Some("The Long Road".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                chapter_id: Some(chapter.chapter_id.clone()),
+                scene_order: 1,
+                full_text: "The road stretched past the last watchtower.".to_string(),
+                summary: "leaving the city".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .expect("chapter_id alone must be sufficient placement");
+
+        let branch_id = svc
+            .repository
+            .active_branch_id_public(&project.project_id)
+            .await
+            .unwrap();
+        let resolved = svc
+            .repository
+            .find_scene_by_natural_key(&project.project_id, &branch_id, 2, 1, 1)
+            .await
+            .unwrap()
+            .expect("the scene must land in the chapter named by chapter_id");
+        assert_eq!(resolved.id, out.scene_id);
+        assert_eq!(resolved.book_number, 2);
+        assert_eq!(resolved.chapter_number, 1);
+    }
+
+    /// A call with NEITHER chapter_id NOR usable numbers must fail with a
+    /// clear validation error — silently falling back to book/chapter 0 is
+    /// what burned a receipt in the live run.
+    #[tokio::test]
+    async fn save_scene_draft_rejects_call_with_no_placement_at_all() {
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "no-placement".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "p".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let err = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                scene_order: 1,
+                full_text: "Some prose.".to_string(),
+                summary: "s".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .expect_err("missing placement must be a validation error");
+        assert!(
+            err.to_string()
+                .contains("requires chapter_id or both book_number and chapter_number"),
+            "expected an explicit placement validation error, got: {err}"
+        );
+    }
+
+    /// Explicit numbers that contradict the chapter named by `chapter_id`
+    /// must be rejected loudly, mirroring `get_scene_context`'s reconcile.
+    #[tokio::test]
+    async fn save_scene_draft_rejects_chapter_id_conflicting_with_numbers() {
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "chapter-id-conflict".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "p".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let chapter = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(2),
+                title: None,
+            })
+            .await
+            .unwrap();
+
+        let err = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id,
+                book_number: 2,
+                chapter_number: 2,
+                chapter_id: Some(chapter.chapter_id),
+                scene_order: 1,
+                full_text: "Some prose.".to_string(),
+                summary: "s".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .expect_err("contradictory placement must be rejected");
+        assert!(
+            err.to_string().contains("does not match book_number"),
+            "expected the mismatch error, got: {err}"
+        );
+    }
+
+    /// The receipt claim key must use the RESOLVED placement when the save
+    /// names the chapter by id — never the defaulted `book 0, chapter 0`.
+    #[tokio::test]
+    async fn explicit_save_with_chapter_id_only_binds_receipt_to_resolved_placement() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "chapter-id-receipt".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "receipt-gated drafting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let chapter = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: project.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(2),
+                title: None,
+            })
+            .await
+            .unwrap();
+        let receipt = svc
+            .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed")
+            .await;
+        {
+            let mut receipts = svc.generation_receipts.write().unwrap();
+            receipts
+                .get_mut(&receipt.id)
+                .expect("seeded receipt")
+                .explicit_capable_agent = true;
+        }
+
+        let explicit_by_chapter_id = |scene_order: i32| SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            chapter_id: Some(chapter.chapter_id.clone()),
+            scene_order,
+            full_text: "Her breath caught as he took her, slow and deliberate.".to_string(),
+            summary: format!("Explicit scene {scene_order}."),
+            content_rating: spindle_core::models::ContentRating::Explicit,
+            generation_id: Some(receipt.id.clone()),
+            ..Default::default()
+        };
+
+        svc.save_scene_draft(explicit_by_chapter_id(1))
+            .await
+            .expect("chapter_id-only explicit save must resolve placement and succeed");
+        svc.save_scene_draft(explicit_by_chapter_id(1))
+            .await
+            .expect("re-saving the same resolved scene keeps the receipt valid");
+
+        let err = svc
+            .save_scene_draft(explicit_by_chapter_id(2))
+            .await
+            .expect_err("the receipt may not spill onto a sibling scene");
+        assert!(
+            err.to_string().contains("already authorized"),
+            "expected a claim-conflict naming the resolved scene, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("book 1, chapter 2, scene 1"),
+            "the conflict must name the RESOLVED placement, not book 0 chapter 0, got: {err}"
+        );
     }
 
     /// Bug-4 guard: the NON-explicit agent-draft path (a valid `draft`-route
@@ -34977,6 +36001,345 @@ rating = "explicit"
         assert_eq!(active.id, feature.branch_id);
     }
 
+    /// Live-run bug fixture: book 1 chapter 4 has a three-scene spine, and
+    /// `generate_alternatives` mints TWO unresolved alternatives over scene
+    /// order 2. On the broken build `list_chapter_scenes` returned five rows
+    /// (three of them at order 2), which led an operator to position-delete
+    /// the REAL scene 2 while cleaning up phantoms.
+    async fn spine_chapter_with_unresolved_alternatives() -> (
+        TempDir,
+        SqliteSpindleService,
+        CreateProjectOutput,
+        Vec<String>,
+        Vec<String>,
+    ) {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, ContentRating,
+            CreateCharacterInput, CreateLocationInput, GenerateAlternativesInput,
+            SaveSceneDraftInput, WorldStateInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "SpineContract".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        for chapter_number in 2..=4 {
+            svc.create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: proj.project_id.clone(),
+                book_number: Some(1),
+                book_id: None,
+                chapter_number: Some(chapter_number),
+                title: None,
+            })
+            .await
+            .unwrap();
+        }
+        let mut spine_ids = Vec::new();
+        for (scene_order, body) in [
+            (1, "Mara reached the gate at dusk."),
+            (2, "The gate opened and the wardens stepped aside."),
+            (3, "Mara crossed the threshold into the dark."),
+        ] {
+            let out = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: proj.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 4,
+                    chapter_id: None,
+                    scene_order,
+                    full_text: body.into(),
+                    summary: format!("scene {scene_order}"),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            spine_ids.push(out.scene_id);
+        }
+
+        let mara = svc
+            .create_character(CreateCharacterInput {
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Warden.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        let gate = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Ash Gate".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A blackened wall.".into(),
+                initial_state: WorldStateInput {
+                    controlling_faction: None,
+                    status: None,
+                    prosperity: None,
+                    stability: None,
+                    threat_level: None,
+                    sensory_details: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let alts = svc
+            .generate_alternatives(GenerateAlternativesInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 4,
+                scene_order: 2,
+                character_ids: vec![mara.character_id],
+                location_id: gate.location_id,
+                alternatives: Some(2),
+                variation_strategy: "approach".into(),
+            })
+            .await
+            .unwrap();
+        let alt_ids = alts
+            .alternatives
+            .iter()
+            .map(|alt| alt.scene_id.clone())
+            .collect::<Vec<_>>();
+        (_tmp, svc, proj, spine_ids, alt_ids)
+    }
+
+    /// Contract: for any (book, chapter), the scenes `list_chapter_scenes`
+    /// reports as the spine are EXACTLY the scenes `compile_manuscript`
+    /// renders, and every one is addressable by the position resolver. This is
+    /// the invariant whose failure let an operator position-delete the real
+    /// scene while cleaning up phantom duplicates.
+    #[tokio::test]
+    async fn list_chapter_scenes_matches_compiled_spine_and_position_resolver() {
+        use spindle_core::models::{CompileManuscriptInput, ListChapterScenesInput};
+        use std::collections::BTreeSet;
+
+        let (_tmp, svc, proj, spine_ids, alt_ids) =
+            spine_chapter_with_unresolved_alternatives().await;
+        let active_branch = svc
+            .repository()
+            .get_active_branch(&proj.project_id)
+            .await
+            .unwrap();
+
+        let listing = svc
+            .list_chapter_scenes(ListChapterScenesInput {
+                project_id: proj.project_id.clone(),
+                chapter_id: None,
+                book_number: 1,
+                chapter_number: 4,
+            })
+            .await
+            .unwrap();
+
+        // 1. The listing is the three-scene spine, in order — no phantom rows.
+        let listed_ids = listing
+            .scenes
+            .iter()
+            .map(|entry| entry.scene_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed_ids, spine_ids,
+            "listing must be exactly the active-branch spine"
+        );
+        for alt_id in &alt_ids {
+            assert!(
+                !listed_ids.contains(alt_id),
+                "alternative-branch scene {alt_id} leaked into the spine listing"
+            );
+        }
+
+        // 2. The listing agrees with the raw active-branch spine rows.
+        let branch_scenes = svc
+            .repository()
+            .list_scenes_by_project_and_branch(&proj.project_id, &active_branch.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|scene| scene.book_number == 1 && scene.chapter_number == 4)
+            .map(|scene| scene.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            listed_ids.iter().cloned().collect::<BTreeSet<_>>(),
+            branch_scenes,
+            "listing and branch-scoped spine query must return the same scene set"
+        );
+
+        // 3. compile_manuscript renders exactly the listed scenes.
+        let compiled = svc
+            .compile_manuscript(CompileManuscriptInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                start_chapter: Some(4),
+                end_chapter: Some(4),
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            compiled.scene_count,
+            listing.scenes.len(),
+            "compile_manuscript rendered {} scenes but the listing reports {}",
+            compiled.scene_count,
+            listing.scenes.len()
+        );
+        assert!(
+            compiled.missing_scenes.is_empty(),
+            "a healthy chapter must compile with no missing scenes, got {:?}",
+            compiled.missing_scenes
+        );
+
+        // 4. Every listed scene is addressable by the position resolver.
+        for entry in &listing.scenes {
+            let resolved = svc
+                .repository()
+                .find_scene_by_natural_key(
+                    &proj.project_id,
+                    &active_branch.id,
+                    1,
+                    4,
+                    entry.scene_order,
+                )
+                .await
+                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "position resolver lost listed scene at order {}",
+                        entry.scene_order
+                    )
+                });
+            assert_eq!(
+                resolved.id, entry.scene_id,
+                "position resolver disagrees with the listing at order {}",
+                entry.scene_order
+            );
+        }
+    }
+
+    /// Regression for the observed duplicate-`scene_order` shape: the listing
+    /// may never carry two rows at one position. Three rows at order 2 is what
+    /// made a healthy chapter look corrupted.
+    #[tokio::test]
+    async fn list_chapter_scenes_never_lists_two_scenes_at_one_position() {
+        use spindle_core::models::ListChapterScenesInput;
+        use std::collections::BTreeMap;
+
+        let (_tmp, svc, proj, _spine_ids, _alt_ids) =
+            spine_chapter_with_unresolved_alternatives().await;
+
+        let listing = svc
+            .list_chapter_scenes(ListChapterScenesInput {
+                project_id: proj.project_id.clone(),
+                chapter_id: None,
+                book_number: 1,
+                chapter_number: 4,
+            })
+            .await
+            .unwrap();
+
+        let mut by_order: BTreeMap<i32, Vec<String>> = BTreeMap::new();
+        for entry in &listing.scenes {
+            by_order
+                .entry(entry.scene_order)
+                .or_default()
+                .push(entry.scene_id.clone());
+        }
+        for (order, ids) in &by_order {
+            assert_eq!(
+                ids.len(),
+                1,
+                "scene_order {order} listed {} rows: {ids:?}",
+                ids.len()
+            );
+        }
+        assert_eq!(
+            listing.scenes.len(),
+            3,
+            "book 1 chapter 4 has a three-scene spine, listing shows {}",
+            listing.scenes.len()
+        );
+    }
+
+    /// Unresolved `generate_alternatives` output must still be visible to the
+    /// operator — but under its own field, where it can never be mistaken for
+    /// the spine or deleted by position.
+    #[tokio::test]
+    async fn list_chapter_scenes_reports_unresolved_alternatives_separately() {
+        use spindle_core::models::ListChapterScenesInput;
+
+        let (_tmp, svc, proj, spine_ids, alt_ids) =
+            spine_chapter_with_unresolved_alternatives().await;
+
+        let listing = svc
+            .list_chapter_scenes(ListChapterScenesInput {
+                project_id: proj.project_id.clone(),
+                chapter_id: None,
+                book_number: 1,
+                chapter_number: 4,
+            })
+            .await
+            .unwrap();
+
+        let reported_alt_ids = listing
+            .unresolved_alternatives
+            .iter()
+            .map(|alt| alt.scene_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            reported_alt_ids,
+            alt_ids
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "every unselected alternative in the chapter must be reported"
+        );
+        for alt in &listing.unresolved_alternatives {
+            assert_eq!(alt.scene_order, 2);
+            assert!(
+                alt.branch_name.starts_with("alt-approach-1-4-"),
+                "alternative entry must name its branch, got {:?}",
+                alt.branch_name
+            );
+            assert!(
+                !spine_ids.contains(&alt.scene_id),
+                "an alternative may never be reported as a spine scene"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn export_epub_emits_divergence_warnings_for_drifted_files() {
         use spindle_core::models::{
@@ -34999,13 +36362,15 @@ rating = "explicit"
             .await
             .unwrap();
 
+        // The scene body clears the stub gate's word floor so the export
+        // reaches the divergence walk it is exercising.
         svc.save_scene_draft(SaveSceneDraftInput {
             project_id: proj.project_id.clone(),
             book_number: 1,
             chapter_number: 1,
             chapter_id: None,
             scene_order: 1,
-            full_text: "Scene one full body.".into(),
+            full_text: "The first scene opened on the harbor at dawn, gulls wheeling over the fishing boats as the tide pulled away from the stones.".into(),
             summary: "s1".into(),
             content_rating: ContentRating::General,
             tone: None,
@@ -35032,7 +36397,14 @@ rating = "explicit"
             .unwrap();
 
         // Mutate file directly so the on-disk SHA disagrees with the link.
-        std::fs::write(&pushed.target_path, "Externally edited body.").unwrap();
+        // The replacement must stay at least as long as the tracked byte
+        // range, or the divergence resolver cannot re-slice the file and
+        // reports `Unknown` instead of `ContentMismatch`.
+        std::fs::write(
+            &pushed.target_path,
+            "Externally edited body that someone rewrote overnight, changing every sentence of the scene while keeping the file roughly the same size.",
+        )
+        .unwrap();
 
         let out = svc
             .export_epub(ExportEpubInput {
@@ -41204,6 +42576,7 @@ agent = "review-dead"
         // Deleting the scene before B shifts B's "scenes before" set.
         svc.delete_scene(DeleteSceneInput {
             project_id: proj.project_id.clone(),
+            scene_id: None,
             book_number: 1,
             chapter_number: 1,
             scene_order: 1,
@@ -41295,6 +42668,7 @@ agent = "review-dead"
         // Moving the scene changes its placement, so the cached finding is stale.
         svc.move_scene(MoveSceneInput {
             project_id: proj.project_id.clone(),
+            scene_id: None,
             from_book_number: 1,
             from_chapter_number: 1,
             from_scene_order: 1,

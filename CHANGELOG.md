@@ -8,6 +8,65 @@
   embedded workflow skills and craft references to clients without MCP resource
   support (e.g. Kimi): they return the same content as the `bible://skills/*`
   and `bible://references/*` resources and are available in every tool profile.
+- `delete_scene`, `operator_delete_scene`, and `move_scene` accept an optional
+  `scene_id` that identifies the row unambiguously. With `scene_id` the
+  position fields become optional (and are validated against the row's actual
+  placement when supplied); the scene must be on the project's active branch.
+  Position-only addressing is unchanged, but it could not disambiguate rows
+  sharing a position and silently acted on whichever row the resolver picked —
+  the root hazard behind a live-run deletion of a real scene.
+- `list_chapter_scenes` returns `unresolved_alternatives`: scenes on
+  `alternative`-type branches that were never promoted to the active branch
+  (the unselected output of `generate_alternatives`). They are reported
+  beside the spine — never inside it — so they can no longer be mistaken for
+  spine scenes or deleted by position.
+- `compile_manuscript` returns `stub_scenes` (`chapter.scene` refs) alongside
+  `missing_scenes`: drafted scenes whose body matches obvious placeholder
+  text or sits below the minimum scene word count. They still render into the
+  Markdown but are named so they are never read as finished prose.
+- `preflight_book_export` flags stub scenes with a Blocking `scene_stub_text`
+  issue, and `check_consistency` gained a `scene_stub_text` check
+  (severity `info` — stubbiness is a manuscript-readiness observation, not an
+  in-story consistency violation, and the authoring loop's checkpoint
+  policies approve/block on errors+warnings). A scene is a stub when its
+  entire body is an obvious placeholder marker (`placeholder`, `TODO`,
+  `TBD`, …) or its word count is below the floor. The floor is per-project:
+  `project.min_scene_word_count` via `update_entity` (migration V0036),
+  defaulting to 20 words.
+
+### Fixed
+
+- `list_chapter_scenes` (and `list_book_chapters`) no longer report scenes
+  from OTHER branches as if they were the chapter's spine. The listing query
+  filtered by `chapter_id` only, but books and chapters are branch-shared —
+  so the never-selected alternatives `generate_alternatives` stores on their
+  own branches leaked into the listing, producing live-run chapters with five
+  listed scenes and three of them at one `scene_order`. The listing now
+  shares the ONE branch-scoped spine predicate with `compile_manuscript` and
+  the position resolver (`Repository::list_scenes_by_chapter_and_branch`), so
+  the listing, the compiled manuscript, and position addressing can never
+  disagree about which scenes are in the spine. A contract test pins the
+  invariant (listing ≡ compiled spine ≡ position-addressable).
+- A FAILED `save_scene_draft` no longer consumes the explicit generation
+  receipt. The receipt claim ran as its own committed write before placement
+  validation, so a save that then failed (`book 0 not found for project`)
+  left the receipt bound to the bogus placement and burned it — forcing a
+  full regeneration of explicit prose that had already been produced and paid
+  for. The claim now commits inside the scene's save transaction (migration
+  V0034 semantics, enforced atomically): a save that fails at any point
+  leaves the receipt unbound and reusable.
+- `save_scene_draft` now resolves book/chapter placement from `chapter_id` as
+  its schema documents, and rejects calls that name neither `chapter_id` nor
+  positive `book_number`/`chapter_number` with a validation error. Previously
+  the numbers silently defaulted to 0 and the save failed deep in persistence
+  with `book 0 not found for project` — which is also what corrupted the
+  receipt claim above. Contradictory `chapter_id` + numbers are rejected
+  loudly, mirroring `get_scene_context`.
+- `create_chapter` persists the `title` it accepts. Previously the field was
+  silently dropped and a later `preflight_book_export` reported
+  `chapter_missing_title` for a chapter created with a title. An existing
+  chapter's title is never clobbered — the ensure path only fills a missing
+  one.
 
 ### Security
 

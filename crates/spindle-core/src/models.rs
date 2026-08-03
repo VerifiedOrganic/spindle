@@ -2089,12 +2089,24 @@ pub struct GetSceneMoveImpactOutput {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MoveSceneInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
+    /// Optional id of the scene to move. When provided it identifies the
+    /// source row unambiguously (safe even if duplicates or orphans share a
+    /// position); the `from_*` fields become optional and are only validated
+    /// against the scene's actual placement when supplied.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Source book. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub from_book_number: i32,
+    /// Source chapter. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub from_chapter_number: i32,
+    /// Source scene order. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub from_scene_order: i32,
     pub to_book_number: i32,
     pub to_chapter_number: i32,
@@ -2115,12 +2127,28 @@ pub struct MoveSceneOutput {
     pub left_source_scene_order_gap: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteSceneInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
+    /// Optional id of the scene to delete. Preferred whenever the exact row
+    /// is known: it identifies the row unambiguously and can never act on a
+    /// different scene that happens to share a position. The scene must be
+    /// on the project's active branch. When provided, the position fields
+    /// are optional and only validated against the scene's actual placement
+    /// if supplied.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Book of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub book_number: i32,
+    /// Chapter of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub chapter_number: i32,
+    /// Scene order within the chapter. Required unless `scene_id` is
+    /// provided. Position addressing resolves a single active-branch row; it
+    /// cannot disambiguate rows sharing a position.
+    #[serde(default)]
     pub scene_order: i32,
 }
 
@@ -2132,12 +2160,22 @@ pub struct DeleteSceneOutput {
     pub left_scene_order_gap: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct OperatorDeleteSceneInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
+    /// Optional id of the scene to delete (see `DeleteSceneInput::scene_id`).
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Book of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub book_number: i32,
+    /// Chapter of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub chapter_number: i32,
+    /// Scene order within the chapter. Required unless `scene_id` is
+    /// provided.
+    #[serde(default)]
     pub scene_order: i32,
 }
 
@@ -2310,6 +2348,21 @@ pub struct SceneSpineEntry {
     pub tone: Option<String>,
 }
 
+/// A scene stored on an `alternative`-type branch that is NOT the active
+/// branch, reported beside (never inside) the spine listing. These are the
+/// rows `generate_alternatives` produced; until one is promoted via
+/// `select_alternative` it is not part of the active-branch spine and is
+/// never rendered by `compile_manuscript` or addressable by position.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UnresolvedAlternativeEntry {
+    pub scene_id: String,
+    pub branch_id: String,
+    pub branch_name: String,
+    pub scene_order: i32,
+    pub word_count: usize,
+    pub summary_first_line: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListChapterScenesOutput {
     pub project_id: String,
@@ -2320,8 +2373,17 @@ pub struct ListChapterScenesOutput {
     pub chapter_number: i32,
     #[serde(default)]
     pub title: Option<String>,
+    /// The active-branch spine of this chapter, exactly what
+    /// `compile_manuscript` renders and the position resolver addresses.
+    /// Never contains rows from other branches and never contains duplicate
+    /// `scene_order` values.
     #[serde(default)]
     pub scenes: Vec<SceneSpineEntry>,
+    /// Alternative-branch scenes in this chapter that were never promoted to
+    /// the active branch. Deliberately separate from `scenes` so they can
+    /// never be mistaken for the spine or deleted by position.
+    #[serde(default)]
+    pub unresolved_alternatives: Vec<UnresolvedAlternativeEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6117,6 +6179,13 @@ pub struct CompileManuscriptOutput {
     /// spine but not yet drafted. Never silently omitted from the Markdown.
     #[serde(default)]
     pub missing_scenes: Vec<String>,
+    /// `chapter.scene` refs (e.g. "2.2") for drafted scenes that are stubs:
+    /// their body matches obvious placeholder text, or their word count is
+    /// below the project's minimum scene length
+    /// (`project.min_scene_word_count`, default 20). They render into the
+    /// Markdown but are not shippable prose.
+    #[serde(default)]
+    pub stub_scenes: Vec<String>,
     /// Absolute path to the written artifact when `write_to_workspace` is set;
     /// `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
