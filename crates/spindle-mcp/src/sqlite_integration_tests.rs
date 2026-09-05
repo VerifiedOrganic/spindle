@@ -93,6 +93,7 @@ async fn mcp_priority_flow_create_project_through_save_scene_draft() {
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -162,6 +163,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Warden of the Ash Gate.".into(),
@@ -191,6 +193,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
 
     let aldric = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Aldric".into(),
             summary: "Scribe.".into(),
@@ -315,7 +318,7 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
 
     svc.register_canonical_fact(RegisterCanonicalFactInput {
         project_id: project.project_id.clone(),
-        scene_id: scene.scene_id.clone(),
+        scene_id: Some(scene.scene_id.clone()),
         book_number: 1,
         chapter_number: 1,
         fact_type: None,
@@ -559,6 +562,7 @@ agent = "cli-agent-review"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -1416,6 +1420,7 @@ async fn run_journal_full_trace_and_payload_discipline_pin() {
         .unwrap();
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -1918,6 +1923,7 @@ async fn preflight_fixture_with_ratings(
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -2715,6 +2721,7 @@ agent = "cli-agent-draft"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -3624,6 +3631,7 @@ agent = "cli-agent-draft"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -4279,6 +4287,7 @@ agent = "cli-agent-draft"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -5179,6 +5188,7 @@ agent = "cli-agent-review"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -5699,6 +5709,7 @@ agent = "cli-agent-review"
         .unwrap();
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Warden.".into(),
@@ -6158,6 +6169,7 @@ agent = "cli-agent-review"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -6780,6 +6792,7 @@ agent = "tame-analyst"
 
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -7337,6 +7350,7 @@ agent = "style-agent"
         .unwrap();
     // Opt in to style learning.
     svc.update_entity(spindle_core::models::UpdateEntityInput {
+        allow_rename: None,
         entity_type: "project".into(),
         entity_id: project.project_id.clone(),
         changes: serde_json::json!({ "style_learning": 1 }),
@@ -7611,6 +7625,7 @@ agent = "cli-agent-draft"
         .unwrap();
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden.".into(),
@@ -7984,6 +7999,108 @@ async fn resolve_block_redraft_resets_poisoned_scene_and_lists_in_error() {
 }
 
 // ── Bug 4a/4b: lazy primacy claiming + internal-listener survival ────────────
+
+/// Dialing a dead loopback address must FAIL, not hang. Reclamation (above)
+/// keeps the addr file honest, but it cannot close the window where a listener
+/// dies between the health probe and the connect. When that happens the harness
+/// client has to surface a transport error promptly so the caller can record an
+/// honest `error` status and advance; a hang instead parks the run until the MCP
+/// client times out, which is what deadlocked the authoring loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn harness_client_fails_fast_on_dead_address() {
+    use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+
+    // Bind then drop, so the port is certainly dead and certainly unused.
+    let dead_addr = {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        probe.local_addr().unwrap()
+    };
+    let url = format!("http://{dead_addr}/mcp");
+
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        McpHarnessClient::connect(&TransportConfig::Http { url }),
+    )
+    .await;
+
+    let elapsed = started.elapsed();
+    match outcome {
+        Err(_) => panic!(
+            "connect to a dead address hung past 15s instead of erroring; the \
+             authoring loop cannot record a transport error it never receives"
+        ),
+        Ok(Ok(_)) => panic!("connect to a dead address must not report success"),
+        Ok(Err(_)) => assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "connect must fail promptly on connection-refused, took {elapsed:?}"
+        ),
+    }
+}
+
+/// A workspace whose addr file names a DEAD listener must be reclaimed at
+/// dispatch time, from inside the async runtime the real dispatch path runs on.
+///
+/// This is the shape that hung the authoring loop in production: the addr file
+/// held a port from an older process, nothing listened there, and every
+/// `authoring_execute_next` stalled until the MCP client timed out ~60s later
+/// with no state advance. The sibling unit test
+/// (`claim_addr_file_is_atomic_and_reclaims_stale`) covered reclamation but ran
+/// as a plain `#[test]`, i.e. on a thread with NO tokio runtime — so it could
+/// not catch a reclamation path that only fails when a runtime is already
+/// active. Every real caller reaches it from `async fn`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_addr_file_is_reclaimed_from_async_dispatch() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let pool = SqlitePool::open(&tmp.path().join("stale.db"))
+        .await
+        .unwrap();
+    let svc = SqliteSpindleService::new(Repository::with_model_router(
+        pool,
+        data_dir.clone(),
+        ModelRouter::local_only(),
+    ));
+
+    // Bind a port, learn its number, then drop the listener so the address is
+    // guaranteed dead — the production shape (an older process's port).
+    let dead_addr = {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        probe.local_addr().unwrap()
+    };
+    crate::write_addr_file(&data_dir, dead_addr).unwrap();
+
+    // The real dispatch path. Must not hang, must not panic, must reclaim.
+    let addr = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::internal_listener::ensure_primary_addr(&svc, &data_dir),
+    )
+    .await
+    .expect("resolving a stale addr must not hang")
+    .expect("a dead addr file must be reclaimed, not surfaced as an error");
+
+    assert_ne!(
+        addr, dead_addr,
+        "must claim a fresh listener, not hand back the dead address"
+    );
+    assert_eq!(
+        crate::read_addr_file(&data_dir).unwrap(),
+        addr,
+        "the reclaimed addr must be written back to the addr file"
+    );
+
+    // The reclaimed listener actually serves.
+    let ok = reqwest::Client::new()
+        .get(format!("http://{addr}/health"))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    assert!(ok, "reclaimed listener must serve /health");
+
+    crate::internal_listener::shutdown_lazy_listener(&data_dir).await;
+}
 
 /// 4a: a workspace with NO addr file (a server that started before init, or a
 /// non-primary process) must claim primacy lazily at dispatch time — writing the

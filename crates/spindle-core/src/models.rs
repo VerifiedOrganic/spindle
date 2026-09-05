@@ -182,6 +182,8 @@ pub struct IntensityPoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct StoryClock {
     /// In-world day index from the project epoch (monotonic, spans books).
+    /// Negative values are valid: the epoch is the story's opening, and
+    /// births, backstory, and timeline events routinely precede it.
     pub day_index: Option<i64>,
     /// Minutes from midnight, in `0..(hours_per_day * 60)`.
     pub time_of_day: Option<i32>,
@@ -281,12 +283,12 @@ impl StoryClock {
     }
 
     /// Validate this clock against `calendar`.
+    ///
+    /// `day_index` is a SIGNED offset from the project epoch: births and
+    /// backstory precede the story's opening day, so negative values are
+    /// valid (and the total-order index keeps comparing correctly). Only
+    /// magnitudes — duration — and the intra-day clock are bounded.
     pub fn validate(&self, calendar: &CalendarDef) -> Result<(), String> {
-        if let Some(day_index) = self.day_index
-            && day_index < 0
-        {
-            return Err(format!("day_index must be >= 0 (got {day_index})"));
-        }
         if let Some(duration) = self.duration_days
             && duration < 0.0
         {
@@ -881,16 +883,29 @@ mod story_clock_tests {
     }
 
     #[test]
-    fn clock_rejects_negative_day_index_and_unknown_precision() {
+    fn clock_accepts_negative_day_index_and_rejects_unknown_precision() {
         let cal = gregorian();
+        // Births and backstory precede the story's opening day (the epoch),
+        // so day_index is a signed offset — negative values must validate.
         assert!(
             StoryClock {
-                day_index: Some(-1),
+                day_index: Some(-8913),
+                precision: Some("day".into()),
                 ..Default::default()
             }
             .validate(&cal)
-            .is_err()
+            .is_ok()
         );
+        // ...and order before the epoch in the total-order index.
+        let birth = StoryClock {
+            day_index: Some(-8913),
+            ..Default::default()
+        };
+        let opening = StoryClock {
+            day_index: Some(1),
+            ..Default::default()
+        };
+        assert!(birth.total_index(&cal).unwrap() < opening.total_index(&cal).unwrap());
         assert!(
             StoryClock {
                 precision: Some("fortnight".into()),
@@ -906,6 +921,19 @@ mod story_clock_tests {
             }
             .validate(&cal)
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn clock_still_rejects_negative_duration() {
+        let cal = gregorian();
+        assert!(
+            StoryClock {
+                duration_days: Some(-1.0),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
         );
     }
 }
@@ -965,7 +993,7 @@ pub struct StatedConsequence {
     pub delivered: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterArcMilestone {
     pub label: String,
     pub placement: Option<StoryPlacement>,
@@ -1096,6 +1124,12 @@ pub struct CreateCharacterInput {
     pub summary: String,
     pub role: String,
     pub realm: Option<String>,
+    /// Alternate names the character answers to (nicknames, titles, an
+    /// in-world name decided after the record exists). Searchable via
+    /// find_entity exactly like the primary name; rename preserves the old
+    /// name here automatically.
+    #[serde(default)]
+    pub aliases: Vec<String>,
     /// Optional (defect item 5): minor characters rarely arrive with a voice
     /// profile. Missing AND explicit null both default to an empty profile.
     #[serde(default, deserialize_with = "null_to_default")]
@@ -2905,6 +2939,11 @@ pub struct CreateChapterOutput {
     pub chapter_id: String,
     pub book_number: i32,
     pub chapter_number: i32,
+    /// The chapter's effective title after the call: the supplied title when
+    /// it was applied, otherwise the title the chapter already had (the
+    /// ensure path can return a pre-existing row). `None` when untitled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2950,6 +2989,11 @@ pub struct SetNarratorVoiceOutput {
     pub narrator_voice: crate::style::NarratorVoice,
     /// True when the call cleared the directive (all fields empty).
     pub cleared: bool,
+    /// Non-blocking advisories, e.g. a chapter word-count target in the new
+    /// narrator voice that contradicts reader_contract.style_notes or a style
+    /// world rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3364,6 +3408,14 @@ pub struct UpdateEntityInput {
     pub entity_id: String,
     #[schemars(schema_with = "any_object_schema")]
     pub changes: serde_json::Value,
+    /// Renaming a character is a controlled operation, not a plain field
+    /// write: it must move the normalized-name uniqueness key, preserve the
+    /// old name as an alias, refresh the search index, and report records
+    /// still referencing the old name. Set this to true to opt in when
+    /// `changes` includes `"name"` on a character; without it the call is
+    /// rejected. Ignored for every other entity type.
+    #[serde(default)]
+    pub allow_rename: Option<bool>,
 }
 
 fn any_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -3378,6 +3430,47 @@ fn any_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 pub struct UpdateEntityOutput {
     pub entity_type: String,
     pub entity_id: String,
+    /// Present only when the call renamed a character (`changes` included
+    /// `"name"` with `allow_rename: true`). Lists the records that still
+    /// reference the old name so the author can fix them — prose mentions in
+    /// scenes are never rewritten automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_report: Option<RenameReport>,
+    /// Non-blocking advisories about the post-update state. Currently used to
+    /// surface reader-contract / style-surface contradictions (e.g. chapter
+    /// word-count targets that disagree between reader_contract.style_notes,
+    /// the narrator voice, and style world rules) so a stale figure is caught
+    /// at update time instead of after chapters are drafted against it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Outcome of a character rename: what changed and what still references the
+/// old name. The search index (FTS + embeddings) and the character's own FTS
+/// entry are refreshed as part of the rename; the records listed here are the
+/// ones the rename could NOT update safely.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RenameReport {
+    pub character_id: String,
+    pub old_name: String,
+    pub new_name: String,
+    /// True when the old name was appended to the character's aliases (it is
+    /// not re-added when already present, or when only the casing/spacing of
+    /// the name changed).
+    pub old_name_kept_as_alias: bool,
+    /// Scenes whose prose or summary mentions the old name (FTS match on the
+    /// active branch). Rename never edits scene text — the author decides
+    /// which mentions are historical and which must follow the rename.
+    pub scenes_referencing_old_name: Vec<String>,
+    /// Active (not superseded) canonical facts whose value text, JSON value,
+    /// or aliases mention the old name. Facts that reference the character by
+    /// id are unaffected and not listed.
+    pub canonical_facts_referencing_old_name: Vec<String>,
+    /// Knowledge facts whose text mentions the old name.
+    pub knowledge_facts_referencing_old_name: Vec<String>,
+    /// Character arcs (of this character) whose notes or milestones mention
+    /// the old name.
+    pub arcs_referencing_old_name: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3390,6 +3483,11 @@ pub struct UpdateWorldRuleInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateWorldRuleOutput {
     pub world_rule_id: String,
+    /// Non-blocking advisories, e.g. a style world rule whose chapter
+    /// word-count target contradicts reader_contract.style_notes or the
+    /// narrator voice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3608,6 +3706,30 @@ pub struct CreateCharacterArcInput {
 pub struct CreateCharacterArcOutput {
     pub character_arc_id: String,
     pub pacing_tracker_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateArcMilestoneInput {
+    /// Record id of the character arc (e.g. "character_arc:abc123").
+    pub arc_id: String,
+    /// Exact label of the milestone to update.
+    pub label: String,
+    /// New planned placement for the milestone. Omit to keep the current
+    /// placement. (Clearing a placement is not supported here; resend the
+    /// full milestones array via update_entity for that.)
+    #[serde(default)]
+    pub placement: Option<StoryPlacement>,
+    /// Manuscript position where the milestone was actually reached. Omit to
+    /// keep the current value.
+    #[serde(default)]
+    pub reached_at: Option<StoryPlacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateArcMilestoneOutput {
+    pub arc_id: String,
+    /// The milestone after the update.
+    pub milestone: CharacterArcMilestone,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6306,7 +6428,13 @@ pub struct SecrecyScope {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RegisterCanonicalFactInput {
     pub project_id: String,
-    pub scene_id: String,
+    /// The scene that dramatises the fact. Optional: omit it to register a
+    /// fact decided during PLANNING but not yet dramatised (e.g. a name
+    /// locked by author decision before its scene exists). Such a fact is
+    /// planned-and-pending — placed by book_number/chapter_number only — and
+    /// can be attached to its scene later with bind_canonical_fact_to_scene.
+    #[serde(default)]
+    pub scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
     /// The kind of fact: "pull_result", "stat_change", "item_acquired",
@@ -6440,6 +6568,21 @@ pub struct MigrateCanonicalFactInput {
 pub struct MigrateCanonicalFactOutput {
     pub canonical_fact_id: String,
     pub superseded_fact_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BindCanonicalFactToSceneInput {
+    /// Record id of the canonical fact (e.g. "canonical_fact:abc123").
+    pub canonical_fact_id: String,
+    /// The scene that dramatises the fact. Must belong to the same project
+    /// and branch as the fact.
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BindCanonicalFactToSceneOutput {
+    pub canonical_fact_id: String,
+    pub scene_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -270,7 +270,7 @@ impl<'a> TryFrom<&Row<'a>> for Scene {
 // =============================================================================
 
 pub const CHARACTER_COLUMNS: &str = "id, project_id, branch_id, name, normalized_name, summary, role, realm, \
-     appearance, notes, created_at, updated_at";
+     appearance, notes, created_at, updated_at, aliases";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Character {
@@ -286,6 +286,9 @@ pub struct Character {
     pub notes: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Alternate names (V0037): nicknames, titles, an in-world name decided
+    /// after the record exists. Rename preserves the old name here.
+    pub aliases: Vec<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Character {
@@ -305,6 +308,7 @@ impl<'a> TryFrom<&Row<'a>> for Character {
             notes: row::opt_text(r, 9)?,
             created_at: row::time(r, 10)?,
             updated_at: row::time(r, 11)?,
+            aliases: row::json(r, 12)?,
         })
     }
 }
@@ -2012,7 +2016,10 @@ pub struct CanonicalFact {
     pub id: String,
     pub project_id: String,
     pub branch_id: String,
-    pub scene_id: String,
+    /// None for planned-and-pending facts registered before their scene
+    /// exists (V0038); placed by book/chapter only until bound via
+    /// bind_canonical_fact_to_scene.
+    pub scene_id: Option<String>,
     pub source_scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
@@ -2048,7 +2055,7 @@ impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
             id: row::text(r, 0)?,
             project_id: row::text(r, 1)?,
             branch_id: row::text(r, 2)?,
-            scene_id: row::text(r, 3)?,
+            scene_id: row::opt_text(r, 3)?,
             source_scene_id: row::opt_text(r, 4)?,
             book_number: row::int(r, 5)? as i32,
             chapter_number: row::int(r, 6)? as i32,

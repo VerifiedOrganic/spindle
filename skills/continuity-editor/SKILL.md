@@ -159,6 +159,11 @@ fact, do not mutate it — call `register_canonical_fact` with
 `migrate_canonical_fact` to convert legacy untyped facts into the typed
 shape.
 
+`register_canonical_fact` accepts a fact with no `scene_id` — a
+planned-and-pending fact decided in planning before its scene exists (placed
+by book/chapter only). Once the dramatising scene is drafted, attach it with
+`bind_canonical_fact_to_scene`.
+
 ### 10. Try-Fail Cycle Tracking
 Reviews `conflict.try_fail_cycles`:
 - Do conflicts have enough attempts before resolution? (minimum 2-3)
@@ -348,12 +353,14 @@ manuscript already runs past P (max scoped chapter **≥ P+1**) it raises a
 overdue (`max_scoped_chapter − P`); if the scope has only reached P (max **== P**)
 it raises an **info** "due now". A milestone with a `reached_at` marker is silent
 regardless, and a milestone with no `placement` is silent. Mark a milestone
-reached by resending the arc's `milestones` array through `update_entity` with
-`reached_at` set.
+reached with `update_arc_milestone(arc_id, label, reached_at=...)` — a targeted
+patch that preserves the milestone's other fields. (The whole `milestones`
+array remains writable through `update_entity` for bulk edits; read it back
+first via `get_entity(table="character_arc")` or `get_character_snapshot`.)
 
 **What to do when flagged**: demonstrate the milestone in the prose and set its
-`reached_at` (via `update_entity` on the `character_arc`), or move the
-milestone's `placement` if the arc has legitimately slipped.
+`reached_at` via `update_arc_milestone`, or move the milestone's `placement`
+the same way if the arc has legitimately slipped.
 
 ### 24. Conflict Escalation Audit (`conflict_escalation_audit`)
 Metadata-only. A conflict's `escalation_demonstrated` array is index-aligned

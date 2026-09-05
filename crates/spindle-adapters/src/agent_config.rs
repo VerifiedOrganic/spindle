@@ -12,6 +12,21 @@ pub struct SpindleConfigFile {
     #[serde(default)]
     pub routing: Vec<RoutingRule>,
     pub health_check: Option<HealthCheckConfig>,
+    /// Route the manuscript-import routes (`import_extract`, `import_synthesize`)
+    /// through the operator's explicit-cleared offload agent.
+    ///
+    /// Import routes carry the full manuscript yet are deliberately exempt from
+    /// the rating gate (ratings do not exist until analysis runs), so a
+    /// rating-based explicit offload never engages for them — by default an
+    /// import dispatch goes to whatever default agent is bound to the route,
+    /// even if the operator offloads explicit work elsewhere. Stricter provider
+    /// safety classifiers (e.g. Qwen) can then refuse the un-offloaded prose.
+    /// Setting this `true` makes import resolve to the same explicit-cleared
+    /// agent that serves `draft` at the `explicit` rating (or an
+    /// `import_*`-specific explicit override), honoring the offload. Opt-in so a
+    /// deliberately configured import chair is never silently overridden.
+    #[serde(default)]
+    pub route_import_to_explicit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +110,9 @@ pub struct LoadedAgentConfig {
     #[serde(default)]
     pub routing: Vec<RoutingRule>,
     pub health_check: HealthCheckConfig,
+    /// See [`SpindleConfigFile::route_import_to_explicit`].
+    #[serde(default)]
+    pub route_import_to_explicit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,6 +184,7 @@ pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentCo
             agents: Vec::new(),
             routing: Vec::new(),
             health_check: default_health_check_config(),
+            route_import_to_explicit: false,
         });
     };
 
@@ -179,6 +198,7 @@ pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentCo
         agents: config.agents,
         routing: config.routing,
         health_check: normalized_health_check_config(config.health_check),
+        route_import_to_explicit: config.route_import_to_explicit,
     })
 }
 
@@ -476,6 +496,7 @@ mod tests {
             ],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("duplicate agent ids should fail");
 
@@ -517,6 +538,7 @@ mod tests {
                 rating: None,
             }],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("unknown routing agent should fail");
 
@@ -558,6 +580,7 @@ mod tests {
                 rating: None,
             }],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("invalid temperature should fail");
 
@@ -618,6 +641,7 @@ mod tests {
                 make_routing("draft", "explicit-agent", Some("explicit")),
             ],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect("default + per-rating overrides for the same route should validate");
     }
@@ -631,6 +655,7 @@ mod tests {
                 make_routing("draft", "agent-b", None),
             ],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("two default rules for the same route must fail");
         assert!(
@@ -648,6 +673,7 @@ mod tests {
                 make_routing("draft", "agent-b", Some("explicit")),
             ],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("two rules for the same (route, rating) must fail");
         assert!(
@@ -664,6 +690,7 @@ mod tests {
             agents: vec![make_agent("agent-a")],
             routing: vec![make_routing("draft", "agent-a", Some("nc-17"))],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("unknown rating values must be rejected");
         assert!(
@@ -701,6 +728,7 @@ mod tests {
             agents: vec![make_grok_agent("grok-local")],
             routing: vec![make_routing("draft", "grok-local", Some("explicit"))],
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect("grok-cli agent with full optional fields should validate");
     }
@@ -713,6 +741,7 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("invalid effort should fail");
         assert!(
@@ -729,6 +758,7 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("zero max_turns should fail");
         assert!(
@@ -745,6 +775,7 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
         })
         .expect_err("grok-only fields on non-grok provider should fail");
         let msg = err.to_string();

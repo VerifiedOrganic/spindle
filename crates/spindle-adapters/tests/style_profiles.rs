@@ -196,6 +196,7 @@ async fn test_create_and_apply_style_profile_lifecycle() {
     // 6. Test applying the style profile
     let apply_out = svc
         .apply_style_profile(ApplyStyleProfileInput {
+            force: None,
             project_id: project_id.clone(),
             profile_id: profile.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
@@ -476,6 +477,7 @@ async fn test_style_profile_audit_rollback_and_drift_lifecycle() {
     // 4. Test ApplyStyleProfile (writes audit row, handles ReplaceGeneratedStyleNotes)
     let apply_out = svc
         .apply_style_profile(ApplyStyleProfileInput {
+            force: None,
             project_id: project_id.clone(),
             profile_id: profile.profile_id.clone(),
             mode: StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
@@ -869,6 +871,7 @@ async fn test_active_style_profile_lifecycle() {
     // Apply Profile A
     let apply_a = svc
         .apply_style_profile(ApplyStyleProfileInput {
+            force: None,
             project_id: project_id.clone(),
             profile_id: profile_a.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
@@ -900,6 +903,7 @@ async fn test_active_style_profile_lifecycle() {
     // Apply Profile B
     let apply_b = svc
         .apply_style_profile(ApplyStyleProfileInput {
+            force: None,
             project_id: project_id.clone(),
             profile_id: profile_b.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
@@ -3566,5 +3570,265 @@ async fn test_style_profile_refresh_workflow() {
     assert_eq!(
         persisted_source_row_count, 0,
         "no source prose should be persisted in source rows"
+    );
+}
+
+/// Bug: a style profile whose guidance synthesis came back empty was stuck at
+/// `NeedsReview` and `apply_style_profile` had no escape hatch — the profile
+/// could be created but never applied. `force=true` must bypass the
+/// Ready-status and application-guidance gates and ACTIVATE the profile
+/// without clobbering the project's existing narrator voice / style notes
+/// (a metrics-only profile is applied for drift detection, not to overwrite
+/// prose style).
+#[tokio::test]
+async fn test_apply_style_profile_force_activates_empty_guidance_without_clobbering_prose() {
+    use spindle_core::models::SetNarratorVoiceInput;
+    use spindle_core::style::{NarratorVoice, StyleProfileGuidance, StyleProfileStatus};
+
+    let (tmp, svc) = fresh_service().await;
+
+    // 1. Project with a REAL, operator-authored narrator voice + style notes.
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Force Apply Project".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Epic adventure".to_string(),
+                style_notes: vec!["Keep chapters under 3k words".to_string()],
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = project_out.project_id;
+
+    let real_voice = NarratorVoice {
+        comedy_density: Some("high — a laugh a page".to_string()),
+        pacing_feel: Some("punchy".to_string()),
+        interiority_ratio: None,
+        emotional_register: Some("funny-and-sarcastic".to_string()),
+        chapter_ending_style: None,
+        notes: Vec::new(),
+    };
+    svc.set_narrator_voice(SetNarratorVoiceInput {
+        project_id: project_id.clone(),
+        narrator_voice: real_voice.clone(),
+    })
+    .await
+    .unwrap();
+
+    // 2. Build a real profile via the stub, then clone it into a
+    //    NeedsReview + EMPTY-guidance profile (the shape the production bug
+    //    produced) and insert it directly.
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/style");
+    let src = base.join("fast-serial-chapter-1.md");
+    let dest = tmp.path().join("fast-serial-chapter-1.md");
+    std::fs::copy(&src, &dest).unwrap();
+
+    let seed_out = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Seed".to_string(),
+            source_paths: vec![dest.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await
+        .unwrap();
+
+    let mut stuck = seed_out.profile;
+    stuck.profile_id = "style_profile:stuck-empty-guidance".to_string();
+    stuck.name = "Stuck Empty Guidance".to_string();
+    stuck.status = StyleProfileStatus::NeedsReview;
+    stuck.guidance = StyleProfileGuidance::default();
+    assert!(stuck.guidance.is_empty());
+    svc.repository().insert_style_profile(&stuck).await.unwrap();
+
+    // 3. Without force: blocked by the Ready-status gate.
+    let err = svc
+        .apply_style_profile(ApplyStyleProfileInput {
+            force: None,
+            project_id: project_id.clone(),
+            profile_id: stuck.profile_id.clone(),
+            mode: StyleProfileApplyMode::Merge,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("not ready to apply"),
+        "expected status gate error, got: {err}"
+    );
+
+    // 4. With force: activates, and MUST NOT clobber the real narrator voice
+    //    or the operator's style notes.
+    let out = svc
+        .apply_style_profile(ApplyStyleProfileInput {
+            force: Some(true),
+            project_id: project_id.clone(),
+            profile_id: stuck.profile_id.clone(),
+            mode: StyleProfileApplyMode::Merge,
+        })
+        .await
+        .expect("force=true must apply a NeedsReview/empty-guidance profile");
+
+    assert_eq!(out.profile_id, stuck.profile_id);
+    assert_eq!(
+        out.narrator_voice, real_voice,
+        "forcing an empty-guidance profile must not overwrite the narrator voice"
+    );
+    assert_eq!(
+        out.reader_contract_style_notes,
+        vec!["Keep chapters under 3k words".to_string()],
+        "forcing an empty-guidance profile must not touch operator style notes"
+    );
+    assert!(
+        out.style_rule_id.is_none(),
+        "no style world rule should be created for empty guidance"
+    );
+
+    // The profile is now the active one (usable for drift detection).
+    let project_after = svc.repository().get_project(&project_id).await.unwrap();
+    assert_eq!(
+        project_after.active_style_profile_id.as_deref(),
+        Some(stuck.profile_id.as_str())
+    );
+}
+
+/// `create_style_profile_from_markdown` must fail loudly when guidance
+/// synthesis returns nothing usable, instead of silently persisting an
+/// unappliable record — EXCEPT in metrics_only mode, where empty prose
+/// guidance is expected by design.
+#[tokio::test]
+async fn test_create_style_profile_metrics_only_is_exempt_from_empty_guidance_guard() {
+    let (tmp, svc) = fresh_service().await;
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Metrics Only Exempt".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "p".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/style");
+    let src = base.join("fast-serial-chapter-1.md");
+    let dest = tmp.path().join("fast-serial-chapter-1.md");
+    std::fs::copy(&src, &dest).unwrap();
+
+    // metrics_only=true must succeed even though the guard would otherwise
+    // reject empty prose guidance.
+    let out = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_out.project_id.clone(),
+            profile_name: "Metrics Only".to_string(),
+            source_paths: vec![dest.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: Some(true),
+            force_apply: None,
+        })
+        .await
+        .expect("metrics_only create must not trip the empty-guidance guard");
+    assert!(!out.profile.profile_id.is_empty());
+}
+
+/// End-to-end guard: when guidance synthesis returns nothing usable, create
+/// must fail loudly and persist NOTHING — the original bug reported success
+/// and created a `NeedsReview` record with empty guidance that could never be
+/// applied. Uses the local-stub test sentinel to force an unparseable model
+/// response (both the initial call and the one-shot repair embed the marker).
+#[tokio::test]
+async fn test_create_style_profile_fails_loudly_when_guidance_empty_and_persists_nothing() {
+    let (tmp, svc) = fresh_service().await;
+
+    let project_out = svc
+        .create_project(CreateProjectInput {
+            name: "Loud Failure".to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "p".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = project_out.project_id;
+
+    // A corpus carrying the sentinel makes the local stub return unparseable
+    // guidance, simulating a model that fails to conform to the schema.
+    let bad_src = tmp.path().join("bad-guidance.md");
+    std::fs::write(
+        &bad_src,
+        "[SPINDLE_TEST:EMPTY_STYLE_GUIDANCE]\n\nSome prose to analyze so the corpus is non-empty.",
+    )
+    .unwrap();
+
+    let err = svc
+        .create_style_profile_from_markdown(CreateStyleProfileFromMarkdownInput {
+            project_id: project_id.clone(),
+            profile_name: "Should Not Persist".to_string(),
+            source_paths: vec![bad_src.to_string_lossy().to_string()],
+            recursive: Some(false),
+            include_globs: None,
+            exclude_globs: None,
+            max_files: None,
+            max_bytes_per_file: None,
+            max_total_words: None,
+            apply: Some(false),
+            application_mode: None,
+            source_sample_word_budget: None,
+            metrics_only: None,
+            force_apply: None,
+        })
+        .await
+        .expect_err("empty guidance must fail loudly, not report success");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("usable guidance"),
+        "expected the loud empty-guidance error, got: {msg}"
+    );
+    assert!(
+        msg.contains("metrics_only"),
+        "error must point at the metrics_only opt-out, got: {msg}"
+    );
+
+    // Nothing was persisted.
+    let listed = svc
+        .list_style_profiles(spindle_core::style::ListStyleProfilesInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .profiles
+            .iter()
+            .all(|p| p.name != "Should Not Persist"),
+        "no unusable profile may be persisted after a loud failure"
     );
 }

@@ -268,11 +268,29 @@ explicit-cleared local agents you use for drafting. An import agent that is not
 cleared for explicit content will still see your full explicit manuscript; the
 gate will not stop it.
 
+If you offload explicit work to a separate agent and want import to follow that
+offload without wiring each import route by hand, set the top-level flag:
+
+```toml
+route_import_to_explicit = true
+```
+
+With it enabled, `import_extract` and `import_synthesize` resolve to your
+explicit-cleared offload agent — the agent that serves `draft` at the `explicit`
+rating (or an `import_*`-specific `rating = "explicit"` override if you defined
+one) — instead of their default chair. This keeps un-rated manuscript prose off a
+default agent whose provider safety classifier would refuse it (e.g. Qwen). It is
+opt-in: a deliberately configured import chair is never overridden unless you set
+the flag. If no explicit-cleared agent is configured, import falls back to its
+default chair.
+
 As a nudge, `configure_agents` emits an advisory warning when an import route's
 agent does **not** declare the `explicit` rating while another configured agent
 does — a heuristic sign that you work with explicit content somewhere but your
 import chair is not cleared for it. It is advisory, not an error: import routes
-are not rating-gated, so ensure the agent may see your full manuscript.
+are not rating-gated, so ensure the agent may see your full manuscript (or set
+`route_import_to_explicit = true`). The advisory is suppressed when the flag is
+enabled.
 
 ## Research routing
 

@@ -164,6 +164,22 @@ The `scan_pattern` field is what makes a world rule enforceable: the
 violations in `check_consistency`. Without a `scan_pattern`, the validator
 silently skips the rule.
 
+Patterns match **whole words**, not raw substrings: `stat` matches the
+standalone word but not "statement", "station", or "status". Multi-word
+phrases work the same way (`the system`). The pattern is a regex (invalid
+regexes fall back to literal matching), so stem matching is opt-in — write
+`resurrect\w*` if you want "resurrect", "resurrected", and "resurrection"
+from one rule.
+
+**Secrecy-class rules are scoped to dialogue.** A rule about non-disclosure
+("Nate must never disclose the N.A.I.P.") is violated by characters TALKING,
+not by narration or interface readouts mentioning the secret. When the
+`rule_type` or `rule_name` says "secrecy"/"secret", or the description uses
+non-disclosure phrasing ("disclose", "never reveal", "keep secret", …), the
+validator only flags `scan_pattern` hits inside quoted dialogue — interior
+narration and bracketed HUD blocks like `*[The system notes: …]*` stay
+silent. Use `rule_type: "secrecy"` for these.
+
 **Critical rule types to define:**
 - **magic_limitation**: What magic can't do, or the constraints on how it works
 - **power_cost**: What using power consumes (health, time, resources, sanity)

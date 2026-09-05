@@ -873,6 +873,11 @@ but weren't captured in the explicit state updates. For each:
 
 - **New minor character** → propose `create_character` with minimal profile
 - **Physical description update** → propose `update_entity` on the character
+- **Character named or renamed** → `update_entity` with `changes: {"name": ...}`
+  and `allow_rename: true`: it keeps the old name as an alias, refreshes the
+  search index, and returns a `rename_report` of scenes/facts/knowledge/arcs
+  still using the old name. If the character simply gains an additional name
+  (nickname, title) without losing the old one, add `aliases` instead — no rename
 - **Location detail** → propose `update_entity` on the location
 - **Demonstrated world rule** → propose `update_entity` or `create_world_rule`
   Use `description` when updating an existing `world_rule`; do not send `summary`

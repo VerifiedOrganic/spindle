@@ -662,6 +662,34 @@ impl SubjectKindSpecific {
                 Some(format!("Current state: {}", details.current_state)),
                 Some(format!("Target state: {}", details.target_state)),
                 Some(format!("Thematic purpose: {}", details.thematic_purpose)),
+                if details.milestones.is_empty() {
+                    None
+                } else {
+                    Some(format!(
+                        "Milestones: {}",
+                        details
+                            .milestones
+                            .iter()
+                            .map(|milestone| {
+                                let placement = milestone
+                                    .placement
+                                    .as_ref()
+                                    .map(format_story_placement)
+                                    .unwrap_or_else(|| "unplaced".to_string());
+                                match &milestone.reached_at {
+                                    Some(reached) => format!(
+                                        "{} [{}] (reached {})",
+                                        milestone.label,
+                                        placement,
+                                        format_story_placement(reached)
+                                    ),
+                                    None => format!("{} [{}]", milestone.label, placement),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ))
+                },
             ])),
             SubjectKindSpecific::Term(details) => Some(compact_lines(vec![
                 Some(format!("Term: {}", details.term_text)),
@@ -761,6 +789,11 @@ pub struct CharacterDetails {
     pub role: String,
     pub summary: String,
     pub realm: Option<String>,
+    /// Alternate names the character answers to (V0037). Rename preserves
+    /// the old name here; drafting models reading the snapshot see every
+    /// name the character answers to.
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -855,6 +888,13 @@ pub struct CharacterArcDetails {
     pub current_state: String,
     pub target_state: String,
     pub thematic_purpose: String,
+    /// Full milestone array (label, placement, description, unlocks,
+    /// reached_at). Without it the arc snapshot is write-once: a caller
+    /// updating one placement would have to resend milestones it cannot
+    /// read back. serde-defaulted so pre-existing serialized snapshots
+    /// still deserialize.
+    #[serde(default)]
+    pub milestones: Vec<crate::models::CharacterArcMilestone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1002,6 +1042,10 @@ pub struct CharacterArcSummary {
     pub summary: String,
     pub current_phase: Option<String>,
     pub provenance: Provenance,
+    /// Full milestone array so the character snapshot can answer "where does
+    /// this arc stand and what comes next" without a second get_entity call.
+    #[serde(default)]
+    pub milestones: Vec<crate::models::CharacterArcMilestone>,
 }
 
 impl CharacterArcSummary {
@@ -1131,6 +1175,7 @@ mod tests {
                 role: "protagonist".to_string(),
                 summary: "Leads the chapter.".to_string(),
                 realm: Some("capital".to_string()),
+                aliases: Vec::new(),
             }),
             SubjectKindSpecific::Location(LocationDetails {
                 kind: "city".to_string(),
@@ -1197,6 +1242,7 @@ mod tests {
                 current_state: "doubting".to_string(),
                 target_state: "self-directed".to_string(),
                 thematic_purpose: "Claim agency.".to_string(),
+                milestones: Vec::new(),
             }),
             SubjectKindSpecific::Term(TermDetails {
                 term_text: "Glasswake".to_string(),
@@ -1303,6 +1349,7 @@ mod tests {
                 summary: "Learns to delegate.".to_string(),
                 current_phase: Some("pressure".to_string()),
                 provenance: provenance(),
+                milestones: Vec::new(),
             }],
             vec![SceneAppearanceSummary {
                 scene_id: RecordId::new("scene:test"),
@@ -1327,6 +1374,7 @@ mod tests {
                     role: "protagonist".to_string(),
                     summary: "Holding the line.".to_string(),
                     realm: Some("Northwall".to_string()),
+                    aliases: Vec::new(),
                 }),
             ),
             snapshot_for(
@@ -1366,6 +1414,7 @@ mod tests {
                 role: "protagonist".to_string(),
                 summary: "Wrong kind.".to_string(),
                 realm: None,
+                aliases: Vec::new(),
             }),
             Vec::new(),
             Vec::new(),
@@ -1538,6 +1587,7 @@ mod tests {
                 role: "protagonist".to_string(),
                 summary: "Holding the line.".to_string(),
                 realm: Some("Northwall".to_string()),
+                aliases: Vec::new(),
             }),
             vec![CanonicalFactSummary {
                 fact: "Mara commands the east watch.".to_string(),
@@ -1572,6 +1622,7 @@ mod tests {
                 summary: "Learns to delegate.".to_string(),
                 current_phase: Some("pressure".to_string()),
                 provenance: provenance(),
+                milestones: Vec::new(),
             }],
             vec![SceneAppearanceSummary {
                 scene_id: RecordId::new("scene:test"),

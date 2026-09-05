@@ -55,6 +55,12 @@ voice, and story tone.";
 ///   and content") and `docs/spindle-evolution-design.md` §4. The config lint in
 ///   [`configuration_warnings`] nudges the operator when their import agent is not
 ///   cleared for explicit content while another configured agent is.
+/// - **Opt-in explicit offload.** Because a rating gate cannot engage here, an
+///   operator who offloads explicit work to a separate agent can set
+///   `route_import_to_explicit = true` so import resolves to that explicit-cleared
+///   agent (see [`resolve_route`] / [`explicit_offload_route`]) instead of the
+///   default chair — keeping un-rated manuscript prose off a stricter provider
+///   (e.g. Qwen) that would otherwise refuse it.
 pub const PROSE_BEARING_ROUTES: &[&str] = &["draft", "mine", "line_edit", "reader_sim", "review"];
 
 /// Manuscript-import routes. Prose-bearing (they carry the operator's full
@@ -306,6 +312,10 @@ struct RuntimeConfig {
     agents: BTreeMap<String, AgentRuntime>,
     health_checks_enabled: bool,
     health_check_timeout: Duration,
+    /// When true, import routes (`import_extract`, `import_synthesize`) resolve
+    /// to the operator's explicit-cleared offload agent instead of their default
+    /// binding — see [`resolve_route`]. Mirrors the opt-in config flag.
+    route_import_to_explicit: bool,
 }
 
 /// A single ATTEMPTED dispatch observed at the router's rating-gated chokepoint
@@ -365,6 +375,7 @@ impl Default for ModelRouter {
                 agents: Vec::new(),
                 routing: Vec::new(),
                 health_check: crate::agent_config::default_health_check_config(),
+                route_import_to_explicit: false,
             }),
         )
     }
@@ -377,6 +388,7 @@ impl ModelRouter {
             agents: Vec::new(),
             routing: Vec::new(),
             health_check: crate::agent_config::default_health_check_config(),
+            route_import_to_explicit: false,
         })
     }
 
@@ -538,6 +550,24 @@ impl ModelRouter {
     /// filter protects at the SOURCE (an explicit example never reaches an
     /// analyzer that never declared explicit coverage), mirroring the
     /// prose-bearing dispatch gate.
+    /// Resolve `route_name` for `rating` and report the TYPED clearance error
+    /// without dispatching anything.
+    ///
+    /// Callers that hand their model work to a background task need this: a
+    /// clearance failure must still surface to the CALLER with its real type
+    /// (`RouteClearanceError`), because downstream code distinguishes an
+    /// uncleared route from a transient failure by `downcast_ref`. Flattening it
+    /// to a string inside a detached task turns an honest "skip, fall back to
+    /// manual" into an opaque "blocked".
+    pub fn check_route_clearance(
+        &self,
+        route_name: &str,
+        rating: Option<&str>,
+    ) -> Result<(), RouteClearanceError> {
+        let runtime = self.runtime.read().expect("model router read lock");
+        resolve_cleared_route(&runtime, route_name, rating).map(|_| ())
+    }
+
     pub fn route_clears_rating(&self, route_name: &str, rating: &str) -> bool {
         let runtime = self.runtime.read().expect("model router read lock");
         // "Declares the rating" — a missing API key means the DECLARED agent is
@@ -955,7 +985,12 @@ impl ModelRouter {
         if !response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {status} from {endpoint}: {error_body}");
+            return Err(http_completion_error(
+                status,
+                &endpoint,
+                &route.route_name,
+                &error_body,
+            ));
         }
         let body: serde_json::Value = response.json().await?;
         let first_choice = body
@@ -1022,7 +1057,12 @@ impl ModelRouter {
         if !response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {status} from {endpoint}: {error_body}");
+            return Err(http_completion_error(
+                status,
+                &endpoint,
+                &route.route_name,
+                &error_body,
+            ));
         }
         let resp_body: serde_json::Value = response.json().await?;
         let first_choice = resp_body
@@ -1157,8 +1197,12 @@ fn route_preflight(runtime: &RuntimeConfig, route_name: &str, rating: &str) -> D
 ///
 /// Resolution order:
 /// 1. If `rating` is `Some`, try `rating_routes[(route, normalized_rating)]`.
-/// 2. Fall back to `routes[route]` (the default rule for this route).
-/// 3. Return `None` if neither is configured.
+/// 2. For an import route with no rating, when `route_import_to_explicit` is
+///    enabled, prefer the operator's explicit-cleared offload agent (see
+///    [`explicit_offload_route`]) so un-rated manuscript prose honors the
+///    explicit offload instead of landing on the default chair.
+/// 3. Fall back to `routes[route]` (the default rule for this route).
+/// 4. Return `None` if nothing is configured.
 fn resolve_route<'r>(
     runtime: &'r RuntimeConfig,
     route_name: &str,
@@ -1174,7 +1218,38 @@ fn resolve_route<'r>(
             return Some(route);
         }
     }
+    // Import routes dispatch with `rating: None` and are exempt from the rating
+    // gate, so a rating-based explicit offload never engages for them. When the
+    // operator opts in, route them through the explicit-cleared offload agent so
+    // a stricter provider (e.g. Qwen) is not handed un-offloaded manuscript prose.
+    if rating.is_none()
+        && runtime.route_import_to_explicit
+        && IMPORT_ROUTES.contains(&route_name)
+        && let Some(route) = explicit_offload_route(runtime, route_name)
+    {
+        return Some(route);
+    }
     runtime.routes.get(route_name)
+}
+
+/// The explicit-cleared offload target for an import route, when one is
+/// configured. Prefers an `import_*`-specific explicit override
+/// (`rating_routes[(route, "explicit")]`); otherwise falls back to the agent
+/// that serves `draft` at the `explicit` rating — the canonical "where explicit
+/// prose goes" binding the operator has already declared. Returns `None` when
+/// neither is configured, so the caller falls back to the default chair.
+fn explicit_offload_route<'r>(
+    runtime: &'r RuntimeConfig,
+    route_name: &str,
+) -> Option<&'r ModelRoute> {
+    runtime
+        .rating_routes
+        .get(&(route_name.to_string(), "explicit".to_string()))
+        .or_else(|| {
+            runtime
+                .rating_routes
+                .get(&("draft".to_string(), "explicit".to_string()))
+        })
 }
 
 /// Why a prose-bearing route could not be cleared for dispatch (evolution §4
@@ -1213,6 +1288,74 @@ pub enum RouteClearanceError {
 #[error("no model configured for route '{route}' - configure an agent in .spindle/config.toml")]
 pub struct NoModelConfiguredError {
     pub route: String,
+}
+
+/// A provider safety classifier refused the completion on content-policy
+/// grounds (e.g. Qwen/DashScope data-inspection, OpenAI/Anthropic content
+/// policy). Distinct from a transient model error: a refusal is deterministic
+/// for this prompt+provider and retrying will not help, so callers honest-skip
+/// the affected item (a scene, an import segment) rather than aborting the whole
+/// operation or burning retries.
+///
+/// Preserved through `anyhow` so callers can `downcast_ref` to distinguish a
+/// content-policy refusal from a transient failure — the same convention as
+/// [`RouteClearanceError`] and [`NoModelConfiguredError`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("provider content-policy refusal on route '{route}' from {endpoint}")]
+pub struct ContentPolicyRefusal {
+    pub route: String,
+    pub endpoint: String,
+    /// The provider's error body, trimmed. Carried so an operator can see WHY,
+    /// but never includes the prompt/prose that triggered it.
+    pub detail: String,
+}
+
+/// Error-body substrings that identify a provider safety/content-policy refusal
+/// as opposed to an ordinary bad request. Lowercased before matching. Covers
+/// OpenAI-compatible (`content policy`, `content_policy`, `content filter`),
+/// Anthropic (`sensitive content`), and DashScope/Qwen (`datainspectionfailed`,
+/// `data inspection`) wordings.
+const CONTENT_POLICY_REFUSAL_MARKERS: &[&str] = &[
+    "content policy",
+    "content_policy",
+    "content filter",
+    "content_filter",
+    "content moderation",
+    "sensitive content",
+    "datainspectionfailed",
+    "data inspection",
+    "responsibleaipolicy",
+    "safety system",
+];
+
+/// True when an HTTP error body looks like a provider content-policy refusal
+/// rather than a generic 4xx. Used by the HTTP adapters to surface a typed
+/// [`ContentPolicyRefusal`] callers can honest-skip on.
+fn is_content_policy_refusal(error_body: &str) -> bool {
+    let lowered = error_body.to_ascii_lowercase();
+    CONTENT_POLICY_REFUSAL_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+}
+
+/// Map a non-success HTTP response from a chat completion into either a typed
+/// [`ContentPolicyRefusal`] (when the body looks like a safety refusal) or a
+/// generic anyhow error. Keeps the two HTTP adapters consistent.
+fn http_completion_error(
+    status: reqwest::StatusCode,
+    endpoint: &str,
+    route: &str,
+    error_body: &str,
+) -> anyhow::Error {
+    if is_content_policy_refusal(error_body) {
+        anyhow::Error::new(ContentPolicyRefusal {
+            route: route.to_string(),
+            endpoint: endpoint.to_string(),
+            detail: error_body.trim().chars().take(500).collect(),
+        })
+    } else {
+        anyhow::anyhow!("HTTP {status} from {endpoint}: {error_body}")
+    }
 }
 
 /// Rating-gated dispatch chokepoint (evolution §4 rule 2). Wraps
@@ -1637,6 +1780,7 @@ fn runtime_from_loaded_config(
         agents,
         health_checks_enabled,
         health_check_timeout: timeout,
+        route_import_to_explicit: config.route_import_to_explicit,
     }
 }
 
@@ -1934,9 +2078,17 @@ fn configuration_warnings(config: &LoadedAgentConfig) -> Vec<String> {
 /// import chair does NOT, warn — advisorily, never an error — that the import
 /// chair sees the full manuscript ungated and should be one the operator trusts
 /// with explicit content. One warning per distinct uncleared import agent,
-/// emitted deterministically.
+/// emitted deterministically. Suppressed entirely when `route_import_to_explicit`
+/// is enabled, since import then resolves to the explicit-cleared offload agent
+/// and the concern is already addressed.
 fn import_chair_clearance_advisories(config: &LoadedAgentConfig) -> Vec<String> {
     use std::collections::BTreeSet;
+
+    // Opt-in offload enabled: import resolves to the explicit-cleared agent, so
+    // the tame-default-chair concern no longer applies.
+    if config.route_import_to_explicit {
+        return Vec::new();
+    }
 
     let declares_explicit = |agent: &ConfiguredAgent| -> bool {
         agent
@@ -1977,7 +2129,8 @@ fn import_chair_clearance_advisories(config: &LoadedAgentConfig) -> Vec<String> 
                 "agent '{agent_id}' serves an import route but is not cleared for explicit \
                  content, while another configured agent is. import routes are not rating-gated \
                  (ratings do not exist until analysis runs); ensure this agent may see your full \
-                 manuscript, or route import to an explicit-cleared agent you trust with it"
+                 manuscript, or set `route_import_to_explicit = true` to route import through your \
+                 explicit-cleared offload agent"
             )
         })
         .collect()
@@ -2462,6 +2615,14 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> Result<String, NoModelC
         // local-stub agent (builtin_default = false) still gets the mock for
         // genuinely-local test/dev setups.
         "style_analyze" if route.builtin_default => return Err(no_model()),
+        // Test sentinel: a corpus carrying this marker makes the stub return
+        // unparseable guidance (echoing the marker so the one-shot repair
+        // prompt, which embeds the prior response, also fails). This exercises
+        // the create-from-markdown "guidance came back empty/unusable → fail
+        // loudly" path end to end without a real model.
+        "style_analyze" if prompt.contains("[SPINDLE_TEST:EMPTY_STYLE_GUIDANCE]") => {
+            "[SPINDLE_TEST:EMPTY_STYLE_GUIDANCE] this is not valid JSON".to_string()
+        }
         "style_analyze" => r#"{
   "summary": "Mock style profile guidance summary",
   "pov": "third_person_close",
@@ -3502,6 +3663,7 @@ enabled = false
             )]),
             health_checks_enabled: false,
             health_check_timeout: Duration::from_millis(1500),
+            route_import_to_explicit: false,
         };
 
         ModelRouter {
@@ -4450,6 +4612,175 @@ agent = "mature-drafter"
         );
     }
 
+    // ── Opt-in import → explicit offload (route_import_to_explicit) ────────
+    // Import routes dispatch rating: None and are exempt from the rating gate, so
+    // a rating-based explicit offload never engages for them. With the opt-in
+    // flag, import resolves to the explicit-cleared offload agent (the `draft`
+    // explicit chair) instead of the tame default — keeping un-rated manuscript
+    // prose off a stricter provider (e.g. Qwen).
+
+    fn import_offload_fixture(flag: bool) -> String {
+        format!(
+            r####"
+route_import_to_explicit = {flag}
+
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "tame-model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "explicit-model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####
+        )
+    }
+
+    #[test]
+    fn import_routes_to_explicit_offload_when_flag_enabled() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(true));
+        router.configure(Some(&path)).expect("configure");
+
+        let runtime = router.runtime.read().expect("read lock");
+        let route =
+            resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
+        assert_eq!(
+            route.model_name, "explicit-drafter",
+            "with the flag, import must follow the explicit offload chair"
+        );
+    }
+
+    #[test]
+    fn import_uses_default_chair_when_flag_disabled() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(false));
+        router.configure(Some(&path)).expect("configure");
+
+        let runtime = router.runtime.read().expect("read lock");
+        let route =
+            resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
+        assert_eq!(
+            route.model_name, "import-tame",
+            "without the flag, import keeps its configured default chair"
+        );
+    }
+
+    #[test]
+    fn import_prefers_route_specific_explicit_override_over_draft_chair() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+route_import_to_explicit = true
+
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "tame-model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "import-explicit"
+name = "Import Explicit"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "import-explicit-model"
+ratings = ["explicit"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "explicit-model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "import_extract"
+agent = "import-explicit"
+rating = "explicit"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####,
+        );
+        router.configure(Some(&path)).expect("configure");
+
+        let runtime = router.runtime.read().expect("read lock");
+        let route =
+            resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
+        assert_eq!(
+            route.model_name, "import-explicit",
+            "a route-specific explicit override wins over the draft chair"
+        );
+    }
+
+    #[test]
+    fn flag_suppresses_import_chair_advisory() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(true));
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("import routes are not rating-gated")),
+            "flag enabled means the import-chair concern is handled, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn advisory_suggests_the_flag_when_disabled() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(false));
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            output
+                .warnings
+                .iter()
+                .any(|w| w.contains("route_import_to_explicit")),
+            "advisory must point at the opt-in flag, got {:?}",
+            output.warnings
+        );
+    }
+
     #[test]
     fn draft_preflight_flags_missing_api_key_with_env_name_only() {
         // A var name unique to this test that must not be set.
@@ -4850,6 +5181,65 @@ agent = "reviewer"
         let route =
             resolve_cleared_route(&runtime, "review", None).expect("None rating passes through");
         assert_eq!(route.model_name, "reviewer");
+    }
+
+    // ── Provider content-policy refusal detection (Qwen et al.) ────────────
+    // A stricter provider safety classifier refusing a completion must surface
+    // as a typed `ContentPolicyRefusal` callers can honest-skip on, never as a
+    // generic error that aborts the whole mine/import operation.
+
+    #[test]
+    fn detects_provider_content_policy_refusal_wordings() {
+        assert!(is_content_policy_refusal(
+            r#"{"error":{"message":"Your request was rejected by content policy"}}"#
+        ));
+        assert!(is_content_policy_refusal(
+            r#"{"error":{"code":"content_policy_violation"}}"#
+        ));
+        // DashScope / Qwen data-inspection wording.
+        assert!(is_content_policy_refusal(
+            r#"{"code":"DataInspectionFailed","message":"Input data may contain inappropriate content."}"#
+        ));
+        assert!(is_content_policy_refusal(
+            "This request contains sensitive content."
+        ));
+    }
+
+    #[test]
+    fn ordinary_http_errors_are_not_content_policy_refusals() {
+        assert!(!is_content_policy_refusal(r#"{"error":"invalid api key"}"#));
+        assert!(!is_content_policy_refusal("model not found"));
+        assert!(!is_content_policy_refusal(""));
+    }
+
+    #[test]
+    fn http_completion_error_maps_refusal_to_typed_error() {
+        let err = http_completion_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "import_extract",
+            r#"{"code":"DataInspectionFailed"}"#,
+        );
+        let refusal = err
+            .downcast_ref::<ContentPolicyRefusal>()
+            .expect("typed refusal preserved through anyhow");
+        assert_eq!(refusal.route, "import_extract");
+        assert!(refusal.detail.contains("DataInspectionFailed"));
+    }
+
+    #[test]
+    fn http_completion_error_keeps_generic_error_for_other_4xx() {
+        let err = http_completion_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "https://example/v1/chat/completions",
+            "mine",
+            r#"{"error":"invalid api key"}"#,
+        );
+        assert!(
+            err.downcast_ref::<ContentPolicyRefusal>().is_none(),
+            "a non-policy 400 must stay a generic error"
+        );
+        assert!(err.to_string().contains("HTTP 400"));
     }
 
     #[test]

@@ -467,7 +467,11 @@ impl SqliteSpindleService {
                - Third-person: {:.2}\n\
              - Top repeated functional markers: {}\n\n\
              {}\n\n\
-             Output a single JSON object strictly matching the StyleProfileGuidance schema.",
+             [REQUIRED OUTPUT SCHEMA]\n\
+             {}\n\n\
+             Output a single JSON object strictly matching this schema. Include every field; \
+             use empty strings, empty arrays, or null where a category does not apply. \
+             No markdown wrapping, no commentary.",
             total_words,
             metrics.average_sentence_words,
             metrics.median_sentence_words,
@@ -484,7 +488,8 @@ impl SqliteSpindleService {
             metrics.first_person_pronoun_rate_per_1k_words,
             metrics.third_person_pronoun_rate_per_1k_words,
             metrics.top_functional_markers.join(", "),
-            corpus_section
+            corpus_section,
+            spindle_core::style::style_profile_guidance_json_schema()
         );
 
         let req = crate::ai::ModelRequest {
@@ -564,8 +569,16 @@ impl SqliteSpindleService {
 
             match guidance_res {
                 Ok(g) => {
-                    status = StyleProfileStatus::Ready;
                     final_guidance = g;
+                    // A parseable-but-empty object (the model returned `{}` or
+                    // omitted every field) is NOT a usable profile. Mark it
+                    // NeedsReview so callers can fail loudly instead of
+                    // persisting a Ready-but-unappliable record.
+                    status = if final_guidance.is_empty() {
+                        StyleProfileStatus::NeedsReview
+                    } else {
+                        StyleProfileStatus::Ready
+                    };
                 }
                 Err(_) => {
                     status = StyleProfileStatus::NeedsReview;
@@ -739,6 +752,23 @@ impl SqliteSpindleService {
             .generate_candidate_style_profile(&input.project_id, &input.profile_name, &policy, None)
             .await?;
 
+        // Fail loudly instead of silently persisting an unappliable record.
+        // Guidance synthesis is model-populated; if the routed model returned
+        // nothing usable (empty or unparseable output) the profile would be
+        // stuck at NeedsReview with empty guidance and no way to apply it.
+        // Metrics-only profiles are exempt by design — they carry no prose
+        // guidance and are applied deliberately via force.
+        let is_metrics_only = input.metrics_only.unwrap_or(false);
+        if !is_metrics_only && profile.guidance.is_empty() {
+            return Err(anyhow!(
+                "create_style_profile_from_markdown failed: the style_analyze route returned no \
+                 usable guidance (every guidance field came back empty), so no profile was \
+                 created. The model's output was empty or did not match the StyleProfileGuidance \
+                 schema. Check the configured style agent / model_receipt, retry, or pass \
+                 metrics_only=true to create a metrics-only profile deliberately."
+            ));
+        }
+
         let should_apply = input.apply.unwrap_or(false);
         if should_apply
             && profile.quality.classification
@@ -754,7 +784,10 @@ impl SqliteSpindleService {
         // Persist profile
         self.repository().insert_style_profile(&profile).await?;
 
-        // Optionally apply profile
+        // Optionally apply profile. force_apply doubles as the apply-level
+        // force so a metrics-only (no prose guidance) or NeedsReview profile
+        // can be activated deliberately rather than being trapped by the
+        // Ready-status / application-guidance gates.
         let mut applied = false;
         let mut application = None;
         if should_apply {
@@ -765,6 +798,7 @@ impl SqliteSpindleService {
                     mode: input
                         .application_mode
                         .unwrap_or(StyleProfileApplyMode::Merge),
+                    force: input.force_apply,
                 })
                 .await?;
             applied = true;
@@ -1244,6 +1278,7 @@ impl SqliteSpindleService {
                     project_id: input.project_id.clone(),
                     profile_id: candidate.profile_id.clone(),
                     mode: StyleProfileApplyMode::Merge,
+                    force: None,
                 })
                 .await?;
             applied = true;
@@ -1288,21 +1323,23 @@ impl SqliteSpindleService {
         input: ApplyStyleProfileInput,
     ) -> Result<ApplyStyleProfileOutput> {
         // 1. Fetch style profile
+        let force = input.force.unwrap_or(false);
         let profile = self
             .repository()
             .get_style_profile(&input.project_id, &input.profile_id)
             .await?
             .ok_or_else(|| anyhow!("style profile not found"))?;
-        if profile.status != StyleProfileStatus::Ready {
+        if profile.status != StyleProfileStatus::Ready && !force {
             return Err(anyhow!(
-                "style profile is not ready to apply: {:?}",
+                "style profile is not ready to apply: {:?} (pass force=true to apply deliberately)",
                 profile.status
             ));
         }
         ensure_style_profile_not_archived(&profile)?;
-        if !has_application_guidance(&profile.guidance) {
+        let has_guidance = has_application_guidance(&profile.guidance);
+        if !has_guidance && !force {
             return Err(anyhow!(
-                "style profile has no application guidance to apply: {}",
+                "style profile has no application guidance to apply: {} (pass force=true to activate a metrics-only profile without changing prose settings)",
                 profile.profile_id
             ));
         }
@@ -1325,83 +1362,119 @@ impl SqliteSpindleService {
             Vec::new()
         };
 
-        // Use helper
+        // Compute and apply the prose diff. When forcing a profile that has no
+        // application guidance (metrics-only), do NOT touch narrator voice,
+        // style notes, or the style world rule — activation is for drift
+        // detection only, and clobbering a project's real narrator voice with
+        // an empty one is exactly the incident this guards against.
         let (
             after_narrator_voice,
             added_style_notes,
             removed_style_notes,
             after_style_notes,
             style_rule_action,
-            _cache_ids,
-        ) = build_apply_style_profile_diff(
-            &profile,
-            &current_narrator_voice,
-            &before_style_notes,
-            input.mode,
-            &existing_world_rules,
-            branch_id.as_deref(),
-        );
+            style_rule_id,
+            db_rule_action_str,
+        ) = if has_guidance {
+            // Use helper
+            let (
+                after_narrator_voice,
+                added_style_notes,
+                removed_style_notes,
+                after_style_notes,
+                style_rule_action,
+                _cache_ids,
+            ) = build_apply_style_profile_diff(
+                &profile,
+                &current_narrator_voice,
+                &before_style_notes,
+                input.mode,
+                &existing_world_rules,
+                branch_id.as_deref(),
+            );
 
-        // Perform narrator voice update
-        self.repository()
-            .set_narrator_voice(&input.project_id, after_narrator_voice.clone())
-            .await?;
+            // Perform narrator voice update
+            self.repository()
+                .set_narrator_voice(&input.project_id, after_narrator_voice.clone())
+                .await?;
 
-        // Perform reader contract update
-        let mut reader_contract = project.reader_contract.into_core();
-        reader_contract.style_notes = after_style_notes;
-        self.repository()
-            .update_project_reader_contract(&input.project_id, &reader_contract)
-            .await?;
+            // Perform reader contract update
+            let mut reader_contract = project.reader_contract.clone().into_core();
+            reader_contract.style_notes = after_style_notes.clone();
+            self.repository()
+                .update_project_reader_contract(&input.project_id, &reader_contract)
+                .await?;
 
-        // Perform world rule update
-        let mut style_rule_id = None;
-        let db_rule_action_str = match style_rule_action.clone() {
-            spindle_core::style::StyleWorldRuleAction::Create {
-                rule_name,
-                description,
-            } => {
-                let rule_out = self
-                    .create_world_rule(CreateWorldRuleInput {
-                        project_id: input.project_id.clone(),
-                        rule_name,
-                        rule_type: "style".to_string(),
-                        description,
-                        scan_pattern: None,
-                        relevance_tags: Vec::new(),
-                        established_in: None,
+            // Perform world rule update
+            let mut rule_id: Option<String> = None;
+            let action_str = match style_rule_action.clone() {
+                spindle_core::style::StyleWorldRuleAction::Create {
+                    rule_name,
+                    description,
+                } => {
+                    let rule_out = self
+                        .create_world_rule(CreateWorldRuleInput {
+                            project_id: input.project_id.clone(),
+                            rule_name,
+                            rule_type: "style".to_string(),
+                            description,
+                            scan_pattern: None,
+                            relevance_tags: Vec::new(),
+                            established_in: None,
+                        })
+                        .await?;
+                    rule_id = Some(rule_out.world_rule_id);
+                    "created".to_string()
+                }
+                spindle_core::style::StyleWorldRuleAction::Update {
+                    rule_id: update_rule_id,
+                    new_description,
+                    ..
+                } => {
+                    let changes = serde_json::json!({
+                        "description": new_description
+                    });
+                    self.update_world_rule(UpdateWorldRuleInput {
+                        world_rule_id: update_rule_id.clone(),
+                        changes,
                     })
                     .await?;
-                style_rule_id = Some(rule_out.world_rule_id);
-                "created".to_string()
-            }
-            spindle_core::style::StyleWorldRuleAction::Update {
-                rule_id,
-                new_description,
-                ..
-            } => {
-                let changes = serde_json::json!({
-                    "description": new_description
-                });
-                self.update_world_rule(UpdateWorldRuleInput {
-                    world_rule_id: rule_id.clone(),
-                    changes,
-                })
-                .await?;
-                style_rule_id = Some(rule_id);
-                "updated".to_string()
-            }
-            spindle_core::style::StyleWorldRuleAction::NoOp => {
-                // If it exists but didn't change description, retrieve rule ID
-                if let Some(_bid) = &branch_id {
-                    let expected_name = format!("Style Profile: {}", profile.name);
-                    style_rule_id = existing_world_rules
-                        .iter()
-                        .find(|r| r.rule_name == profile.name || r.rule_name == expected_name)
-                        .map(|r| r.id.clone());
+                    rule_id = Some(update_rule_id);
+                    "updated".to_string()
                 }
-                "no_op".to_string()
-            }
+                spindle_core::style::StyleWorldRuleAction::NoOp => {
+                    // If it exists but didn't change description, retrieve rule ID
+                    if let Some(_bid) = &branch_id {
+                        let expected_name = format!("Style Profile: {}", profile.name);
+                        rule_id = existing_world_rules
+                            .iter()
+                            .find(|r| r.rule_name == profile.name || r.rule_name == expected_name)
+                            .map(|r| r.id.clone());
+                    }
+                    "no_op".to_string()
+                }
+            };
+            (
+                after_narrator_voice,
+                added_style_notes,
+                removed_style_notes,
+                after_style_notes,
+                style_rule_action,
+                rule_id,
+                action_str,
+            )
+        } else {
+            // Forced activation without prose guidance: leave every prose
+            // setting exactly as it is.
+            (
+                current_narrator_voice.clone(),
+                Vec::new(),
+                Vec::new(),
+                before_style_notes.clone(),
+                spindle_core::style::StyleWorldRuleAction::NoOp,
+                None,
+                "no_op".to_string(),
+            )
         };
 
         // Invalidate caches
@@ -1436,7 +1509,7 @@ impl SqliteSpindleService {
             before_narrator_voice: current_narrator_voice,
             after_narrator_voice,
             before_style_notes,
-            after_style_notes: reader_contract.style_notes.clone(),
+            after_style_notes,
             added_style_notes,
             removed_style_notes,
             style_rule_id: style_rule_id.clone(),

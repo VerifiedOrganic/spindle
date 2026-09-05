@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Bounded-concurrency fan-out (`stream::buffered`) for the deep-check tiers.
+futures-util = "0.3.31"
 anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true

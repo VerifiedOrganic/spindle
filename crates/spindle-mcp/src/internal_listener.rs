@@ -177,7 +177,7 @@ pub async fn ensure_primary_addr(
 
     // Atomic election: whoever creates the addr file first wins. A stale file
     // naming a dead listener is reclaimed.
-    match claim_addr_file(data_dir, our_addr) {
+    match claim_addr_file(data_dir, our_addr).await {
         AddrClaim::Won => {
             tracing::info!("lazily claimed primacy; internal MCP listener on {our_addr}");
             guard.insert(key, Arc::new(listener));
@@ -204,7 +204,17 @@ enum AddrClaim {
 /// Atomically try to become the addr-file owner. Uses `create_new` so exactly
 /// one racer wins the create. If the file already exists, its listener is
 /// health-probed: dead ⇒ reclaim (overwrite and win); live ⇒ lose to it.
-fn claim_addr_file(data_dir: &Path, addr: SocketAddr) -> AddrClaim {
+///
+/// `async` because the liveness probe must run on the CALLER's runtime. This
+/// used to be a sync fn that drove the probe on a nested current-thread runtime
+/// via `block_on`; every real caller reaches it from `async fn`, and tokio
+/// panics ("Cannot start a runtime from within a runtime") when `block_on` runs
+/// on a thread already driving a runtime. That panic fired on exactly the path
+/// this function exists to handle — an addr file naming a dead listener — so a
+/// stale addr was never reclaimed. The panic unwound through the MCP tool
+/// handler without producing a response, which the client saw as a ~60s hang
+/// rather than an error, deadlocking the whole authoring loop.
+async fn claim_addr_file(data_dir: &Path, addr: SocketAddr) -> AddrClaim {
     let path = addr_file_path(data_dir);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -233,7 +243,7 @@ fn claim_addr_file(data_dir: &Path, addr: SocketAddr) -> AddrClaim {
 
     // The file exists. Is its listener alive?
     match read_addr_file(data_dir) {
-        Ok(existing) if probe_health_blocking(existing) => AddrClaim::LostTo(existing),
+        Ok(existing) if probe_health(existing).await => AddrClaim::LostTo(existing),
         _ => {
             // Stale file (unparseable or dead listener) — reclaim it.
             let _ = write_addr_file(data_dir, addr);
@@ -250,18 +260,6 @@ async fn probe_health(addr: SocketAddr) -> bool {
         .send()
         .await
         .is_ok()
-}
-
-/// Blocking health probe, used from the synchronous [`claim_addr_file`] election
-/// (it runs a tiny current-thread runtime so the sync election stays sync).
-fn probe_health_blocking(addr: SocketAddr) -> bool {
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
-        return false;
-    };
-    rt.block_on(probe_health(addr))
 }
 
 /// Shut down a lazily-claimed listener on real process shutdown and, if this
@@ -289,8 +287,13 @@ mod tests {
 
     /// 4a: claiming the addr file is atomic and idempotent — two concurrent
     /// claims resolve to the SAME winning addr (one owner), never two files.
-    #[test]
-    fn claim_addr_file_is_atomic_and_reclaims_stale() {
+    ///
+    /// Runs on a runtime deliberately: every production caller reaches
+    /// `claim_addr_file` from `async fn`, and as a plain `#[test]` this ran on a
+    /// runtime-less thread where the old nested-`block_on` probe happened to
+    /// work — passing green while production panicked on the same path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claim_addr_file_is_atomic_and_reclaims_stale() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -300,7 +303,7 @@ mod tests {
         write_addr_file(&data_dir, dead).unwrap();
         let ours: SocketAddr = "127.0.0.1:55001".parse().unwrap();
         assert!(
-            matches!(claim_addr_file(&data_dir, ours), AddrClaim::Won),
+            matches!(claim_addr_file(&data_dir, ours).await, AddrClaim::Won),
             "a stale/dead addr file must be reclaimable"
         );
         assert_eq!(read_addr_file(&data_dir).unwrap(), ours);
@@ -308,6 +311,9 @@ mod tests {
         // A second claim over a now-owned-but-dead file also reclaims (ours:55001
         // has no listener either), staying idempotent on the winner side.
         let other: SocketAddr = "127.0.0.1:55002".parse().unwrap();
-        assert!(matches!(claim_addr_file(&data_dir, other), AddrClaim::Won));
+        assert!(matches!(
+            claim_addr_file(&data_dir, other).await,
+            AddrClaim::Won
+        ));
     }
 }

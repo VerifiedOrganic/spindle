@@ -103,23 +103,68 @@ pub struct StyleCorpusMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 pub struct StyleProfileGuidance {
+    // Every field carries `#[serde(default)]`: model-synthesized guidance is
+    // parsed leniently so a response that omits (or slightly misnames) a field
+    // degrades to an empty value instead of failing the whole parse. An
+    // all-empty result is then detected explicitly (`== default()`) and
+    // surfaced loudly by the caller rather than silently persisting.
+    #[serde(default)]
     pub summary: String,
+    #[serde(default)]
     pub pov: Option<String>,
+    #[serde(default)]
     pub tense: Option<String>,
+    #[serde(default)]
     pub narrator_distance: Option<String>,
+    #[serde(default)]
     pub narrator_voice: crate::style::NarratorVoice,
+    #[serde(default)]
     pub pacing: Vec<String>,
+    #[serde(default)]
     pub paragraphing: Vec<String>,
+    #[serde(default)]
     pub sentence_rhythm: Vec<String>,
+    #[serde(default)]
     pub diction: Vec<String>,
+    #[serde(default)]
     pub dialogue: Vec<String>,
+    #[serde(default)]
     pub exposition: Vec<String>,
+    #[serde(default)]
     pub interiority: Vec<String>,
+    #[serde(default)]
     pub humor_or_tension: Vec<String>,
+    #[serde(default)]
     pub scene_structure: Vec<String>,
+    #[serde(default)]
     pub do_rules: Vec<String>,
+    #[serde(default)]
     pub avoid_rules: Vec<String>,
+    #[serde(default)]
     pub prompt_snippet: String,
+}
+
+impl StyleProfileGuidance {
+    /// True when synthesis produced nothing usable — every field empty. Used
+    /// to fail loudly instead of persisting an unappliable profile.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// JSON Schema for [`StyleProfileGuidance`], injected into the style-analysis
+/// prompt so the routed model is told the exact output shape it must produce.
+/// Without this the prompt only referenced "the StyleProfileGuidance schema"
+/// by name, so real models could not conform and guidance synthesis silently
+/// degraded to an empty `NeedsReview` profile. Subschemas (e.g. NarratorVoice)
+/// are inlined so the emitted schema is self-contained.
+pub fn style_profile_guidance_json_schema() -> String {
+    let settings = schemars::generate::SchemaSettings::openapi3().with(|s| {
+        s.inline_subschemas = true;
+    });
+    let generator = settings.into_generator();
+    let schema = generator.into_root_schema_for::<StyleProfileGuidance>();
+    serde_json::to_string(&schema).unwrap_or_else(|_| "{}".to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -199,6 +244,14 @@ pub struct ApplyStyleProfileInput {
     pub project_id: String,
     pub profile_id: String,
     pub mode: StyleProfileApplyMode,
+    /// Override the Ready-status and application-guidance gates so a profile
+    /// can be applied deliberately even when it is `NeedsReview` or carries no
+    /// prose guidance (e.g. a metrics-only profile activated for drift
+    /// detection). With no application guidance the prose settings (narrator
+    /// voice, style notes, style world rule) are left untouched — only the
+    /// profile is activated — so forcing never clobbers existing prose style.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -782,4 +835,83 @@ pub struct RefreshStyleProfileOutput {
     /// `dismissed`, never fed), evolution §3.9.
     #[serde(default)]
     pub dismissed_candidate_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guidance_json_schema_is_valid_and_names_every_field() {
+        let schema = style_profile_guidance_json_schema();
+        assert!(!schema.is_empty());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&schema).expect("schema must be valid JSON");
+        // The model must be able to see the concrete field names it has to
+        // emit; the old prompt only referenced the schema by name.
+        let schema_str = parsed.to_string();
+        for field in [
+            "summary",
+            "pov",
+            "tense",
+            "narrator_distance",
+            "narrator_voice",
+            "pacing",
+            "paragraphing",
+            "sentence_rhythm",
+            "diction",
+            "dialogue",
+            "exposition",
+            "interiority",
+            "humor_or_tension",
+            "scene_structure",
+            "do_rules",
+            "avoid_rules",
+            "prompt_snippet",
+        ] {
+            assert!(
+                schema_str.contains(&format!("\"{field}\"")),
+                "schema must name field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn guidance_parses_leniently_and_reports_emptiness() {
+        // An empty object parses to an all-default (empty) guidance — the
+        // shape the production bug produced — and is detected as empty.
+        let empty: StyleProfileGuidance =
+            serde_json::from_str("{}").expect("empty object must parse leniently");
+        assert!(empty.is_empty());
+
+        // A partial response parses, filling omitted fields with defaults, and
+        // is NOT empty.
+        let partial: StyleProfileGuidance = serde_json::from_str(
+            r#"{"summary":"Close third, past tense.","do_rules":["Keep POV tight"]}"#,
+        )
+        .expect("partial object must parse leniently");
+        assert!(!partial.is_empty());
+        assert_eq!(partial.summary, "Close third, past tense.");
+        assert_eq!(partial.do_rules, vec!["Keep POV tight".to_string()]);
+        assert!(partial.avoid_rules.is_empty());
+        assert!(partial.pov.is_none());
+        assert!(partial.narrator_voice.is_empty());
+
+        // A fully-populated response parses and is not empty.
+        let full_json = r#"{
+            "summary":"s","pov":"third_person_close","tense":"past",
+            "narrator_distance":"close",
+            "narrator_voice":{"pacing_feel":"punchy","notes":["n"]},
+            "pacing":["p"],"paragraphing":["pa"],"sentence_rhythm":["r"],
+            "diction":["d"],"dialogue":["di"],"exposition":["e"],
+            "interiority":["i"],"humor_or_tension":["h"],
+            "scene_structure":["sc"],"do_rules":["do"],"avoid_rules":["av"],
+            "prompt_snippet":"snippet"
+        }"#;
+        let full: StyleProfileGuidance =
+            serde_json::from_str(full_json).expect("full object must parse");
+        assert!(!full.is_empty());
+        assert_eq!(full.prompt_snippet, "snippet");
+        assert_eq!(full.narrator_voice.pacing_feel.as_deref(), Some("punchy"));
+    }
 }

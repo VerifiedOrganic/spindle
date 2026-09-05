@@ -133,7 +133,9 @@ already know the Truth and use it to change the world around them.
 ## Step 1: Core Identity
 
 Ask the user (or infer from context):
-- **Name**: What are they called? Any nicknames?
+- **Name**: What are they called? Any nicknames? (Nicknames, titles, and
+  alternate names go in `aliases` — they resolve through `find_entity`
+  exactly like the primary name.)
 - **Role in story**: protagonist, deuteragonist, antagonist, love interest, mentor,
   ally, foil, comic relief, threshold guardian
 - **One-sentence summary**: Who are they in 15 words?
@@ -143,6 +145,7 @@ Call `create_character` with the full typed input:
 ```
 project_id, name, summary, role,
 realm: Option<String>,
+aliases: Vec<String>,                             // optional: nicknames/titles/other names
 voice_profile: CharacterVoiceProfileData,        // optional: omit/null → empty profile
 emotional_profile: CharacterEmotionalProfileData, // optional: omit/null → empty profile
 initial_state: Option<CharacterStatePatch>

@@ -18,6 +18,8 @@
 //! criterion. Each method gets a corresponding `#[cfg(test)] mod tests` entry
 //! that calls it through a real MCP-shaped input.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use chrono::TimeZone;
 use spindle_core::models::{
@@ -25,7 +27,8 @@ use spindle_core::models::{
     ArchiveEntityOutput, BatchCreateMotifsInput, BatchCreateMotifsOutput,
     BatchCreateNarrativePromisesInput, BatchCreateNarrativePromisesOutput, BatchCreateTermsInput,
     BatchCreateTermsOutput, BatchSetCharacterVoiceProfilesInput,
-    BatchSetCharacterVoiceProfilesOutput, BookOutline, CanonicalFactScope, ChapterOutline,
+    BatchSetCharacterVoiceProfilesOutput, BindCanonicalFactToSceneInput,
+    BindCanonicalFactToSceneOutput, BookOutline, CanonicalFactScope, ChapterOutline,
     ChapterOutlineBeat, CharacterStatePatch, CharacterVoiceProfileData, CommitCharacterStateInput,
     CommitCharacterStateOutput, ConfigureAgentsInput, ConfigureAgentsOutput, CreateBookInput,
     CreateBookOutput, CreateBranchInput, CreateBranchOutput, CreateChapterInput,
@@ -51,17 +54,18 @@ use spindle_core::models::{
     OperatorDeleteSceneOutput, PlanChapterInput, PlanChapterOutput, ProjectSummary,
     RebuildSearchIndexInput, RebuildSearchIndexOutput, RecordKnowledgeInput, RecordKnowledgeOutput,
     RecordNoteInput, RecordNoteOutput, RegisterCanonicalFactInput, RegisterCanonicalFactOutput,
-    ResolveRevisionMarkerInput, ResolveRevisionMarkerOutput, RestoreSceneVersionInput,
-    RestoreSceneVersionOutput, SaveSceneDraftInput, SaveSceneDraftOutput, SaveSummaryInput,
-    SaveSummaryOutput, SceneDeleteImpactGroup, SceneDeleteImpactTarget, SceneDeleteReadiness,
-    SceneMoveImpactDestination, SceneMoveImpactGroup, SceneMoveReadiness, SceneVersionSummary,
-    SearchBibleInput, SearchBibleMode, SearchBibleOutput, SearchBibleResultItem,
-    SetArcPacingConstraintsInput, SetArcPacingConstraintsOutput, SetBookOutlineInput,
-    SetBookOutlineOutput, SetChapterOutlineInput, SetChapterOutlineOutput,
+    RenameReport, ResolveRevisionMarkerInput, ResolveRevisionMarkerOutput,
+    RestoreSceneVersionInput, RestoreSceneVersionOutput, SaveSceneDraftInput, SaveSceneDraftOutput,
+    SaveSummaryInput, SaveSummaryOutput, SceneDeleteImpactGroup, SceneDeleteImpactTarget,
+    SceneDeleteReadiness, SceneMoveImpactDestination, SceneMoveImpactGroup, SceneMoveReadiness,
+    SceneVersionSummary, SearchBibleInput, SearchBibleMode, SearchBibleOutput,
+    SearchBibleResultItem, SetArcPacingConstraintsInput, SetArcPacingConstraintsOutput,
+    SetBookOutlineInput, SetBookOutlineOutput, SetChapterOutlineInput, SetChapterOutlineOutput,
     SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput, StoryPlacement,
-    SwitchBranchInput, SwitchBranchOutput, TestAgentInput, TestAgentOutput, UpdateEntityInput,
-    UpdateEntityOutput, UpdatePromiseStatusInput, UpdatePromiseStatusOutput,
-    UpdateRelationshipInput, UpdateRelationshipOutput, UpdateWorldRuleInput, UpdateWorldRuleOutput,
+    SwitchBranchInput, SwitchBranchOutput, TestAgentInput, TestAgentOutput,
+    UpdateArcMilestoneInput, UpdateArcMilestoneOutput, UpdateEntityInput, UpdateEntityOutput,
+    UpdatePromiseStatusInput, UpdatePromiseStatusOutput, UpdateRelationshipInput,
+    UpdateRelationshipOutput, UpdateWorldRuleInput, UpdateWorldRuleOutput,
     UpdateWriterPositionInput,
 };
 
@@ -206,6 +210,51 @@ struct GenerationReceiptRecord {
     explicit_capable_agent: bool,
 }
 
+/// Running-or-terminal state of a detached dual-persona review job. The result
+/// itself is NOT carried here — it is persisted to `dual_persona_review` round
+/// by round, so a waiter re-reads the row rather than cloning a large payload
+/// through the channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReviewJobState {
+    Running,
+    Done,
+    Failed(String),
+}
+
+/// A detached review job plus the total round count it is driving toward.
+/// `target_rounds` is what makes a post-timeout retry a COLLECT rather than a
+/// top-up: a caller asking for that same total joins this job instead of
+/// stacking another `rounds` on top of the rounds it is already producing.
+#[derive(Clone)]
+struct ReviewJob {
+    target_rounds: usize,
+    state: tokio::sync::watch::Receiver<ReviewJobState>,
+}
+
+/// How long `run_dual_persona_review` waits on a detached job before returning
+/// `status: "in_progress"`. Deliberately well under a typical 60s MCP request
+/// timeout: the point is to answer the CALLER promptly while the job keeps
+/// running, not to race the timeout. Small under `cfg!(test)` so the
+/// timeout-then-resume path is exercised without slow tests.
+const REVIEW_JOB_JOIN_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(150)
+} else {
+    Duration::from_secs(25)
+};
+
+/// Deep-tier model calls in flight at once. The per-scene calls are independent,
+/// so fanning them out is what lets a chapter range finish; the cap keeps a wide
+/// range from opening one connection per scene against the review provider.
+const DEEP_CHECK_CONCURRENCY: usize = 4;
+
+/// One deep-tier model response, plus whether it came from the built-in local
+/// stub. Tiers that fall back to a heuristic when no real review model is
+/// configured branch on `local_stub`; tiers that parse regardless ignore it.
+struct DeepTierOutput {
+    output: String,
+    local_stub: bool,
+}
+
 /// SQLite-backed Spindle service layer. Cheap to clone — the inner
 /// [`Repository`] handle is `Arc`-wrapped; generation-receipt state is
 /// also `Arc`-shared so all clones see the same receipt cache.
@@ -216,6 +265,11 @@ pub struct SqliteSpindleService {
         std::sync::RwLock<std::collections::BTreeMap<String, GenerationReceiptRecord>>,
     >,
     generation_receipt_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// In-flight detached review jobs, keyed by
+    /// `{branch_id}|{scene_id}|{scene_fingerprint}`. Shared across clones so a
+    /// retry arriving on a different service clone joins the SAME job instead
+    /// of launching a duplicate run against the model.
+    review_jobs: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, ReviewJob>>>,
 }
 
 const STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS: &str = "\
@@ -381,6 +435,9 @@ impl SqliteSpindleService {
                 std::collections::BTreeMap::new(),
             )),
             generation_receipt_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            review_jobs: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
         }
     }
 
@@ -444,6 +501,8 @@ impl SqliteSpindleService {
                 if changes.contains_key("genre")
                     || changes.contains_key("project_type")
                     || changes.contains_key("reader_contract")
+                    || changes.contains_key("promise")
+                    || changes.contains_key("boundaries")
                     || changes.contains_key("style_notes") =>
             {
                 let project = self.repository.get_project(entity_id).await?;
@@ -604,10 +663,16 @@ impl SqliteSpindleService {
             .narrator_voice
             .map(|stored| stored.into_core())
             .unwrap_or_default();
+        // Surface any word-count contradiction the new voice introduces
+        // against reader_contract.style_notes or a style world rule.
+        let warnings = self
+            .style_surface_contradiction_warnings(&input.project_id)
+            .await?;
         Ok(spindle_core::models::SetNarratorVoiceOutput {
             project_id: project.id,
             narrator_voice,
             cleared,
+            warnings,
         })
     }
 
@@ -636,12 +701,7 @@ impl SqliteSpindleService {
             &[PhaseFourCacheId::VoiceDrift],
         )
         .await?;
-        let document = SearchDocument {
-            entity_table: "character".into(),
-            title: character.name.clone(),
-            excerpt: character.summary.clone(),
-            content: format!("{}\n\n{}", character.name, character.summary),
-        };
+        let document = character_search_document(&character);
         self.repository
             .refresh_search_embedding_for_entity(
                 &input.project_id,
@@ -1637,6 +1697,7 @@ impl SqliteSpindleService {
         // already set. The live bug silently dropped this field and
         // preflight later reported chapter_missing_title for a chapter that
         // was created with a title.
+        let mut effective_title = chapter.title.clone();
         if let Some(title) = input
             .title
             .as_deref()
@@ -1656,11 +1717,13 @@ impl SqliteSpindleService {
                     serde_json::Value::String(title.to_string()),
                 )
                 .await?;
+            effective_title = Some(title.to_string());
         }
         Ok(CreateChapterOutput {
             chapter_id: chapter.id,
             book_number: chapter.book_number,
             chapter_number: chapter.chapter_number,
+            title: effective_title,
         })
     }
 
@@ -1956,20 +2019,86 @@ impl SqliteSpindleService {
     /// Generic field-merge update on a row identified by (entity_type, entity_id).
     /// The repository enforces a per-table column allowlist; unknown columns
     /// surface an error rather than silently being ignored.
+    ///
+    /// Character renames are the one field that does NOT go through the plain
+    /// column path: a `name` change is routed through `rename_character`,
+    /// which moves the normalized-name uniqueness key, keeps the old name as
+    /// an alias, refreshes the search index, and reports every record still
+    /// referencing the old name. The caller must opt in with
+    /// `allow_rename: true`; without it the call is rejected before any
+    /// write.
     pub async fn update_entity(&self, input: UpdateEntityInput) -> Result<UpdateEntityOutput> {
         let entity_type = input.entity_type.clone();
         let entity_id = input.entity_id.clone();
-        let changes: std::collections::BTreeMap<String, serde_json::Value> = match input.changes {
+        let allow_rename = input.allow_rename.unwrap_or(false);
+        let mut changes: std::collections::BTreeMap<String, serde_json::Value> = match input.changes
+        {
             serde_json::Value::Object(map) => map.into_iter().collect(),
             serde_json::Value::Null => std::collections::BTreeMap::new(),
             _ => anyhow::bail!("update_entity changes must be a JSON object"),
         };
+        // Cache invalidation is computed over the FULL change set (the
+        // character-name arm keys off changes containing "name"), before the
+        // rename peels the name off.
         let cache_target = self
             .phase_four_cache_target_for_entity_update(&entity_type, &entity_id, &changes)
             .await?;
-        self.repository
-            .update_entity_fields(&entity_type, &entity_id, changes)
-            .await?;
+        // The emotional-profile columns only carry json_valid CHECKs, but the
+        // row readers deserialize into typed shapes — a wrong-shaped value
+        // would write fine and then break every later read of the profile
+        // (briefings embed it). Validate against the stored types up front.
+        if entity_type == "character_emotional_profile" {
+            validate_emotional_profile_changes(&changes)?;
+        }
+        // `character.aliases` is the same class of hazard: the column only
+        // checks json_valid, but the row reader deserializes Vec<String>.
+        if entity_type == "character"
+            && let Some(value) = changes.get("aliases")
+        {
+            validate_character_aliases_value(value)?;
+        }
+        // Reader-contract fields (`promise`, `style_notes`, `boundaries`, or a
+        // whole `reader_contract` object) live in a single JSON column, so they
+        // cannot go through the per-column allowlist path. Peel them off and
+        // apply a validated partial merge through the dedicated repository
+        // writer, then surface any style-surface contradictions introduced by
+        // the change (e.g. a chapter word-count target that now disagrees with
+        // the narrator voice or a style world rule).
+        let mut warnings: Vec<String> = Vec::new();
+        let mut reader_contract_updated = false;
+        if entity_type == "project" {
+            let contract_changes: std::collections::BTreeMap<String, serde_json::Value> =
+                ["reader_contract", "promise", "style_notes", "boundaries"]
+                    .into_iter()
+                    .filter_map(|key| changes.remove(key).map(|value| (key.to_string(), value)))
+                    .collect();
+            if !contract_changes.is_empty() {
+                self.update_project_reader_contract_fields(&entity_id, &contract_changes)
+                    .await?;
+                reader_contract_updated = true;
+                warnings = self
+                    .style_surface_contradiction_warnings(&entity_id)
+                    .await?;
+            }
+        }
+        let mut rename_report = None;
+        if entity_type == "character"
+            && let Some(name_value) = changes.remove("name")
+        {
+            let new_name = match name_value {
+                serde_json::Value::String(name) => name,
+                other => anyhow::bail!("character name must be a string, got {other}"),
+            };
+            rename_report = Some(
+                self.rename_character(&entity_id, &new_name, allow_rename)
+                    .await?,
+            );
+        }
+        if !changes.is_empty() || (rename_report.is_none() && !reader_contract_updated) {
+            self.repository
+                .update_entity_fields(&entity_type, &entity_id, changes)
+                .await?;
+        }
         if let Some((project_id, branch_id, cache_ids)) = cache_target {
             match branch_id {
                 Some(branch_id) => {
@@ -1985,6 +2114,207 @@ impl SqliteSpindleService {
         Ok(UpdateEntityOutput {
             entity_type,
             entity_id,
+            rename_report,
+            warnings,
+        })
+    }
+
+    /// Partial-merge update of `project.reader_contract` — the only write path
+    /// for the contract, since the update allowlist operates on flat columns
+    /// while the contract is a single JSON column. Provided fields are
+    /// validated against the stored shape BEFORE being merged into the
+    /// existing contract, so a wrong-shaped value cannot corrupt the row
+    /// (the column only carries a `json_valid` CHECK). Fields not mentioned
+    /// are preserved, so a `style_notes`-only edit never wipes `promise`.
+    async fn update_project_reader_contract_fields(
+        &self,
+        project_id: &str,
+        changes: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        let project = self.repository.get_project(project_id).await?;
+        let mut contract = project.reader_contract.into_core();
+
+        // A nested `reader_contract` object merges field-by-field (only the
+        // keys actually present), then top-level scalar/array keys override.
+        if let Some(value) = changes.get("reader_contract") {
+            let obj = value
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("reader_contract must be a JSON object"))?;
+            if let Some(promise) = obj.get("promise") {
+                contract.promise = parse_contract_string("reader_contract.promise", promise)?;
+            }
+            if let Some(style_notes) = obj.get("style_notes") {
+                contract.style_notes =
+                    parse_contract_string_list("reader_contract.style_notes", style_notes)?;
+            }
+            if let Some(boundaries) = obj.get("boundaries") {
+                contract.boundaries =
+                    parse_contract_string_list("reader_contract.boundaries", boundaries)?;
+            }
+        }
+        if let Some(value) = changes.get("promise") {
+            contract.promise = parse_contract_string("promise", value)?;
+        }
+        if let Some(value) = changes.get("style_notes") {
+            contract.style_notes = parse_contract_string_list("style_notes", value)?;
+        }
+        if let Some(value) = changes.get("boundaries") {
+            contract.boundaries = parse_contract_string_list("boundaries", value)?;
+        }
+
+        self.repository
+            .update_project_reader_contract(project_id, &contract)
+            .await
+    }
+
+    /// Cross-check the hard numbers — currently chapter/scene word-count
+    /// targets — across the three style surfaces drafting reads:
+    /// `reader_contract.style_notes`, the narrator voice, and style world
+    /// rules. Returns one warning per pair of surfaces whose targets disagree.
+    /// This is the guard against the stale-contract failure where one surface
+    /// is updated and another still carries the superseded figure, so chapters
+    /// get drafted against the wrong number. Advisory, never blocking.
+    async fn style_surface_contradiction_warnings(&self, project_id: &str) -> Result<Vec<String>> {
+        let project = self.repository.get_project(project_id).await?;
+        let contract = project.reader_contract.into_core();
+        let narrator_voice = project
+            .narrator_voice
+            .map(|stored| stored.into_core())
+            .unwrap_or_default();
+
+        // Collect (surface label, word-count ranges) for every surface that
+        // carries at least one range.
+        let mut surfaces: Vec<(String, Vec<(i64, i64)>)> = Vec::new();
+
+        let mut contract_ranges: Vec<(i64, i64)> = Vec::new();
+        for note in &contract.style_notes {
+            contract_ranges.extend(extract_word_count_ranges(note));
+        }
+        if !contract_ranges.is_empty() {
+            surfaces.push(("reader_contract.style_notes".to_string(), contract_ranges));
+        }
+
+        let mut voice_ranges: Vec<(i64, i64)> = Vec::new();
+        for text in narrator_voice_text_fields(&narrator_voice) {
+            voice_ranges.extend(extract_word_count_ranges(&text));
+        }
+        if !voice_ranges.is_empty() {
+            surfaces.push(("narrator_voice".to_string(), voice_ranges));
+        }
+
+        let branch_id = self.repository.active_branch_id_public(project_id).await?;
+        let rules = self
+            .repository
+            .list_world_rules_by_project_and_branch(project_id, &branch_id)
+            .await?;
+        for rule in rules.iter().filter(|r| r.rule_type == "style") {
+            let ranges = extract_word_count_ranges(&rule.description);
+            if !ranges.is_empty() {
+                surfaces.push((format!("world_rule '{}'", rule.rule_name), ranges));
+            }
+        }
+
+        // Warn for every pair of surfaces with non-overlapping targets.
+        let mut warnings = Vec::new();
+        for i in 0..surfaces.len() {
+            for j in (i + 1)..surfaces.len() {
+                let (name_a, ranges_a) = &surfaces[i];
+                let (name_b, ranges_b) = &surfaces[j];
+                if word_ranges_contradict(ranges_a, ranges_b) {
+                    warnings.push(format!(
+                        "style-surface contradiction: {} targets {} but {} targets {}; \
+                         update the stale surface so drafting reads one consistent figure",
+                        name_a,
+                        format_word_ranges(ranges_a),
+                        name_b,
+                        format_word_ranges(ranges_b)
+                    ));
+                }
+            }
+        }
+        Ok(warnings)
+    }
+
+    /// Controlled character rename (the engine behind `update_entity` with
+    /// `changes: {"name": ...}` + `allow_rename: true`). Validates the new
+    /// name, refuses without the explicit flag, then moves the name +
+    /// normalized uniqueness key, keeps the old name as an alias, refreshes
+    /// the search embedding, and reports stale references. Scene prose is
+    /// never rewritten — the report exists so the author can decide which
+    /// mentions follow the rename and which are historical.
+    async fn rename_character(
+        &self,
+        character_id: &str,
+        new_name: &str,
+        allow_rename: bool,
+    ) -> Result<RenameReport> {
+        let character = self.repository.get_character(character_id).await?;
+        let old_name = character.name.clone();
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            anyhow::bail!("character name must not be empty");
+        }
+        if !allow_rename {
+            anyhow::bail!(
+                "renaming a character requires allow_rename: true on update_entity: \
+                 the rename moves the name's uniqueness key, keeps '{old_name}' as an alias, \
+                 refreshes the search index, and reports records still referencing the old name. \
+                 To add a name WITHOUT renaming, set the character's aliases field instead"
+            );
+        }
+        let (updated, old_name_kept_as_alias) = self
+            .repository
+            .rename_character(character_id, new_name)
+            .await?;
+        // FTS syncs by trigger; the embedding needs an explicit refresh so
+        // the semantic path stops returning the old name.
+        let document = character_search_document(&updated);
+        self.repository
+            .refresh_search_embedding_for_entity(
+                &updated.project_id,
+                &updated.branch_id,
+                &updated.id,
+                &document,
+            )
+            .await?;
+        // Records still referencing the OLD name. Relationships and character
+        // states link by id and are unaffected; scenes, facts, knowledge, and
+        // arc prose are scanned and reported, never rewritten.
+        let scenes_referencing_old_name = self
+            .repository
+            .list_scene_ids_mentioning_phrase(
+                &updated.project_id,
+                &updated.branch_id,
+                &old_name,
+                200,
+            )
+            .await?;
+        let canonical_facts_referencing_old_name = self
+            .repository
+            .list_canonical_fact_ids_mentioning(&updated.project_id, &updated.branch_id, &old_name)
+            .await?;
+        let knowledge_facts_referencing_old_name = self
+            .repository
+            .list_knowledge_fact_ids_mentioning(&updated.project_id, &updated.branch_id, &old_name)
+            .await?;
+        let arcs_referencing_old_name = self
+            .repository
+            .list_character_arc_ids_mentioning(
+                &updated.project_id,
+                &updated.branch_id,
+                &updated.id,
+                &old_name,
+            )
+            .await?;
+        Ok(RenameReport {
+            character_id: updated.id.clone(),
+            old_name,
+            new_name: updated.name.clone(),
+            old_name_kept_as_alias,
+            scenes_referencing_old_name,
+            canonical_facts_referencing_old_name,
+            knowledge_facts_referencing_old_name,
+            arcs_referencing_old_name,
         })
     }
 
@@ -1998,12 +2328,12 @@ impl SqliteSpindleService {
             _ => anyhow::bail!("update_world_rule changes must be a JSON object"),
         };
         let mut cache_ids = vec![PhaseFourCacheId::WorldRuleSemanticDrift];
-        if before.rule_type.eq_ignore_ascii_case("style")
+        let style_relevant = before.rule_type.eq_ignore_ascii_case("style")
             || changes
                 .get("rule_type")
                 .and_then(|value| value.as_str())
-                .is_some_and(|rule_type| rule_type.eq_ignore_ascii_case("style"))
-        {
+                .is_some_and(|rule_type| rule_type.eq_ignore_ascii_case("style"));
+        if style_relevant {
             cache_ids.push(PhaseFourCacheId::StyleCompliance);
         }
         self.repository
@@ -2011,8 +2341,18 @@ impl SqliteSpindleService {
             .await?;
         self.resolve_phase_four_caches(&before.project_id, &before.branch_id, &cache_ids)
             .await?;
+        // A style world rule is one of the surfaces drafting reads for hard
+        // numbers; warn if it now contradicts reader_contract.style_notes or
+        // the narrator voice on a target like chapter length.
+        let warnings = if style_relevant {
+            self.style_surface_contradiction_warnings(&before.project_id)
+                .await?
+        } else {
+            Vec::new()
+        };
         Ok(UpdateWorldRuleOutput {
             world_rule_id: input.world_rule_id,
+            warnings,
         })
     }
 
@@ -2026,6 +2366,64 @@ impl SqliteSpindleService {
         Ok(UpdatePromiseStatusOutput {
             narrative_promise_id: input.narrative_promise_id,
             status: input.status,
+        })
+    }
+
+    /// Targeted single-milestone update for a character arc, addressed by
+    /// milestone label. Reads the arc, patches only the supplied fields on
+    /// the matching milestone, and writes the full milestones array back
+    /// through the allowlisted `character_arc.milestones` column — so the
+    /// caller never has to resend milestone fields (description, unlocks)
+    /// it may not be able to read.
+    pub async fn update_arc_milestone(
+        &self,
+        input: UpdateArcMilestoneInput,
+    ) -> Result<UpdateArcMilestoneOutput> {
+        if input.placement.is_none() && input.reached_at.is_none() {
+            anyhow::bail!(
+                "update_arc_milestone requires placement and/or reached_at; \
+                 omitting both would be a no-op"
+            );
+        }
+        let label = input.label.trim();
+        if label.is_empty() {
+            anyhow::bail!("update_arc_milestone requires a non-empty label");
+        }
+        let arc = self.repository.get_character_arc(&input.arc_id).await?;
+        let mut milestones = arc.milestones.clone();
+        let milestone = milestones
+            .iter_mut()
+            .find(|milestone| milestone.label == label)
+            .ok_or_else(|| {
+                let available = arc
+                    .milestones
+                    .iter()
+                    .map(|milestone| milestone.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::anyhow!(
+                    "no milestone labelled '{label}' on arc {}; available labels: {available}",
+                    input.arc_id
+                )
+            })?;
+        if let Some(placement) = input.placement {
+            milestone.placement = Some(crate::sqlite::json_records::StoredStoryPlacement::from(
+                placement,
+            ));
+        }
+        if let Some(reached_at) = input.reached_at {
+            milestone.reached_at = Some(crate::sqlite::json_records::StoredStoryPlacement::from(
+                reached_at,
+            ));
+        }
+        let updated = milestone.clone();
+        let milestones_json = serde_json::to_value(&milestones)?;
+        self.repository
+            .update_entity_field("character_arc", &arc.id, "milestones", milestones_json)
+            .await?;
+        Ok(UpdateArcMilestoneOutput {
+            arc_id: arc.id,
+            milestone: updated.into_core(),
         })
     }
 
@@ -2281,15 +2679,15 @@ impl SqliteSpindleService {
             .list_characters_by_project_and_branch(&input.project_id, &branch_id)
             .await?
         {
-            self.refresh_entity_index(
-                &input.project_id,
-                &branch_id,
-                &character.id,
-                "character",
-                &character.name,
-                &character.summary,
-            )
-            .await?;
+            let document = character_search_document(&character);
+            self.repository
+                .refresh_search_embedding_for_entity(
+                    &input.project_id,
+                    &branch_id,
+                    &character.id,
+                    &document,
+                )
+                .await?;
             indexed += 1;
         }
         for location in self
@@ -2883,7 +3281,7 @@ impl SqliteSpindleService {
                 .list_canonical_facts_by_project(&input.project_id)
                 .await?
                 .into_iter()
-                .filter(|fact| fact.scene_id == scene.id)
+                .filter(|fact| fact.scene_id.as_deref() == Some(scene.id.as_str()))
                 .map(|fact| fact.id)
                 .collect(),
             "Canonical facts cite this scene as their source and must be removed, superseded, or re-sourced.",
@@ -3571,10 +3969,26 @@ impl SqliteSpindleService {
         input: RegisterCanonicalFactInput,
     ) -> Result<RegisterCanonicalFactOutput> {
         self.repository.get_project(&input.project_id).await?;
-        let scene = self.repository.get_scene(&input.scene_id).await?;
-        if scene.project_id != input.project_id {
-            anyhow::bail!("scene does not belong to the requested project");
-        }
+        // scene_id is optional (V0038): when present the fact is anchored to
+        // its dramatising scene (and inherits that scene's branch); when
+        // absent the fact is planned-and-pending, placed by book/chapter only
+        // on the project's active branch, to be bound later via
+        // bind_canonical_fact_to_scene.
+        let (branch_id, scene_id) = match input.scene_id.as_deref() {
+            Some(scene_id) => {
+                let scene = self.repository.get_scene(scene_id).await?;
+                if scene.project_id != input.project_id {
+                    anyhow::bail!("scene does not belong to the requested project");
+                }
+                (scene.branch_id.clone(), Some(scene.id.clone()))
+            }
+            None => (
+                self.repository
+                    .active_branch_id_public(&input.project_id)
+                    .await?,
+                None,
+            ),
+        };
         // Pick value_kind based on which value field is populated.
         let value_kind = input.value_kind.clone().unwrap_or_else(|| {
             if input.value_number.is_some() {
@@ -3602,8 +4016,8 @@ impl SqliteSpindleService {
         .to_string();
         let params = crate::sqlite::repository::CreateCanonicalFactParams {
             project_id: input.project_id.clone(),
-            branch_id: scene.branch_id.clone(),
-            scene_id: scene.id.clone(),
+            branch_id,
+            scene_id,
             book_number: input.book_number,
             chapter_number: input.chapter_number,
             subject_table,
@@ -3668,6 +4082,48 @@ impl SqliteSpindleService {
         Ok(RegisterCanonicalFactOutput {
             canonical_fact_id: fact.id,
             superseded_fact_id,
+        })
+    }
+
+    /// Attach a planned-and-pending canonical fact (registered without a
+    /// scene, V0038) to the scene that dramatises it. The fact's book/chapter
+    /// placement is untouched — binding only records where the fact was
+    /// established, so authors can bind even if the scene landed in a
+    /// different slot than originally planned.
+    pub async fn bind_canonical_fact_to_scene(
+        &self,
+        input: BindCanonicalFactToSceneInput,
+    ) -> Result<BindCanonicalFactToSceneOutput> {
+        let fact = self
+            .repository
+            .get_canonical_fact(&input.canonical_fact_id)
+            .await?;
+        if fact.superseded_by.is_some() {
+            anyhow::bail!(
+                "canonical fact {} is superseded; bind the live fact, not its history",
+                input.canonical_fact_id
+            );
+        }
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        if scene.project_id != fact.project_id {
+            anyhow::bail!("scene does not belong to the fact's project");
+        }
+        if scene.branch_id != fact.branch_id {
+            anyhow::bail!("scene is on a different branch than the fact");
+        }
+        self.repository
+            .bind_canonical_fact_to_scene(&fact.id, &scene.id)
+            .await?;
+        // The establishing-scene skip in the prose-drift validator changed.
+        self.resolve_phase_four_caches(
+            &fact.project_id,
+            &fact.branch_id,
+            &[PhaseFourCacheId::CanonicalFactProseDrift],
+        )
+        .await?;
+        Ok(BindCanonicalFactToSceneOutput {
+            canonical_fact_id: fact.id,
+            scene_id: scene.id,
         })
     }
 
@@ -5402,6 +5858,14 @@ impl SqliteSpindleService {
             "book" => self.repository.get_book(record_id_str).await.is_ok(),
             "chapter" => self.repository.get_chapter(record_id_str).await.is_ok(),
             "character" => self.repository.get_character(record_id_str).await.is_ok(),
+            // Keyed 1:1 by character_id with no project_id column of its own;
+            // existence check only (callers resolve the project through the
+            // character). Needed so update_entity can address it.
+            "character_emotional_profile" => self
+                .repository
+                .get_character_emotional_profile_by_id(record_id_str)
+                .await
+                .is_ok(),
             "location" => self.repository.get_location(record_id_str).await.is_ok(),
             "bible_branch" => self.repository.get_branch(record_id_str).await.is_ok(),
             "faction" => self.repository.get_faction(record_id_str).await.is_ok(),
@@ -8430,7 +8894,9 @@ impl SqliteSpindleService {
                                 promise.description, verdict.overdue_by_chapters
                             ),
                             Some(
-                                "pay it off, reinforce it, or call update_promise_status"
+                                "pay it off, reinforce it, call update_promise_status, or \
+                                 retarget it with update_entity(narrative_promise, \
+                                 changes={planned_payoff: {book_number, chapter_number}})"
                                     .to_string(),
                             ),
                         ),
@@ -10155,7 +10621,8 @@ impl SqliteSpindleService {
                             ),
                             entity_ids: vec![arc.id.clone()],
                             suggested_action: Some(
-                                "mark the milestone reached_at where it lands, or move its placement"
+                                "call update_arc_milestone to stamp reached_at where the \
+                                 milestone lands, or to move its placement"
                                     .to_string(),
                             ),
                         });
@@ -10170,7 +10637,8 @@ impl SqliteSpindleService {
                             ),
                             entity_ids: vec![arc.id.clone()],
                             suggested_action: Some(
-                                "demonstrate the milestone in this chapter and set reached_at"
+                                "demonstrate the milestone in this chapter and set reached_at \
+                                 via update_arc_milestone"
                                     .to_string(),
                             ),
                         });
@@ -10830,6 +11298,7 @@ impl SqliteSpindleService {
                 scan_pattern: r.scan_pattern.clone(),
                 rule_name: r.rule_name.clone(),
                 description: r.description.clone(),
+                rule_type: r.rule_type.clone(),
             })
             .collect();
         Ok(spindle_core::world_rules::scan_prose_for_world_rules(
@@ -11281,6 +11750,8 @@ impl SqliteSpindleService {
                     .established_in
                     .as_ref()
                     .map(|placement| (placement.book_number, placement.chapter_number)),
+                rule_type: rule.rule_type.clone(),
+                description: rule.description.clone(),
             })
             .collect::<Vec<_>>();
 
@@ -11493,7 +11964,6 @@ impl SqliteSpindleService {
         scenes: &[crate::sqlite::records::Scene],
         rules: &[crate::sqlite::records::WorldRule],
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
-        use crate::ai::ModelRequest;
         use crate::format::world_rule_established_before_scene;
         use spindle_core::models::ConsistencyIssue;
 
@@ -11509,36 +11979,54 @@ impl SqliteSpindleService {
         //     degradation visible instead of silent. (Previously this arm silently
         //     fell back to the heuristic, so a dead route degraded invisibly.)
         let mut model_route_dead = false;
-        for scene in scenes {
-            let applicable_rules = rules
+        // Scenes that actually have rules to audit, fanned out with bounded
+        // concurrency and served from the V0039 cache where this prose version
+        // was already analyzed. Results arrive in scene order, so the skip
+        // cadence below is unchanged; the stream is consumed lazily so the
+        // dead-route exit still stops the calls queued behind it.
+        let scanned: Vec<&crate::sqlite::records::Scene> = scenes
+            .iter()
+            .filter(|scene| {
+                rules
+                    .iter()
+                    .any(|rule| world_rule_established_before_scene(rule, scene))
+            })
+            .collect();
+        let rules_for_scene = |scene: &crate::sqlite::records::Scene| {
+            rules
                 .iter()
                 .filter(|rule| world_rule_established_before_scene(rule, scene))
-                .collect::<Vec<_>>();
-            if applicable_rules.is_empty() {
-                continue;
-            }
+                .collect::<Vec<_>>()
+        };
+        let prompts = scanned
+            .iter()
+            .map(|scene| build_world_rule_deep_check_prompt(scene, &rules_for_scene(scene)))
+            .collect();
+        let mut outputs = std::pin::pin!(self.deep_tier_output_stream(
+            &scanned,
+            "world_rule_compliance",
+            prompts
+        ));
 
-            // Once the model route is known dead this run, skip the call entirely
-            // (a dead route won't heal mid-run) and use the heuristic directly.
-            let model_violations = if model_route_dead {
-                heuristic_world_rule_violations(scene, &applicable_rules)
+        let mut index = 0usize;
+        while index < scanned.len() {
+            // Once the route is known dead this run, STOP POLLING the stream:
+            // a dead route won't heal mid-run, and leaving it unpolled is what
+            // keeps the remaining scenes from dispatching a model call each.
+            // The rest of the range still gets heuristic coverage below.
+            let output = if model_route_dead {
+                None
             } else {
-                // This pass carries scene prose, so it MUST stamp the scene's
-                // content rating (lowercased) — the rating-gated chokepoint then
-                // routes an explicit-rated scene only to an explicit-cleared agent
-                // (evolution §4). Previously `rating: None` bypassed clearance.
-                match self
-                    .repository
-                    .model_router()
-                    .complete(&ModelRequest {
-                        route: "review".to_string(),
-                        prompt: build_world_rule_deep_check_prompt(scene, &applicable_rules),
-                        rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
-                        context: None,
-                    })
-                    .await
-                {
-                    Ok(response) if response.adapter_kind != "local" => {
+                futures_util::StreamExt::next(&mut outputs).await
+            };
+            let scene = scanned[index];
+            index += 1;
+            let applicable_rules = rules_for_scene(scene);
+
+            let model_violations = match output {
+                None => heuristic_world_rule_violations(scene, &applicable_rules),
+                Some(output) => match output {
+                    Ok(response) if !response.local_stub => {
                         parse_deep_world_rule_check_output(&response.output).unwrap_or_else(|_| {
                             heuristic_world_rule_violations(scene, &applicable_rules)
                         })
@@ -11569,7 +12057,7 @@ impl SqliteSpindleService {
                         model_route_dead = true;
                         heuristic_world_rule_violations(scene, &applicable_rules)
                     }
-                }
+                },
             };
 
             for violation in model_violations {
@@ -11614,11 +12102,128 @@ impl SqliteSpindleService {
     /// `temporal_coherence` check_type. When no review model is configured the
     /// route returns no parseable findings, so this adds nothing and the
     /// deterministic scan stands alone. Mirrors `deep_world_rule_compliance_issues`.
+    /// One deep-tier model call for one scene, served from the V0039 cache when
+    /// this exact prose version has already been analyzed by this tier.
+    ///
+    /// A deep check over a chapter range is `tiers x scenes` model calls; on a
+    /// reasoning model that runs past any client timeout, and the audit used to
+    /// hold everything in memory until the very end, so a timeout threw away
+    /// every completed scene and the retry re-paid for all of it. Banking the
+    /// raw output per (scene, prose version, tier) turns the retry into forward
+    /// progress: analyzed scenes re-parse for free and only the remainder calls
+    /// the model.
+    ///
+    /// Local-stub output is NOT cached — it is free to recompute, and caching
+    /// it would freeze a stub answer in front of a real model configured later.
+    async fn deep_tier_model_output(
+        &self,
+        scene: &crate::sqlite::records::Scene,
+        check_type: &str,
+        prompt: String,
+    ) -> Result<DeepTierOutput> {
+        use crate::ai::ModelRequest;
+
+        let fingerprint = scene_revision_fingerprint(scene);
+        if let Some(cached) = self
+            .repository
+            .get_deep_check_cache(&scene.id, &fingerprint, check_type)
+            .await?
+        {
+            // Only external output is ever cached, so a hit is never a stub.
+            return Ok(DeepTierOutput {
+                output: cached,
+                local_stub: false,
+            });
+        }
+
+        // This pass carries scene prose, so it MUST stamp the scene's content
+        // rating (lowercased) — the rating-gated chokepoint then routes an
+        // explicit-rated scene only to an explicit-cleared agent (evolution §4).
+        let response = self
+            .repository
+            .model_router()
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt,
+                rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
+                context: None,
+            })
+            .await?;
+
+        let local_stub = response.adapter_kind == "local";
+        if !local_stub {
+            // A cache write must never fail the audit: the analysis in hand is
+            // still valid, we just lose the chance to reuse it.
+            if let Err(error) = self
+                .repository
+                .put_deep_check_cache(&scene.id, &fingerprint, check_type, &response.output)
+                .await
+            {
+                tracing::warn!(
+                    scene_id = %scene.id,
+                    check_type,
+                    error = %format!("{error:#}"),
+                    "failed to cache deep-check output; a retry will re-call the model"
+                );
+            }
+        }
+        Ok(DeepTierOutput {
+            output: response.output,
+            local_stub,
+        })
+    }
+
+    /// Stream one deep tier's per-scene model calls with bounded concurrency,
+    /// yielding results in scene order.
+    ///
+    /// The per-scene calls are independent, so running them in sequence only
+    /// summed their latencies — the difference between a chapter range that
+    /// finishes and one that never does. The cap keeps a wide range from opening
+    /// one connection per scene against the provider.
+    ///
+    /// Returned as a lazy stream, not a collected Vec, so a caller that stops on
+    /// the first failure (both per-scene tiers do — a dead route will not heal
+    /// mid-run) drops the stream and cancels the calls still queued behind it.
+    fn deep_tier_output_stream<'a>(
+        &'a self,
+        scenes: &'a [&'a crate::sqlite::records::Scene],
+        check_type: &'a str,
+        prompts: Vec<String>,
+    ) -> impl futures_util::Stream<Item = Result<DeepTierOutput>> + 'a {
+        use futures_util::stream::StreamExt;
+
+        // The FIRST scene is deliberately probed alone, and only then does the
+        // rest fan out. Both tiers promise that a dead or uncleared route costs
+        // exactly ONE attempt before they stop; fanning out from the start would
+        // put `DEEP_CHECK_CONCURRENCY` calls on the wire before the first
+        // failure was even observed, hammering a route already known broken.
+        // Probing first keeps that promise exact, while a healthy route -- the
+        // case that actually needs the speed -- still gets the full fan-out.
+        let mut prompts = prompts.into_iter();
+        let probe = scenes
+            .first()
+            .zip(prompts.next())
+            .map(|(scene, prompt)| self.deep_tier_model_output(scene, check_type, prompt));
+        let rest = futures_util::stream::iter(
+            scenes
+                .iter()
+                .skip(1)
+                .zip(prompts)
+                .map(|(scene, prompt)| self.deep_tier_model_output(scene, check_type, prompt)),
+        )
+        .buffered(DEEP_CHECK_CONCURRENCY);
+
+        // `chain` does not poll `rest` until the probe has yielded, so a caller
+        // that bails on the probe's error never dispatches the remainder.
+        futures_util::stream::iter(probe)
+            .then(|future| future)
+            .chain(rest)
+    }
+
     async fn deep_temporal_coherence_issues(
         &self,
         scenes: &[crate::sqlite::records::Scene],
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
-        use crate::ai::ModelRequest;
         use spindle_core::models::ConsistencyIssue;
 
         let mut issues = Vec::new();
@@ -11632,31 +12237,29 @@ impl SqliteSpindleService {
         //     skip finding and STOP calling the model for remaining scenes rather
         //     than emitting a duplicate finding per scene. (Previously this arm
         //     silently returned Vec::new(), so a dead route read as a clean scan.)
-        for scene in scenes {
-            if scene.full_text.trim().is_empty() {
-                continue;
-            }
-            // This pass carries scene prose, so it MUST stamp the scene's content
-            // rating (lowercased) — the rating-gated chokepoint then routes an
-            // explicit-rated scene only to an explicit-cleared agent (evolution
-            // §4). Previously `rating: None` bypassed clearance entirely.
-            let findings = match self
-                .repository
-                .model_router()
-                .complete(&ModelRequest {
-                    route: "review".to_string(),
-                    prompt: build_temporal_deep_check_prompt(scene),
-                    rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
-                    context: None,
-                })
-                .await
-            {
+        // Scenes with prose, fanned out with bounded concurrency and served from
+        // the V0039 cache where this prose version was already analyzed. Results
+        // come back in scene order, so the skip cadence below is unchanged.
+        let scanned: Vec<&crate::sqlite::records::Scene> = scenes
+            .iter()
+            .filter(|scene| !scene.full_text.trim().is_empty())
+            .collect();
+        let prompts = scanned
+            .iter()
+            .map(|scene| build_temporal_deep_check_prompt(scene))
+            .collect();
+        let mut outputs =
+            std::pin::pin!(self.deep_tier_output_stream(&scanned, "temporal_coherence", prompts));
+
+        let mut index = 0usize;
+        while let Some(output) = futures_util::StreamExt::next(&mut outputs).await {
+            let scene = scanned[index];
+            index += 1;
+            let findings = match output {
                 // Parse regardless of adapter kind: a non-JSON local stub
                 // (the default `review` route) parses to nothing, so Tier 2 is
                 // a no-op unless a real review model returns structured findings.
-                Ok(response) => {
-                    parse_deep_temporal_check_output(&response.output).unwrap_or_default()
-                }
+                Ok(output) => parse_deep_temporal_check_output(&output.output).unwrap_or_default(),
                 // Honest skip on a rating-clearance rejection: the `review` agent
                 // is not cleared for this scene's rating, so the prose never left.
                 // Emit one info finding that reads as SKIPPED (route + rating, no
@@ -12383,7 +12986,7 @@ impl SqliteSpindleService {
             match self
                 .register_canonical_fact(spindle_core::models::RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number,
                     chapter_number,
                     fact_type: entry.fact_type,
@@ -13447,14 +14050,30 @@ impl SqliteSpindleService {
     /// replaced with deterministic heuristic concerns derived from the
     /// scene metadata so unit tests work without a real model. Persists
     /// to `dual_persona_review` via the existing repository upsert.
+    /// Run (or join) a dual-persona review for a scene.
+    ///
+    /// # Why this is a detached job
+    ///
+    /// Each round dispatches one model call per persona, and a reasoning model
+    /// can spend 30–60s on a single call. A two-round review is therefore
+    /// minutes of wall time — well past an MCP client's request timeout. The
+    /// original implementation ran every round inline and persisted ONCE at the
+    /// end, so a client timeout threw away the whole run: the table was left
+    /// with zero rows despite every model call having been paid for, and the
+    /// retry started from scratch.
+    ///
+    /// So the work is detached from the request. This call starts (or joins) a
+    /// background job, waits [`REVIEW_JOB_JOIN_WAIT`], and then either returns
+    /// the finished review or reports `status: "in_progress"` with the rounds
+    /// banked so far. The job keeps running and persists EACH round as it
+    /// lands, so progress survives both the client giving up and this call
+    /// returning. A retry joins the same job (never a duplicate run) and
+    /// collects the result once it is done.
     pub async fn run_dual_persona_review(
         &self,
         input: spindle_core::models::RunDualPersonaReviewInput,
     ) -> Result<spindle_core::models::RunDualPersonaReviewOutput> {
-        use crate::ai::ModelRequest;
-        use spindle_core::models::{
-            DualPersonaReviewRound, PersonaReviewNotes, RunDualPersonaReviewOutput,
-        };
+        use spindle_core::models::RunDualPersonaReviewOutput;
 
         let branch = match input.branch_id.as_deref() {
             Some(id) => self.repository.get_branch(id).await?,
@@ -13481,72 +14100,323 @@ impl SqliteSpindleService {
             );
         }
 
+        let requested_rounds = input.rounds.unwrap_or(2).clamp(1, 3);
+        let scene_fingerprint = scene_revision_fingerprint(&scene);
+        let job_key = format!("{branch_id}|{}|{scene_fingerprint}", input.scene_id);
+
+        // Rounds already banked against THIS prose version.
+        let prior_rounds = self
+            .persisted_review_rounds(&branch_id, &input.scene_id, &scene_fingerprint)
+            .await?;
+
+        // An in-flight job for this exact key decides the target: joining it
+        // must not stack another `requested_rounds` on top of what it is
+        // already producing, or a post-timeout retry would silently double the
+        // review depth. Absent a job, the request tops up from what is banked
+        // (the established `rounds` semantics).
+        // Clearance is checked HERE, on the caller's thread, before any work is
+        // detached. A `review` route that is not cleared for this scene's rating
+        // must fail with the TYPED `RouteClearanceError` the caller downcasts
+        // on - the auto-checkpoint path uses it to fall back to manual review
+        // rather than reporting the run blocked. A detached task can only hand
+        // back a flattened string, so this case must never reach one. It also
+        // means an uncleared route costs nothing: no job, no spawn, no prose.
+        self.repository.model_router().check_route_clearance(
+            "review",
+            Some(scene.content_rating.trim().to_ascii_lowercase()).as_deref(),
+        )?;
+
+        let existing_job = self.lookup_review_job(&job_key);
+        let target_rounds = match existing_job.as_ref() {
+            Some(job) => job.target_rounds,
+            None => prior_rounds.len() + requested_rounds,
+        };
+
+        // Already satisfied by persisted work — collect without touching the
+        // model. This is what makes a retry after a client timeout idempotent.
+        if existing_job.is_none() && prior_rounds.len() >= target_rounds {
+            let persisted = self
+                .repository
+                .get_dual_persona_review(&branch_id, &input.scene_id)
+                .await?;
+            if let Some(persisted) = persisted {
+                return Ok(RunDualPersonaReviewOutput {
+                    scene_id: input.scene_id,
+                    branch_id,
+                    rounds_completed: prior_rounds.len(),
+                    review_id: persisted.id,
+                    status: persisted.status,
+                    review_rounds: prior_rounds,
+                });
+            }
+        }
+
+        let job = match existing_job {
+            Some(job) => job,
+            None => self.spawn_review_job(&job_key, &input, &scene, target_rounds, prior_rounds),
+        };
+
+        // Bounded wait: answer the caller promptly either way.
+        let mut state = job.state.clone();
+        // Take an OWNED snapshot of the terminal state. The watch guard is not
+        // `Send`, and holding it across the awaits below would make this whole
+        // future non-`Send` and unusable from the MCP tool handler.
+        let terminal: Option<ReviewJobState> = {
+            let settled = tokio::time::timeout(
+                REVIEW_JOB_JOIN_WAIT,
+                state.wait_for(|s| !matches!(s, ReviewJobState::Running)),
+            )
+            .await;
+            match settled {
+                Ok(Ok(guard)) => Some(guard.clone()),
+                // Sender dropped without a terminal state (the job task was torn
+                // down). Treat it as settled so the next call starts fresh
+                // rather than joining a corpse forever.
+                Ok(Err(_)) => Some(ReviewJobState::Done),
+                // Still running - report banked progress below.
+                Err(_) => None,
+            }
+        };
+
+        if let Some(terminal) = terminal {
+            self.clear_review_job(&job_key);
+            if let ReviewJobState::Failed(message) = terminal {
+                anyhow::bail!("dual persona review failed: {message}");
+            }
+        }
+
+        let banked = self
+            .persisted_review_rounds(&branch_id, &input.scene_id, &scene_fingerprint)
+            .await?;
+        let persisted = self
+            .repository
+            .get_dual_persona_review(&branch_id, &input.scene_id)
+            .await?;
+        let (review_id, status) = match persisted {
+            Some(row) => (row.id, row.status),
+            // Nothing banked yet: the first round has not landed. Report the
+            // honest in-progress shape rather than inventing a row id.
+            None => (String::new(), "in_progress".to_string()),
+        };
+
+        Ok(RunDualPersonaReviewOutput {
+            scene_id: input.scene_id,
+            branch_id,
+            rounds_completed: banked.len(),
+            review_id,
+            status,
+            review_rounds: banked,
+        })
+    }
+
+    /// Rounds already persisted for this scene AT this prose version. A stale
+    /// row, or one whose fingerprint no longer matches, contributes nothing —
+    /// the review restarts against the new prose.
+    async fn persisted_review_rounds(
+        &self,
+        branch_id: &str,
+        scene_id: &str,
+        scene_fingerprint: &str,
+    ) -> Result<Vec<spindle_core::models::DualPersonaReviewRound>> {
+        let Some(existing) = self
+            .repository
+            .get_dual_persona_review(branch_id, scene_id)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        // `in_progress` counts: those rounds are real completed model work,
+        // banked mid-run. Only a `stale` row (prose moved on) is discarded.
+        if existing.status == "stale" || existing.scene_revision_fingerprint != scene_fingerprint {
+            return Ok(Vec::new());
+        }
+        Ok(existing
+            .review_rounds
+            .get("rounds")
+            .cloned()
+            .and_then(|rounds| {
+                serde_json::from_value::<
+                    Vec<crate::sqlite::json_records::StoredDualPersonaReviewRound>,
+                >(rounds)
+                .ok()
+            })
+            .map(|rounds| {
+                rounds
+                    .into_iter()
+                    .map(crate::sqlite::json_records::StoredDualPersonaReviewRound::into_core)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    fn lookup_review_job(&self, job_key: &str) -> Option<ReviewJob> {
+        self.review_jobs
+            .lock()
+            .expect("review job registry lock")
+            .get(job_key)
+            .cloned()
+    }
+
+    fn clear_review_job(&self, job_key: &str) {
+        self.review_jobs
+            .lock()
+            .expect("review job registry lock")
+            .remove(job_key);
+    }
+
+    /// Detach the remaining rounds onto a background task and register it so
+    /// concurrent/retrying callers join rather than duplicate.
+    fn spawn_review_job(
+        &self,
+        job_key: &str,
+        input: &spindle_core::models::RunDualPersonaReviewInput,
+        scene: &crate::sqlite::records::Scene,
+        target_rounds: usize,
+        prior_rounds: Vec<spindle_core::models::DualPersonaReviewRound>,
+    ) -> ReviewJob {
+        let (tx, rx) = tokio::sync::watch::channel(ReviewJobState::Running);
+        let job = ReviewJob {
+            target_rounds,
+            state: rx,
+        };
+        {
+            let mut guard = self.review_jobs.lock().expect("review job registry lock");
+            // Re-check under the lock: another caller may have registered a job
+            // for this key between our lookup and here.
+            if let Some(existing) = guard.get(job_key) {
+                return existing.clone();
+            }
+            guard.insert(job_key.to_string(), job.clone());
+        }
+
+        let service = self.clone();
+        let project_id = input.project_id.clone();
+        let scene = scene.clone();
+        let job_key_owned = job_key.to_string();
+        tokio::spawn(async move {
+            let outcome = service
+                .drive_review_rounds(&project_id, &scene, target_rounds, prior_rounds)
+                .await;
+            let state = match outcome {
+                Ok(()) => ReviewJobState::Done,
+                Err(error) => {
+                    tracing::warn!(
+                        scene_id = %scene.id,
+                        error = %format!("{error:#}"),
+                        "dual persona review job failed"
+                    );
+                    ReviewJobState::Failed(format!("{error:#}"))
+                }
+            };
+            // Best-effort: a dropped receiver just means nobody is waiting.
+            let _ = tx.send(state);
+            // Leave the entry for a waiter to collect; if none ever comes, drop
+            // it here so the registry cannot grow without bound.
+            tokio::time::sleep(Duration::from_secs(if cfg!(test) { 0 } else { 300 })).await;
+            service.clear_review_job(&job_key_owned);
+        });
+
+        job
+    }
+
+    /// Run rounds until `target_rounds` are banked, persisting after EACH one.
+    /// Per-round persistence is what makes the work survivable: a failure (or a
+    /// process exit) at round N leaves rounds 1..N-1 durable and resumable
+    /// instead of discarding every model call the run already paid for.
+    async fn drive_review_rounds(
+        &self,
+        project_id: &str,
+        scene: &crate::sqlite::records::Scene,
+        target_rounds: usize,
+        prior_rounds: Vec<spindle_core::models::DualPersonaReviewRound>,
+    ) -> Result<()> {
+        let branch_id = scene.branch_id.clone();
+        let scene_fingerprint = scene_revision_fingerprint(scene);
+
         // The Target Reader persona judges genre delivery, a different axis
         // from craft quality. It is populated from the project style contract;
         // skip it entirely when the project declares no style signal.
         let style_directive = self
-            .style_directive_for(&input.project_id, &branch_id)
+            .style_directive_for(project_id, &branch_id)
             .await
             .unwrap_or_default();
+
+        let mut all_rounds = prior_rounds;
+        while all_rounds.len() < target_rounds {
+            // Jobs are keyed by fingerprint, so an edit starts a second job.
+            // Persistence is unique on (branch, scene): without this check an
+            // in-flight job for fingerprint A can finish after B has started
+            // and overwrite B's banked rounds.
+            let live = self.repository.get_scene(&scene.id).await?;
+            if scene_revision_fingerprint(&live) != scene_fingerprint {
+                tracing::info!(
+                    scene_id = %scene.id,
+                    "dropping dual-persona job; scene prose moved on"
+                );
+                return Ok(());
+            }
+            let round = all_rounds.len() + 1;
+            let completed = self
+                .execute_review_round(scene, round, &style_directive)
+                .await?;
+            all_rounds.push(completed);
+
+            let status = if all_rounds.len() >= target_rounds {
+                "current"
+            } else {
+                "in_progress"
+            };
+            let persisted = self
+                .repository
+                .upsert_dual_persona_review(
+                    crate::sqlite::repository::UpsertDualPersonaReviewParams {
+                        project_id: project_id.to_string(),
+                        branch_id: branch_id.clone(),
+                        scene_id: scene.id.clone(),
+                        rounds_completed: all_rounds.len(),
+                        review_rounds: all_rounds.clone(),
+                        scene_revision_fingerprint: scene_fingerprint.clone(),
+                        status: status.to_string(),
+                    },
+                )
+                .await?;
+            if persisted.scene_revision_fingerprint != scene_fingerprint {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// One review round: every persona for this round dispatched CONCURRENTLY.
+    ///
+    /// The personas judge the same prose on independent axes and none consumes
+    /// another's output, so running them in sequence only added their latencies
+    /// together — on a reasoning model that turned a round from ~1 model call of
+    /// wall time into three.
+    async fn execute_review_round(
+        &self,
+        scene: &crate::sqlite::records::Scene,
+        round: usize,
+        style_directive: &spindle_core::style::StyleDirective,
+    ) -> Result<spindle_core::models::DualPersonaReviewRound> {
+        use crate::ai::ModelRequest;
+        use spindle_core::models::{DualPersonaReviewRound, PersonaReviewNotes};
+
         let run_genre_reader = !style_directive.is_empty();
         let genre_brief = style_directive.render_markdown().unwrap_or_default();
-
-        let rounds = input.rounds.unwrap_or(2).clamp(1, 3);
-        // Review-currency top-up (defect item 8): rounds accumulate across
-        // reviews of the SAME prose version. A prior `current` review whose
-        // fingerprint still matches contributes its rounds and the new rounds
-        // continue the numbering — so a rounds=1 top-up satisfies a two-round
-        // gate without re-running the whole review. A stale row or a changed
-        // fingerprint starts the count over.
-        let scene_fingerprint = scene_revision_fingerprint(&scene);
-        let prior_rounds: Vec<DualPersonaReviewRound> = match self
-            .repository
-            .get_dual_persona_review(&branch_id, &input.scene_id)
-            .await?
-        {
-            Some(existing)
-                if existing.status == "current"
-                    && existing.scene_revision_fingerprint == scene_fingerprint =>
-            {
-                // Persisted shape is {"rounds": [StoredDualPersonaReviewRound]}.
-                existing
-                    .review_rounds
-                    .get("rounds")
-                    .cloned()
-                    .and_then(|rounds| {
-                        serde_json::from_value::<
-                            Vec<crate::sqlite::json_records::StoredDualPersonaReviewRound>,
-                        >(rounds)
-                        .ok()
-                    })
-                    .map(|rounds| {
-                        rounds
-                            .into_iter()
-                            .map(crate::sqlite::json_records::StoredDualPersonaReviewRound::into_core)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            _ => Vec::new(),
-        };
-        let completed_rounds = prior_rounds.len();
-
-        let mut review_rounds = Vec::new();
         let review_rating = Some(scene.content_rating.clone());
         let review_context = Some(crate::ai::RequestContext {
-            project_id: Some(input.project_id.clone()),
+            project_id: Some(scene.project_id.clone()),
             book_id: None,
             chapter_id: Some(format!("{}.{}", scene.book_number, scene.chapter_number)),
             scene_id: Some(scene.id.clone()),
         });
-        for round in (completed_rounds + 1)..=(completed_rounds + rounds) {
-            let literary = self
-                .repository
-                .model_router()
-                .complete(&ModelRequest {
-                    route: "review".to_string(),
-                    prompt: format!(
-                        "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
+        let router = self.repository.model_router();
+        {
+            let literary_request = ModelRequest {
+                route: "review".to_string(),
+                prompt: format!(
+                    "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
                          You are a literary critic reviewing round {round} of a scene draft.\n\n\
                          Scene summary: {}\n\n\
                          Full prose:\n{}\n\n\
@@ -13559,19 +14429,15 @@ impl SqliteSpindleService {
                          STRENGTHS:\n- one strength per line\n\n\
                          CONCERNS:\n- one concern per line\n\n\
                          Be specific to THIS scene. Reference actual lines, images, or moments.",
-                        scene.summary, scene.full_text
-                    ),
-                    rating: review_rating.clone(),
-                    context: review_context.clone(),
-                })
-                .await?;
-            let craft = self
-                .repository
-                .model_router()
-                .complete(&ModelRequest {
-                    route: "review".to_string(),
-                    prompt: format!(
-                        "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
+                    scene.summary, scene.full_text
+                ),
+                rating: review_rating.clone(),
+                context: review_context.clone(),
+            };
+            let craft_request = ModelRequest {
+                route: "review".to_string(),
+                prompt: format!(
+                    "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
                          You are a craft technician reviewing round {round} of a scene draft.\n\n\
                          Tone: {}\n\
                          Scene summary: {}\n\n\
@@ -13586,25 +14452,19 @@ impl SqliteSpindleService {
                          STRENGTHS:\n- one strength per line\n\n\
                          CONCERNS:\n- one concern per line\n\n\
                          Be specific to THIS scene. Quote actual phrases that need work.",
-                        scene.tone.as_deref().unwrap_or("unspecified"),
-                        scene.summary,
-                        scene.full_text
-                    ),
-                    rating: review_rating.clone(),
-                    context: review_context.clone(),
-                })
-                .await?;
-
+                    scene.tone.as_deref().unwrap_or("unspecified"),
+                    scene.summary,
+                    scene.full_text
+                ),
+                rating: review_rating.clone(),
+                context: review_context.clone(),
+            };
             // Target Reader persona: only invoked when there is a style
             // contract to judge against.
-            let genre_reader = if run_genre_reader {
-                let genre = self
-                    .repository
-                    .model_router()
-                    .complete(&ModelRequest {
-                        route: "review".to_string(),
-                        prompt: format!(
-                            "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
+            let genre_request = ModelRequest {
+                route: "review".to_string(),
+                prompt: format!(
+                    "{FICTION_REVIEW_PROMPT_FRAME}\n\n\
                              You are the TARGET READER of this book's declared genre, reviewing \
                              round {round} of a scene draft. You are NOT a craft critic — you are \
                              the reader this book is FOR, judging whether the scene delivers what \
@@ -13630,38 +14490,54 @@ impl SqliteSpindleService {
                              CONCERNS:\n- one concern per line\n\n\
                              A scene that is well-crafted but OFF-GENRE is a CONCERN, not a \
                              strength. Be specific to THIS scene.",
-                            scene.tone.as_deref().unwrap_or("unspecified"),
-                            scene.summary,
-                            scene.full_text
-                        ),
-                        rating: review_rating.clone(),
-                        context: review_context.clone(),
-                    })
-                    .await?;
-                let (strengths, concerns) = if genre.adapter_kind == "local" {
-                    (
-                        vec!["local heuristic pass (no external model configured)".to_string()],
-                        derive_genre_concerns(&scene, &style_directive),
-                    )
-                } else {
-                    parse_review_sections(&genre.output)
-                };
-                PersonaReviewNotes {
-                    persona: "target_reader".to_string(),
-                    strengths,
-                    concerns,
+                    scene.tone.as_deref().unwrap_or("unspecified"),
+                    scene.summary,
+                    scene.full_text
+                ),
+                rating: review_rating.clone(),
+                context: review_context.clone(),
+            };
+
+            // The three personas dispatch together; the round costs one model
+            // call of wall time instead of three.
+            let genre_call = async {
+                if !run_genre_reader {
+                    return Ok(None);
                 }
-            } else {
-                PersonaReviewNotes {
+                router.complete(&genre_request).await.map(Some)
+            };
+            let (literary, craft, genre) = tokio::try_join!(
+                router.complete(&literary_request),
+                router.complete(&craft_request),
+                genre_call
+            )?;
+
+            let genre_reader = match genre {
+                Some(genre) => {
+                    let (strengths, concerns) = if genre.adapter_kind == "local" {
+                        (
+                            vec!["local heuristic pass (no external model configured)".to_string()],
+                            derive_genre_concerns(scene, style_directive),
+                        )
+                    } else {
+                        parse_review_sections(&genre.output)
+                    };
+                    PersonaReviewNotes {
+                        persona: "target_reader".to_string(),
+                        strengths,
+                        concerns,
+                    }
+                }
+                None => PersonaReviewNotes {
                     persona: "target_reader".to_string(),
                     ..Default::default()
-                }
+                },
             };
 
             let (literary_strengths, literary_concerns) = if literary.adapter_kind == "local" {
                 (
                     vec!["local heuristic pass (no external model configured)".to_string()],
-                    derive_literary_concerns(&scene),
+                    derive_literary_concerns(scene),
                 )
             } else {
                 parse_review_sections(&literary.output)
@@ -13669,7 +14545,7 @@ impl SqliteSpindleService {
             let (craft_strengths, craft_concerns) = if craft.adapter_kind == "local" {
                 (
                     vec!["local heuristic pass (no external model configured)".to_string()],
-                    derive_craft_concerns(&scene),
+                    derive_craft_concerns(scene),
                 )
             } else {
                 parse_review_sections(&craft.output)
@@ -13683,7 +14559,7 @@ impl SqliteSpindleService {
                     .take(2)
                     .map(|c| format!("Genre fix: {c}"))
                     .collect();
-                actions.extend(derive_review_actions(&scene));
+                actions.extend(derive_review_actions(scene));
                 actions
             } else {
                 let mut actions: Vec<String> = genre_reader
@@ -13705,7 +14581,7 @@ impl SqliteSpindleService {
                 actions
             };
 
-            review_rounds.push(DualPersonaReviewRound {
+            Ok(DualPersonaReviewRound {
                 round,
                 literary_critic: PersonaReviewNotes {
                     persona: "literary_critic".to_string(),
@@ -13719,32 +14595,8 @@ impl SqliteSpindleService {
                 },
                 genre_reader,
                 priority_actions,
-            });
-        }
-
-        let mut all_rounds = prior_rounds;
-        all_rounds.extend(review_rounds);
-        let persisted = self
-            .repository
-            .upsert_dual_persona_review(crate::sqlite::repository::UpsertDualPersonaReviewParams {
-                project_id: input.project_id.clone(),
-                branch_id: branch_id.clone(),
-                scene_id: input.scene_id.clone(),
-                rounds_completed: all_rounds.len(),
-                review_rounds: all_rounds.clone(),
-                scene_revision_fingerprint: scene_fingerprint,
-                status: "current".to_string(),
             })
-            .await?;
-
-        Ok(RunDualPersonaReviewOutput {
-            scene_id: input.scene_id,
-            branch_id,
-            rounds_completed: all_rounds.len(),
-            review_id: persisted.id,
-            status: persisted.status,
-            review_rounds: all_rounds,
-        })
+        }
     }
 
     /// Route-based research lookup that asks the configured research agent
@@ -15596,12 +16448,10 @@ impl SqliteSpindleService {
     /// `scene_source_link` offsets + SHA-256.
     ///
     /// Accepts both Spindle-managed delimited files (one chapter per
-    /// file, scenes separated by `\n\n---\n\n`) and externally-formatted
-    /// manuscripts (Markdown `# Chapter` headers, `***` / `---` scene
-    /// breaks, blank-line scene transitions, etc.) by routing the source
-    /// text through the import structural slicer. See
-    /// `sqlite::source_bridge::scene_offsets_from_import_slicer` for the
-    /// slicer-to-bridge translation logic.
+    /// file, scenes separated by `<!-- spindle-scene -->`) and
+    /// externally-formatted manuscripts (Markdown `# Chapter` headers,
+    /// `***` / `---` scene breaks, blank-line scene transitions, etc.).
+    /// See `sqlite::source_bridge` for delimiter vs slicer routing.
     pub async fn pull_chapter_from_file(
         &self,
         input: spindle_core::models::PullChapterFromFileInput,
@@ -15613,7 +16463,7 @@ impl SqliteSpindleService {
     }
 
     /// Serialise every scene in a chapter to a single text file under
-    /// `data_dir`, scene bodies separated by `\n\n---\n\n`. Upserts a
+    /// `data_dir`, scene bodies separated by `<!-- spindle-scene -->`. Upserts a
     /// `scene_source_link` row per scene with the on-disk byte range and
     /// SHA-256 hash so subsequent `pull_chapter_from_file` and
     /// `backfill_scene_source_offsets` calls can round-trip cleanly.
@@ -18655,6 +19505,7 @@ impl SqliteSpindleService {
         };
 
         self.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "conflict".to_string(),
             entity_id: conflict_id,
             changes: serde_json::json!({ column: value }),
@@ -18687,6 +19538,7 @@ impl SqliteSpindleService {
         target.reached_at = Some(StoredStoryPlacement::from(placement));
 
         self.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "character_arc".to_string(),
             entity_id: arc_id,
             changes: serde_json::json!({ "milestones": serde_json::to_value(&milestones)? }),
@@ -20088,7 +20940,7 @@ impl SqliteSpindleService {
                     scene: Some(scene),
                     text: &segment_text,
                 });
-                let _model_response = self
+                match self
                     .repository
                     .model_router()
                     .complete(&ModelRequest {
@@ -20097,7 +20949,51 @@ impl SqliteSpindleService {
                         rating: None,
                         context: None,
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(_model_response) => {}
+                    // A provider safety refusal is deterministic for this
+                    // segment+provider; retrying won't help and must not abort the
+                    // whole import. Surface it as a Warning review item and fall
+                    // through to the local (regex) extraction so the segment still
+                    // yields what it can. Any other error still propagates.
+                    Err(err)
+                        if err
+                            .downcast_ref::<crate::ai::ContentPolicyRefusal>()
+                            .is_some() =>
+                    {
+                        let refusal = err
+                            .downcast_ref::<crate::ai::ContentPolicyRefusal>()
+                            .expect("matched above");
+                        let review = self
+                            .repository
+                            .create_import_review_item(CreateImportReviewItemParams {
+                                session_id: input.session_id.clone(),
+                                pass_name: import_pass_name(&ImportPassName::EntityExtraction),
+                                item_kind: import_review_item_kind_name(
+                                    &ImportReviewItemKind::Entity,
+                                ),
+                                severity: import_review_severity_name(
+                                    &ImportReviewSeverity::Warning,
+                                ),
+                                status: import_review_status_name(&ImportReviewStatus::Open),
+                                title: "Model refused entity extraction (content policy)"
+                                    .to_string(),
+                                description: format!(
+                                    "The import model ({}) refused this segment on content-policy grounds; local extraction still ran. Route import to an explicit-cleared agent (see `route_import_to_explicit`) to avoid this. Detail: {}",
+                                    refusal.endpoint, refusal.detail
+                                ),
+                                related_segment_ids: vec![segment_record.id.clone()],
+                                related_entity_ids: Vec::new(),
+                                confidence: None,
+                                proposed_correction: None,
+                                resolver_notes: None,
+                            })
+                            .await?;
+                        review_items.push(review);
+                    }
+                    Err(err) => return Err(err),
+                }
 
                 let candidates = extract_entity_candidates(&segment_text);
                 for candidate in candidates {
@@ -22653,6 +23549,7 @@ impl SqliteSpindleService {
                 });
             let created = self
                 .create_character(CreateCharacterInput {
+                    aliases: Vec::new(),
                     project_id: target_project_id.clone(),
                     name: dossier.canonical_name.clone(),
                     summary: summarize_character_summary(dossier),
@@ -24898,19 +25795,8 @@ fn canonical_predicate_slug(sentence: &str) -> String {
 }
 
 /// Stable fingerprint over the scene fields that drive review staleness.
-/// Mirrors `SpindleRepository::scene_revision_fingerprint` from
-/// repository.rs:2687 in 705b835^.
 fn scene_revision_fingerprint(scene: &crate::sqlite::records::Scene) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(scene.summary.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(scene.full_text.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(scene.content_rating.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(scene.tone.clone().unwrap_or_default().as_bytes());
-    format!("{:x}", hasher.finalize())
+    crate::sqlite::repository::Repository::scene_revision_fingerprint(scene)
 }
 
 /// Pure helper: compare a source branch's scenes against the target
@@ -25338,11 +26224,22 @@ fn phase_four_context_hashes(
                             "rule_name": rule.rule_name,
                             "scan_pattern": rule.scan_pattern,
                             "established_in": rule.established_in,
+                            // Classification inputs for secrecy-class scoping:
+                            // editing either must invalidate cached findings.
+                            "rule_type": rule.rule_type,
+                            "description": rule.description,
                         })
                     })
                     .collect::<Vec<_>>();
                 rules.sort_by_key(|value| value.to_string());
-                serde_json::json!({ "world_rules": rules })
+                serde_json::json!({
+                    "world_rules": rules,
+                    // Scanner behavior is part of the cache key: findings
+                    // computed by older scanner semantics (e.g. pre-secrecy
+                    // v1, which flagged narration/HUD hits) must not be
+                    // served after a scanner upgrade.
+                    "scanner_version": spindle_core::world_rules::SCANNER_SEMANTICS_VERSION,
+                })
             }
             PhaseFourCacheId::VoiceDrift => {
                 let mut profiles = context
@@ -26387,9 +27284,15 @@ fn mine_skip_output(
         Some(crate::ai::RouteClearanceError::RatingNotCovered { route, rating, .. }) => format!(
             "canon mining SKIPPED: the `{route}` route is not cleared for rating `{rating}`"
         ),
-        _ => format!(
-            "canon mining SKIPPED: no usable `{attempted_route}` route (the model call failed)"
-        ),
+        _ => match err.downcast_ref::<crate::ai::ContentPolicyRefusal>() {
+            Some(refusal) => format!(
+                "canon mining SKIPPED: the `{}` provider refused this scene on content-policy grounds ({})",
+                refusal.endpoint, refusal.detail
+            ),
+            None => format!(
+                "canon mining SKIPPED: no usable `{attempted_route}` route (the model call failed)"
+            ),
+        },
     };
     spindle_core::models::MineSceneCanonOutput {
         staged: Vec::new(),
@@ -26665,7 +27568,14 @@ fn canon_mine_output_contract() -> &'static str {
 /// prose, the current-state digest, the optional quantity-scheme guidance, and
 /// the output contract. Pure — the service builds `digest`/`scheme_name`.
 fn build_mine_prompt(scene_text: &str, digest: &str, quantity_scheme_name: Option<&str>) -> String {
+    use crate::sqlite::import::prompts::FICTION_FRAME_PREFIX;
+
     let mut prompt = String::new();
+    // Fiction/safety frame first: mining ships the scene's verbatim prose plus a
+    // mature-adjacent output contract (relationship_shift/tension_delta/…), which
+    // stricter provider classifiers (e.g. Qwen) can read as real-world content
+    // without the frame the review/research routes already carry.
+    prompt.push_str(FICTION_FRAME_PREFIX);
     prompt.push_str(CANON_MINE_AUDIT_HEADER);
     prompt.push('\n');
     prompt.push_str(
@@ -27393,6 +28303,195 @@ fn canonical_fact_value_for_check(fact: &crate::sqlite::records::CanonicalFact) 
     crate::format::canonical_fact_value(fact)
 }
 
+/// Shape-check proposed `character_emotional_profile` column writes against
+/// the types the row readers deserialize into. The schema only enforces
+/// `json_valid` on these columns, so without this a type-wrong-but-valid-JSON
+/// value would persist and then break every subsequent read of the profile —
+/// and the emotional profile is embedded in character briefings, so one bad
+/// write poisons the character's whole drafting context. Unknown columns are
+/// ignored here; the allowlist check rejects them separately.
+fn validate_emotional_profile_changes(
+    changes: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<()> {
+    use crate::sqlite::json_records::StoredFlexRange;
+    for (column, value) in changes {
+        match column.as_str() {
+            "base_emotions" if !value.is_object() => {
+                anyhow::bail!(
+                    "character_emotional_profile.base_emotions must be a JSON object \
+                     mapping emotion names to values"
+                );
+            }
+            "suppressed" | "triggers" | "defense_mechanisms" => {
+                serde_json::from_value::<Vec<String>>(value.clone()).map_err(|_| {
+                    anyhow::anyhow!(
+                        "character_emotional_profile.{column} must be an array of strings"
+                    )
+                })?;
+            }
+            "flex_range" if !value.is_null() => {
+                serde_json::from_value::<StoredFlexRange>(value.clone()).map_err(|_| {
+                    anyhow::anyhow!(
+                        "character_emotional_profile.flex_range must be null or an object \
+                         with optional `low`/`high` string fields"
+                    )
+                })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Shape-check a proposed `character.aliases` write. The column only requires
+/// `json_valid`, so `[1, 2]` or `{"nick": "Gull"}` would persist and then
+/// break every later `get_character` / snapshot / FTS-adjacent read of the row.
+fn validate_character_aliases_value(value: &serde_json::Value) -> Result<()> {
+    serde_json::from_value::<Vec<String>>(value.clone())
+        .map_err(|_| anyhow::anyhow!("character.aliases must be an array of strings"))?;
+    Ok(())
+}
+
+/// Validate a reader-contract field that must be a string.
+fn parse_contract_string(field: &str, value: &serde_json::Value) -> Result<String> {
+    match value {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        other => anyhow::bail!("reader_contract.{field} must be a string, got {other}"),
+    }
+}
+
+/// Validate a reader-contract field that must be an array of strings.
+fn parse_contract_string_list(field: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+    serde_json::from_value::<Vec<String>>(value.clone())
+        .map_err(|_| anyhow::anyhow!("reader_contract.{field} must be an array of strings"))
+}
+
+/// The free-text fields of a narrator voice that may carry a word-count
+/// target, flattened for contradiction scanning.
+fn narrator_voice_text_fields(voice: &spindle_core::style::NarratorVoice) -> Vec<String> {
+    let mut fields = Vec::new();
+    if let Some(v) = &voice.comedy_density {
+        fields.push(v.clone());
+    }
+    if let Some(v) = &voice.pacing_feel {
+        fields.push(v.clone());
+    }
+    if let Some(v) = &voice.interiority_ratio {
+        fields.push(v.clone());
+    }
+    if let Some(v) = &voice.emotional_register {
+        fields.push(v.clone());
+    }
+    if let Some(v) = &voice.chapter_ending_style {
+        fields.push(v.clone());
+    }
+    fields.extend(voice.notes.iter().cloned());
+    fields
+}
+
+/// Extract word-count target ranges like "1,200–2,000 words", "1200-2000
+/// words", "3,500 to 5,000 words", or "1200–2000-word chapters". Only ranges
+/// followed (or immediately trailed) by the word "word"/"words" count, so an
+/// unrelated pair of numbers is not treated as a length target. Returns
+/// inclusive `(lo, hi)` pairs, deduplicated.
+fn extract_word_count_ranges(text: &str) -> Vec<(i64, i64)> {
+    // Work on the lowercased string so byte indices stay valid for slicing.
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+
+    // Number spans as (start_byte, end_byte, value).
+    let mut numbers: Vec<(usize, usize, i64)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            let mut digits = String::new();
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b',') {
+                if bytes[i].is_ascii_digit() {
+                    digits.push(bytes[i] as char);
+                }
+                i += 1;
+            }
+            if let Ok(value) = digits.parse::<i64>() {
+                numbers.push((start, i, value));
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut ranges: Vec<(i64, i64)> = Vec::new();
+    for pair in numbers.windows(2) {
+        let (_, a_end, a_val) = pair[0];
+        let (b_start, b_end, b_val) = pair[1];
+        if a_end > b_start {
+            continue;
+        }
+        let gap = lower[a_end..b_start].trim();
+        let is_range_separator =
+            gap == "-" || gap == "–" || gap == "—" || gap == "to" || gap == "and";
+        if !is_range_separator {
+            continue;
+        }
+        // Require "word"/"words" shortly after the second number.
+        let after_end = (b_end + 40).min(lower.len());
+        let after = &lower[b_end..after_end];
+        if after.contains("word") {
+            let lo = a_val.min(b_val);
+            let hi = a_val.max(b_val);
+            if !ranges.contains(&(lo, hi)) {
+                ranges.push((lo, hi));
+            }
+        }
+    }
+    ranges
+}
+
+/// True when two inclusive ranges overlap.
+fn word_ranges_overlap(a: &(i64, i64), b: &(i64, i64)) -> bool {
+    a.0 <= b.1 && b.0 <= a.1
+}
+
+/// Two surfaces contradict when no range on one side overlaps any range on the
+/// other. Empty sides never contradict.
+fn word_ranges_contradict(a: &[(i64, i64)], b: &[(i64, i64)]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    !a.iter()
+        .any(|ra| b.iter().any(|rb| word_ranges_overlap(ra, rb)))
+}
+
+/// Render a set of ranges for a warning message.
+fn format_word_ranges(ranges: &[(i64, i64)]) -> String {
+    ranges
+        .iter()
+        .map(|(lo, hi)| format!("{lo}-{hi} words"))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// The character's search-embedding document. Aliases ride in the content so
+/// find_entity's semantic (kNN) path resolves nicknames and pre-rename names;
+/// the exact-name FTS path is covered by fts_character.aliases (V0037). Every
+/// write path that indexes a character (create, rename, rebuild) must go
+/// through this so the document shape stays consistent.
+fn character_search_document(character: &crate::sqlite::records::Character) -> SearchDocument {
+    let mut content = format!("{}\n\n{}", character.name, character.summary);
+    if !character.aliases.is_empty() {
+        content.push_str(&format!(
+            "\n\nAlso known as: {}",
+            character.aliases.join(", ")
+        ));
+    }
+    SearchDocument {
+        entity_table: "character".to_string(),
+        title: character.name.clone(),
+        excerpt: character.summary.clone(),
+        content,
+    }
+}
+
 /// Secret-knowledge gating (design §2.2): the per-scene decision the context
 /// assembly applies to every carrier. Produced once by
 /// `resolve_scene_secret_gate` and consumed by `apply_secret_visibility`, so no
@@ -27900,6 +28999,82 @@ mod tests {
         );
     }
 
+    /// Regression for the stale-cache bug that made the secrecy-scoping fix
+    /// invisible: the world_rule_semantic_drift context hash keyed only on
+    /// rule metadata (rule_id, rule_name, scan_pattern, established_in), so
+    /// findings computed by the pre-secrecy scanner kept matching the cache
+    /// key and were served forever. The hash must now incorporate the
+    /// scanner semantics version AND the classification inputs (rule_type,
+    /// description), so a scanner upgrade — or an edit to either field —
+    /// invalidates cached findings.
+    #[test]
+    fn world_rule_context_hash_covers_scanner_semantics_and_classification_inputs() {
+        use spindle_core::validators::{ValidatorContext, WorldRuleSnapshot};
+
+        let context = |rule_type: &str, description: &str| ValidatorContext {
+            project_id: "project:p".to_string(),
+            branch_id: "branch:b".to_string(),
+            scenes: Vec::new(),
+            canonical_facts: Vec::new(),
+            world_rules: vec![WorldRuleSnapshot {
+                rule_id: "world_rule:r".to_string(),
+                rule_name: "System Secrecy".to_string(),
+                scan_pattern: Some("the system".to_string()),
+                established_in: None,
+                rule_type: rule_type.to_string(),
+                description: description.to_string(),
+            }],
+            voice_profiles: Vec::new(),
+            timeline_events: Vec::new(),
+            temporal_interventions: Vec::new(),
+            style_directive: None,
+        };
+        let checks: std::collections::BTreeSet<PhaseFourCacheId> =
+            std::iter::once(PhaseFourCacheId::WorldRuleSemanticDrift).collect();
+
+        let hash = phase_four_context_hashes(
+            &context("secrecy", "Nate must never disclose the N.A.I.P."),
+            &checks,
+        )
+        .unwrap()
+        .get("world_rule_semantic_drift")
+        .unwrap()
+        .clone();
+
+        // The pre-fix payload (rule metadata only, no scanner version, no
+        // classification inputs) must NOT collide with the new hash — this
+        // is exactly the key the stale cached findings were stored under.
+        let legacy_payload = serde_json::json!({
+            "world_rules": [serde_json::json!({
+                "rule_id": "world_rule:r",
+                "rule_name": "System Secrecy",
+                "scan_pattern": "the system",
+                "established_in": null,
+            })]
+        });
+        let legacy_hash = generation_sha256_hex(&serde_json::to_vec(&legacy_payload).unwrap());
+        assert_ne!(
+            hash, legacy_hash,
+            "findings cached by the pre-secrecy scanner must no longer match"
+        );
+
+        // Classification inputs participate: reclassifying the same rule
+        // (or rewording its description) invalidates the cache.
+        let reclassified = phase_four_context_hashes(
+            &context("magic_limitation", "Different constraint entirely."),
+            &checks,
+        )
+        .unwrap();
+        assert_ne!(
+            hash,
+            reclassified
+                .get("world_rule_semantic_drift")
+                .unwrap()
+                .as_str(),
+            "rule_type/description edits must change the context hash"
+        );
+    }
+
     #[tokio::test]
     async fn read_project_resource_continuity_health_reports_cache_orphans_and_duplicates() {
         let (_tmp, svc) = fresh_service().await;
@@ -27930,7 +29105,7 @@ mod tests {
         for value_text in ["clear", "stormy"] {
             svc.register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: project.project_id.clone(),
-                scene_id: scene_id.clone(),
+                scene_id: Some(scene_id.clone()),
                 book_number: 1,
                 chapter_number: 1,
                 fact_type: None,
@@ -28221,6 +29396,7 @@ mod tests {
         .await;
 
         svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "world_rule".to_string(),
             entity_id: rule.world_rule_id,
             changes: serde_json::json!({
@@ -28409,7 +29585,7 @@ mod tests {
 
         svc.register_canonical_fact(RegisterCanonicalFactInput {
             project_id: project.project_id.clone(),
-            scene_id: scene_id.clone(),
+            scene_id: Some(scene_id.clone()),
             book_number: 1,
             chapter_number: 1,
             fact_type: Some("typed_fact".to_string()),
@@ -28620,6 +29796,7 @@ mod tests {
         .await;
 
         svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "project".to_string(),
             entity_id: project.project_id.clone(),
             changes: serde_json::json!({
@@ -28822,6 +29999,7 @@ mod tests {
             .unwrap();
 
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Mara Oathkeeper".into(),
             summary: "Warden of the Ash Gate.".into(),
@@ -28922,6 +30100,7 @@ mod tests {
         // 2. Create a character.
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Oathbound warden of the Ash Gate.".into(),
@@ -28958,6 +30137,7 @@ mod tests {
 
         let aldric = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Aldric".into(),
                 summary: "Scribe of the eastern marches.".into(),
@@ -29107,6 +30287,7 @@ mod tests {
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Oathbound warden of the Ash Gate.".into(),
@@ -29142,6 +30323,7 @@ mod tests {
 
         let aldric = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Aldric".into(),
                 summary: "Scribe of the marches.".into(),
@@ -29330,7 +30512,7 @@ mod tests {
         let fact = svc
             .register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: proj.project_id.clone(),
-                scene_id: scene1.scene_id.clone(),
+                scene_id: Some(scene1.scene_id.clone()),
                 book_number: 1,
                 chapter_number: 1,
                 fact_type: None,
@@ -29497,6 +30679,7 @@ mod tests {
             .unwrap();
 
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Mara".into(),
             summary: "Warden of the Ash Gate.".into(),
@@ -29667,7 +30850,7 @@ mod tests {
         let untyped = svc
             .register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: proj.project_id.clone(),
-                scene_id: scene.scene_id.clone(),
+                scene_id: Some(scene.scene_id.clone()),
                 book_number: 1,
                 chapter_number: 1,
                 fact_type: Some("note".into()),
@@ -29770,6 +30953,11 @@ mod tests {
             chapter.title.as_deref(),
             Some("Prologue: Sol System, Off-Season"),
             "create_chapter must persist the title it accepts"
+        );
+        assert_eq!(
+            out.title.as_deref(),
+            Some("Prologue: Sol System, Off-Season"),
+            "the success response must echo the persisted title"
         );
 
         // The preflight that surfaced the live bug must no longer flag the
@@ -30156,6 +31344,7 @@ mod tests {
         // Lower the floor to 3 words: the 5-word scene is now legitimate,
         // the literal placeholder is still a placeholder.
         svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "project".to_string(),
             entity_id: proj.project_id.clone(),
             changes: serde_json::json!({ "min_scene_word_count": 3 }),
@@ -30253,6 +31442,7 @@ mod tests {
             .unwrap()
             .unwrap();
         svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "chapter".into(),
             entity_id: ch1.id.clone(),
             changes: serde_json::json!({ "title": "The Gate" }),
@@ -30775,7 +31965,7 @@ mod tests {
         use spindle_core::models::{RegisterCanonicalFactInput, SecrecyScope};
         svc.register_canonical_fact(RegisterCanonicalFactInput {
             project_id: project_id.to_string(),
-            scene_id: scene_id.to_string(),
+            scene_id: Some(scene_id.to_string()),
             book_number: 1,
             chapter_number: 1,
             fact_type: None,
@@ -30933,7 +32123,7 @@ mod tests {
         let fact = svc
             .register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: proj.clone(),
-                scene_id: scene_id.clone(),
+                scene_id: Some(scene_id.clone()),
                 book_number: 1,
                 chapter_number: 1,
                 fact_type: None,
@@ -31180,6 +32370,7 @@ mod tests {
             CreateCharacterInput,
         };
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project_id.to_string(),
             name: name.into(),
             summary: format!("{name} of the docks."),
@@ -31414,6 +32605,280 @@ mod tests {
         );
     }
 
+    /// A `review` endpoint that sleeps `delay` before answering, serving each
+    /// connection on its own thread so concurrent persona calls really overlap.
+    /// Stands in for a reasoning model whose single call outlives an MCP
+    /// request timeout.
+    fn spawn_slow_review_server(delay: std::time::Duration) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind slow server");
+        let address = listener.local_addr().expect("listener address");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                std::thread::spawn(move || {
+                    let mut buffer = [0_u8; 16384];
+                    let _ = stream.read(&mut buffer);
+                    std::thread::sleep(delay);
+                    let body = serde_json::json!({
+                        "choices": [{
+                            "message": {
+                                "content": "STRENGTHS:\n- slow model strength\n\nCONCERNS:\n- slow model concern"
+                            },
+                            "finish_reason": "stop"
+                        }]
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                });
+            }
+        });
+        format!("http://{address}/v1")
+    }
+
+    /// Seed a project with one saved scene and a review route pointing at a
+    /// deliberately slow model. Returns (tmp, service, project_id, scene_id).
+    async fn slow_review_fixture(
+        delay: std::time::Duration,
+    ) -> (TempDir, SqliteSpindleService, String, String) {
+        use spindle_core::models::{ConfigureAgentsInput, ContentRating, SaveSceneDraftInput};
+
+        let (tmp, svc) = fresh_service_local().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "slow-review".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let saved = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "The wall held through the night and the horns did not sound again."
+                    .into(),
+                summary: "Quiet watch.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let endpoint = spawn_slow_review_server(delay);
+        let config_path = tmp.path().join("slow-review.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "slow-review"
+name = "Slow Review"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "slow-review"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "slow-review"
+"####
+            ),
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+
+        (tmp, svc, proj.project_id, saved.scene_id)
+    }
+
+    async fn await_review_rounds(
+        svc: &SqliteSpindleService,
+        branch_id: &str,
+        scene_id: &str,
+        want_rounds: i64,
+    ) {
+        for _ in 0..200 {
+            if let Some(row) = svc
+                .repository
+                .get_dual_persona_review(branch_id, scene_id)
+                .await
+                .unwrap()
+                && row.rounds_completed >= want_rounds
+                && row.status == "current"
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("review never reached {want_rounds} completed rounds");
+    }
+
+    /// THE REGRESSION: a review whose model is slower than the caller's patience
+    /// must still finish and persist.
+    ///
+    /// Every round used to run inline with a single persist at the very end, so
+    /// when the MCP client gave up at ~60s the whole run was discarded — the
+    /// table held zero rows despite every model call having been paid for, and
+    /// the retry restarted from nothing. Now the call reports `in_progress` and
+    /// the detached job banks each round as it lands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn slow_review_completes_and_persists_after_caller_stops_waiting() {
+        use spindle_core::models::RunDualPersonaReviewInput;
+
+        // Each call outlives REVIEW_JOB_JOIN_WAIT (150ms under cfg!(test)).
+        let (_tmp, svc, project_id, scene_id) =
+            slow_review_fixture(std::time::Duration::from_millis(300)).await;
+        let branch_id = svc
+            .repository
+            .get_active_branch(&project_id)
+            .await
+            .unwrap()
+            .id;
+
+        let first = svc
+            .run_dual_persona_review(RunDualPersonaReviewInput {
+                project_id: project_id.clone(),
+                branch_id: None,
+                scene_id: scene_id.clone(),
+                rounds: Some(2),
+            })
+            .await
+            .expect("the call must return, not hang, when the model is slow");
+
+        // The caller is answered promptly with an honest in-progress status
+        // rather than blocking until the client's own timeout fires.
+        assert_eq!(
+            first.status, "in_progress",
+            "a review slower than the join wait must report in_progress"
+        );
+        assert!(
+            first.rounds_completed < 2,
+            "the run cannot already be complete at this delay"
+        );
+
+        // The detached job keeps going and banks both rounds.
+        await_review_rounds(&svc, &branch_id, &scene_id, 2).await;
+
+        // Exactly one row for the scene — no duplicate from the retry path.
+        let all = svc
+            .repository
+            .list_dual_persona_reviews_by_project(&project_id)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1, "a review must never fan out into extra rows");
+    }
+
+    /// Retrying after a client timeout must COLLECT the finished work, not
+    /// stack another `rounds` on top of it. Without the in-flight/target-rounds
+    /// check, a rounds=2 retry over 2 banked rounds would run 2 MORE and bill
+    /// the operator twice for a review they already have.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn retrying_a_timed_out_review_collects_instead_of_topping_up() {
+        use spindle_core::models::RunDualPersonaReviewInput;
+
+        let (_tmp, svc, project_id, scene_id) =
+            slow_review_fixture(std::time::Duration::from_millis(200)).await;
+        let branch_id = svc
+            .repository
+            .get_active_branch(&project_id)
+            .await
+            .unwrap()
+            .id;
+        let request = || RunDualPersonaReviewInput {
+            project_id: project_id.clone(),
+            branch_id: None,
+            scene_id: scene_id.clone(),
+            rounds: Some(2),
+        };
+
+        // First call times out its join wait and leaves the job running.
+        let first = svc.run_dual_persona_review(request()).await.unwrap();
+        assert_eq!(first.status, "in_progress");
+        await_review_rounds(&svc, &branch_id, &scene_id, 2).await;
+
+        // The retry the operator would naturally make. It must hand back the
+        // banked review, not launch rounds 3 and 4.
+        let second = svc.run_dual_persona_review(request()).await.unwrap();
+        assert_eq!(
+            second.rounds_completed, 2,
+            "retry must collect the 2 banked rounds, not top up to 4"
+        );
+        assert_eq!(second.status, "current");
+        assert_eq!(second.review_rounds.len(), 2);
+
+        let row = svc
+            .repository
+            .get_dual_persona_review(&branch_id, &scene_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.rounds_completed, 2, "the persisted row must not grow");
+    }
+
+    /// Two callers racing for the same scene must share one job — the model is
+    /// the expensive resource and a duplicate run doubles its cost for nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_review_calls_join_one_job() {
+        use spindle_core::models::RunDualPersonaReviewInput;
+
+        let (_tmp, svc, project_id, scene_id) =
+            slow_review_fixture(std::time::Duration::from_millis(200)).await;
+        let branch_id = svc
+            .repository
+            .get_active_branch(&project_id)
+            .await
+            .unwrap()
+            .id;
+        let request = || RunDualPersonaReviewInput {
+            project_id: project_id.clone(),
+            branch_id: None,
+            scene_id: scene_id.clone(),
+            rounds: Some(1),
+        };
+
+        let (a, b) = tokio::join!(
+            svc.run_dual_persona_review(request()),
+            svc.run_dual_persona_review(request())
+        );
+        a.unwrap();
+        b.unwrap();
+
+        await_review_rounds(&svc, &branch_id, &scene_id, 1).await;
+        let row = svc
+            .repository
+            .get_dual_persona_review(&branch_id, &scene_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.rounds_completed, 1,
+            "two racing callers must produce ONE round, not two"
+        );
+    }
+
     #[tokio::test]
     async fn dual_persona_review_rounds_top_up_across_calls_on_same_prose() {
         // Defect item 8: the checkpoint gate needs status=current AND
@@ -31577,6 +33042,7 @@ mod tests {
 
         let jason = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Jason".into(),
                 summary: "37-year-old mind in a 19-year-old body; sarcastic narrator.".into(),
@@ -33722,6 +35188,7 @@ agent = "explicit-agent"
 
         // Drive the bug repro: update entity_type="book", field="title".
         svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "book".into(),
             entity_id: book_id.clone(),
             changes: serde_json::json!({ "title": "Renamed Book" }),
@@ -33801,6 +35268,7 @@ agent = "explicit-agent"
         ];
 
         svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
             entity_type: "conflict".into(),
             entity_id: conflict.conflict_id.clone(),
             changes: serde_json::json!({
@@ -33820,6 +35288,1786 @@ agent = "explicit-agent"
         assert_eq!(updated.try_fail_cycles[0].attempt_order, 1);
         assert_eq!(updated.try_fail_cycles[1].attempt_order, 2);
         assert_eq!(updated.expected_total_cycles, Some(3));
+    }
+
+    /// Regression for the allowlist gap that made planned_payoff
+    /// unactionable: after a chapter renumber every promise still pointed at
+    /// its old payoff chapter, and narrative_promise_tracking emitted
+    /// permanent "past planned payoff" warnings with no API path to retarget
+    /// the promise (update_promise_status takes only status/note).
+    #[tokio::test]
+    async fn update_entity_on_narrative_promise_planned_payoff_now_allowlisted() {
+        use spindle_core::models::{CreateNarrativePromiseInput, StoryPlacement};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Promise Retarget".into(),
+                project_type: "novel".into(),
+                genre: "litRPG".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let promise = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: proj.project_id.clone(),
+                promise_type: "foreshadowing".into(),
+                description: "The coerced yes will detonate.".into(),
+                planted_at: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 4,
+                    scene_order: None,
+                    note: None,
+                },
+                planned_payoff: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 30,
+                    scene_order: None,
+                    note: None,
+                }),
+                notes: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        // Drive the bug repro: retarget the payoff after a restructure.
+        // Pre-fix this errored with "column 'planned_payoff' on
+        // 'narrative_promise' is not in the update allowlist".
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "narrative_promise".into(),
+            entity_id: promise.narrative_promise_id.clone(),
+            changes: serde_json::json!({
+                "planned_payoff": { "book_number": 1, "chapter_number": 65 }
+            }),
+        })
+        .await
+        .expect("update_entity on narrative_promise.planned_payoff must succeed");
+
+        let updated = svc
+            .repository()
+            .get_narrative_promise(&promise.narrative_promise_id)
+            .await
+            .unwrap();
+        let payoff = updated
+            .planned_payoff
+            .expect("planned_payoff persists")
+            .into_core();
+        assert_eq!(payoff.book_number, 1);
+        assert_eq!(payoff.chapter_number, 65);
+    }
+
+    /// Regression for the allowlist gap on scene.summary: scene summaries
+    /// were fixed at save_scene_draft time, so a renumber left stale
+    /// cross-references that get_chapter_briefing keeps feeding into future
+    /// drafting context.
+    #[tokio::test]
+    async fn update_entity_on_scene_summary_now_allowlisted() {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Scene Summary".into(),
+                project_type: "novel".into(),
+                genre: "litRPG".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "The knife changed hands under the table.".into(),
+                summary: "Nate pockets the combat knife from Chapter 3.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Drive the bug repro: correct the stale cross-reference after the
+        // renumber moved the knife scene to Chapter 8. Pre-fix this errored
+        // with "column 'summary' on 'scene' is not in the update allowlist".
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "scene".into(),
+            entity_id: scene.scene_id.clone(),
+            changes: serde_json::json!({
+                "summary": "Nate pockets the combat knife from Chapter 8."
+            }),
+        })
+        .await
+        .expect("update_entity on scene.summary must succeed");
+
+        let updated = svc.repository().get_scene(&scene.scene_id).await.unwrap();
+        assert_eq!(
+            updated.summary,
+            "Nate pockets the combat knife from Chapter 8."
+        );
+    }
+
+    /// Regression: renaming a character through update_entity used to be
+    /// impossible — `name` is not in the column allowlist — leaving authors
+    /// who created a character before its in-world naming scene with no way
+    /// to apply the name. The rename is now a controlled operation gated by
+    /// `allow_rename`; without the flag the call must fail BEFORE writing.
+    #[tokio::test]
+    async fn update_entity_character_rename_requires_allow_rename_flag() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Rename Gate".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id =
+            create_character_named(&svc, &proj.project_id, "Placeholder Co-Lead").await;
+
+        // No flag: rejected, with guidance, and nothing changed.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character".into(),
+                entity_id: character_id.clone(),
+                changes: serde_json::json!({ "name": "Kaelen Voss" }),
+            })
+            .await
+            .expect_err("rename without allow_rename must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("allow_rename"),
+            "error must name the gate, got: {msg}"
+        );
+        let unchanged = svc.repository().get_character(&character_id).await.unwrap();
+        assert_eq!(unchanged.name, "Placeholder Co-Lead");
+        assert!(unchanged.aliases.is_empty());
+
+        // Flag set: the rename lands.
+        let out = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: Some(true),
+                entity_type: "character".into(),
+                entity_id: character_id.clone(),
+                changes: serde_json::json!({ "name": "Kaelen Voss" }),
+            })
+            .await
+            .expect("rename with allow_rename must succeed");
+        let report = out
+            .rename_report
+            .expect("character rename must return a rename_report");
+        assert_eq!(report.old_name, "Placeholder Co-Lead");
+        assert_eq!(report.new_name, "Kaelen Voss");
+        assert!(report.old_name_kept_as_alias);
+
+        let renamed = svc.repository().get_character(&character_id).await.unwrap();
+        assert_eq!(renamed.name, "Kaelen Voss");
+        assert_eq!(renamed.normalized_name, "kaelen voss");
+        assert_eq!(renamed.aliases, vec!["Placeholder Co-Lead".to_string()]);
+    }
+
+    /// The rename report must surface every record still referencing the old
+    /// name — scenes (prose), canonical facts, knowledge, arcs — so the
+    /// author can fix them. A silent rename leaving stale references is worse
+    /// than the old hard error.
+    #[tokio::test]
+    async fn update_entity_character_rename_reports_stale_references() {
+        use spindle_core::models::{
+            ContentRating, CreateCharacterArcInput, RecordKnowledgeInput,
+            RegisterCanonicalFactInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Rename Report".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &proj.project_id, "Mara").await;
+
+        // Scene prose mentioning the old name.
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Mara drew the salt blade and waited.".into(),
+                summary: "Mara stands watch.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // A canonical fact whose value text carries the old name.
+        let fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(scene.scene_id.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".to_string()),
+                subject_id: Some(character_id.clone()),
+                predicate: Some("true_name".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("Mara of the Salt Flats".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        // Knowledge prose mentioning the old name.
+        let other_holder = create_character_named(&svc, &proj.project_id, "Bran").await;
+        svc.record_knowledge(RecordKnowledgeInput {
+            project_id: proj.project_id.clone(),
+            branch_id: None,
+            character_id: other_holder.clone(),
+            fact: "Bran knows Mara smuggles salt.".into(),
+            source_summary: "declared".into(),
+            learned_at: None,
+            confidence: None,
+            tags: Vec::new(),
+            reader_visible: true,
+            secret_of_fact_id: None,
+        })
+        .await
+        .unwrap();
+
+        // An arc whose notes mention the old name.
+        let arc = svc
+            .create_character_arc(CreateCharacterArcInput {
+                project_id: proj.project_id.clone(),
+                character_id: character_id.clone(),
+                arc_type: "positive".into(),
+                starting_state: "Guarded smuggler.".into(),
+                ending_state: "Open leader.".into(),
+                milestones: Vec::new(),
+                thematic_purpose: "Trust.".into(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "character_arc".into(),
+            entity_id: arc.character_arc_id.clone(),
+            changes: serde_json::json!({ "notes": "Mara's trust arc." }),
+        })
+        .await
+        .unwrap();
+
+        // The rename itself.
+        let out = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: Some(true),
+                entity_type: "character".into(),
+                entity_id: character_id.clone(),
+                changes: serde_json::json!({ "name": "Marah" }),
+            })
+            .await
+            .expect("rename must succeed");
+        let report = out.rename_report.expect("rename_report present");
+
+        assert!(
+            report.scenes_referencing_old_name.contains(&scene.scene_id),
+            "scene prose mention must be reported: {:?}",
+            report.scenes_referencing_old_name
+        );
+        assert!(
+            report
+                .canonical_facts_referencing_old_name
+                .contains(&fact.canonical_fact_id),
+            "canonical fact value text must be reported: {:?}",
+            report.canonical_facts_referencing_old_name
+        );
+        assert!(
+            !report.knowledge_facts_referencing_old_name.is_empty(),
+            "knowledge mention must be reported"
+        );
+        assert!(
+            report
+                .arcs_referencing_old_name
+                .contains(&arc.character_arc_id),
+            "arc notes mention must be reported: {:?}",
+            report.arcs_referencing_old_name
+        );
+
+        // Resolution keeps working under BOTH names: the new one via the FTS
+        // name column, the old one via the preserved alias (V0037 fts index).
+        let by_new = svc
+            .find_entity(spindle_core::models::FindEntityInput {
+                project_id: proj.project_id.clone(),
+                query: "Marah".into(),
+                table: Some(spindle_core::subject::SubjectTable::Character),
+                branch_id: None,
+                limit: Some(5),
+            })
+            .await
+            .unwrap();
+        assert!(
+            by_new.matches.iter().any(|m| m.entity_id == character_id),
+            "find_entity must resolve the NEW name"
+        );
+        let by_old = svc
+            .find_entity(spindle_core::models::FindEntityInput {
+                project_id: proj.project_id.clone(),
+                query: "Mara".into(),
+                table: Some(spindle_core::subject::SubjectTable::Character),
+                branch_id: None,
+                limit: Some(5),
+            })
+            .await
+            .unwrap();
+        assert!(
+            by_old.matches.iter().any(|m| m.entity_id == character_id),
+            "find_entity must still resolve the OLD name via aliases"
+        );
+    }
+
+    /// Rename collisions are checked project-wide (the unique index is on
+    /// project_id + normalized_name, not branch-scoped).
+    #[tokio::test]
+    async fn update_entity_character_rename_rejects_name_collision() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Rename Collision".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let first = create_character_named(&svc, &proj.project_id, "Kael").await;
+        let second = create_character_named(&svc, &proj.project_id, "Wren").await;
+
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: Some(true),
+                entity_type: "character".into(),
+                entity_id: second.clone(),
+                changes: serde_json::json!({ "name": "KAEL" }),
+            })
+            .await
+            .expect_err("rename onto an existing name must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("already exists"),
+            "error must name the collision, got: {msg}"
+        );
+        assert!(msg.contains(&first), "error must name the holder id: {msg}");
+        let unchanged = svc.repository().get_character(&second).await.unwrap();
+        assert_eq!(unchanged.name, "Wren");
+    }
+
+    /// Aliases on characters (V0037): settable at create time and amendable
+    /// through the update_entity allowlist. This is the rename-free path for
+    /// the "named after the record exists" case.
+    #[tokio::test]
+    async fn character_aliases_create_and_update_round_trip() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CreateCharacterInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Aliases".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let created = svc
+            .create_character(CreateCharacterInput {
+                aliases: vec!["The Salt Blade".to_string()],
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Smuggler of the flats.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: Some(CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: None,
+                    source_summary: None,
+                }),
+            })
+            .await
+            .unwrap();
+
+        let character = svc
+            .repository()
+            .get_character(&created.character_id)
+            .await
+            .unwrap();
+        assert_eq!(character.aliases, vec!["The Salt Blade".to_string()]);
+
+        // Amend via the allowlisted column; the primary name stays put.
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "character".into(),
+            entity_id: created.character_id.clone(),
+            changes: serde_json::json!({ "aliases": ["The Salt Blade", "Gull"] }),
+        })
+        .await
+        .expect("character.aliases must be allowlisted");
+        let updated = svc
+            .repository()
+            .get_character(&created.character_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.aliases,
+            vec!["The Salt Blade".to_string(), "Gull".to_string()]
+        );
+        assert_eq!(updated.name, "Mara");
+
+        // And the alias resolves through find_entity's FTS path.
+        let hits = svc
+            .find_entity(spindle_core::models::FindEntityInput {
+                project_id: proj.project_id.clone(),
+                query: "Gull".into(),
+                table: Some(spindle_core::subject::SubjectTable::Character),
+                branch_id: None,
+                limit: Some(5),
+            })
+            .await
+            .unwrap();
+        assert!(
+            hits.matches
+                .iter()
+                .any(|m| m.entity_id == created.character_id),
+            "find_entity must resolve characters by alias"
+        );
+    }
+
+    #[tokio::test]
+    async fn character_aliases_reject_non_string_values() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CreateCharacterInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Aliases Shape".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let created = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "Smuggler.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: Some(CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: None,
+                    source_summary: None,
+                }),
+            })
+            .await
+            .unwrap();
+
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character".into(),
+                entity_id: created.character_id.clone(),
+                changes: serde_json::json!({ "aliases": [1, 2] }),
+            })
+            .await
+            .expect_err("non-string aliases must not persist");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("array of strings"),
+            "error must name the required shape, got: {msg}"
+        );
+        let unchanged = svc
+            .repository()
+            .get_character(&created.character_id)
+            .await
+            .unwrap();
+        assert!(unchanged.aliases.is_empty());
+    }
+
+    /// Planned-and-pending canonical facts (V0038): register without a scene
+    /// when the decision predates the dramatising scene, then bind it once
+    /// the scene exists. book/chapter placement anchors the fact meanwhile.
+    #[tokio::test]
+    async fn register_canonical_fact_without_scene_binds_later() {
+        use spindle_core::models::{
+            BindCanonicalFactToSceneInput, ContentRating, RegisterCanonicalFactInput,
+            SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Pending Facts".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id =
+            create_character_named(&svc, &proj.project_id, "Unnamed Foundling").await;
+
+        // The name is locked by author decision in planning — the naming
+        // scene does not exist yet (the chapter does; scenes are what a fact
+        // anchors to).
+        let pending = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: proj.project_id.clone(),
+                scene_id: None,
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".to_string()),
+                subject_id: Some(character_id.clone()),
+                predicate: Some("true_name".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("Kaelen Voss".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .expect("register without scene_id must succeed");
+
+        let fact = svc
+            .repository()
+            .get_canonical_fact(&pending.canonical_fact_id)
+            .await
+            .unwrap();
+        assert!(
+            fact.scene_id.is_none(),
+            "planned-and-pending fact must carry no scene"
+        );
+        assert_eq!(fact.book_number, 1);
+        assert_eq!(fact.chapter_number, 1);
+
+        // The naming scene is drafted later, then the fact is bound to it.
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "\"Kaelen,\" she said. \"That is your name.\"".into(),
+                summary: "The foundling is named.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        svc.bind_canonical_fact_to_scene(BindCanonicalFactToSceneInput {
+            canonical_fact_id: pending.canonical_fact_id.clone(),
+            scene_id: scene.scene_id.clone(),
+        })
+        .await
+        .expect("bind must succeed");
+        let bound = svc
+            .repository()
+            .get_canonical_fact(&pending.canonical_fact_id)
+            .await
+            .unwrap();
+        assert_eq!(bound.scene_id.as_deref(), Some(scene.scene_id.as_str()));
+
+        // Binding a superseded fact is rejected (history is not re-anchored).
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: proj.project_id.clone(),
+            scene_id: Some(scene.scene_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".to_string()),
+            subject_id: Some(character_id.clone()),
+            predicate: Some("true_name".to_string()),
+            value_kind: Some("string".to_string()),
+            value_text: Some("Kaelen Voss of the Flats".to_string()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: Some(pending.canonical_fact_id.clone()),
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+        let err = svc
+            .bind_canonical_fact_to_scene(BindCanonicalFactToSceneInput {
+                canonical_fact_id: pending.canonical_fact_id.clone(),
+                scene_id: scene.scene_id.clone(),
+            })
+            .await
+            .expect_err("binding a superseded fact must fail");
+        assert!(format!("{err:#}").contains("superseded"));
+    }
+
+    /// Bug 1: an arc's destination is among the likeliest fields to change
+    /// during planning — recording it early so it can be revised is the
+    /// reason to write an arc down before drafting. Pre-fix, every planning
+    /// field except milestones was frozen at create time and a live record
+    /// kept reading "OPEN, deliberately so" after the decision was made.
+    #[tokio::test]
+    async fn update_entity_character_arc_planning_fields_now_updatable() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, CreateCharacterArcInput,
+            CreateCharacterInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Arc Planning".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "s".into(),
+                role: "r".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData::default(),
+                emotional_profile: CharacterEmotionalProfileData::default(),
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        let arc = svc
+            .create_character_arc(CreateCharacterArcInput {
+                project_id: proj.project_id.clone(),
+                character_id: character.character_id.clone(),
+                arc_type: "flat".into(),
+                starting_state: "Guarded.".into(),
+                ending_state: "OPEN, deliberately so".into(),
+                milestones: Vec::new(),
+                thematic_purpose: "Placeholder until the theme firms up.".into(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "character_arc".into(),
+            entity_id: arc.character_arc_id.clone(),
+            changes: serde_json::json!({
+                "arc_type": "positive",
+                "starting_state": "Guarded smuggler.",
+                "ending_state": "Open leader who trusts the crew.",
+                "thematic_purpose": "Trust is chosen, not earned.",
+                "connected_theme_ids": ["theme:one"],
+                "status": "active"
+            }),
+        })
+        .await
+        .expect("arc planning fields must be updatable");
+
+        let updated = svc
+            .repository()
+            .get_character_arc(&arc.character_arc_id)
+            .await
+            .unwrap();
+        assert_eq!(updated.arc_type, "positive");
+        assert_eq!(updated.starting_state, "Guarded smuggler.");
+        assert_eq!(updated.ending_state, "Open leader who trusts the crew.");
+        assert_eq!(updated.thematic_purpose, "Trust is chosen, not earned.");
+        assert_eq!(updated.connected_theme_ids, vec!["theme:one".to_string()]);
+        assert_eq!(updated.status, "active");
+
+        // The boundary: computed/identity fields stay locked.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character_arc".into(),
+                entity_id: arc.character_arc_id.clone(),
+                changes: serde_json::json!({ "progress": 0.5 }),
+            })
+            .await
+            .expect_err("progress is computed and must stay locked");
+        assert!(format!("{err:#}").contains("not in the update allowlist"));
+    }
+
+    /// Bug 2: emotional profiles were write-once at create_character, so any
+    /// character scaffolded before their psychology was worked out (most
+    /// supporting cast) was permanently stuck with an empty profile.
+    #[tokio::test]
+    async fn update_entity_emotional_profile_columns_now_updatable() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Emotional Profiles".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &proj.project_id, "Mara").await;
+        let profile_id = svc
+            .repository()
+            .get_character_emotional_profile(&character_id)
+            .await
+            .unwrap()
+            .id;
+
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "character_emotional_profile".into(),
+            entity_id: profile_id.clone(),
+            changes: serde_json::json!({
+                "base_emotions": { "grief": 0.7, "defiance": 0.5 },
+                "suppressed": ["anger"],
+                "triggers": ["betrayal", "salt"],
+                "defense_mechanisms": ["deflection"],
+                "flex_range": { "low": "guarded", "high": "volatile" }
+            }),
+        })
+        .await
+        .expect("emotional profile columns must be updatable");
+
+        let updated = svc
+            .repository()
+            .get_character_emotional_profile_by_id(&profile_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.base_emotions.get("grief"),
+            Some(&serde_json::json!(0.7))
+        );
+        assert_eq!(updated.suppressed, vec!["anger".to_string()]);
+        assert_eq!(
+            updated.triggers,
+            vec!["betrayal".to_string(), "salt".to_string()]
+        );
+        assert_eq!(updated.defense_mechanisms, vec!["deflection".to_string()]);
+        let flex = updated.flex_range.expect("flex_range set");
+        assert_eq!(flex.low.as_deref(), Some("guarded"));
+        assert_eq!(flex.high.as_deref(), Some("volatile"));
+
+        // flex_range can be cleared back to NULL.
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "character_emotional_profile".into(),
+            entity_id: profile_id.clone(),
+            changes: serde_json::json!({ "flex_range": null }),
+        })
+        .await
+        .expect("flex_range must accept null");
+        let cleared = svc
+            .repository()
+            .get_character_emotional_profile_by_id(&profile_id)
+            .await
+            .unwrap();
+        assert!(cleared.flex_range.is_none());
+    }
+
+    /// The emotional-profile columns only carry json_valid CHECKs, so the
+    /// service validates shapes BEFORE writing: a type-wrong value must be
+    /// rejected and leave the stored profile untouched (a poisoned row would
+    /// break every later read of the character's briefing context).
+    #[tokio::test]
+    async fn update_entity_emotional_profile_rejects_wrong_shapes_before_writing() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Profile Shapes".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &proj.project_id, "Mara").await;
+        let profile_id = svc
+            .repository()
+            .get_character_emotional_profile(&character_id)
+            .await
+            .unwrap()
+            .id;
+
+        // suppressed must be an array of strings, not numbers.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character_emotional_profile".into(),
+                entity_id: profile_id.clone(),
+                changes: serde_json::json!({ "suppressed": [1, 2] }),
+            })
+            .await
+            .expect_err("non-string array must be rejected");
+        assert!(format!("{err:#}").contains("array of strings"));
+
+        // base_emotions must be an object.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character_emotional_profile".into(),
+                entity_id: profile_id.clone(),
+                changes: serde_json::json!({ "base_emotions": ["grief"] }),
+            })
+            .await
+            .expect_err("non-object base_emotions must be rejected");
+        assert!(format!("{err:#}").contains("JSON object"));
+
+        // flex_range must be null or {low?, high?} with string fields.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character_emotional_profile".into(),
+                entity_id: profile_id.clone(),
+                changes: serde_json::json!({ "flex_range": { "low": 3 } }),
+            })
+            .await
+            .expect_err("non-string flex_range fields must be rejected");
+        assert!(format!("{err:#}").contains("flex_range"));
+
+        // Validation runs before ANY column write: a mixed change set with one
+        // valid and one invalid field must not half-apply.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "character_emotional_profile".into(),
+                entity_id: profile_id.clone(),
+                changes: serde_json::json!({
+                    "triggers": ["salt"],
+                    "suppressed": [1]
+                }),
+            })
+            .await
+            .expect_err("mixed valid/invalid change set must be rejected whole");
+        assert!(format!("{err:#}").contains("array of strings"));
+        let untouched = svc
+            .repository()
+            .get_character_emotional_profile_by_id(&profile_id)
+            .await
+            .unwrap();
+        assert!(untouched.triggers.is_empty());
+        assert!(untouched.suppressed.is_empty());
+    }
+
+    /// Bug 3: day_index is a signed offset from the story's opening, and
+    /// every adult character was born before day 1 — the old >= 0 bound made
+    /// set_character_birth unusable for essentially all contemporary fiction,
+    /// forcing ages into prose summaries where nothing can validate them.
+    #[tokio::test]
+    async fn set_character_birth_accepts_negative_day_index() {
+        use spindle_core::models::{SetCharacterBirthInput, StoryClock};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Birthdays".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &proj.project_id, "Mara").await;
+
+        svc.set_character_birth(SetCharacterBirthInput {
+            project_id: proj.project_id.clone(),
+            character_id: character_id.clone(),
+            clock: StoryClock {
+                day_index: Some(-8913),
+                precision: Some("day".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("birth before the epoch must be accepted");
+
+        let stored = svc
+            .repository()
+            .get_character_birth(&character_id)
+            .await
+            .unwrap()
+            .expect("birth stored");
+        assert_eq!(stored.clock.day_index, Some(-8913));
+        assert_eq!(stored.clock.precision.as_deref(), Some("day"));
+
+        // Durations are magnitudes and stay non-negative.
+        let err = svc
+            .set_character_birth(SetCharacterBirthInput {
+                project_id: proj.project_id.clone(),
+                character_id,
+                clock: StoryClock {
+                    day_index: Some(-8913),
+                    duration_days: Some(-1.0),
+                    ..Default::default()
+                },
+            })
+            .await
+            .expect_err("negative duration must still be rejected");
+        assert!(format!("{err:#}").contains("duration_days"));
+    }
+
+    /// Bug 4 verification: a mixed-type payload — one string field plus one
+    /// array field in the same changes object — applies every field. An
+    /// earlier failure rejected the whole call with "changes must be a JSON
+    /// object" despite changes being a valid object; this guards the
+    /// regression at the service boundary.
+    #[tokio::test]
+    async fn update_entity_mixed_string_and_array_payload_applies_both() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Mixed Payload".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &proj.project_id, "Mara").await;
+
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "character".into(),
+            entity_id: character_id.clone(),
+            changes: serde_json::json!({
+                "summary": "A smuggler with a salt blade.",
+                "aliases": ["The Salt Blade", "Gull"]
+            }),
+        })
+        .await
+        .expect("mixed string + array payload must succeed");
+
+        let updated = svc.repository().get_character(&character_id).await.unwrap();
+        assert_eq!(updated.summary, "A smuggler with a salt blade.");
+        assert_eq!(
+            updated.aliases,
+            vec!["The Salt Blade".to_string(), "Gull".to_string()]
+        );
+    }
+
+    /// Audit spot-check: the allowlist sweep opened the locked planning
+    /// fields on the remaining entity tables. world_rule goes through its
+    /// dedicated tool (same allowlist underneath), timeline_event through
+    /// update_entity directly.
+    #[tokio::test]
+    async fn update_entity_audit_opened_world_rule_and_timeline_planning_fields() {
+        use spindle_core::models::{
+            CreateTimelineEventInput, CreateWorldRuleInput, StoryPlacement, UpdateWorldRuleInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Audit Sweep".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let rule = svc
+            .create_world_rule(CreateWorldRuleInput {
+                project_id: proj.project_id.clone(),
+                rule_name: "Salt Price".into(),
+                rule_type: "constraint".into(),
+                description: "Salt is worth its weight in iron.".into(),
+                scan_pattern: None,
+                relevance_tags: Vec::new(),
+                established_in: None,
+            })
+            .await
+            .unwrap();
+        svc.update_world_rule(UpdateWorldRuleInput {
+            world_rule_id: rule.world_rule_id.clone(),
+            changes: serde_json::json!({
+                "rule_type": "style",
+                "scan_pattern": "salt",
+                "relevance_tags": ["trade"]
+            }),
+        })
+        .await
+        .expect("world_rule planning fields must be updatable via update_world_rule");
+        let rule_after = svc
+            .repository()
+            .get_world_rule(&rule.world_rule_id)
+            .await
+            .unwrap();
+        assert_eq!(rule_after.rule_type, "style");
+        assert_eq!(rule_after.scan_pattern.as_deref(), Some("salt"));
+        assert_eq!(rule_after.relevance_tags, Some(vec!["trade".to_string()]));
+
+        let event = svc
+            .create_timeline_event(CreateTimelineEventInput {
+                project_id: proj.project_id.clone(),
+                title: "The Harbor Fire".into(),
+                event_type: "backstory".into(),
+                placement: StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: None,
+                    note: None,
+                },
+                summary: "Original summary.".into(),
+                related_entity_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "timeline_event".into(),
+            entity_id: event.timeline_event_id.clone(),
+            changes: serde_json::json!({
+                "title": "The Harbor Fire (corrected)",
+                "summary": "Corrected after the renumber.",
+                "placement": { "book_number": 1, "chapter_number": 3 }
+            }),
+        })
+        .await
+        .expect("timeline_event planning fields must be updatable");
+        let event_after = svc
+            .repository()
+            .get_timeline_event(&event.timeline_event_id)
+            .await
+            .unwrap();
+        assert_eq!(event_after.title, "The Harbor Fire (corrected)");
+        assert_eq!(event_after.summary, "Corrected after the renumber.");
+        assert_eq!(event_after.placement.chapter_number, 3);
+    }
+
+    // ── Word-count range extraction (contradiction check primitives) ────────
+
+    #[test]
+    fn extract_word_count_ranges_parses_common_formats() {
+        assert_eq!(
+            extract_word_count_ranges("One beat per chapter, 1,200–2,000 words."),
+            vec![(1200, 2000)]
+        );
+        assert_eq!(
+            extract_word_count_ranges("Chapters run 1200-2000 words."),
+            vec![(1200, 2000)]
+        );
+        assert_eq!(
+            extract_word_count_ranges("Target 3,500 to 5,000 words per chapter."),
+            vec![(3500, 5000)]
+        );
+        assert_eq!(
+            extract_word_count_ranges("Aim for 1200–2000-word chapters."),
+            vec![(1200, 2000)]
+        );
+        // No "words" nearby -> not a length target.
+        assert!(extract_word_count_ranges("Between 1200 and 2000 pages.").is_empty());
+        // A lone number is not a range.
+        assert!(extract_word_count_ranges("Chapters are 2000 words.").is_empty());
+        assert!(extract_word_count_ranges("No numbers here.").is_empty());
+    }
+
+    #[test]
+    fn word_ranges_contradict_detects_disjoint_targets() {
+        // Disjoint -> contradiction.
+        assert!(word_ranges_contradict(&[(1200, 2000)], &[(3500, 5000)]));
+        // Overlapping -> no contradiction.
+        assert!(!word_ranges_contradict(&[(1200, 2000)], &[(1800, 2500)]));
+        assert!(!word_ranges_contradict(&[(1200, 2000)], &[(1200, 2000)]));
+        // Empty side never contradicts.
+        assert!(!word_ranges_contradict(&[], &[(3500, 5000)]));
+        assert!(!word_ranges_contradict(&[(1200, 2000)], &[]));
+    }
+
+    // ── reader_contract update via update_entity ───────────────────────────
+
+    /// The reader contract is set once at create_project and was previously
+    /// immutable — a stale style note silently overrode an explicit author
+    /// directive and corrupted drafted chapters. update_entity must now merge
+    /// reader_contract / promise / style_notes / boundaries, preserving fields
+    /// the caller did not send.
+    #[tokio::test]
+    async fn update_entity_project_reader_contract_is_updatable_and_partial_merge_preserves_rest() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Contract Update".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "Epic adventure".into(),
+                    style_notes: vec!["One beat per chapter, 1,200–2,000 words.".into()],
+                    boundaries: vec!["No gore".into()],
+                },
+            })
+            .await
+            .unwrap();
+
+        // Update ONLY style_notes; promise and boundaries must survive.
+        let out = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "project".into(),
+                entity_id: proj.project_id.clone(),
+                changes: serde_json::json!({
+                    "style_notes": ["One beat per chapter, 3,500–5,000 words."]
+                }),
+            })
+            .await
+            .expect("style_notes must be updatable");
+        assert!(out.warnings.is_empty());
+
+        let project = svc
+            .repository()
+            .get_project(&proj.project_id)
+            .await
+            .unwrap();
+        let contract = project.reader_contract.into_core();
+        assert_eq!(contract.promise, "Epic adventure");
+        assert_eq!(contract.boundaries, vec!["No gore".to_string()]);
+        assert_eq!(
+            contract.style_notes,
+            vec!["One beat per chapter, 3,500–5,000 words.".to_string()]
+        );
+
+        // Update promise via a top-level key.
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "project".into(),
+            entity_id: proj.project_id.clone(),
+            changes: serde_json::json!({ "promise": "A heist with heart" }),
+        })
+        .await
+        .expect("promise must be updatable");
+        let project = svc
+            .repository()
+            .get_project(&proj.project_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            project.reader_contract.into_core().promise,
+            "A heist with heart"
+        );
+
+        // Update the whole reader_contract object (nested partial).
+        svc.update_entity(UpdateEntityInput {
+            allow_rename: None,
+            entity_type: "project".into(),
+            entity_id: proj.project_id.clone(),
+            changes: serde_json::json!({
+                "reader_contract": { "boundaries": ["No gore", "No character death"] }
+            }),
+        })
+        .await
+        .expect("reader_contract object must be updatable");
+        let project = svc
+            .repository()
+            .get_project(&proj.project_id)
+            .await
+            .unwrap();
+        let contract = project.reader_contract.into_core();
+        assert_eq!(
+            contract.boundaries,
+            vec!["No gore".to_string(), "No character death".to_string()]
+        );
+        // Nested partial must not wipe promise/style_notes.
+        assert_eq!(contract.promise, "A heist with heart");
+        assert_eq!(contract.style_notes.len(), 1);
+    }
+
+    /// A wrong-shaped reader-contract value must be rejected before any write,
+    /// leaving the stored contract untouched.
+    #[tokio::test]
+    async fn update_entity_project_reader_contract_rejects_wrong_shapes_before_writing() {
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Contract Shapes".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: vec!["keep me".into()],
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // style_notes must be an array of strings.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "project".into(),
+                entity_id: proj.project_id.clone(),
+                changes: serde_json::json!({ "style_notes": ["ok", 42] }),
+            })
+            .await
+            .expect_err("non-string style note must be rejected");
+        assert!(format!("{err:#}").contains("array of strings"));
+
+        // promise must be a string.
+        let err = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "project".into(),
+                entity_id: proj.project_id.clone(),
+                changes: serde_json::json!({ "promise": { "not": "a string" } }),
+            })
+            .await
+            .expect_err("non-string promise must be rejected");
+        assert!(format!("{err:#}").contains("must be a string"));
+
+        // The stored contract is untouched after the rejected writes.
+        let project = svc
+            .repository()
+            .get_project(&proj.project_id)
+            .await
+            .unwrap();
+        let contract = project.reader_contract.into_core();
+        assert_eq!(contract.promise, "p");
+        assert_eq!(contract.style_notes, vec!["keep me".to_string()]);
+    }
+
+    // ── Style-surface contradiction warnings ───────────────────────────────
+
+    /// Updating a style surface to a word-count target that contradicts
+    /// another surface must surface a warning — the stale-contract failure
+    /// that corrupted chapters.
+    #[tokio::test]
+    async fn update_entity_reader_contract_contradiction_warns_against_narrator_voice() {
+        use spindle_core::models::SetNarratorVoiceInput;
+        use spindle_core::style::NarratorVoice;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Contradiction".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: vec!["One beat per chapter, 1,200–2,000 words.".into()],
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Narrator voice agrees with the contract -> no warning.
+        let agree = svc
+            .set_narrator_voice(SetNarratorVoiceInput {
+                project_id: proj.project_id.clone(),
+                narrator_voice: NarratorVoice {
+                    pacing_feel: Some("chapters land 1,200–2,000 words".to_string()),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        assert!(agree.warnings.is_empty());
+
+        // Narrator voice moves to a disjoint target -> warning at the update.
+        let disagree = svc
+            .set_narrator_voice(SetNarratorVoiceInput {
+                project_id: proj.project_id.clone(),
+                narrator_voice: NarratorVoice {
+                    pacing_feel: Some("chapters land 3,500–5,000 words".to_string()),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(disagree.warnings.len(), 1);
+        assert!(
+            disagree.warnings[0].contains("style-surface contradiction"),
+            "expected contradiction warning, got: {:?}",
+            disagree.warnings
+        );
+
+        // Fixing the reader contract to match clears the contradiction; the
+        // update that fixes it reports no warning.
+        let fixed = svc
+            .update_entity(UpdateEntityInput {
+                allow_rename: None,
+                entity_type: "project".into(),
+                entity_id: proj.project_id.clone(),
+                changes: serde_json::json!({
+                    "style_notes": ["One beat per chapter, 3,500–5,000 words."]
+                }),
+            })
+            .await
+            .unwrap();
+        assert!(
+            fixed.warnings.is_empty(),
+            "matching targets must not warn, got: {:?}",
+            fixed.warnings
+        );
+    }
+
+    /// A style world rule carrying a word-count target is cross-checked
+    /// against reader_contract.style_notes when it is updated.
+    #[tokio::test]
+    async fn update_world_rule_style_contradicts_reader_contract_warns() {
+        use spindle_core::models::{CreateWorldRuleInput, UpdateWorldRuleInput};
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Rule Contradiction".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: vec!["Chapters are 1,200–2,000 words.".into()],
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let rule = svc
+            .create_world_rule(CreateWorldRuleInput {
+                project_id: proj.project_id.clone(),
+                rule_name: "Chapter Length".into(),
+                rule_type: "style".into(),
+                description: "Chapters are 1,200–2,000 words.".into(),
+                scan_pattern: None,
+                relevance_tags: Vec::new(),
+                established_in: None,
+            })
+            .await
+            .unwrap();
+
+        // Updating the rule to a disjoint target warns (reader_contract still
+        // carries the old figure — exactly the reported corruption).
+        let out = svc
+            .update_world_rule(UpdateWorldRuleInput {
+                world_rule_id: rule.world_rule_id.clone(),
+                changes: serde_json::json!({
+                    "description": "Chapters are 3,500–5,000 words."
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].contains("style-surface contradiction"));
+    }
+
+    /// Targeted milestone update: patch placement and reached_at by label
+    /// without resending (or even being able to read) the rest of the
+    /// milestone array.
+    #[tokio::test]
+    async fn update_arc_milestone_patches_only_the_supplied_fields() {
+        use spindle_core::models::{
+            CharacterArcMilestone, CharacterEmotionalProfileData, CharacterVoiceProfileData,
+            CreateCharacterArcInput, CreateCharacterInput, StoryPlacement, UpdateArcMilestoneInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Milestone Update".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: proj.project_id.clone(),
+                name: "Mara Oathkeeper".into(),
+                summary: "Warden of the Ash Gate.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData::default(),
+                emotional_profile: CharacterEmotionalProfileData::default(),
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        let arc = svc
+            .create_character_arc(CreateCharacterArcInput {
+                project_id: proj.project_id.clone(),
+                character_id: character.character_id.clone(),
+                arc_type: "belief_shift".into(),
+                starting_state: "obeys".into(),
+                ending_state: "defies".into(),
+                milestones: vec![
+                    CharacterArcMilestone {
+                        label: "first doubt".into(),
+                        placement: Some(StoryPlacement {
+                            book_number: 1,
+                            chapter_number: 10,
+                            scene_order: None,
+                            note: None,
+                        }),
+                        description: "Mara questions the oath.".into(),
+                        unlocks: vec!["inner monologue".into()],
+                        reached_at: None,
+                    },
+                    CharacterArcMilestone {
+                        label: "open defiance".into(),
+                        placement: Some(StoryPlacement {
+                            book_number: 1,
+                            chapter_number: 30,
+                            scene_order: None,
+                            note: None,
+                        }),
+                        description: "Mara refuses the order.".into(),
+                        unlocks: Vec::new(),
+                        reached_at: None,
+                    },
+                ],
+                thematic_purpose: "Claim agency.".into(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let out = svc
+            .update_arc_milestone(UpdateArcMilestoneInput {
+                arc_id: arc.character_arc_id.clone(),
+                label: "first doubt".into(),
+                placement: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 12,
+                    scene_order: None,
+                    note: None,
+                }),
+                reached_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 12,
+                    scene_order: Some(2),
+                    note: None,
+                }),
+            })
+            .await
+            .expect("update_arc_milestone must succeed");
+
+        assert_eq!(
+            out.milestone.placement.as_ref().map(|p| p.chapter_number),
+            Some(12)
+        );
+        assert_eq!(
+            out.milestone
+                .reached_at
+                .as_ref()
+                .map(|p| (p.chapter_number, p.scene_order)),
+            Some((12, Some(2)))
+        );
+        // Untouched fields survive the targeted patch.
+        assert_eq!(out.milestone.description, "Mara questions the oath.");
+        assert_eq!(out.milestone.unlocks, vec!["inner monologue".to_string()]);
+
+        // The write persisted, and the sibling milestone is untouched.
+        let stored = svc
+            .repository()
+            .get_character_arc(&arc.character_arc_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.milestones.len(), 2);
+        let sibling = stored
+            .milestones
+            .iter()
+            .find(|m| m.label == "open defiance")
+            .unwrap();
+        assert_eq!(
+            sibling.placement.as_ref().map(|p| p.chapter_number),
+            Some(30)
+        );
+        assert!(sibling.reached_at.is_none());
+
+        // Unknown label: error names the valid labels.
+        let err = svc
+            .update_arc_milestone(UpdateArcMilestoneInput {
+                arc_id: arc.character_arc_id.clone(),
+                label: "no such milestone".into(),
+                placement: None,
+                reached_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: None,
+                    note: None,
+                }),
+            })
+            .await
+            .expect_err("unknown label must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("first doubt"), "error lists labels: {msg}");
+        assert!(msg.contains("open defiance"), "error lists labels: {msg}");
+
+        // No-op guard: neither field supplied.
+        svc.update_arc_milestone(UpdateArcMilestoneInput {
+            arc_id: arc.character_arc_id.clone(),
+            label: "first doubt".into(),
+            placement: None,
+            reached_at: None,
+        })
+        .await
+        .expect_err("empty update must fail");
+    }
+
+    /// The arc snapshot must project the full milestone array; without it the
+    /// milestones are write-once (the audit advice to "move its placement"
+    /// required resending descriptions the caller could not read).
+    #[tokio::test]
+    async fn get_entity_character_arc_projects_milestones() {
+        use spindle_core::models::{
+            CharacterArcMilestone, CharacterEmotionalProfileData, CharacterVoiceProfileData,
+            CreateCharacterArcInput, CreateCharacterInput, StoryPlacement,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "Arc Projection".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: proj.project_id.clone(),
+                name: "Mara Oathkeeper".into(),
+                summary: "Warden of the Ash Gate.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData::default(),
+                emotional_profile: CharacterEmotionalProfileData::default(),
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        let arc = svc
+            .create_character_arc(CreateCharacterArcInput {
+                project_id: proj.project_id.clone(),
+                character_id: character.character_id.clone(),
+                arc_type: "belief_shift".into(),
+                starting_state: "obeys".into(),
+                ending_state: "defies".into(),
+                milestones: vec![CharacterArcMilestone {
+                    label: "first doubt".into(),
+                    placement: Some(StoryPlacement {
+                        book_number: 1,
+                        chapter_number: 10,
+                        scene_order: None,
+                        note: None,
+                    }),
+                    description: "Mara questions the oath.".into(),
+                    unlocks: vec!["inner monologue".into()],
+                    reached_at: None,
+                }],
+                thematic_purpose: "Claim agency.".into(),
+                connected_theme_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let snapshot = svc
+            .get_entity(spindle_core::models::GetEntityInput {
+                project_id: proj.project_id.clone(),
+                table: spindle_core::subject::SubjectTable::CharacterArc,
+                entity_id: arc.character_arc_id.clone(),
+                branch_id: None,
+            })
+            .await
+            .unwrap();
+        let spindle_core::subject_snapshot::SubjectKindSpecific::CharacterArc(details) =
+            snapshot.kind_specific()
+        else {
+            panic!("expected character_arc kind-specific details");
+        };
+        assert_eq!(details.milestones.len(), 1);
+        assert_eq!(details.milestones[0].label, "first doubt");
+        assert_eq!(
+            details.milestones[0].description,
+            "Mara questions the oath."
+        );
+        assert_eq!(
+            details.milestones[0].unlocks,
+            vec!["inner monologue".to_string()]
+        );
+        assert_eq!(
+            details.milestones[0]
+                .placement
+                .as_ref()
+                .map(|p| p.chapter_number),
+            Some(10)
+        );
     }
 
     #[tokio::test]
@@ -33934,6 +37182,7 @@ agent = "explicit-agent"
             .unwrap();
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden of the Ash Gate.".into(),
@@ -34033,6 +37282,7 @@ agent = "explicit-agent"
             .unwrap();
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden.".into(),
@@ -34109,6 +37359,7 @@ agent = "explicit-agent"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Oathbound warden of the Ash Gate.".into(),
@@ -34265,6 +37516,7 @@ agent = "explicit-agent"
             .unwrap();
         let character = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Keeps continuity pressure high.".into(),
@@ -34388,6 +37640,7 @@ agent = "explicit-agent"
             .unwrap();
         let character = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden of the Ash Gate.".into(),
@@ -35212,6 +38465,7 @@ rating = "explicit"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden of the Ash Gate.".into(),
@@ -35445,6 +38699,7 @@ rating = "explicit"
             .unwrap();
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden.".into(),
@@ -36072,6 +39327,7 @@ rating = "explicit"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden.".into(),
@@ -36624,6 +39880,190 @@ rating = "explicit"
         assert_eq!(s2.full_text, "second body — REWRITTEN");
     }
 
+    /// Regression: pull used to re-derive scene boundaries with the import
+    /// slicer's structural heuristics, so any edit that changed byte lengths
+    /// (or added a blank-line transition the slicer reads as a scene break)
+    /// failed with "could not map N scene range(s)" — the file round-trip
+    /// only worked for length-preserving edits. Spindle-delimited files now
+    /// split on the exact push-time delimiter, so real revisions map.
+    #[tokio::test]
+    async fn pull_chapter_from_file_survives_length_changing_edits() {
+        use spindle_core::models::{
+            ContentRating, PullChapterFromFileInput, PullStatus, PushChapterToFileInput,
+            SaveSceneDraftInput, SceneSyncStatus,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        for (order, text) in [(1i32, "first body"), (2, "second body"), (3, "third body")] {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: order,
+                full_text: text.into(),
+                summary: format!("s{order}"),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        let chapter = svc
+            .repository()
+            .find_chapter_by_number(&proj.project_id, 1, 1)
+            .await
+            .unwrap()
+            .expect("chapter exists");
+        let pushed = svc
+            .push_chapter_to_file(PushChapterToFileInput {
+                chapter_id: chapter.id.clone(),
+                target_path: "ch1.txt".into(),
+            })
+            .await
+            .unwrap();
+
+        // Rewrite the FIRST scene much longer, including a blank-line
+        // transition the import slicer would read as a phantom scene break
+        // (long line, blank, short all-caps line). Under the old mapping
+        // this either errored or — worse — shifted every later scene onto
+        // the wrong text.
+        let rewritten_scene_one = "Nate counted every bruise the long corridor had given him \
+                                   twice over slowly.\n\nHUD FLASHED BRIGHT\n\nThen he moved on.";
+        let updated_file =
+            format!("{rewritten_scene_one}\n\n---\n\nsecond body\n\n---\n\nthird body\n");
+        std::fs::write(&pushed.target_path, &updated_file).unwrap();
+
+        let report = svc
+            .pull_chapter_from_file(PullChapterFromFileInput {
+                chapter_id: chapter.id.clone(),
+                source_path: "ch1.txt".into(),
+            })
+            .await
+            .expect("pull must map length-changing edits on a pushed file");
+        assert!(matches!(report.status, PullStatus::Diverged));
+        assert_eq!(report.scenes.len(), 3);
+        assert!(matches!(report.scenes[0].status, SceneSyncStatus::Updated));
+        // Later scenes shifted byte positions but are content-identical
+        // (the editor's trailing newline is trimmed, not adopted).
+        assert!(matches!(report.scenes[1].status, SceneSyncStatus::Match));
+        assert!(matches!(report.scenes[2].status, SceneSyncStatus::Match));
+
+        let scenes = svc
+            .repository()
+            .list_scenes_by_chapter(&chapter.id)
+            .await
+            .unwrap();
+        let s1 = scenes.iter().find(|s| s.scene_order == 1).unwrap();
+        assert_eq!(s1.full_text, rewritten_scene_one);
+        let s2 = scenes.iter().find(|s| s.scene_order == 2).unwrap();
+        assert_eq!(s2.full_text, "second body");
+        let s3 = scenes.iter().find(|s| s.scene_order == 3).unwrap();
+        assert_eq!(s3.full_text, "third body");
+    }
+
+    /// Adding or removing a scene in the file changes the delimiter split
+    /// count; pull must say so plainly instead of mis-mapping or emitting
+    /// the opaque "could not map N scene range(s)".
+    #[tokio::test]
+    async fn pull_chapter_from_file_scene_count_mismatch_errors_clearly() {
+        use spindle_core::models::{
+            ContentRating, PullChapterFromFileInput, PushChapterToFileInput, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        for (order, text) in [(1i32, "first body"), (2, "second body")] {
+            svc.save_scene_draft(SaveSceneDraftInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: order,
+                full_text: text.into(),
+                summary: format!("s{order}"),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+        let chapter = svc
+            .repository()
+            .find_chapter_by_number(&proj.project_id, 1, 1)
+            .await
+            .unwrap()
+            .expect("chapter exists");
+        let pushed = svc
+            .push_chapter_to_file(PushChapterToFileInput {
+                chapter_id: chapter.id.clone(),
+                target_path: "ch1.txt".into(),
+            })
+            .await
+            .unwrap();
+
+        // The author splits scene 2 into two scenes in the file.
+        std::fs::write(
+            &pushed.target_path,
+            "first body\n\n---\n\nsecond body part one\n\n---\n\nsecond body part two",
+        )
+        .unwrap();
+
+        let err = svc
+            .pull_chapter_from_file(PullChapterFromFileInput {
+                chapter_id: chapter.id.clone(),
+                source_path: "ch1.txt".into(),
+            })
+            .await
+            .expect_err("a scene-count change must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains('3'),
+            "error names the file's scene count: {msg}"
+        );
+        assert!(
+            msg.contains('2'),
+            "error names the chapter's scene count: {msg}"
+        );
+        assert!(
+            msg.contains("save_scene_draft"),
+            "error names the recovery path: {msg}"
+        );
+    }
+
     #[tokio::test]
     async fn push_chapter_to_file_writes_scenes_with_delimiter() {
         use spindle_core::models::{ContentRating, PushChapterToFileInput, SaveSceneDraftInput};
@@ -36687,6 +40127,52 @@ rating = "explicit"
 
         // Sanity: temp dir contains the file we just wrote.
         let _ = tmp;
+    }
+
+    /// Regression: the outside-data_dir error used to name `source_path`
+    /// even though push_chapter_to_file's parameter is `target_path`.
+    #[tokio::test]
+    async fn push_chapter_to_file_outside_data_dir_error_names_target_path() {
+        use spindle_core::models::PushChapterToFileInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        // create_project mints book 1 chapter 1.
+        let chapter = svc
+            .repository()
+            .find_chapter_by_number(&proj.project_id, 1, 1)
+            .await
+            .unwrap()
+            .expect("bootstrap chapter exists");
+
+        let err = svc
+            .push_chapter_to_file(PushChapterToFileInput {
+                chapter_id: chapter.id.clone(),
+                target_path: "/tmp/spindle-outside-data-dir.txt".into(),
+            })
+            .await
+            .expect_err("a target outside data_dir must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("target_path"),
+            "error must name the target_path parameter, got: {msg}"
+        );
+        assert!(
+            !msg.contains("source_path"),
+            "error must not name a parameter the tool does not take, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -36784,6 +40270,7 @@ rating = "explicit"
 
         // One character so at least one branch-scoped row is present.
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".to_string(),
             summary: "Warden.".to_string(),
@@ -36929,6 +40416,7 @@ rating = "explicit"
         .unwrap();
 
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project_id.clone(),
             name: "Mara".to_string(),
             summary: "Warden.".to_string(),
@@ -37267,6 +40755,7 @@ rating = "explicit"
         };
         // Initial character we want preserved across the restore.
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Mara".into(),
             summary: "Survives.".into(),
@@ -37293,6 +40782,7 @@ rating = "explicit"
         // Post-snapshot mutation: a second character that should NOT
         // survive the restore.
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Ephemera".into(),
             summary: "Will vanish on restore.".into(),
@@ -39448,7 +42938,7 @@ agent = "review-dead"
         // scoped to the economy subject (the "activate price facts" recipe).
         svc.register_canonical_fact(RegisterCanonicalFactInput {
             project_id: proj.project_id.clone(),
-            scene_id: scene.scene_id.clone(),
+            scene_id: Some(scene.scene_id.clone()),
             book_number: 1,
             chapter_number: 1,
             fact_type: Some("typed_fact".into()),
@@ -39883,6 +43373,7 @@ agent = "review-dead"
             CharacterEmotionalProfileData, CharacterVoiceProfileData, CreateCharacterInput,
         };
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project_id.to_string(),
             name: name.into(),
             summary: format!("{name} summary"),
@@ -39985,6 +43476,7 @@ agent = "review-dead"
 
         let character = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project_id.clone(),
                 name: "Hero".into(),
                 summary: "the hero".into(),
@@ -40304,7 +43796,7 @@ agent = "review-dead"
                 .create_canonical_fact(CreateCanonicalFactParams {
                     project_id: project.project_id.clone(),
                     branch_id: branch.id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     subject_table: "economy".into(),
@@ -40588,6 +44080,7 @@ agent = "review-dead"
             .unwrap();
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden".into(),
@@ -40795,6 +44288,7 @@ agent = "review-dead"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Oathbound warden who holds the Ash Gate against the dark.".into(),
@@ -41923,6 +45417,7 @@ agent = "review-dead"
             .unwrap();
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden".into(),
@@ -42032,6 +45527,7 @@ agent = "review-dead"
             .unwrap();
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden".into(),
@@ -42272,7 +45768,7 @@ agent = "review-dead"
             .create_canonical_fact(CreateCanonicalFactParams {
                 project_id: proj.project_id.clone(),
                 branch_id: feature.branch_id.clone(),
-                scene_id: scene.scene_id.clone(),
+                scene_id: Some(scene.scene_id.clone()),
                 book_number: 1,
                 chapter_number: 1,
                 subject_table: "character".into(),
@@ -42694,6 +46190,264 @@ agent = "review-dead"
         );
     }
 
+    /// Seed a chapter with two scenes and return their ids, for the
+    /// scene_id-addressed remediation tests.
+    async fn two_scene_chapter(svc: &SqliteSpindleService, project_id: &str) -> (String, String) {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+        let mut ids = Vec::new();
+        for (scene_order, body) in [
+            (1, "First scene prose that is long enough."),
+            (2, "Second scene prose that is long enough."),
+        ] {
+            let out = svc
+                .save_scene_draft(SaveSceneDraftInput {
+                    project_id: project_id.to_string(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order,
+                    full_text: body.into(),
+                    summary: format!("scene {scene_order}"),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            ids.push(out.scene_id);
+        }
+        (ids.remove(0), ids.remove(0))
+    }
+
+    /// Live-run bug: when duplicates or orphans appear there must be a SAFE
+    /// remediation path. Position-addressed delete cannot disambiguate rows
+    /// sharing a position and silently acts on whichever row the resolver
+    /// picks first. A `scene_id`-addressed delete removes exactly the named
+    /// row.
+    #[tokio::test]
+    async fn delete_scene_by_id_removes_the_exact_scene() {
+        use spindle_core::models::DeleteSceneInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "IdDelete".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let (scene_one, scene_two) = two_scene_chapter(&svc, &proj.project_id).await;
+
+        let out = svc
+            .delete_scene(DeleteSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(scene_one.clone()),
+                ..Default::default()
+            })
+            .await
+            .expect("scene_id-addressed delete must succeed without position fields");
+        assert_eq!(out.scene_id, scene_one);
+
+        let branch_id = svc
+            .repository
+            .active_branch_id_public(&proj.project_id)
+            .await
+            .unwrap();
+        assert!(
+            svc.repository
+                .find_scene_by_natural_key(&proj.project_id, &branch_id, 1, 1, 1)
+                .await
+                .unwrap()
+                .is_none(),
+            "the deleted scene's position must be empty"
+        );
+        let survivor = svc
+            .repository
+            .find_scene_by_natural_key(&proj.project_id, &branch_id, 1, 1, 2)
+            .await
+            .unwrap()
+            .expect("the sibling scene must survive");
+        assert_eq!(survivor.id, scene_two);
+    }
+
+    /// `scene_id` delete must never act on a row that is not on the active
+    /// branch — those are the alternative-branch rows the live run mistook
+    /// for duplicates, and active-branch tools have no business touching
+    /// them.
+    #[tokio::test]
+    async fn delete_scene_by_id_rejects_scene_on_another_branch() {
+        use spindle_core::models::DeleteSceneInput;
+
+        let (_tmp, svc, proj, spine_ids, alt_ids) =
+            spine_chapter_with_unresolved_alternatives().await;
+
+        let err = svc
+            .delete_scene(DeleteSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(alt_ids[0].clone()),
+                ..Default::default()
+            })
+            .await
+            .expect_err(
+                "an alternative-branch scene must not be deletable by an active-branch tool",
+            );
+        assert!(
+            err.to_string().contains("not the active branch"),
+            "expected an active-branch guard, got: {err}"
+        );
+        // The alternative row is untouched.
+        assert!(
+            svc.repository.get_scene(&alt_ids[0]).await.is_ok(),
+            "the rejected delete must not touch the row"
+        );
+        // The spine scene at the same position is still deletable by id.
+        let out = svc
+            .delete_scene(DeleteSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(spine_ids[1].clone()),
+                ..Default::default()
+            })
+            .await
+            .expect("the real spine scene must be deletable by id");
+        assert_eq!(out.scene_id, spine_ids[1]);
+    }
+
+    /// When both `scene_id` and position fields are supplied they must agree;
+    /// a mismatch is a caller bug and must be rejected loudly rather than
+    /// silently acting on the id.
+    #[tokio::test]
+    async fn delete_scene_by_id_rejects_mismatched_position_fields() {
+        use spindle_core::models::DeleteSceneInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "IdMismatch".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let (scene_one, _scene_two) = two_scene_chapter(&svc, &proj.project_id).await;
+
+        let err = svc
+            .delete_scene(DeleteSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(scene_one.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 2,
+            })
+            .await
+            .expect_err("position fields contradicting the scene_id must be rejected");
+        assert!(
+            err.to_string().contains("does not match"),
+            "expected a mismatch error, got: {err}"
+        );
+        assert!(
+            svc.repository.get_scene(&scene_one).await.is_ok(),
+            "the rejected delete must not touch the row"
+        );
+    }
+
+    /// `operator_delete_scene` shares the scene_id path.
+    #[tokio::test]
+    async fn operator_delete_scene_by_id_removes_the_exact_scene() {
+        use spindle_core::models::OperatorDeleteSceneInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "OpIdDelete".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let (scene_one, _scene_two) = two_scene_chapter(&svc, &proj.project_id).await;
+
+        let out = svc
+            .operator_delete_scene(OperatorDeleteSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(scene_one.clone()),
+                ..Default::default()
+            })
+            .await
+            .expect("operator delete must accept scene_id");
+        assert_eq!(out.scene_id, scene_one);
+    }
+
+    /// scene_id-addressed move relocates the exact named row and reports the
+    /// resolved source placement.
+    #[tokio::test]
+    async fn move_scene_by_id_relocates_the_exact_scene() {
+        use spindle_core::models::MoveSceneInput;
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "IdMove".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let (scene_one, _scene_two) = two_scene_chapter(&svc, &proj.project_id).await;
+
+        let out = svc
+            .move_scene(MoveSceneInput {
+                project_id: proj.project_id.clone(),
+                scene_id: Some(scene_one.clone()),
+                to_book_number: 1,
+                to_chapter_number: 3,
+                to_scene_order: 1,
+                ..Default::default()
+            })
+            .await
+            .expect("scene_id-addressed move must succeed without from_* fields");
+        assert_eq!(out.scene_id, scene_one);
+        assert_eq!(out.from_book_number, 1);
+        assert_eq!(out.from_chapter_number, 1);
+        assert_eq!(out.from_scene_order, 1);
+        assert_eq!(out.to_chapter_number, 3);
+
+        let branch_id = svc
+            .repository
+            .active_branch_id_public(&proj.project_id)
+            .await
+            .unwrap();
+        let moved = svc
+            .repository
+            .find_scene_by_natural_key(&proj.project_id, &branch_id, 1, 3, 1)
+            .await
+            .unwrap()
+            .expect("the scene must land at the destination");
+        assert_eq!(moved.id, scene_one);
+    }
+
     #[tokio::test]
     async fn commit_scene_changes_blocks_contradicting_canonical_fact() {
         use spindle_core::models::{
@@ -42834,6 +46588,7 @@ agent = "review-dead"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden".into(),
@@ -42863,6 +46618,7 @@ agent = "review-dead"
 
         let tal = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Tal".into(),
                 summary: "Scout".into(),
@@ -43043,6 +46799,7 @@ agent = "review-dead"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden".into(),
@@ -43228,6 +46985,7 @@ agent = "review-dead"
 
         // Character whose voice profile forbids the phrase "as you know".
         svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Jim Dalton".into(),
             summary: "Dockmaster".into(),
@@ -43350,6 +47108,7 @@ agent = "review-dead"
 
         let mara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden.".into(),
@@ -44365,6 +48124,7 @@ agent = "review-dead"
             .unwrap();
         let character = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Mara".into(),
                 summary: "Warden.".into(),
@@ -45459,6 +49219,7 @@ agent = "review-dead"
             .unwrap();
         let character = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: proj.project_id.clone(),
                 name: "Protagonist".into(),
                 summary: "the lead".into(),
@@ -45970,7 +49731,7 @@ agent = "review-dead"
         );
 
         // Resend the whole milestones array with reached_at set.
-        svc.update_entity(UpdateEntityInput {
+        svc.update_entity(UpdateEntityInput { allow_rename: None,
             entity_type: "character_arc".into(),
             entity_id: arc_id.clone(),
             changes: serde_json::json!({
@@ -46032,6 +49793,7 @@ agent = "review-dead"
             .unwrap();
         if !markers.is_null() {
             svc.update_entity(UpdateEntityInput {
+                allow_rename: None,
                 entity_type: "conflict".into(),
                 entity_id: conflict.conflict_id.clone(),
                 changes: serde_json::json!({ "escalation_demonstrated": markers }),
@@ -46180,6 +49942,7 @@ agent = "review-dead"
             name: &str,
         ) -> String {
             svc.create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project_id.to_string(),
                 name: name.to_string(),
                 summary: format!("{name} in play."),
@@ -46279,7 +50042,7 @@ agent = "review-dead"
             let fact = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: seed.scene_id.clone(),
+                    scene_id: Some(seed.scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -46570,6 +50333,7 @@ agent = "review-dead"
             name: &str,
         ) -> String {
             svc.create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project_id.to_string(),
                 name: name.to_string(),
                 summary: format!("{name} in play."),
@@ -46648,7 +50412,7 @@ agent = "review-dead"
             let fact = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: seed.scene_id.clone(),
+                    scene_id: Some(seed.scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -48306,6 +52070,7 @@ agent = "review-rated"
                 .unwrap();
             let mara = svc
                 .create_character(CreateCharacterInput {
+                    aliases: Vec::new(),
                     project_id: proj.project_id.clone(),
                     name: "Mara".into(),
                     summary: "A reincarnated warden who has told no one.".into(),
@@ -48460,7 +52225,7 @@ agent = "review-rated"
             let out = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -48535,7 +52300,7 @@ agent = "review-rated"
             let out = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -48617,6 +52382,7 @@ agent = "review-rated"
             let (project_id, character_id, scene_id, _location_id) = scaffold(&svc).await;
             let confidant = svc
                 .create_character(CreateCharacterInput {
+                    aliases: Vec::new(),
                     project_id: project_id.clone(),
                     name: "Bran".into(),
                     summary: "The one she finally tells.".into(),
@@ -48647,7 +52413,7 @@ agent = "review-rated"
             let out = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -48730,7 +52496,7 @@ agent = "review-rated"
             let public = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -48809,7 +52575,7 @@ agent = "review-rated"
             let out = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -48877,7 +52643,7 @@ agent = "review-rated"
             // A plain, non-secret canonical fact — the ordinary case.
             svc.register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: project_id.clone(),
-                scene_id: scene_id.clone(),
+                scene_id: Some(scene_id.clone()),
                 book_number: 1,
                 chapter_number: 1,
                 fact_type: None,
@@ -48952,7 +52718,7 @@ agent = "review-rated"
         ) -> String {
             svc.register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: project_id.to_string(),
-                scene_id: scene_id.to_string(),
+                scene_id: Some(scene_id.to_string()),
                 book_number: 1,
                 chapter_number: 1,
                 fact_type: None,
@@ -48990,6 +52756,7 @@ agent = "review-rated"
             name: &str,
         ) -> String {
             svc.create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project_id.to_string(),
                 name: name.to_string(),
                 summary: format!("{name} is present."),
@@ -49510,7 +53277,7 @@ agent = "review-rated"
             let plain = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -50233,6 +54000,7 @@ agent = "review-safe"
         // knower and is NOT present.
         let sara = svc
             .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.project_id.clone(),
                 name: "Sara".to_string(),
                 summary: "the protagonist".to_string(),
@@ -50270,7 +54038,7 @@ agent = "review-safe"
         };
         let public_fact = RegisterCanonicalFactInput {
             project_id: project.project_id.clone(),
-            scene_id: scene_id.clone(),
+            scene_id: Some(scene_id.clone()),
             book_number: 1,
             chapter_number: 1,
             fact_type: None,
@@ -50298,7 +54066,7 @@ agent = "review-safe"
         // holder set → no present cast member knows → withheld).
         let secret_fact = RegisterCanonicalFactInput {
             project_id: project.project_id.clone(),
-            scene_id: scene_id.clone(),
+            scene_id: Some(scene_id.clone()),
             book_number: 1,
             chapter_number: 1,
             fact_type: None,
@@ -50334,6 +54102,12 @@ agent = "review-safe"
         assert!(
             !prompt.contains("true_parentage"),
             "out-of-circle secret key withheld from digest"
+        );
+        // Fiction frame leads the prompt so stricter provider classifiers (e.g.
+        // Qwen) treat the verbatim scene prose as fiction, not real-world content.
+        assert!(
+            prompt.starts_with("Context and safety frame:"),
+            "mine prompt must lead with the fiction frame"
         );
         // Content rating unaffected (guards the plumbing).
         let _ = ContentRating::General;
@@ -50938,6 +54712,7 @@ agent = "review-dead"
             name: &str,
         ) -> String {
             svc.create_character(CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project_id.to_string(),
                 name: name.to_string(),
                 summary: format!("{name} exists."),
@@ -51360,7 +55135,7 @@ agent = "review-dead"
             let secret = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project.project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -52103,7 +55878,7 @@ agent = "review-dead"
             let secret = svc
                 .register_canonical_fact(RegisterCanonicalFactInput {
                     project_id: project.project_id.clone(),
-                    scene_id: scene_id.clone(),
+                    scene_id: Some(scene_id.clone()),
                     book_number: 1,
                     chapter_number: 1,
                     fact_type: None,
@@ -53240,6 +57015,7 @@ agent = "review-dead"
 
         async fn enable_style_learning(svc: &SqliteSpindleService, project_id: &str) {
             svc.update_entity(UpdateEntityInput {
+                allow_rename: None,
                 entity_type: "project".to_string(),
                 entity_id: project_id.to_string(),
                 changes: serde_json::json!({ "style_learning": 1 }),
@@ -53987,6 +57763,7 @@ agent = "local-style"
                 .unwrap();
             // Opt in to style learning.
             svc.update_entity(UpdateEntityInput {
+                allow_rename: None,
                 entity_type: "project".to_string(),
                 entity_id: project.project_id.clone(),
                 changes: serde_json::json!({ "style_learning": 1 }),

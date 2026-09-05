@@ -10,6 +10,8 @@ axum.workspace = true
 clap = { version = "4", features = ["derive"] }
 dirs.workspace = true
 futures-core = "0.3.31"
+# `FutureExt::catch_unwind` for the tool-boundary panic guard in server.rs.
+futures-util = "0.3.31"
 reqwest.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tokio-util = { version = "0.7", features = ["rt"] }

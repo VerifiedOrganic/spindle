@@ -39,6 +39,7 @@ async fn check_consistency_subjects_list_filters_scene_set() {
         .unwrap();
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Mara".into(),
             summary: "Warden.".into(),

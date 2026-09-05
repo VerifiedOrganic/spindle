@@ -13,8 +13,8 @@
 
 use spindle_adapters::sqlite::{Repository, SqlitePool, SqliteSpindleService};
 use spindle_core::models::{
-    ContentRating, CreateProjectInput, PullChapterFromFileInput, PullStatus, ReaderContract,
-    SaveSceneDraftInput, SceneSyncStatus,
+    ContentRating, CreateProjectInput, PullChapterFromFileInput, PullStatus,
+    PushChapterToFileInput, ReaderContract, SaveSceneDraftInput, SceneSyncStatus,
 };
 use tempfile::TempDir;
 
@@ -399,6 +399,112 @@ async fn pull_chapter_byte_ranges_slice_source_exactly() {
         "scene 2 byte range must slice EXACTLY the scene two body — \
          no header drift, no separator bleed",
     );
+
+    drop(tmp);
+}
+
+/// A Spindle-managed push must round-trip after a scene body gains a markdown
+/// thematic break. The old `\n\n---\n\n` delimiter treated that HR as a scene
+/// split and failed with a count mismatch.
+#[tokio::test]
+async fn pull_pushed_chapter_survives_markdown_hr_inside_a_scene() {
+    let (tmp, svc) = fresh_service().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "Delimited".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    svc.save_scene_draft(SaveSceneDraftInput {
+        project_id: proj.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        chapter_id: None,
+        scene_order: 1,
+        full_text: "First scene.".into(),
+        summary: "s1".into(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    svc.save_scene_draft(SaveSceneDraftInput {
+        project_id: proj.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        chapter_id: None,
+        scene_order: 2,
+        full_text: "Second scene.".into(),
+        summary: "s2".into(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let chapter = svc
+        .repository()
+        .find_chapter_by_number(&proj.project_id, 1, 1)
+        .await
+        .unwrap()
+        .expect("chapter");
+
+    let relative = "managed/chapter.md";
+    svc.push_chapter_to_file(PushChapterToFileInput {
+        chapter_id: chapter.id.clone(),
+        target_path: relative.into(),
+    })
+    .await
+    .expect("push");
+
+    let path = svc.repository().data_dir().join(relative);
+    let original = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        original.contains("<!-- spindle-scene -->"),
+        "push must write the dedicated marker, got: {original:?}"
+    );
+    let edited = original.replace(
+        "First scene.",
+        "First scene.\n\n---\n\nA break inside the prose.",
+    );
+    std::fs::write(&path, edited).unwrap();
+
+    let report = svc
+        .pull_chapter_from_file(PullChapterFromFileInput {
+            chapter_id: chapter.id.clone(),
+            source_path: relative.into(),
+        })
+        .await
+        .expect("inner markdown HR must not be treated as a scene split");
+    assert_eq!(report.scenes.len(), 2);
+
+    let scenes = svc
+        .repository()
+        .list_scenes_by_chapter(&chapter.id)
+        .await
+        .unwrap();
+    let first = scenes.iter().find(|s| s.scene_order == 1).unwrap();
+    assert!(
+        first.full_text.contains("A break inside the prose."),
+        "edited body must pull into scene 1, got: {}",
+        first.full_text
+    );
+    let second = scenes.iter().find(|s| s.scene_order == 2).unwrap();
+    assert_eq!(second.full_text, "Second scene.");
 
     drop(tmp);
 }

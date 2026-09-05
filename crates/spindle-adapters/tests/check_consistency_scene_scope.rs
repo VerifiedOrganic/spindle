@@ -49,6 +49,7 @@ async fn fresh_service_local() -> (TempDir, SqliteSpindleService) {
 
 fn make_character_input(project_id: &str, name: &str) -> CreateCharacterInput {
     CreateCharacterInput {
+        aliases: Vec::new(),
         project_id: project_id.to_string(),
         name: name.to_string(),
         summary: format!("{name} in play."),
@@ -512,7 +513,7 @@ async fn secret_leak_scene_scope_fires_only_on_scoped_scene() {
         .unwrap();
     svc.register_canonical_fact(RegisterCanonicalFactInput {
         project_id: project_id.clone(),
-        scene_id: seed.scene_id.clone(),
+        scene_id: Some(seed.scene_id.clone()),
         book_number: 1,
         chapter_number: 1,
         fact_type: None,

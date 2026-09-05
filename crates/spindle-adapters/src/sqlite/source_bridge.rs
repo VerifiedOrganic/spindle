@@ -53,7 +53,12 @@ struct SourceSceneOffsetsByPosition {
     scene_offsets: BTreeMap<(i32, i32), (usize, usize)>,
 }
 
-const SOURCE_BRIDGE_SCENE_DELIMITER: &str = "\n\n---\n\n";
+/// Marker `push_chapter_to_file` writes between scene bodies. An HTML comment
+/// so it cannot be confused with a markdown thematic break (`---`).
+const SOURCE_BRIDGE_SCENE_DELIMITER: &str = "\n\n<!-- spindle-scene -->\n\n";
+/// Delimiter used by pushes before the dedicated marker. Pull still splits on
+/// it when the piece count matches the chapter, so existing files round-trip.
+const LEGACY_SOURCE_BRIDGE_SCENE_DELIMITER: &str = "\n\n---\n\n";
 
 pub struct SourceBridge {
     repository: Repository,
@@ -101,12 +106,11 @@ impl SourceBridge {
             path,
             true,
             "pull_chapter_from_file",
+            "source_path",
         )?;
         let source_path_string = source_path.to_string_lossy().to_string();
         let source_text = std::fs::read_to_string(&source_path)
             .with_context(|| format!("failed to read source file {}", source_path.display()))?;
-        let slicer_offsets =
-            scene_offsets_from_import_slicer(self.repository.data_dir(), &source_path_string)?;
 
         let scenes = self.repository.list_scenes_by_chapter(chapter_id).await?;
         if scenes.is_empty() {
@@ -115,24 +119,64 @@ impl SourceBridge {
             );
         }
 
-        // Map each db scene's scene_order to the slicer's 1-based
-        // position by sorting and zipping. Slicer scenes come out
-        // dense (1, 2, 3, ...); db scene_orders may be sparse from
-        // deletes. Sorted-order is the contract.
-        let mut sorted_db_scene_orders: Vec<i32> = scenes.iter().map(|s| s.scene_order).collect();
-        sorted_db_scene_orders.sort_unstable();
-        let positional_offsets: BTreeMap<(i32, i32), (usize, usize)> = sorted_db_scene_orders
-            .iter()
-            .enumerate()
-            .filter_map(|(pos_0, scene_order)| {
-                let slicer_key = (chapter.chapter_number, (pos_0 + 1) as i32);
-                slicer_offsets
-                    .scene_offsets
-                    .get(&slicer_key)
-                    .copied()
-                    .map(|range| ((chapter.chapter_number, *scene_order), range))
-            })
-            .collect();
+        // Map each db scene to its byte range in the file, aligned to the
+        // scene_order-sorted scene list. Three mapping paths:
+        //
+        // 1. Files that contain the dedicated Spindle marker (anything
+        //    push_chapter_to_file writes now): split on that marker. Count
+        //    mismatch is a real add/remove and errors rather than guessing.
+        // 2. Legacy Spindle pushes that used `\n\n---\n\n`: split that way
+        //    only when the piece count matches the chapter. A markdown HR
+        //    inside a scene would change the count, so those files fall
+        //    through to the slicer instead of being mis-split.
+        // 3. External files: the import slicer's structural analysis.
+        let mut sorted_scenes: Vec<&Scene> = scenes.iter().collect();
+        sorted_scenes.sort_by_key(|scene| scene.scene_order);
+
+        let aligned_ranges: Vec<Option<(usize, usize)>> =
+            if source_text.contains(SOURCE_BRIDGE_SCENE_DELIMITER) {
+                let delimiter_ranges =
+                    delimiter_split_ranges(&source_text, SOURCE_BRIDGE_SCENE_DELIMITER);
+                if delimiter_ranges.len() != sorted_scenes.len() {
+                    anyhow::bail!(
+                        "pull_chapter_from_file found {} scene body/bodies in the source file \
+                         (split on the Spindle scene delimiter) but the chapter has {} scene(s); \
+                         scenes were added or removed in the file — mirror the change in Spindle \
+                         (save_scene_draft / delete_scene) and re-push, or restore the delimiter \
+                         structure",
+                        delimiter_ranges.len(),
+                        sorted_scenes.len()
+                    );
+                }
+                delimiter_ranges.into_iter().map(Some).collect()
+            } else {
+                let legacy_ranges =
+                    delimiter_split_ranges(&source_text, LEGACY_SOURCE_BRIDGE_SCENE_DELIMITER);
+                if legacy_ranges.len() == sorted_scenes.len() && legacy_ranges.len() > 1 {
+                    legacy_ranges.into_iter().map(Some).collect()
+                } else if sorted_scenes.len() == 1 {
+                    // Single-scene chapter: the whole trimmed file is the body.
+                    vec![Some(trim_range(&source_text, 0, source_text.len()))]
+                } else {
+                    let slicer_offsets = scene_offsets_from_import_slicer(
+                        self.repository.data_dir(),
+                        &source_path_string,
+                    )?;
+                    // Slicer scenes come out dense (1, 2, 3, ...); db scene_orders
+                    // may be sparse from deletes. Sorted-order is the contract.
+                    sorted_scenes
+                        .iter()
+                        .enumerate()
+                        .map(|(pos_0, scene)| {
+                            let _ = scene;
+                            slicer_offsets
+                                .scene_offsets
+                                .get(&(chapter.chapter_number, (pos_0 + 1) as i32))
+                                .copied()
+                        })
+                        .collect()
+                }
+            };
         let last_scene_order = scenes
             .iter()
             .map(|scene| scene.scene_order)
@@ -152,11 +196,8 @@ impl SourceBridge {
         let mut staged_updates = Vec::with_capacity(scenes.len());
         let mut unmatched_text_ranges = Vec::new();
 
-        for scene in &scenes {
-            let Some((source_start_offset, source_end_offset)) = positional_offsets
-                .get(&(chapter.chapter_number, scene.scene_order))
-                .copied()
-            else {
+        for (scene, aligned_range) in sorted_scenes.iter().zip(aligned_ranges.iter()) {
+            let Some((source_start_offset, source_end_offset)) = *aligned_range else {
                 unmatched_text_ranges.push(TextByteRange { start: 0, end: 0 });
                 continue;
             };
@@ -175,13 +216,13 @@ impl SourceBridge {
             let raw_slice = source_text
                 .get(source_start_offset..effective_end_offset)
                 .context("source slice was out of UTF-8 bounds")?;
-            let source_slice = if scene.scene_order < last_scene_order
-                && raw_slice.ends_with(SOURCE_BRIDGE_SCENE_DELIMITER)
-            {
-                effective_end_offset -= SOURCE_BRIDGE_SCENE_DELIMITER.len();
-                raw_slice
-                    .strip_suffix(SOURCE_BRIDGE_SCENE_DELIMITER)
-                    .expect("suffix check should guarantee strip")
+            let source_slice = if scene.scene_order < last_scene_order {
+                if let Some(stripped) = strip_trailing_scene_delimiter(raw_slice) {
+                    effective_end_offset -= raw_slice.len() - stripped.len();
+                    stripped
+                } else {
+                    raw_slice
+                }
             } else {
                 raw_slice
             };
@@ -305,6 +346,7 @@ impl SourceBridge {
             path,
             false,
             "push_chapter_to_file",
+            "target_path",
         )?;
         let source_path_string = source_path.to_string_lossy().to_string();
         let scenes = self.repository.list_scenes_by_chapter(chapter_id).await?;
@@ -534,15 +576,16 @@ fn resolve_source_bridge_path(
     source_path: &Path,
     must_exist: bool,
     tool_name: &str,
+    param_name: &str,
 ) -> anyhow::Result<PathBuf> {
     if source_path.as_os_str().is_empty() {
-        anyhow::bail!("{tool_name} requires a non-empty source_path");
+        anyhow::bail!("{tool_name} requires a non-empty {param_name}");
     }
     if source_path
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        anyhow::bail!("{tool_name} rejected source_path with parent-directory traversal");
+        anyhow::bail!("{tool_name} rejected {param_name} with parent-directory traversal");
     }
 
     let resolved = if source_path.is_absolute() {
@@ -560,13 +603,13 @@ fn resolve_source_bridge_path(
     if must_exist {
         let canonical = std::fs::canonicalize(&resolved).with_context(|| {
             format!(
-                "{tool_name} failed to resolve source_path {}",
+                "{tool_name} failed to resolve {param_name} {}",
                 resolved.display()
             )
         })?;
         if !canonical.starts_with(&allowed_root) {
             anyhow::bail!(
-                "{tool_name} source_path must be inside data_dir ({})",
+                "{tool_name} {param_name} must be inside data_dir ({})",
                 allowed_root.display()
             );
         }
@@ -575,12 +618,12 @@ fn resolve_source_bridge_path(
 
     let parent = resolved
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("{tool_name} source_path must include a filename"))?;
+        .ok_or_else(|| anyhow::anyhow!("{tool_name} {param_name} must include a filename"))?;
     let mut existing_ancestor = parent.to_path_buf();
     while !existing_ancestor.exists() {
         existing_ancestor = existing_ancestor
             .parent()
-            .ok_or_else(|| anyhow::anyhow!("{tool_name} source_path parent is invalid"))?
+            .ok_or_else(|| anyhow::anyhow!("{tool_name} {param_name} parent is invalid"))?
             .to_path_buf();
     }
     let canonical_ancestor = std::fs::canonicalize(&existing_ancestor).with_context(|| {
@@ -591,7 +634,7 @@ fn resolve_source_bridge_path(
     })?;
     if !canonical_ancestor.starts_with(&allowed_root) {
         anyhow::bail!(
-            "{tool_name} source_path must be inside data_dir ({})",
+            "{tool_name} {param_name} must be inside data_dir ({})",
             allowed_root.display()
         );
     }
@@ -609,13 +652,13 @@ fn resolve_source_bridge_path(
     })?;
     if !canonical_parent.starts_with(&allowed_root) {
         anyhow::bail!(
-            "{tool_name} source_path must be inside data_dir ({})",
+            "{tool_name} {param_name} must be inside data_dir ({})",
             allowed_root.display()
         );
     }
     let filename = resolved
         .file_name()
-        .ok_or_else(|| anyhow::anyhow!("{tool_name} source_path must include a filename"))?;
+        .ok_or_else(|| anyhow::anyhow!("{tool_name} {param_name} must include a filename"))?;
     Ok(canonical_parent.join(filename))
 }
 
@@ -679,7 +722,9 @@ pub(crate) fn divergence_observation_to_consistency_issue(
             ),
             entity_ids: vec![scene_id.to_string()],
             suggested_action: Some(
-                "re-import or re-save the scene from the updated local file".to_string(),
+                "adopt the file's edits with pull_chapter_from_file, or discard them by \
+                 re-saving the scene / re-pushing with push_chapter_to_file"
+                    .to_string(),
             ),
         },
         DivergenceKind::SourceMissing => ConsistencyIssue {
@@ -721,6 +766,41 @@ pub fn find_unique_scene_source_span(
         return None;
     }
     Some((start, start + scene_text.len()))
+}
+
+/// Byte ranges of the scene bodies in a Spindle-delimited source file —
+/// the exact inverse of `push_chapter_to_file`'s write loop. Each piece is
+/// trimmed of leading/trailing whitespace (editors routinely add a trailing
+/// newline) with the offsets adjusted to cover only the body. A file with
+/// no delimiter yields a single range covering the trimmed whole.
+fn delimiter_split_ranges(source_text: &str, delimiter: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut cursor = 0usize;
+    for (index, _) in source_text.match_indices(delimiter) {
+        ranges.push(trim_range(source_text, cursor, index));
+        cursor = index + delimiter.len();
+    }
+    ranges.push(trim_range(source_text, cursor, source_text.len()));
+    ranges
+}
+
+fn strip_trailing_scene_delimiter(slice: &str) -> Option<&str> {
+    for delimiter in [
+        SOURCE_BRIDGE_SCENE_DELIMITER,
+        LEGACY_SOURCE_BRIDGE_SCENE_DELIMITER,
+    ] {
+        if let Some(stripped) = slice.strip_suffix(delimiter) {
+            return Some(stripped);
+        }
+    }
+    None
+}
+
+fn trim_range(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let slice = &text[start..end];
+    let lead = slice.len() - slice.trim_start().len();
+    let trimmed_len = slice.trim().len();
+    (start + lead, start + lead + trimmed_len)
 }
 
 fn tracked_scene_source_slice<'a>(
@@ -843,5 +923,25 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn dedicated_delimiter_survives_a_markdown_hr_in_a_scene() {
+        let scene_a = "First scene.\n\n---\n\nA thematic break inside the prose.";
+        let scene_b = "Second scene.";
+        let source = format!("{scene_a}{SOURCE_BRIDGE_SCENE_DELIMITER}{scene_b}");
+        let ranges = delimiter_split_ranges(&source, SOURCE_BRIDGE_SCENE_DELIMITER);
+        assert_eq!(ranges.len(), 2, "an inner markdown HR must not add a split");
+        assert_eq!(&source[ranges[0].0..ranges[0].1], scene_a);
+        assert_eq!(&source[ranges[1].0..ranges[1].1], scene_b);
+    }
+
+    #[test]
+    fn legacy_delimiter_still_splits_old_pushes() {
+        let source = "Alpha.\n\n---\n\nBeta.";
+        let ranges = delimiter_split_ranges(source, LEGACY_SOURCE_BRIDGE_SCENE_DELIMITER);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(&source[ranges[0].0..ranges[0].1], "Alpha.");
+        assert_eq!(&source[ranges[1].0..ranges[1].1], "Beta.");
     }
 }

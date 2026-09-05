@@ -12,7 +12,10 @@ pub struct SceneSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct CanonicalFactSnapshot {
-    pub scene_id: String,
+    /// None for planned-and-pending facts registered before their scene
+    /// exists (V0038); such a fact never matches the establishing-scene skip
+    /// and applies from its placement onward.
+    pub scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
     pub fact_type: String,
@@ -26,6 +29,13 @@ pub struct WorldRuleSnapshot {
     pub rule_name: String,
     pub scan_pattern: Option<String>,
     pub established_in: Option<(i32, i32)>,
+    /// Free-form classification from the world_rule row; the
+    /// world_rule_semantic_drift validator uses it (with the rule name and
+    /// description) to scope secrecy-class rules to dialogue spans.
+    pub rule_type: String,
+    /// Carried so secrecy-class classification agrees with the commit-gate
+    /// scan path, which classifies on the full rule description.
+    pub description: String,
 }
 
 #[derive(Debug, Clone)]

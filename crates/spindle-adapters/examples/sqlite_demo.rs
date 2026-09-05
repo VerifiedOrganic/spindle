@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
     // 3. Characters.
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden of the Ash Gate.".into(),
@@ -100,6 +101,7 @@ async fn main() -> Result<()> {
 
     let aldric = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Aldric".into(),
             summary: "Scribe of the marches.".into(),

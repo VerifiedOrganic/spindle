@@ -24,6 +24,7 @@ async fn fresh_repo() -> (TempDir, Repository) {
 async fn seed_character(repo: &Repository, project_id: &str, name: &str) -> String {
     let (character, _, _, _) = repo
         .create_character(&CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project_id.to_string(),
             name: name.to_string(),
             summary: "x".into(),

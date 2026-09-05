@@ -44,7 +44,10 @@ impl SceneValidator for CanonicalFactConsistencyValidator {
     ) -> Result<Vec<ValidatorFinding>, String> {
         let mut findings = Vec::new();
         for fact in &context.canonical_facts {
-            if fact.scene_id == scene.scene_id {
+            // The scene that ESTABLISHED the fact is exempt from drift
+            // checking; planned-and-pending facts (V0038) have no scene yet,
+            // so they never match this skip and apply from their placement.
+            if fact.scene_id.as_deref() == Some(scene.scene_id.as_str()) {
                 continue;
             }
             if !placement_leq(
@@ -111,8 +114,10 @@ impl SceneValidator for WorldRuleComplianceValidator {
                 rule_name: rule.rule_name.clone(),
                 // Description isn't required for adjacency-based severity
                 // assignment; spindle-core's scanner derives severity from
-                // prose context, not rule metadata.
-                description: String::new(),
+                // prose context, not rule metadata. It IS used (with the
+                // rule type/name) to scope secrecy-class rules to dialogue.
+                description: rule.description.clone(),
+                rule_type: rule.rule_type.clone(),
             })
             .collect();
 

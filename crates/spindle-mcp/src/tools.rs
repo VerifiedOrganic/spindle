@@ -83,7 +83,7 @@
 //! | `archive_entity` | Write |
 //! | `save_scene_draft`, `commit_scene_changes` | Write |
 //! | `commit_character_state`, `record_knowledge` | Write |
-//! | `save_summary`, `register_canonical_fact` | Write |
+//! | `save_summary`, `register_canonical_fact`, `bind_canonical_fact_to_scene` | Write |
 //! | `plan_chapter`, `annotate_scene_beats` | Write |
 //! | `move_scene`, `delete_scene`, `operator_delete_scene` | Write |
 //! | `create_branch`, `switch_branch` | Write |
@@ -284,6 +284,7 @@ impl ToolRouter {
                 "create_narrative_promise",
                 "batch_create_narrative_promises",
                 "create_character_arc",
+                "update_arc_milestone",
                 "create_system_overlay",
                 "preflight_book_export",
                 "compile_manuscript",
@@ -326,6 +327,7 @@ impl ToolRouter {
                 "register_canonical_fact",
                 "extract_canonical_facts_from_scene",
                 "migrate_canonical_fact",
+                "bind_canonical_fact_to_scene",
                 "research_query",
                 "research_add_source",
                 "research_add_note",
@@ -414,7 +416,7 @@ impl ToolRouter {
             ),
             tool::<CreateChapterInput, CreateChapterOutput>(
                 "create_chapter",
-                "Create the next chapter within a book using book_number or book_id; optional chapter_number is validated against the next sequential slot",
+                "Create the next chapter within a book using book_number or book_id; optional chapter_number may be any unused non-negative number (gaps are allowed, e.g. for restructures) and defaults to one past the current maximum",
             ),
             tool::<CreateBranchInput, CreateBranchOutput>(
                 "create_branch",
@@ -442,7 +444,7 @@ impl ToolRouter {
             ),
             tool::<SetCharacterBirthInput, SetCharacterBirthOutput>(
                 "set_character_birth",
-                "Anchor a character's birth on the story clock so their age can be derived at any story moment.",
+                "Anchor a character's birth on the story clock so their age can be derived at any story moment. day_index is a signed offset from the story's opening day, so births before the epoch are negative (e.g. -8913 for a character born ~24 years before day 1).",
             ),
             tool::<SetProjectQuantitySchemeInput, SetProjectQuantitySchemeOutput>(
                 "set_project_quantity_scheme",
@@ -474,7 +476,7 @@ impl ToolRouter {
             ),
             tool::<CreateStyleProfileFromMarkdownInput, CreateStyleProfileFromMarkdownOutput>(
                 "create_style_profile_from_markdown",
-                "Derive a reusable project style profile from user-provided local Markdown files or folders. Persists metadata, hashes, metrics, and generated guidance, but no source text by default.",
+                "Derive a reusable project style profile from user-provided local Markdown files or folders. Persists metadata, hashes, metrics, and generated guidance, but no source text by default. The guidance is synthesized by the routed style_analyze model against an explicit schema; if the model returns no usable guidance the call fails loudly and creates no profile (use metrics_only=true to create a metrics-only profile deliberately).",
             ),
             tool::<CheckStyleProfileSourcesInput, CheckStyleProfileSourcesOutput>(
                 "check_style_profile_sources",
@@ -498,7 +500,7 @@ impl ToolRouter {
             ),
             tool::<ApplyStyleProfileInput, ApplyStyleProfileOutput>(
                 "apply_style_profile",
-                "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows.",
+                "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows. Requires the profile to be ready and to carry application guidance; pass force=true to deliberately activate a NeedsReview or metrics-only profile — with no prose guidance, only the profile is activated and the project's narrator voice/style notes are left untouched.",
             ),
             tool::<PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput>(
                 "preview_apply_style_profile",
@@ -619,7 +621,7 @@ impl ToolRouter {
             ),
             tool::<UpdateEntityInput, UpdateEntityOutput>(
                 "update_entity",
-                "Update a supported entity by record id",
+                "Update a supported entity by record id. Character aliases are settable via changes {\"aliases\": [...]}. Renaming a character (changes {\"name\": ...}) is a controlled operation: pass allow_rename: true to move the name's uniqueness key, keep the old name as an alias, refresh the search index, and get a rename_report listing scenes/facts/knowledge/arcs still referencing the old name. Without allow_rename the rename is rejected. For entity_type=project, the reader contract is updatable via changes {\"reader_contract\": {...}} or the sub-fields {\"promise\", \"style_notes\", \"boundaries\"} (partial merge; unset fields are preserved); if the edit leaves the contract's word-count target contradicting the narrator voice or a style world rule, the response warnings flag it",
             ),
             tool::<ArchiveEntityInput, ArchiveEntityOutput>(
                 "archive_entity",
@@ -654,6 +656,10 @@ impl ToolRouter {
             tool::<CreateCharacterArcInput, CreateCharacterArcOutput>(
                 "create_character_arc",
                 "Create a character arc and pacing tracker",
+            ),
+            tool::<UpdateArcMilestoneInput, UpdateArcMilestoneOutput>(
+                "update_arc_milestone",
+                "Update a single character-arc milestone by label: move its placement and/or stamp reached_at (e.g. after a chapter renumber or when the milestone lands). Only the supplied fields change; description and unlocks are preserved. Read milestones via get_entity(table=\"character_arc\") or get_character_snapshot",
             ),
             tool::<CreateFutureKnowledgeInput, CreateFutureKnowledgeOutput>(
                 "create_future_knowledge",
@@ -710,7 +716,7 @@ impl ToolRouter {
             ),
             tool::<RegisterCanonicalFactInput, RegisterCanonicalFactOutput>(
                 "register_canonical_fact",
-                "Register a canonical story fact (pull result, stat change, item, ability) for contradiction detection",
+                "Register a canonical story fact (pull result, stat change, item, ability) for contradiction detection. scene_id is optional: omit it to register a fact decided during planning but not yet dramatised (placed by book_number/chapter_number only), then attach it later with bind_canonical_fact_to_scene",
             ),
             tool::<ExtractCanonicalFactsFromSceneInput, ExtractCanonicalFactsFromSceneOutput>(
                 "extract_canonical_facts_from_scene",
@@ -719,6 +725,10 @@ impl ToolRouter {
             tool::<MigrateCanonicalFactInput, MigrateCanonicalFactOutput>(
                 "migrate_canonical_fact",
                 "Promote a legacy_untyped canonical fact into a typed canonical fact and supersede the legacy row",
+            ),
+            tool::<BindCanonicalFactToSceneInput, BindCanonicalFactToSceneOutput>(
+                "bind_canonical_fact_to_scene",
+                "Attach a planned-and-pending canonical fact (registered without a scene_id) to the scene that dramatises it. The fact and scene must share a project and branch; placement is left untouched",
             ),
             tool::<SearchBibleInput, SearchBibleOutput>(
                 "search_bible",
@@ -910,11 +920,11 @@ impl ToolRouter {
             ),
             tool::<DeleteSceneInput, DeleteSceneOutput>(
                 "delete_scene",
-                "Delete an active-branch scene only when its dependency audit is clear; leaves a gap in scene_order",
+                "Delete an active-branch scene only when its dependency audit is clear; leaves a gap in scene_order. Address by scene_id (preferred — unambiguous even when duplicates or orphans share a position) or by book_number/chapter_number/scene_order",
             ),
             tool::<OperatorDeleteSceneInput, OperatorDeleteSceneOutput>(
                 "operator_delete_scene",
-                "Delete an active-branch scene after removing scene_source_link records and invalidating stale chapter_plan/chapter_summary artifacts, but only when no other blockers or semantic risks remain",
+                "Delete an active-branch scene after removing scene_source_link records and invalidating stale chapter_plan/chapter_summary artifacts, but only when no other blockers or semantic risks remain. Accepts scene_id for unambiguous addressing, like delete_scene",
             ),
             tool::<ListSceneVersionsInput, ListSceneVersionsOutput>(
                 "list_scene_versions",
@@ -1237,6 +1247,17 @@ impl ToolRouter {
                     .context("chapter is missing project_id")?
                     .to_string())
             }
+            "bind_canonical_fact_to_scene" => {
+                let scene_id = required_string_argument(arguments, "scene_id")?;
+                Ok(self
+                    .service
+                    .read_entity_by_id(scene_id)
+                    .await?
+                    .get("project_id")
+                    .and_then(Value::as_str)
+                    .context("scene is missing project_id")?
+                    .to_string())
+            }
             _ => anyhow::bail!("{name} requires project_id for mutation serialization"),
         }
     }
@@ -1274,6 +1295,31 @@ impl ToolRouter {
         }
     }
 
+    /// Is this serialization scope free right now? Used only to let
+    /// `authoring_status` choose its degraded read-only path instead of queueing
+    /// behind a minutes-long write. Advisory by nature — a scope free here can
+    /// be taken a moment later, which is harmless: the caller either takes the
+    /// lock normally or serves a non-persisting read.
+    async fn scope_is_free(&self, scope: &ToolSerializationScope) -> bool {
+        match scope {
+            ToolSerializationScope::Global => self
+                .serialization_state
+                .serialization_gate
+                .try_write()
+                .is_ok(),
+            ToolSerializationScope::Project(project_id) => {
+                let project_lock = {
+                    let mut locks = self.serialization_state.project_locks.lock().await;
+                    locks
+                        .entry(project_id.clone())
+                        .or_insert_with(|| Arc::new(Mutex::new(())))
+                        .clone()
+                };
+                project_lock.try_lock().is_ok()
+            }
+        }
+    }
+
     pub async fn call_tool(
         &self,
         name: &str,
@@ -1290,13 +1336,46 @@ impl ToolRouter {
             Err(error) => return Ok(structured_error_result(&error)),
         };
         let lock_started = Instant::now();
-        let _serialization_guard = match self
+        let scope = match self
             .tool_serialization_scope(name, &resolved_arguments)
             .await
         {
-            Ok(Some(scope)) => Some(self.lock_tool_scope(scope).await),
-            Ok(None) => None,
+            Ok(scope) => scope,
             Err(error) => return Ok(structured_error_result(&error)),
+        };
+
+        // Observability under a long write. Tool calls for a project are
+        // serialized, and a drafting/review step can hold that lock for MINUTES
+        // when the route points at a reasoning model. `authoring_status` then
+        // queued behind the very run it reports on and timed out — the operator
+        // lost the one tool that could tell them whether the slow step was still
+        // alive, exactly when they needed it.
+        //
+        // So status degrades instead of blocking: if the project lock is not
+        // free promptly, serve the non-persisting `authoring_status_readonly`
+        // reconcile. The answer is identical; it just does not write the
+        // reconcile back, which is precisely what makes it safe to run
+        // alongside the in-flight writer.
+        if name == "authoring_status"
+            && let Some(scope) = scope.as_ref()
+            && !self.scope_is_free(scope).await
+        {
+            return match parse_arguments::<AuthoringStatusInput>(Some(&resolved_arguments)) {
+                Ok(input) => match self.authoring_status_readonly(input).await {
+                    Ok(Some(output)) => structured_result(&output)
+                        .or_else(|error| Ok(structured_error_result(&error))),
+                    Ok(None) => Ok(structured_error_result(&anyhow::anyhow!(
+                        "No active or latest authoring run found for project"
+                    ))),
+                    Err(error) => Ok(structured_error_result(&error)),
+                },
+                Err(error) => Ok(structured_error_result(&error)),
+            };
+        }
+
+        let _serialization_guard = match scope {
+            Some(scope) => Some(self.lock_tool_scope(scope).await),
+            None => None,
         };
         let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
         let arguments = Some(&resolved_arguments);
@@ -1623,6 +1702,10 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.create_character_arc(input))
                     .await
             }
+            "update_arc_milestone" => {
+                self.invoke(arguments, |input| self.service.update_arc_milestone(input))
+                    .await
+            }
             "create_future_knowledge" => {
                 self.invoke(arguments, |input| {
                     self.service.create_future_knowledge(input)
@@ -1702,6 +1785,12 @@ impl ToolRouter {
             "migrate_canonical_fact" => {
                 self.invoke(arguments, |input| {
                     self.service.migrate_canonical_fact(input)
+                })
+                .await
+            }
+            "bind_canonical_fact_to_scene" => {
+                self.invoke(arguments, |input| {
+                    self.service.bind_canonical_fact_to_scene(input)
                 })
                 .await
             }
@@ -8299,6 +8388,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_arguments_keeps_mixed_type_update_entity_changes_object() {
+        // Regression: a mixed-type payload — one string field plus one array
+        // field in the same `changes` object — was rejected upstream with
+        // "update_entity changes must be a JSON object" despite changes being
+        // a valid object. Schema coercion must not reshape or drop a
+        // heterogeneous change map, and a stringified-object form (some
+        // clients stringify nested objects) must be parsed back.
+        let args = serde_json::json!({
+            "entity_type": "character",
+            "entity_id": "character:mara",
+            "changes": {
+                "summary": "A smuggler with a salt blade.",
+                "aliases": ["The Salt Blade", "Gull"]
+            }
+        });
+        let args = args
+            .as_object()
+            .cloned()
+            .expect("tool args should be object");
+        let parsed: UpdateEntityInput =
+            parse_arguments(Some(&args)).expect("arguments should parse");
+        assert_eq!(parsed.entity_type, "character");
+        let changes = parsed
+            .changes
+            .as_object()
+            .expect("changes must remain a JSON object");
+        assert_eq!(
+            changes["summary"],
+            serde_json::json!("A smuggler with a salt blade.")
+        );
+        assert_eq!(
+            changes["aliases"],
+            serde_json::json!(["The Salt Blade", "Gull"])
+        );
+
+        // Stringified-object form coerces back to an object.
+        let args = serde_json::json!({
+            "entity_type": "character",
+            "entity_id": "character:mara",
+            "changes": "{\"summary\":\"S\",\"aliases\":[\"A\"]}"
+        });
+        let args = args
+            .as_object()
+            .cloned()
+            .expect("tool args should be object");
+        let parsed: UpdateEntityInput =
+            parse_arguments(Some(&args)).expect("stringified changes should coerce");
+        assert!(
+            parsed.changes.is_object(),
+            "stringified changes must coerce to an object"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn tool_schemas_relax_session_default_project_and_branch_fields() {
         let router = router().await;
@@ -8405,6 +8548,7 @@ mod tests {
         .expect("decode create project");
 
         let mut create_character_args = serde_json::to_value(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: "project:placeholder".to_string(),
             name: "Liora".to_string(),
             summary: "A courier with a perfect memory.".to_string(),
@@ -8535,6 +8679,7 @@ mod tests {
             .expect("create project directly");
 
         let mut create_character_args = serde_json::to_value(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: "project:placeholder".to_string(),
             name: "Mike Petrovic".to_string(),
             summary: "Head coach.".to_string(),
@@ -8608,6 +8753,7 @@ mod tests {
         }
 
         let mut create_character_args = serde_json::to_value(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: "project:placeholder".to_string(),
             name: "Danny Voss".to_string(),
             summary: "Undersized center.".to_string(),
@@ -9125,6 +9271,7 @@ mod tests {
         .expect("project output");
 
         let char_args = serde_json::to_value(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.project_id.clone(),
             name: "Bellwether".to_string(),
             summary: "The bell-ringer of the keep.".to_string(),

@@ -1,3 +1,4 @@
+mod handshake;
 mod http;
 mod internal_listener;
 mod json_utils;
@@ -16,11 +17,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
-use rmcp::transport::io::stdio;
 use spindle_adapters::SqlitePool;
 use spindle_adapters::sqlite::Repository as SpindleRepository;
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber::EnvFilter;
 
 use crate::proxy::ProxyHandler;
@@ -198,12 +197,22 @@ async fn run_primary(service: SpindleService, data_dir: &Path) -> anyhow::Result
     write_addr_file(data_dir, addr)?;
     tracing::info!("primary: internal MCP listener on {addr}");
 
+    // Serve over a duplex and bridge the real stdio ourselves so the handshake
+    // shim can answer pre-`initialize` vendor probes (Antigravity sends
+    // `server/discover` first) that rmcp would otherwise treat as fatal.
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let stdio_bridge = tokio::spawn(bridge_stdio(client_io));
+
     let server = SpindleMcpServer::new(service);
     let running = server
-        .serve(stdio())
+        .serve(server_io)
         .await
         .context("failed to start spindle mcp server")?;
     let _ = running.waiting().await;
+    // Drain the bridge before tearing down: a tool listing is ~500 KB on a
+    // single line, and aborting here would truncate a response already handed
+    // to the transport. The timeout is a backstop against a wedged client pipe.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), stdio_bridge).await;
 
     // Real shutdown: this primary's stdio session ended. Stop the accept loop
     // and drop the addr file so a successor can claim primacy. Also tear down
@@ -273,38 +282,11 @@ async fn run_secondary(data_dir: &Path, db_path: &Path) -> anyhow::Result<()> {
 
 /// Bidirectional bridge between real stdin/stdout and a duplex channel.
 /// Runs until stdin closes or the duplex peer drops.
+///
+/// Client traffic passes through the handshake shim, which answers vendor
+/// probes sent before `initialize` instead of letting rmcp abort the process.
 pub async fn bridge_stdio(duplex: tokio::io::DuplexStream) -> anyhow::Result<()> {
-    let (duplex_read, mut duplex_write) = tokio::io::split(duplex);
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-
-    // stdin → duplex_write (client messages to server)
-    let to_server = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdin).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut msg = line.into_bytes();
-            msg.push(b'\n');
-            if duplex_write.write_all(&msg).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // duplex_read → stdout (server messages to client)
-    let to_client = tokio::spawn(async move {
-        let mut lines = BufReader::new(duplex_read).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut msg = line.into_bytes();
-            msg.push(b'\n');
-            if stdout.write_all(&msg).await.is_err() {
-                break;
-            }
-            let _ = stdout.flush().await;
-        }
-    });
-
-    let _ = tokio::try_join!(to_server, to_client);
-    Ok(())
+    handshake::bridge_with_shim(tokio::io::stdin(), tokio::io::stdout(), duplex).await
 }
 
 // ── Addr file helpers ───────────────────────────────────────────────────────

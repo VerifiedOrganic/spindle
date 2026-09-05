@@ -397,7 +397,10 @@ pub struct AppendProgressionEventParams {
 pub struct CreateCanonicalFactParams {
     pub project_id: String,
     pub branch_id: String,
-    pub scene_id: String,
+    /// None registers a planned-and-pending fact (V0038): decided during
+    /// planning, placed by book/chapter only, bound to its scene later via
+    /// `bind_canonical_fact_to_scene`.
+    pub scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
     pub subject_table: String,
@@ -2560,6 +2563,72 @@ impl Repository {
             .await
     }
 
+    /// Cached raw model output for one deep-check tier over one prose version
+    /// (migration V0039). `None` means the tier has not analyzed this scene at
+    /// this revision — the caller must call the model.
+    pub async fn get_deep_check_cache(
+        &self,
+        scene_id: &str,
+        scene_revision_fingerprint: &str,
+        check_type: &str,
+    ) -> Result<Option<String>> {
+        let scene_id = scene_id.to_string();
+        let fingerprint = scene_revision_fingerprint.to_string();
+        let check_type = check_type.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT output_text FROM deep_check_cache \
+                     WHERE scene_id = ?1 AND scene_revision_fingerprint = ?2 AND check_type = ?3",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![scene_id, fingerprint, check_type])?;
+                match rows.next()? {
+                    Some(row) => Ok(Some(row.get::<_, String>(0)?)),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
+    /// Bank one deep tier's raw model output so a retry does not re-pay for it.
+    /// Also drops this scene's entries for OTHER fingerprints: once the prose
+    /// has moved on, the superseded analysis is unreachable by key and would
+    /// only accumulate.
+    pub async fn put_deep_check_cache(
+        &self,
+        scene_id: &str,
+        scene_revision_fingerprint: &str,
+        check_type: &str,
+        output_text: &str,
+    ) -> Result<()> {
+        let scene_id = scene_id.to_string();
+        let fingerprint = scene_revision_fingerprint.to_string();
+        let check_type = check_type.to_string();
+        let output_text = output_text.to_string();
+        let created = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO deep_check_cache \
+                     (scene_id, scene_revision_fingerprint, check_type, output_text, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(scene_id, scene_revision_fingerprint, check_type) DO UPDATE SET \
+                       output_text = excluded.output_text, \
+                       created_at = excluded.created_at",
+                    rusqlite::params![scene_id, fingerprint, check_type, output_text, created],
+                )?;
+                conn.execute(
+                    "DELETE FROM deep_check_cache \
+                     WHERE scene_id = ?1 AND scene_revision_fingerprint <> ?2",
+                    rusqlite::params![scene_id, fingerprint],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     pub async fn upsert_timeline_event_clock(
         &self,
         timeline_event_id: &str,
@@ -3308,6 +3377,166 @@ impl Repository {
             .await?
             .ok_or_else(|| anyhow!("character not found"))?;
         Ok(character)
+    }
+
+    /// Rename a character in one transaction: moves the display name AND the
+    /// `normalized_name` uniqueness key, and preserves the old name as an
+    /// alias (unless only casing/spacing changed, or the old name is already
+    /// aliased). Returns the updated row plus whether the old name was added
+    /// as an alias.
+    ///
+    /// The unique index `idx_character_project_name(project_id,
+    /// normalized_name)` is project-wide (not branch-scoped), so the
+    /// collision check is too: a character on an alternative branch holds its
+    /// name against every branch.
+    pub async fn rename_character(
+        &self,
+        character_id: &str,
+        new_name: &str,
+    ) -> Result<(Character, bool)> {
+        let character_id = character_id.to_string();
+        let new_name = new_name.to_string();
+        let (character, old_name_kept_as_alias) = self
+            .inner
+            .pool
+            .write(move |conn| {
+                let tx = conn.transaction()?;
+                let outcome = rename_character_in_tx(&tx, &character_id, &new_name)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+                tx.commit()?;
+                Ok(outcome)
+            })
+            .await?;
+        Ok((character, old_name_kept_as_alias))
+    }
+
+    /// Scene ids on a branch whose prose or summary matches a phrase, via the
+    /// FTS5 scene index. Used by the character-rename report to surface prose
+    /// mentions of the old name (rename never rewrites scene text). The
+    /// phrase is tokenized through `fts_safe_query`, so arbitrary names
+    /// (hyphens, apostrophes, quotes) cannot break the MATCH syntax; a phrase
+    /// with no alphanumeric tokens matches nothing.
+    pub async fn list_scene_ids_mentioning_phrase(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        phrase: &str,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let Some(query) = fts_safe_query(phrase) else {
+            return Ok(Vec::new());
+        };
+        let hits = self
+            .fts_search_scenes(project_id, Some(branch_id), &query, limit)
+            .await?;
+        let mut ids: Vec<String> = Vec::new();
+        for (scene_id, _rank, _snippet) in hits {
+            if !ids.contains(&scene_id) {
+                ids.push(scene_id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Active (not superseded) canonical facts on a branch whose value text,
+    /// JSON value, or aliases mention `needle` (case-insensitive LIKE). Used
+    /// by the character-rename report; facts that reference a character by id
+    /// are unaffected by renames and deliberately not scanned.
+    pub async fn list_canonical_fact_ids_mentioning(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        needle: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let pattern = format!("%{needle}%");
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id FROM canonical_fact \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND superseded_by IS NULL \
+                       AND (COALESCE(value_text, '') LIKE ?3 \
+                            OR COALESCE(value_json, '') LIKE ?3 \
+                            OR aliases LIKE ?3) \
+                     ORDER BY book_number, chapter_number",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id, &pattern], |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Knowledge facts on a branch whose text mentions `needle`
+    /// (case-insensitive LIKE). Used by the character-rename report: secret
+    /// circles and recorded knowledge embed character names in rendered fact
+    /// prose that no index covers.
+    pub async fn list_knowledge_fact_ids_mentioning(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        needle: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let pattern = format!("%{needle}%");
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id FROM knowledge_fact \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND fact LIKE ?3 \
+                     ORDER BY created_at",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id, &pattern], |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Non-archived arcs of one character on a branch whose notes or
+    /// milestones JSON mention `needle` (case-insensitive LIKE). Used by the
+    /// character-rename report; the arc's character_id link itself is
+    /// unaffected by renames.
+    pub async fn list_character_arc_ids_mentioning(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        character_id: &str,
+        needle: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let character_id = character_id.to_string();
+        let pattern = format!("%{needle}%");
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id FROM character_arc \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND character_id = ?3 \
+                       AND archived_at IS NULL \
+                       AND (COALESCE(notes, '') LIKE ?4 OR milestones LIKE ?4) \
+                     ORDER BY created_at",
+                )?;
+                let rows = stmt
+                    .query_map(
+                        rusqlite::params![&project_id, &branch_id, &character_id, &pattern],
+                        |r| r.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
     }
 
     pub async fn list_characters_by_project_and_branch(
@@ -4552,6 +4781,7 @@ impl Repository {
         let summary = input.summary.clone();
         let role = input.role.clone();
         let realm = input.realm.clone();
+        let aliases_json = serde_json::to_string(&input.aliases)?;
 
         // Voice profile (with tone + established_in_scene_id from input).
         let voice = input.voice_profile.clone();
@@ -4600,8 +4830,8 @@ impl Repository {
                 let tx = conn.transaction()?;
                 tx.execute(
                     "INSERT INTO character (id, project_id, branch_id, name, normalized_name, \
-                     summary, role, realm, appearance, notes, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?9)",
+                     summary, role, realm, appearance, notes, created_at, updated_at, aliases) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?9, ?10)",
                     rusqlite::params![
                         &character_id,
                         &project_id,
@@ -4612,6 +4842,7 @@ impl Repository {
                         &role,
                         &realm,
                         now,
+                        &aliases_json,
                     ],
                 )?;
                 tx.execute(
@@ -5118,6 +5349,35 @@ impl Repository {
             })
             .await?
             .ok_or_else(|| anyhow!("canonical_fact not found"))
+    }
+
+    /// Attach a canonical fact to the scene that dramatises it (V0038).
+    /// This is the "bind later" half of registering a planned-and-pending
+    /// fact without a scene. The row must already exist; validation that the
+    /// fact and scene share a project/branch and that the fact is live lives
+    /// in the service layer.
+    pub async fn bind_canonical_fact_to_scene(
+        &self,
+        canonical_fact_id: &str,
+        scene_id: &str,
+    ) -> Result<()> {
+        let canonical_fact_id = canonical_fact_id.to_string();
+        let scene_id = scene_id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                let n = conn.execute(
+                    "UPDATE canonical_fact SET scene_id = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&scene_id, now, &canonical_fact_id],
+                )?;
+                if n == 0 {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     /// Test-only seam: clear the `secret` flag on a canonical fact row. Used by
@@ -8016,6 +8276,19 @@ impl Repository {
                 let scene_id = scene_id.clone();
                 move |conn| {
                     let tx = conn.transaction()?;
+                    let sql = format!("SELECT {SCENE_COLUMNS} FROM scene WHERE id = ?1");
+                    let scene = tx.query_row(&sql, rusqlite::params![&scene_id], |row| {
+                        crate::sqlite::records::Scene::try_from(row)
+                    })?;
+                    // Persist only while this job still matches live prose.
+                    // A different fingerprint on the row is not enough to
+                    // decide: a new job MUST replace an old one after an
+                    // edit, but a late finish from the old job must not
+                    // replace the new one. The live scene is the tie-break.
+                    if Repository::scene_revision_fingerprint(&scene) != fingerprint {
+                        tx.commit()?;
+                        return Ok(());
+                    }
                     tx.execute(
                         "DELETE FROM dual_persona_review WHERE branch_id = ?1 AND scene_id = ?2",
                         rusqlite::params![&branch_id, &scene_id],
@@ -8045,6 +8318,21 @@ impl Repository {
         self.get_dual_persona_review(&branch_id, &scene_id)
             .await?
             .ok_or_else(|| anyhow!("dual_persona_review vanished after upsert"))
+    }
+
+    /// Stable fingerprint over the scene fields that drive review staleness.
+    /// Must stay in lockstep with the service-layer copy used to key jobs.
+    pub(crate) fn scene_revision_fingerprint(scene: &Scene) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(scene.summary.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(scene.full_text.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(scene.content_rating.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(scene.tone.clone().unwrap_or_default().as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     pub async fn get_dual_persona_review(
@@ -13643,6 +13931,22 @@ fn table_has_archived_at(table: &str) -> bool {
 /// Allowlist of (table, column) pairs that update_entity_field is permitted
 /// to mutate. Limits surface area to text/json fields where partial overwrites
 /// are safe; identity fields, FKs, and computed fields stay outside this list.
+///
+/// Audit policy (live-run bug round): authoring scaffolds a record first and
+/// deepens it as decisions land, so every PLANNING field — the prose and
+/// structure an author revises during planning — must be mutable after
+/// creation. What stays locked:
+///   * name-family identity columns (character/location/faction/… `name`,
+///     `normalized_name`, `term_text`): they back project-wide uniqueness
+///     indexes and the search index, so a rename is a controlled operation
+///     (see the service's allow_rename path for characters), not a bare
+///     column write;
+///   * FKs and cross-record links (character_id, source/target_event_id,
+///     subject refs);
+///   * computed fields (character_arc.progress);
+///   * columns with a dedicated typed write path (character voice profiles
+///     via set_character_voice_profile, scene text via save/commit,
+///     canonical facts via register/supersede).
 fn column_is_updatable(table: &str, column: &str) -> bool {
     matches!(
         (table, column),
@@ -13666,18 +13970,53 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("character", "role")
             | ("character", "realm")
             | ("character", "appearance")
+            // Alternate names (V0037): nicknames, titles, an in-world name
+            // decided after the record exists. JSON array via the
+            // update_entity_field path (same encoding as conflict's array
+            // fields). The PRIMARY name is deliberately NOT here: renames go
+            // through the service's allow_rename path, which moves the
+            // normalized_name uniqueness key, preserves the old name as an
+            // alias, refreshes the search index, and reports stale
+            // references — none of which a bare column write can do.
+            | ("character", "aliases")
+            // Emotional profile (V0037 audit): create_character seeds it, but
+            // most supporting cast are created before their psychology is
+            // worked out — without these the profile is permanently frozen at
+            // its create-time (usually empty) values. JSON columns via the
+            // update_entity_field path; the service validates the shape of
+            // each key against the stored profile types before writing so a
+            // malformed value cannot poison the row readers.
+            | ("character_emotional_profile", "base_emotions")
+            | ("character_emotional_profile", "suppressed")
+            | ("character_emotional_profile", "triggers")
+            | ("character_emotional_profile", "defense_mechanisms")
+            | ("character_emotional_profile", "flex_range")
             | ("location", "summary")
             | ("location", "realm")
             | ("location", "kind")
             | ("faction", "summary")
+            // World-entity planning fields (audit): classification, realm,
+            // and the JSON tag list are all revised during worldbuilding.
+            // The `name` column stays locked (uniqueness index + search
+            // index; renames need controlled semantics like characters).
+            | ("faction", "faction_type")
+            | ("faction", "realm")
+            | ("faction", "tags")
             | ("religion", "summary")
             | ("religion", "deity_or_principle")
+            | ("religion", "tags")
             | ("economy", "summary")
             | ("economy", "currency")
+            | ("economy", "realm")
+            | ("economy", "scarce_resources")
+            | ("economy", "trade_goods")
             | ("term", "definition")
             | ("term", "pronunciation")
+            | ("term", "usage_context")
+            | ("term", "origin")
             | ("plot_line", "summary")
             | ("plot_line", "status")
+            | ("plot_line", "plot_type")
             // Convergence audit inputs (V0022): the plot line's connected
             // conflicts/themes can be declared at create time or retrofitted
             // onto an existing row so plot_line_convergence_audit has something
@@ -13709,12 +14048,90 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             // update path resends the whole milestones array with the marker
             // set (no per-milestone merge). Drives arc_milestone_audit.
             | ("character_arc", "milestones")
+            // Arc planning fields (audit): an arc's destination is among the
+            // likeliest things to change during planning — recording it early
+            // so it can be revised is the reason to write an arc down before
+            // drafting. `status` gates which arcs project into snapshots
+            // ("active"); the rest are plain planning prose/JSON. `progress`
+            // stays locked (computed), as do the id links.
+            | ("character_arc", "arc_type")
+            | ("character_arc", "starting_state")
+            | ("character_arc", "ending_state")
+            | ("character_arc", "thematic_purpose")
+            | ("character_arc", "connected_theme_ids")
+            | ("character_arc", "status")
             | ("theme", "theme_statement")
             | ("theme", "thesis_antithesis")
+            // Placement JSON objects (same encoding as
+            // narrative_promise.planned_payoff): where the theme lands.
+            | ("theme", "introduction_point")
+            | ("theme", "resolution_point")
             | ("motif", "description")
+            | ("motif", "max_uses_per_chapter")
+            | ("motif", "connected_theme_ids")
             | ("narrative_promise", "description")
             | ("narrative_promise", "status")
+            // Payoff retargeting after a chapter renumber/restructure: the
+            // placement is a JSON object via update_entity_field's JSON path
+            // (same encoding the row reader uses via row::opt_json), so a
+            // promise can be re-aimed at its new payoff chapter. Without this,
+            // narrative_promise_tracking's "past planned payoff" warnings are
+            // unactionable — update_promise_status takes only status/note.
+            | ("narrative_promise", "planned_payoff")
+            // Planting placement retargeting — symmetric with planned_payoff:
+            // a renumber can move where the promise was PLANTED just as easily
+            // as where it pays off, and the tracking advice reads both.
+            | ("narrative_promise", "planted_at")
+            // Scene summaries are drafted at save_scene_draft time but go
+            // stale after renumbers/re-cuts (they carry cross-references like
+            // "the knife from Chapter 3"). They feed get_chapter_briefing, so
+            // the drift propagates into drafting context unless the author
+            // can correct them in place.
+            | ("scene", "summary")
             | ("world_rule", "description")
+            // World-rule planning fields (audit): update_world_rule routes
+            // through this same allowlist and its cache invalidation already
+            // anticipates rule_type edits, but only `description` was
+            // actually writable. scan_pattern feeds the drift scanner (the
+            // cache target resolves WorldRuleSemanticDrift on any update);
+            // established_in/relevance_tags are JSON via the same path.
+            // rule_name stays locked (uniqueness index + search index).
+            | ("world_rule", "rule_type")
+            | ("world_rule", "scan_pattern")
+            | ("world_rule", "established_in")
+            | ("world_rule", "relevance_tags")
+            // Timeline events (audit): entirely locked before — a renumber
+            // stranded their placement and there was no path to fix title or
+            // summary drift. related_entity_ids is the JSON id list;
+            // event_type classifies. RetconReachability cache invalidation
+            // already covers timeline_event/temporal_intervention updates.
+            | ("timeline_event", "title")
+            | ("timeline_event", "event_type")
+            | ("timeline_event", "placement")
+            | ("timeline_event", "summary")
+            | ("timeline_event", "related_entity_ids")
+            | ("temporal_intervention", "intervention_type")
+            | ("temporal_intervention", "summary")
+            | ("temporal_intervention", "consequences")
+            | ("temporal_intervention", "status")
+            // System overlays (audit): every field was locked after create,
+            // so progression-system tuning (tiers, stats, visibility) had no
+            // write path. system_name stays locked (uniqueness index + search
+            // index); the FK-free planning columns are all fair game.
+            | ("system_overlay", "system_type")
+            | ("system_overlay", "rules")
+            | ("system_overlay", "visibility")
+            | ("system_overlay", "progression_currency")
+            | ("system_overlay", "stats")
+            | ("system_overlay", "advancement_tiers")
+            // Future knowledge (audit): time-displaced facts get revised as
+            // the timeline logic firms up; learned_at/expires_at are the JSON
+            // placements that drive the invalidation checks. character_id
+            // (the holder FK) stays locked.
+            | ("future_knowledge", "knowledge_summary")
+            | ("future_knowledge", "source")
+            | ("future_knowledge", "learned_at")
+            | ("future_knowledge", "expires_at")
             // Secret-knowledge gating (V0023): retrofit an existing fact into a
             // secret (or clear it) without a data migration. `secret` is a
             // 0/1 flag via update_entity_field's numeric/bool path;
@@ -13731,6 +14148,71 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
 /// behavior — separate name avoids the captured-symbol headache.
 fn mint_id_local(table: &str) -> String {
     mint_id(table)
+}
+
+/// Rename a character INSIDE the caller's transaction so the name move, the
+/// normalized-name uniqueness key, and the old-name-as-alias preservation all
+/// commit together (or not at all). Returns the updated row plus whether the
+/// old name was added as an alias. Collision handling mirrors the project-wide
+/// unique index `idx_character_project_name(project_id, normalized_name)`.
+fn rename_character_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    character_id: &str,
+    new_name: &str,
+) -> anyhow::Result<(Character, bool)> {
+    let sql = format!("SELECT {CHARACTER_COLUMNS} FROM character WHERE id = ?1");
+    let current = {
+        let mut stmt = tx.prepare_cached(&sql)?;
+        stmt.query_row([character_id], |r| Character::try_from(r))
+            .optional_inner()
+    }?
+    .ok_or_else(|| anyhow::anyhow!("character not found"))?;
+
+    let normalized = normalize_name(new_name);
+    if normalized != current.normalized_name {
+        let clash: Option<String> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT id FROM character \
+                 WHERE project_id = ?1 AND normalized_name = ?2 AND id != ?3",
+            )?;
+            stmt.query_row(
+                rusqlite::params![&current.project_id, &normalized, character_id],
+                |r| r.get(0),
+            )
+            .optional_inner()
+        }?;
+        if let Some(other_id) = clash {
+            anyhow::bail!(
+                "a character named '{new_name}' already exists in this project ({other_id}); \
+                 pick a distinct name or rename/archive the other character first"
+            );
+        }
+    }
+
+    // Preserve the old name as an alias so existing prose and knowledge stay
+    // resolvable — but only when the rename is a real name change and the old
+    // name isn't aliased already.
+    let old_name_kept_as_alias = normalize_name(&current.name) != normalized
+        && !current
+            .aliases
+            .iter()
+            .any(|alias| normalize_name(alias) == normalize_name(&current.name));
+    let mut aliases = current.aliases.clone();
+    if old_name_kept_as_alias {
+        aliases.push(current.name.clone());
+    }
+    let aliases_json = serde_json::to_string(&aliases)?;
+    let now = timestamp_to_micros(chrono::Utc::now());
+    tx.execute(
+        "UPDATE character SET name = ?1, normalized_name = ?2, aliases = ?3, \
+         updated_at = ?4 WHERE id = ?5",
+        rusqlite::params![new_name, &normalized, &aliases_json, now, character_id],
+    )?;
+    let updated = {
+        let mut stmt = tx.prepare_cached(&sql)?;
+        stmt.query_row([character_id], |r| Character::try_from(r))?
+    };
+    Ok((updated, old_name_kept_as_alias))
 }
 
 /// Bind a generation receipt to the one scene it authorizes (migration
@@ -13979,6 +14461,7 @@ fn batch_subject_kind(
                     role: character.role.clone(),
                     summary: character.summary.clone(),
                     realm: character.realm.clone(),
+                    aliases: character.aliases.clone(),
                 }),
                 Provenance::asserted_by_author(character.updated_at),
             ))
@@ -14148,6 +14631,12 @@ fn batch_subject_kind(
                     },
                     target_state: arc.ending_state.clone(),
                     thematic_purpose: arc.thematic_purpose.clone(),
+                    milestones: arc
+                        .milestones
+                        .iter()
+                        .cloned()
+                        .map(StoredCharacterArcMilestone::into_core)
+                        .collect(),
                 }),
                 Provenance::asserted_by_author(arc.updated_at),
             ))
@@ -14289,7 +14778,18 @@ fn batch_canonical_fact_summaries(
                 canonical_fact_value_text(fact).unwrap_or_else(|| "<unset>".to_string())
             ),
             source_label: None,
-            provenance: scene_provenance(&fact.scene_id),
+            // Planned-and-pending facts (V0038) have no scene yet; cite their
+            // book/chapter placement instead so the summary still carries a
+            // source.
+            provenance: match fact.scene_id.as_deref() {
+                Some(scene_id) => scene_provenance(scene_id),
+                None => placement_provenance(&StoryPlacement {
+                    book_number: fact.book_number,
+                    chapter_number: fact.chapter_number,
+                    scene_order: None,
+                    note: None,
+                }),
+            },
         })
         .collect())
 }
@@ -14436,6 +14936,12 @@ fn batch_active_arc_summaries(
                 })
                 .map(|milestone| milestone.label.clone()),
             provenance: Provenance::asserted_by_author(arc.updated_at),
+            milestones: arc
+                .milestones
+                .iter()
+                .cloned()
+                .map(StoredCharacterArcMilestone::into_core)
+                .collect(),
         })
         .collect())
 }
@@ -16631,6 +17137,316 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre_v0037_database_applies_later_migrations_with_secret_facts() {
+        // HEAD already shipped V0036. This batch adds V0037 (aliases), V0038
+        // (nullable canonical_fact.scene_id), and V0039 (deep_check_cache).
+        // Refinery abort_missing would refuse a V0035 inserted below 36; this
+        // test is the live upgrade: a V0036-era DB with a secret-linked
+        // knowledge_fact must open, keep the link, and gain the new table.
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("legacy36.db");
+        let _warm = SqlitePool::open(&tmp.path().join("warm36.db"))
+            .await
+            .unwrap();
+
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            crate::sqlite::migrations::runner()
+                .set_target(refinery::Target::Version(36))
+                .run(&mut conn)
+                .unwrap();
+            conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+            let cache_exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='deep_check_cache'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(cache_exists, 0, "deep_check_cache must not exist at V0036");
+
+            let now = timestamp_to_micros(chrono::Utc::now());
+            conn.execute(
+                "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "project:legacy36",
+                    "Legacy36",
+                    "novel",
+                    "fantasy",
+                    r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                    now,
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO bible_branch (id, project_id, name, status, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    "bible_branch:legacy36",
+                    "project:legacy36",
+                    "main",
+                    "active",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE project SET active_branch_id = ?1 WHERE id = ?2",
+                rusqlite::params!["bible_branch:legacy36", "project:legacy36"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO book (id, project_id, book_number, created_at) \
+                 VALUES (?1, ?2, 1, ?3)",
+                rusqlite::params!["book:legacy36", "project:legacy36", now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chapter (id, project_id, book_id, book_number, chapter_number, created_at) \
+                 VALUES (?1, ?2, ?3, 1, 1, ?4)",
+                rusqlite::params!["chapter:legacy36", "project:legacy36", "book:legacy36", now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scene (id, project_id, branch_id, book_id, chapter_id, \
+                 book_number, chapter_number, scene_order, full_text, summary, \
+                 content_rating, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, 1, 'prose', 'sum', 'General', ?6, ?6)",
+                rusqlite::params![
+                    "scene:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "book:legacy36",
+                    "chapter:legacy36",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO character (id, project_id, branch_id, name, normalized_name, \
+                 summary, role, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                rusqlite::params![
+                    "character:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "Nate",
+                    "nate",
+                    "lead",
+                    "protagonist",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO canonical_fact (id, project_id, branch_id, scene_id, \
+                 book_number, chapter_number, subject_table, predicate, value_kind, \
+                 value_text, aliases, scope, created_at, updated_at, secret) \
+                 VALUES (?1, ?2, ?3, ?4, 1, 1, 'character', 'true_name', 'string', \
+                         'Nathaniel', '[]', 'invariant', ?5, ?5, 1)",
+                rusqlite::params![
+                    "canonical_fact:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "scene:legacy36",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+                 fact, normalized_fact, source_summary, tags, reader_visible, \
+                 created_at, updated_at, secret_of_fact_id) \
+                 VALUES (?1, ?2, ?3, ?4, 'knows the name', 'knows the name', 'reveal', \
+                         '[]', 1, ?5, ?5, ?6)",
+                rusqlite::params![
+                    "knowledge_fact:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "character:legacy36",
+                    now,
+                    "canonical_fact:legacy36"
+                ],
+            )
+            .unwrap();
+        }
+
+        let pool = SqlitePool::open(&db_path).await.expect(
+            "a V0036-era database with secret-linked knowledge_facts must migrate through V0038/V0039",
+        );
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = Repository::new(pool, data_dir);
+
+        let again = repo.get_project("project:legacy36").await.unwrap();
+        assert_eq!(again.name, "Legacy36");
+
+        let knowledge = repo
+            .get_knowledge_fact("knowledge_fact:legacy36")
+            .await
+            .unwrap();
+        assert_eq!(
+            knowledge.secret_of_fact_id.as_deref(),
+            Some("canonical_fact:legacy36"),
+            "V0038 rebuild must restore secret_of_fact_id links"
+        );
+
+        let scene_id_notnull: i64 = repo
+            .pool()
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT \"notnull\" FROM pragma_table_info('canonical_fact') \
+                     WHERE name = 'scene_id'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(scene_id_notnull, 0, "V0038 must make scene_id nullable");
+
+        let cache_exists: i64 = repo
+            .pool()
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='deep_check_cache'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(cache_exists, 1, "V0039 must create deep_check_cache");
+    }
+
+    #[tokio::test]
+    async fn deep_check_cache_hits_current_fingerprint_and_sweeps_stale() {
+        let (_tmp, repo, _project, _branch, scene_id) = repo_with_scene().await;
+        repo.put_deep_check_cache(&scene_id, "fp-a", "temporal_coherence", "output-a")
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_deep_check_cache(&scene_id, "fp-a", "temporal_coherence")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("output-a")
+        );
+
+        repo.put_deep_check_cache(&scene_id, "fp-b", "temporal_coherence", "output-b")
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_deep_check_cache(&scene_id, "fp-a", "temporal_coherence")
+                .await
+                .unwrap(),
+            None,
+            "an edit must miss the previous fingerprint"
+        );
+        assert_eq!(
+            repo.get_deep_check_cache(&scene_id, "fp-b", "temporal_coherence")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("output-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn dual_persona_upsert_does_not_clobber_a_newer_fingerprint() {
+        use spindle_core::models::{
+            ContentRating, DualPersonaReviewRound, PersonaReviewNotes, SaveSceneDraftInput,
+        };
+
+        let round = |n: usize| DualPersonaReviewRound {
+            round: n,
+            literary_critic: PersonaReviewNotes {
+                persona: "literary".into(),
+                strengths: vec!["s".into()],
+                concerns: Vec::new(),
+            },
+            craft_technician: PersonaReviewNotes {
+                persona: "craft".into(),
+                strengths: Vec::new(),
+                concerns: Vec::new(),
+            },
+            genre_reader: PersonaReviewNotes::default(),
+            priority_actions: Vec::new(),
+        };
+
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let scene_a = repo.get_scene(&scene_id).await.unwrap();
+        let fp_a = Repository::scene_revision_fingerprint(&scene_a);
+        repo.upsert_dual_persona_review(UpsertDualPersonaReviewParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_id.clone(),
+            rounds_completed: 1,
+            review_rounds: vec![round(1)],
+            scene_revision_fingerprint: fp_a.clone(),
+            status: "in_progress".into(),
+        })
+        .await
+        .unwrap();
+
+        repo.save_scene_draft(
+            &project.id,
+            &branch.id,
+            &SaveSceneDraftInput {
+                project_id: project.id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "She turned back and said the line differently.".into(),
+                summary: "turn".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let scene_b = repo.get_scene(&scene_id).await.unwrap();
+        let fp_b = Repository::scene_revision_fingerprint(&scene_b);
+        assert_ne!(fp_a, fp_b, "an edit must change the review fingerprint");
+
+        repo.upsert_dual_persona_review(UpsertDualPersonaReviewParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_id.clone(),
+            rounds_completed: 1,
+            review_rounds: vec![round(1)],
+            scene_revision_fingerprint: fp_b.clone(),
+            status: "in_progress".into(),
+        })
+        .await
+        .unwrap();
+
+        let after_stale = repo
+            .upsert_dual_persona_review(UpsertDualPersonaReviewParams {
+                project_id: project.id.clone(),
+                branch_id: branch.id.clone(),
+                scene_id: scene_id.clone(),
+                rounds_completed: 2,
+                review_rounds: vec![round(1), round(2)],
+                scene_revision_fingerprint: fp_a,
+                status: "current".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_stale.scene_revision_fingerprint, fp_b);
+        assert_eq!(after_stale.rounds_completed, 1);
+    }
+
+    #[tokio::test]
     async fn create_project_round_trip() {
         let (_tmp, repo) = fresh_repo().await;
         let input = CreateProjectInput {
@@ -16900,6 +17716,7 @@ mod tests {
 
         let _mara = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara Oathkeeper".into(),
                 summary: "Warden of the Ash Gate.".into(),
@@ -17326,6 +18143,7 @@ mod tests {
 
         let (character, voice, emotional, state) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara".into(),
                 summary: "An oathbound warden.".into(),
@@ -17658,6 +18476,7 @@ mod tests {
 
         let (character, voice, _emotional, _state) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara".into(),
                 summary: "An oathbound warden.".into(),
@@ -17799,6 +18618,7 @@ mod tests {
         };
         let (mara, _, _, _) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara".into(),
                 role: "protagonist".into(),
@@ -17812,6 +18632,7 @@ mod tests {
             .unwrap();
         let (aldric, _, _, _) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Aldric".into(),
                 role: "scribe".into(),
@@ -18160,6 +18981,7 @@ mod tests {
 
         // Live state we'll wipe: one character on the active branch.
         repo.create_character(&CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.id.clone(),
             name: "DoomedDeniz".into(),
             summary: "Will be wiped.".into(),
@@ -18262,6 +19084,7 @@ mod tests {
         async fn make_char(repo: &Repository, project_id: &str, name: &str) -> Character {
             let (character, _, _, _) = repo
                 .create_character(&CreateCharacterInput {
+                    aliases: Vec::new(),
                     project_id: project_id.to_string(),
                     name: name.to_string(),
                     summary: "x".into(),
