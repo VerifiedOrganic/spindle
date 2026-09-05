@@ -3762,24 +3762,82 @@ pub fn build_book_synopsis(parts: &[(i32, String)], char_cap: usize) -> (String,
     if full.len() <= char_cap {
         return (full, false);
     }
-    const MARKER: &str = "[earlier chapters condensed]";
+    const MARKER: &str = "[earlier chapters omitted]";
     let mut kept: Vec<&str> = Vec::new();
     let mut used = MARKER.len();
     for line in rendered.iter().rev() {
         let add = line.len() + 1; // newline
         if used + add > char_cap {
+            if kept.is_empty() {
+                let head = truncate_to_bytes(line, char_cap.saturating_sub(used + 1));
+                if !head.is_empty() {
+                    kept.push(head);
+                }
+            }
             break;
         }
         used += add;
         kept.push(line.as_str());
     }
     kept.reverse();
-    let mut out = String::from(MARKER);
+    let mut out = truncate_to_bytes(MARKER, char_cap).to_string();
     for line in kept {
         out.push('\n');
         out.push_str(line);
     }
     (out, true)
+}
+
+/// UTF-8 safe byte budget shared by bounded serial context surfaces.
+pub fn truncate_to_bytes(text: &str, max_bytes: usize) -> &str {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Recent books and live commitments have independent budgets. The caller
+/// supplies only summaries preceding the drafting cursor.
+pub fn render_story_so_far(
+    books: &std::collections::BTreeMap<i32, Vec<(i32, String)>>,
+    threads: &[String],
+) -> String {
+    if books.is_empty() && threads.is_empty() {
+        return String::new();
+    }
+    const TOTAL_BYTES: usize = 2000;
+    let mut out =
+        String::from("STORY SO FAR (summaries before this chapter; newest books first):\n");
+    let open = render_open_threads_segment(threads, 600);
+    if !open.is_empty() {
+        out.push_str(&open);
+        out.push_str("\n(Thread priorities are current author plans.)\n");
+    }
+    let mut included = 0;
+    for (book, parts) in books.iter().rev() {
+        let Some((last_chapter, _)) = parts.last() else {
+            continue;
+        };
+        let header = format!("Book {book} (through ch {last_chapter}): ");
+        let remaining = TOTAL_BYTES.saturating_sub(out.len() + 80);
+        if remaining < header.len() + 80 {
+            break;
+        }
+        let cap = remaining.min(700).saturating_sub(header.len() + 1);
+        let (synopsis, _) = build_book_synopsis(parts, cap);
+        out.push_str(&header);
+        out.push_str(&synopsis);
+        out.push('\n');
+        included += 1;
+    }
+    if included < books.len() {
+        out.push_str(&format!(
+            "[{} earlier books omitted; retrieve summaries for detail.]",
+            books.len() - included
+        ));
+    }
+    out
 }
 
 /// Maximum number of open-thread entries persisted into a book digest.
@@ -4363,6 +4421,7 @@ mod promise_timing_tests {
             promise_type: "setup".to_string(),
             description: "a test promise".to_string(),
             status: status.to_string(),
+            status_history: Vec::new(),
             planted_at: planted,
             planned_payoff: payoff,
             notes: Vec::new(),
@@ -4552,7 +4611,10 @@ mod book_digest_tests {
             .collect();
         let (synopsis, truncated) = build_book_synopsis(&parts, 90);
         assert!(truncated, "should report truncation");
-        assert!(synopsis.contains("condensed"), "should mark condensation");
+        assert!(
+            synopsis.contains("omitted"),
+            "should identify omitted chapters"
+        );
         assert!(synopsis.contains("Ch 10:"), "most recent chapter retained");
         assert!(
             !synopsis.contains("Ch 1:"),
@@ -4584,6 +4646,7 @@ mod open_threads_tests {
             promise_type: "setup".to_string(),
             description: description.to_string(),
             status: status.to_string(),
+            status_history: Vec::new(),
             planted_at: placement(1, 1, 0),
             planned_payoff: None,
             notes: Vec::new(),

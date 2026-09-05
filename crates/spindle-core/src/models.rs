@@ -1,3 +1,4 @@
+pub use crate::serial::*;
 use crate::subject::SubjectTable;
 use crate::subject_snapshot::SubjectSnapshot;
 use crate::subject_snapshot::{
@@ -2227,6 +2228,15 @@ pub struct OperatorDeleteSceneOutput {
     pub invalidated_chapter_summary_ids: Vec<String>,
 }
 
+/// Declared authorship is independent of provider rating-clearance receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftAuthorship {
+    #[default]
+    Human,
+    Assistant,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct SaveSceneDraftInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
@@ -2244,6 +2254,10 @@ pub struct SaveSceneDraftInput {
     pub scene_order: i32,
     #[serde(alias = "content", alias = "text")]
     pub full_text: String,
+    /// Use assistant for prose composed or revised by the host AI. Human by
+    /// default. Enables opt-in learning from a later human edit, not AI edits.
+    #[serde(default)]
+    pub authorship: DraftAuthorship,
     pub summary: String,
     pub content_rating: ContentRating,
     pub tone: Option<String>,
@@ -3673,13 +3687,32 @@ pub struct BatchCreateNarrativePromisesOutput {
     pub created: usize,
 }
 
+/// An actual story event, separate from an author's planned payoff.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PromiseStatusEvent {
+    pub id: String,
+    pub previous_status: String,
+    pub status: String,
+    pub at: Option<StoryPlacement>,
+    pub source_scene_id: Option<String>,
+    pub note: Option<String>,
+    pub replaces_event_id: Option<String>,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct UpdatePromiseStatusInput {
     #[serde(alias = "promise_id")]
     pub narrative_promise_id: String,
     #[serde(alias = "new_status")]
     pub status: String,
     pub note: Option<String>,
+    /// Actual placement. Omit when unknown; planned_payoff is never used here.
+    pub at: Option<StoryPlacement>,
+    /// Evidence scene; supplies the placement when `at` is omitted.
+    pub source_scene_id: Option<String>,
+    /// Correct an existing event without deleting its audit history.
+    pub replaces_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4128,6 +4161,10 @@ pub const SCENE_VERIFY_CHECKS: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckConsistencyInput {
+    /// Page through capped deep audits in stable story/urgency order. Keep the
+    /// scope and manuscript unchanged between pages; defaults to zero.
+    #[serde(default)]
+    pub deep_scan_offset: Option<usize>,
     pub project_id: String,
     pub scope: ConsistencyScopeInput,
     #[serde(default)]
@@ -4194,6 +4231,9 @@ pub struct ConsistencySection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckConsistencyOutput {
+    /// Empty for shallow checks. A clean finding list does not imply complete coverage.
+    #[serde(default)]
+    pub audit_coverage: Vec<AuditCoverage>,
     pub issues: Vec<ConsistencyIssue>,
     pub summary: ConsistencySummary,
     /// Per-validator grouping of Phase 4 validator findings. Each section
@@ -6849,6 +6889,9 @@ pub struct AuthoringSaveSceneDraftInput {
     pub scene_order: i32,
     #[serde(alias = "content", alias = "text")]
     pub full_text: String,
+    /// Declare assistant for host-AI prose; omission preserves human authorship.
+    #[serde(default)]
+    pub authorship: DraftAuthorship,
     pub summary: String,
     pub content_rating: ContentRating,
     #[serde(default)]
@@ -7540,6 +7583,10 @@ pub struct ReaderSimChapterInput {
 /// A skip or an unparsed read never reads as a clean pass (evolution I8).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReaderSimChapterOutcome {
+    /// Updated reader questions. Omitted by older models; an explicit empty
+    /// array means all previous questions were answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_questions: Option<Vec<String>>,
     /// `read` | `unparsed` | `skipped`.
     pub status: String,
     /// The reader's engagement verdict: `high` | `steady` | `dipping` on a

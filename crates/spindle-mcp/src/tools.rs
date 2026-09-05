@@ -255,6 +255,14 @@ impl ToolRouter {
                 "rollback_style_revision_patch",
             ],
             "write" => &[
+                "get_editorial_queue",
+                "decide_editorial_item",
+                "read_episode",
+                "get_model_usage",
+                "get_series_status",
+                "prepare_episode_release",
+                "release_episode",
+                "get_episode_release",
                 "create_project",
                 "list_projects",
                 "list_skills",
@@ -282,6 +290,7 @@ impl ToolRouter {
                 "create_motif",
                 "batch_create_motifs",
                 "create_narrative_promise",
+                "update_promise_status",
                 "batch_create_narrative_promises",
                 "create_character_arc",
                 "update_arc_milestone",
@@ -389,6 +398,75 @@ impl ToolRouter {
                 "import_status",
                 "import_hydrate_bible",
             ],
+            "authoring" => &[
+                "record_note",
+                "update_arc_milestone",
+                "create_character_arc",
+                "create_motif",
+                "create_theme",
+                "create_conflict",
+                "create_plot_line",
+                "annotate_scene_beats",
+                "save_scene_draft",
+                "set_active_project",
+                "get_editorial_queue",
+                "decide_editorial_item",
+                "read_episode",
+                "get_series_status",
+                "prepare_episode_release",
+                "release_episode",
+                "get_episode_release",
+                "get_model_usage",
+                "create_project",
+                "list_projects",
+                "list_skills",
+                "get_skill",
+                "get_reference",
+                "create_book",
+                "create_chapter",
+                "create_character",
+                "create_location",
+                "create_world_rule",
+                "create_narrative_promise",
+                "update_promise_status",
+                "get_writer_state",
+                "get_entity",
+                "find_entity",
+                "search_bible",
+                "get_chapter_briefing",
+                "get_scene_context",
+                "list_chapter_scenes",
+                "list_book_chapters",
+                "plan_chapter",
+                "set_book_outline",
+                "set_chapter_outline",
+                "update_entity",
+                "authoring_prepare_run",
+                "authoring_start_run",
+                "authoring_status",
+                "authoring_execute_next",
+                "authoring_save_scene_draft",
+                "authoring_record_checkpoint_audit",
+                "authoring_review_checkpoint",
+                "authoring_resolve_block",
+                "authoring_cancel_run",
+                "commit_scene_changes",
+                "save_summary",
+                "check_consistency",
+                "run_dual_persona_review",
+                "mine_scene_canon",
+                "list_canon_deltas",
+                "decide_canon_deltas",
+                "replan_chapter",
+                "list_plan_amendments",
+                "decide_plan_amendments",
+                "preflight_book_export",
+                "compile_manuscript",
+                "export_recap",
+                "export_series_bible",
+                "create_save_point",
+                "restore_save_point",
+            ],
             _ => return all,
         };
         all.into_iter()
@@ -398,6 +476,38 @@ impl ToolRouter {
 
     fn all_tools(&self) -> Vec<Tool> {
         vec![
+            tool::<GetEditorialQueueInput, EditorialQueueOutput>(
+                "get_editorial_queue",
+                "Review reader concerns with chapter evidence, source freshness and author decisions. Default shows unresolved work.",
+            ),
+            tool::<DecideEditorialItemInput, EditorialItem>(
+                "decide_editorial_item",
+                "Accept, defer, resolve, dismiss or reopen an editorial concern against the reviewed source and decision revision. Accepted work enters drafting guidance; never changes prose or canon.",
+            ),
+            tool::<ReadEpisodeInput, ReadEpisodeOutput>(
+                "read_episode",
+                "Read an episode as the promised reader, continuing source-validated memory across runs and books. Reuses unchanged reads and reports gaps and stale memory.",
+            ),
+            tool::<GetSeriesStatusInput, SeriesStatusOutput>(
+                "get_series_status",
+                "Inspect the published cursor, draft and ready backlog, episode revisions, and changes since release.",
+            ),
+            tool::<PrepareEpisodeReleaseInput, EpisodeReleasePreview>(
+                "prepare_episode_release",
+                "Preview one chapter as an episode. Reports missing/stub scenes and returns a source hash for a local immutable release.",
+            ),
+            tool::<ReleaseEpisodeInput, EpisodeRelease>(
+                "release_episode",
+                "Record an immutable local episode snapshot from an unchanged preview. Corrections append revisions. Does not post to any platform.",
+            ),
+            tool::<GetEpisodeReleaseInput, EpisodeRelease>(
+                "get_episode_release",
+                "Read the exact prose and source metadata of an immutable episode release, including the previous revision id.",
+            ),
+            tool::<GetModelUsageInput, GetModelUsageOutput>(
+                "get_model_usage",
+                "Inspect persisted model calls, reported tokens, elapsed time and unknown usage. No prose or credentials are logged.",
+            ),
             tool::<CreateProjectInput, CreateProjectOutput>(
                 "create_project",
                 "Create a project, book 1, and chapter 1",
@@ -1907,6 +2017,40 @@ impl ToolRouter {
                 },
                 Err(error) => Err(error),
             },
+            "get_model_usage" => {
+                self.invoke(arguments, |input| self.service.get_model_usage(input))
+                    .await
+            }
+            "get_series_status" => {
+                self.invoke(arguments, |input| self.service.get_series_status(input))
+                    .await
+            }
+            "prepare_episode_release" => {
+                self.invoke(arguments, |input| {
+                    self.service.prepare_episode_release(input)
+                })
+                .await
+            }
+            "release_episode" => {
+                self.invoke(arguments, |input| self.service.release_episode(input))
+                    .await
+            }
+            "get_episode_release" => {
+                self.invoke(arguments, |input| self.service.get_episode_release(input))
+                    .await
+            }
+            "get_editorial_queue" => {
+                self.invoke(arguments, |input| self.service.get_editorial_queue(input))
+                    .await
+            }
+            "decide_editorial_item" => {
+                self.invoke(arguments, |input| self.service.decide_editorial_item(input))
+                    .await
+            }
+            "read_episode" => {
+                self.invoke(arguments, |input| self.service.read_episode(input))
+                    .await
+            }
             "list_agents" => structured_result(&self.service.list_agents()),
             "init_grok_skills" => match parse_arguments::<InitGrokSkillsInput>(arguments) {
                 Ok(input) => {
@@ -2251,6 +2395,11 @@ fn tool_requires_session_serialization(name: &str) -> bool {
     !matches!(
         name,
         "list_projects"
+            | "get_model_usage"
+            | "get_series_status"
+            | "get_editorial_queue"
+            | "prepare_episode_release"
+            | "get_episode_release"
             | "list_agents"
             | "list_skills"
             | "get_skill"
@@ -2331,6 +2480,8 @@ fn tool_requires_project_context(name: &str) -> bool {
         name,
         "create_project"
             | "list_projects"
+            | "get_model_usage"
+            | "get_episode_release"
             | "set_active_project"
             | "import_manuscript"
             | "list_agents"
@@ -3973,23 +4124,6 @@ impl ToolRouter {
             .save_scene_draft(authoring_save_scene_input(&input))
             .await?;
 
-        // Provenance (evolution §3.9): a host draft through this hybrid seam is
-        // the operator's own prose, not an agent style signal. Stamp `"host"` so
-        // the three-way vocabulary (agent:*/host/operator — see the `draft_origin`
-        // record field) is uniform and an operator re-save over a host draft is
-        // never mistaken for an agent-draft contrast pair. An explicit hybrid
-        // draft carries a valid `draft` `generation_id`, which `save_scene_draft`
-        // already stamped as `agent:*` (receipt-verified provenance; the caller's
-        // full_text is what persisted); leave that stamp intact.
-        let host_authored = input
-            .generation_id
-            .as_deref()
-            .is_none_or(|id| id.trim().is_empty());
-        if host_authored {
-            repo.update_scene_draft_origin(&save_output.scene_id, "host")
-                .await?;
-        }
-
         let state_path = authoring_state_path(repo.data_dir(), &run_id);
         let artifact_store =
             ArtifactStore::new(authoring_artifacts_root(&state_path, &harness_state));
@@ -4186,6 +4320,7 @@ impl ToolRouter {
         };
         let output = client
             .check_consistency(&spindle_core::models::CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.to_string(),
                 scope,
                 checks: spindle_core::models::SCENE_VERIFY_CHECKS
@@ -4524,6 +4659,7 @@ impl ToolRouter {
         let consistency = self
             .service
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: state.project_id.clone(),
                 scope: ConsistencyScopeInput::chapter_range(
                     state.book_number,
@@ -4933,6 +5069,7 @@ impl ToolRouter {
         let deep = match self
             .service
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: harness_state.project_id.clone(),
                 scope: ConsistencyScopeInput::chapter_range(
                     harness_state.book_number,
@@ -5168,7 +5305,6 @@ impl ToolRouter {
         use spindle_harness::artifacts::{
             CheckpointReaderSimChapter, CheckpointReaderSimSection, READER_SIM_NOTES_PATH,
             ReaderSimConcernEntry, ReaderSimHistoryEntry, ReaderSimNotesArtifact,
-            cap_reader_sim_notes,
         };
 
         let artifacts_root = authoring_artifacts_root(state_path, harness_state);
@@ -5182,7 +5318,7 @@ impl ToolRouter {
         let mut report_chapters: Vec<CheckpointReaderSimChapter> = Vec::new();
 
         for chapter_number in start_chapter..=end_chapter {
-            let Some(chapter) = harness_state
+            let Some(_chapter) = harness_state
                 .chapters
                 .iter()
                 .find(|ch| ch.chapter_number == chapter_number)
@@ -5190,26 +5326,17 @@ impl ToolRouter {
                 continue;
             };
 
-            // Scenes in spine order (scene_order), with resolvable ids only.
-            let mut scenes: Vec<&spindle_harness::state::SceneState> =
-                chapter.scenes.iter().collect();
-            scenes.sort_by_key(|sc| sc.scene_order);
-            let scene_ids: Vec<String> =
-                scenes.iter().filter_map(|sc| sc.scene_id.clone()).collect();
-            let rating = reader_sim_chapter_rating(&scenes);
-
-            // Prior notes (rolling memory), char-capped to what WE include.
-            let prior_notes = cap_reader_sim_notes(&notes_artifact.notes);
-
-            let outcome = self
+            let read = self
                 .service
-                .reader_sim_chapter(spindle_core::models::ReaderSimChapterInput {
+                .read_episode(spindle_core::models::ReadEpisodeInput {
                     project_id: harness_state.project_id.clone(),
-                    scene_ids,
-                    rating,
-                    prior_notes: prior_notes.clone(),
+                    book_number: harness_state.book_number,
+                    chapter_number,
+                    branch_id: Some(harness_state.active_branch_id.clone()),
+                    force: false,
                 })
                 .await?;
+            let outcome = read.outcome;
 
             let concerns_count = outcome.concerns.len();
             let skipped_reason = if outcome.status == "skipped" {
@@ -5236,6 +5363,7 @@ impl ToolRouter {
             artifact_store.save_json(READER_SIM_NOTES_PATH, &notes_artifact)?;
 
             report_chapters.push(CheckpointReaderSimChapter {
+                memory: Some(read.memory),
                 chapter: chapter_number,
                 engagement: outcome.engagement.clone(),
                 concerns: outcome
@@ -5910,6 +6038,7 @@ fn authoring_save_scene_input(input: &AuthoringSaveSceneDraftInput) -> SaveScene
         chapter_id: input.chapter_id.clone(),
         scene_order: input.scene_order,
         full_text: input.full_text.clone(),
+        authorship: input.authorship,
         summary: input.summary.clone(),
         content_rating: input.content_rating.clone(),
         tone: input.tone.clone(),
@@ -6313,26 +6442,6 @@ fn read_reader_sim_engagement(
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// The batch content rating for a reader-sim chapter pass (evolution §3.6): the
-/// STRICTEST rating across the chapter's scenes, since the reader-sim prompt
-/// concatenates every scene's prose. Mirrors the service-side `max_scene_rating`
-/// ordering (explicit > mature > teen > general). `None` when the chapter has no
-/// scenes (nothing to rate — the pass skips on empty prose anyway).
-fn reader_sim_chapter_rating(scenes: &[&spindle_harness::state::SceneState]) -> Option<String> {
-    fn rank(rating: &str) -> u8 {
-        match rating.trim().to_ascii_lowercase().as_str() {
-            "explicit" => 3,
-            "mature" => 2,
-            "teen" => 1,
-            _ => 0,
-        }
-    }
-    scenes
-        .iter()
-        .max_by_key(|sc| rank(sc.content_rating.as_str()))
-        .map(|sc| sc.content_rating.as_str().to_ascii_lowercase())
 }
 
 /// Is `error` a rating-not-covered rejection from the dispatch chokepoint
@@ -7273,6 +7382,7 @@ mod tests {
             chapter_id: None,
             scene_order: 1,
             full_text: "prose".into(),
+            authorship: Default::default(),
             summary: "s".into(),
             content_rating: ContentRating::General,
             tone: None,
@@ -7782,7 +7892,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn skill_tools_are_listed_in_every_tool_profile() {
-        for profile in ["import", "write", "minimal"] {
+        for profile in ["import", "write", "minimal", "authoring"] {
             let temp = tempdir().expect("temp dir");
             let db = SqlitePool::open(&temp.path().join("router.db"))
                 .await
@@ -7807,6 +7917,42 @@ mod tests {
                     names.iter().any(|name| name == tool_name),
                     "profile {profile} is missing tool {tool_name}"
                 );
+            }
+            if profile == "authoring" {
+                for step in [
+                    "authoring_prepare_run",
+                    "authoring_start_run",
+                    "authoring_status",
+                    "authoring_execute_next",
+                    "authoring_save_scene_draft",
+                    "commit_scene_changes",
+                    "save_summary",
+                    "authoring_record_checkpoint_audit",
+                    "authoring_review_checkpoint",
+                    "authoring_resolve_block",
+                    "authoring_cancel_run",
+                    "decide_canon_deltas",
+                    "decide_plan_amendments",
+                    "compile_manuscript",
+                    "set_active_project",
+                    "save_scene_draft",
+                    "annotate_scene_beats",
+                    "get_editorial_queue",
+                    "decide_editorial_item",
+                    "read_episode",
+                    "prepare_episode_release",
+                    "release_episode",
+                    "get_episode_release",
+                    "create_plot_line",
+                    "create_conflict",
+                    "create_character_arc",
+                ] {
+                    assert!(
+                        names.iter().any(|name| name == step),
+                        "authoring profile cannot complete {step}"
+                    );
+                }
+                assert!(names.len() < router.all_tools().len() / 2);
             }
         }
     }

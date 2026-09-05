@@ -53,7 +53,9 @@ Follow this loop for every drafting pass on an active branch:
 3. Call `get_scene_context` for the target scene scope. Use
    `find_scenes_referencing` when you need to locate every scene that mentions
    a character, location, faction, or other entity before drafting or revising.
-4. Draft with `save_scene_draft`. Pass `location_id` for the scene's setting:
+4. Draft with `save_scene_draft`, declaring `authorship: "assistant"` for prose
+   you compose or revise. Reserve `"human"` for the author's own writing.
+   Pass `location_id` for the scene's setting:
    it is persisted on the scene so the NEXT scene's pre-draft `[IN-WORLD TIME]`
    constraint can tell the writer where (and when) the previous scene ended.
 5. Review `save_scene_draft` output and iterate until it is acceptable:
@@ -89,6 +91,11 @@ Follow this loop for every drafting pass on an active branch:
    (one model call per scene) on top of the deterministic checks — including
    the Tier 2 `temporal_coherence` pass that catches idiomatic time jumps the
    fixed lexicon misses. Use it for a thorough sweep, not every draft.
+   Inspect `audit_coverage` before calling a deep review complete. Each check
+   identifies eligible, evaluated, heuristic-only and not-evaluated records.
+   Follow `next_offset` with the same scope and unchanged manuscript to examine
+   another capped page; combine the evaluated IDs across pages. Unknown coverage
+   or an unavailable route is not a clean verdict.
    Example triage:
    - If prose says "Cole is 19" but canon has `cole.age = 20`, fix the prose
      or supersede canon through the canonical-fact workflow.

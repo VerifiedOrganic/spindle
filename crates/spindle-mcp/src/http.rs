@@ -31,17 +31,17 @@ impl HttpState {
     }
 }
 
-/// The read-only operator console page (evolution §3.7 console v1). ONE committed
+/// The operator console page. ONE committed
 /// HTML file — inline CSS + JS, no external requests, no build step — embedded at
 /// compile time and served under `/console`. Security posture: localhost-bound
-/// like the whole HTTP surface, no auth, read-only; the manuscript/delta panes
+/// like the whole HTTP surface, no auth; the manuscript/delta panes
 /// show prose the operator already owns (same trust context as their own
 /// terminal), while journal payloads it streams are prose-free by ADR 0002.
 const CONSOLE_HTML: &str = include_str!("console.html");
 
 /// Build a router that serves the MCP streamable HTTP transport at `/mcp`, the
 /// existing read-only operational routes (`/health`, `/model-routes`, `/events`),
-/// and the read-only operator console (`/console` + `/console/api/*`).
+/// and the operator console. Actions use the existing MCP transport.
 pub fn mcp_router(service: SpindleService, cancellation_token: CancellationToken) -> Router {
     let mcp_service =
         SpindleMcpServer::streamable_http_service(service.clone(), cancellation_token);
@@ -50,12 +50,8 @@ pub fn mcp_router(service: SpindleService, cancellation_token: CancellationToken
         .route("/health", get(health))
         .route("/model-routes", get(model_routes))
         .route("/events", get(event_stream))
-        // Read-only operator console v1 (evolution §3.7). The page is one static
-        // file; its data comes from the localhost-only `/console/api/*` reads
-        // below, which call the service layer thinly and never mutate. The MCP
-        // streamable-HTTP transport's initialize+session handshake is
-        // impractical to speak from zero-dependency browser JS, so this is the
-        // sanctioned GET-fallback documented in the console file's header.
+        // GET read models remain compatible. New reads and all actions use
+        // /mcp, including its existing project serialization and validation.
         .route("/console", get(console_page))
         .route("/console/api/projects", get(console_projects))
         .route("/console/api/status", get(console_status))
@@ -64,6 +60,58 @@ pub fn mcp_router(service: SpindleService, cancellation_token: CancellationToken
         .route("/console/api/plan_amendments", get(console_plan_amendments))
         .with_state(HttpState::new(service))
         .nest_service("/mcp", mcp_service)
+        .layer(axum::middleware::from_fn(check_browser_origin))
+}
+
+/// CLI MCP clients do not send Origin. Browser requests must originate at this
+/// exact loopback authority; this also rejects DNS-rebinding hostnames.
+fn browser_origin_allowed(headers: &HeaderMap) -> bool {
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|v| v == "cross-site")
+    {
+        return false;
+    }
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return true;
+    };
+    let Some(origin) = origin
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<axum::http::Uri>().ok())
+    else {
+        return false;
+    };
+    let Some(authority) = origin.authority() else {
+        return false;
+    };
+    let host = authority.host().trim_matches(['[', ']']);
+    let loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    loopback
+        && matches!(origin.scheme_str(), Some("http" | "https"))
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && headers
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            == Some(authority.as_str())
+}
+
+async fn check_browser_origin(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !browser_origin_allowed(request.headers()) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Browser requests must come from this local Spindle address",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 pub async fn serve(service: SpindleService, addr: SocketAddr) -> anyhow::Result<()> {
@@ -98,10 +146,7 @@ async fn model_routes(State(state): State<HttpState>) -> impl IntoResponse {
 
 // ── Read-only operator console (evolution §3.7 console v1) ──────────────────
 //
-// These endpoints are the sanctioned browser fallback: the console page cannot
-// practically speak the rmcp streamable-HTTP MCP transport (initialize +
-// `Mcp-Session-Id` negotiation + SSE tool responses) from zero-dependency JS, so
-// it reads through these thin, read-only GETs instead. Each calls the service
+// Existing console reads remain available. Each calls the service
 // layer directly (never the repository), returns exactly the underlying tool's
 // serialization (no extra leakage surface — those tools are already gated), and
 // performs NO mutation. Localhost-bound like the rest of the HTTP surface.
@@ -425,6 +470,36 @@ fn run_event_frame(row: &spindle_adapters::sqlite::records::StoredRunEvent) -> E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_origin_requires_matching_loopback_authority() {
+        let mut headers = HeaderMap::new();
+        assert!(
+            browser_origin_allowed(&headers),
+            "native MCP clients omit Origin"
+        );
+        headers.insert("host", "127.0.0.1:8937".parse().unwrap());
+        for origin in [
+            "null",
+            "https://evil.example",
+            "http://127.0.0.1:9999",
+            "http://127.0.0.1:8937/path",
+        ] {
+            headers.insert("origin", origin.parse().unwrap());
+            assert!(!browser_origin_allowed(&headers), "{origin}");
+        }
+        headers.insert("origin", "http://127.0.0.1:8937".parse().unwrap());
+        assert!(browser_origin_allowed(&headers));
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(!browser_origin_allowed(&headers));
+        headers.remove("sec-fetch-site");
+        headers.insert("host", "evil.example:8937".parse().unwrap());
+        headers.insert("origin", "http://evil.example:8937".parse().unwrap());
+        assert!(
+            !browser_origin_allowed(&headers),
+            "DNS rebinding cannot claim a local origin"
+        );
+    }
     use axum::body::to_bytes;
     use axum::http::Method;
     use spindle_adapters::sqlite::Repository;

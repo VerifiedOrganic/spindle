@@ -331,12 +331,15 @@ The journal streams over the existing HTTP surface at
 `data` = payload JSON), replayed from `Last-Event-ID`+1 then followed live;
 `/events` with no topic is the unchanged model-routes snapshot.
 
-The **read-only operator console v1** (evolution §3.7) is served at `/console`
-when HTTP mode is on (`SPINDLE_HTTP_ADDR`): a single embedded HTML page (no build
-step, no external requests) that reads run status, the compiled manuscript, and
-the staged canon-delta / plan-amendment ratify queues through localhost-only
-`GET /console/api/*` service reads, and follows a run's journal live over the SSE
-topic above. It never mutates (I5); ratification stays in the `decide_*` tools.
+The **operator console** is served at `/console` when HTTP mode is on
+(`SPINDLE_HTTP_ADDR`): a single embedded HTML page with no build step or external
+assets. It reads run status, the compiled manuscript, and staged canon/plan
+queues through localhost-only `GET /console/api/*` service reads, and follows a
+run's journal live over the SSE topic above. Series, reader memory, editorial
+decisions, and local release actions use an MCP session at `/mcp`; ratification
+still goes through the guarded `decide_*` tools. The GET endpoints never mutate.
+Cross-site browser requests are rejected. When an Origin header is present, it
+must match the loopback authority; native MCP clients without one remain supported.
 
 ## Craft evaluation layer
 

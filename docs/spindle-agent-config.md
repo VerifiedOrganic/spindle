@@ -30,6 +30,12 @@ The current implementation lets you:
 When no config file exists, Spindle keeps the existing built-in local route
 defaults.
 
+For `provider = "cli"`, `endpoint` is the executable name or path for that
+specific agent. Completion passes the route and prompt as two arguments.
+Configured endpoints take precedence over `SPINDLE_MODEL_CLI_COMMAND`; that
+environment variable remains a fallback for legacy CLI routes without an
+endpoint. Different rated agents therefore dispatch different executables.
+
 ## Config file locations
 
 Spindle resolves agent config in this order:

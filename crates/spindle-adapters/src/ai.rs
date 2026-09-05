@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
+mod usage;
+
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use spindle_core::models::{
@@ -217,7 +219,7 @@ pub struct ModelRequest {
     pub context: Option<RequestContext>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelResponse {
     pub adapter_kind: String,
     pub model_name: String,
@@ -225,6 +227,12 @@ pub struct ModelResponse {
     /// True when the model hit its token limit and the output is incomplete.
     #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
+    pub usage: Option<spindle_core::models::ModelUsage>,
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default)]
+    pub call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +366,7 @@ pub struct ModelRouter {
     runtime: Arc<RwLock<RuntimeConfig>>,
     http_client: reqwest::Client,
     health_generation: Arc<AtomicU64>,
+    usage_pool: Option<crate::sqlite::SqlitePool>,
     /// Test-only dispatch recorder (evolution §4 rule 2 recording seam). When
     /// installed via [`ModelRouter::install_dispatch_recorder`], every attempted
     /// dispatch past the clearance gate — and every clearance rejection — is
@@ -427,6 +436,7 @@ impl ModelRouter {
             runtime: Arc::new(RwLock::new(runtime)),
             http_client,
             health_generation: Arc::new(AtomicU64::new(0)),
+            usage_pool: None,
             #[cfg(any(test, feature = "test-support"))]
             dispatch_log: Arc::new(RwLock::new(None)),
         };
@@ -684,6 +694,14 @@ impl ModelRouter {
     }
 
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
+        let start = std::time::Instant::now();
+        let mut result = self.complete_inner(request).await;
+        self.record_usage(&request.route, request.context.as_ref(), start, &mut result)
+            .await;
+        result
+    }
+
+    async fn complete_inner(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
         // Rating-gated dispatch chokepoint (evolution §4 rule 2): every prose-
         // bearing completion resolves through `resolve_cleared_route`, so an
@@ -728,9 +746,10 @@ impl ModelRouter {
                     model_name: route.model_name.clone(),
                     output,
                     truncated: false,
+                    ..Default::default()
                 })
             }
-            "cli" => self.run_cli(route, &request.prompt).await,
+            "cli" => self.run_cli(&runtime, route, &request.prompt).await,
             "http" => {
                 self.run_http(&runtime, route, request.rating.as_deref(), &request.prompt)
                     .await
@@ -797,6 +816,23 @@ impl ModelRouter {
         original_prompt: &str,
         prior_output: &str,
     ) -> anyhow::Result<ModelResponse> {
+        let start = std::time::Instant::now();
+        let mut result = self
+            .complete_continuation_inner(route_name, rating, context, original_prompt, prior_output)
+            .await;
+        self.record_usage(route_name, context, start, &mut result)
+            .await;
+        result
+    }
+
+    async fn complete_continuation_inner(
+        &self,
+        route_name: &str,
+        rating: Option<&str>,
+        context: Option<&RequestContext>,
+        original_prompt: &str,
+        prior_output: &str,
+    ) -> anyhow::Result<ModelResponse> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
         // Same rating-gated chokepoint as `complete` — a continuation carries
         // the same prose and rating as the original request (I3), so an
@@ -842,9 +878,22 @@ impl ModelRouter {
         }
     }
 
-    async fn run_cli(&self, route: &ModelRoute, prompt: &str) -> anyhow::Result<ModelResponse> {
-        let command = std::env::var("SPINDLE_MODEL_CLI_COMMAND")
-            .map_err(|_| anyhow::anyhow!("SPINDLE_MODEL_CLI_COMMAND is not configured"))?;
+    async fn run_cli(
+        &self,
+        runtime: &RuntimeConfig,
+        route: &ModelRoute,
+        prompt: &str,
+    ) -> anyhow::Result<ModelResponse> {
+        // Dispatch the endpoint of the agent that passed clearance, not a
+        // process-global command that could name a different agent.
+        let command = runtime
+            .agents
+            .get(&route.model_name)
+            .map(|agent| agent.config.endpoint.trim())
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("SPINDLE_MODEL_CLI_COMMAND").ok())
+            .context("CLI agent needs an endpoint or SPINDLE_MODEL_CLI_COMMAND")?;
         let output = tokio::process::Command::new(&command)
             .arg(&route.route_name)
             .arg(prompt)
@@ -858,6 +907,7 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output: String::from_utf8(output.stdout)?.trim().to_string(),
             truncated: false,
+            ..Default::default()
         })
     }
 
@@ -947,6 +997,7 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output: text,
             truncated,
+            ..Default::default()
         })
     }
 
@@ -1013,6 +1064,8 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output,
             truncated,
+            usage: usage::parse_usage(&body),
+            ..Default::default()
         })
     }
 
@@ -1085,6 +1138,8 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output,
             truncated,
+            usage: usage::parse_usage(&resp_body),
+            ..Default::default()
         })
     }
 }
@@ -3600,6 +3655,57 @@ enabled = false
         assert_eq!(server.join().expect("server join"), 2);
     }
 
+    #[tokio::test]
+    async fn model_usage_records_provider_tokens_unknowns_and_continuations_without_prose() {
+        let (endpoint, server) = spawn_http_test_server(vec![
+            (200, serde_json::json!({"choices": [{"message": {"content": "PRIVATE PROSE"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 30, "prompt_tokens_details": {"cached_tokens": 80}}}).to_string()),
+            (200, serde_json::json!({"choices": [{"message": {"content": "continuation"}, "finish_reason": "stop"}]}).to_string()),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::sqlite::SqlitePool::open(&tmp.path().join("usage.db"))
+            .await
+            .unwrap();
+        let repo = crate::sqlite::Repository::with_model_router(
+            pool,
+            tmp.path().into(),
+            http_test_router(&endpoint),
+        );
+        let request = ModelRequest {
+            route: "review".into(),
+            prompt: "PRIVATE PROMPT".into(),
+            ..Default::default()
+        };
+        let response = repo.model_router().complete(&request).await.unwrap();
+        assert!(response.elapsed_ms.is_some() && response.call_id.is_some());
+        assert_eq!(response.usage.unwrap().cached_input_tokens, Some(80));
+        repo.model_router()
+            .complete_continuation("review", None, None, &request.prompt, &response.output)
+            .await
+            .unwrap();
+        assert_eq!(server.join().unwrap(), 2);
+        let reopened = crate::sqlite::SqlitePool::open(&tmp.path().join("usage.db"))
+            .await
+            .unwrap();
+        let svc =
+            crate::sqlite::SqliteSpindleService::new(crate::sqlite::Repository::with_model_router(
+                reopened,
+                tmp.path().into(),
+                ModelRouter::local_only(),
+            ));
+        let report = svc.get_model_usage(Default::default()).await.unwrap();
+        assert_eq!(
+            (report.total_calls, report.calls_with_unknown_tokens),
+            (2, 1)
+        );
+        assert_eq!(
+            (report.known_input_tokens, report.known_output_tokens),
+            (120, 30)
+        );
+        assert_eq!(report.unattributed_calls, 2);
+        assert!(!serde_json::to_string(&report).unwrap().contains("PRIVATE"));
+    }
+
     fn http_test_router(endpoint: &str) -> ModelRouter {
         let route = ModelRoute {
             route_name: "review".to_string(),
@@ -3670,6 +3776,7 @@ enabled = false
             runtime: Arc::new(RwLock::new(runtime)),
             http_client: reqwest::Client::new(),
             health_generation: Arc::new(AtomicU64::new(0)),
+            usage_pool: None,
             dispatch_log: Arc::new(RwLock::new(None)),
         }
     }
@@ -3982,6 +4089,67 @@ enabled = false
         assert_eq!(adapter_kind_for_agent(&agent), "http");
         agent.endpoint = "/usr/local/bin/local-model".to_string();
         assert_eq!(adapter_kind_for_agent(&agent), "local");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_endpoints_stay_scoped_to_the_cleared_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["general", "explicit"] {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '{name} endpoint'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let config = tmp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                r#"
+[health_check]
+enabled = false
+[[agents]]
+id = "general-agent"
+name = "General"
+provider = "cli"
+endpoint = "{}/general"
+model = "general"
+ratings = ["general"]
+[[agents]]
+id = "explicit-agent"
+name = "Explicit"
+provider = "cli"
+endpoint = "{}/explicit"
+model = "explicit"
+ratings = ["explicit"]
+[[routing]]
+route = "draft"
+agent = "general-agent"
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+rating = "explicit"
+"#,
+                tmp.path().display(),
+                tmp.path().display()
+            ),
+        )
+        .unwrap();
+        let router = ModelRouter::local_only();
+        router.configure(config.to_str()).unwrap();
+        let general = ModelRequest {
+            route: "draft".into(),
+            prompt: "general fixture".into(),
+            rating: Some("general".into()),
+            context: None,
+        };
+        let explicit = ModelRequest {
+            rating: Some("explicit".into()),
+            ..general.clone()
+        };
+        let (a, b) = tokio::join!(router.complete(&general), router.complete(&explicit));
+        assert_eq!(a.unwrap().output, "general endpoint");
+        assert_eq!(b.unwrap().output, "explicit endpoint");
     }
 
     #[tokio::test]

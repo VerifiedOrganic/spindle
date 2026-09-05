@@ -1,41 +1,9 @@
 <!doctype html>
 <!--
-  Spindle Operator Console — v1 (read-only).
-
-  OWNER-FLAGGED V1 DECISION: this console is ONE committed HTML file (inline CSS +
-  JS, zero external requests — no CDNs, no fonts, nothing leaves localhost),
-  embedded via include_str! and served by the existing axum router under /console.
-  No node/npm, no build step, no new crates. SvelteKit is reconsidered at v2.
-
-  SCOPE (evolution-design §3.7 console v1), four panes:
-    1. Runs       — project picker -> authoring_status grid + live SSE timeline
-    2. Manuscript — book picker -> compile_manuscript reading pane
-    3. Canon queue    — list_canon_deltas status=staged (read-only)
-    4. Plan queue     — list_plan_amendments status=staged (read-only)
-
-  DEFERRED to v2 (documented deviation):
-    - The thread board (promises x chapters, arcs, plot lines, motif density) is
-      NOT shipped: no list surface for promises/arcs exists yet to read it from.
-    - All actions (ratify/reject deltas & amendments, resolve blocks) are v2 —
-      this page performs NO mutations. Ratification is via decide_canon_deltas /
-      decide_plan_amendments from the operator's terminal.
-    - v2 roadmap: actions + thread board + the SvelteKit packaging decision.
-
-  DATA PATH: the browser cannot practically speak the rmcp streamable-HTTP MCP
-  transport (initialize handshake + Mcp-Session-Id negotiation + SSE tool
-  responses) with zero dependencies and minimal JS, so this page reads through a
-  small set of localhost-only GET /console/api/* endpoints that call the SERVICE
-  layer thinly and read-only (the documented sanctioned fallback). The live
-  timeline uses the native EventSource against the existing /events?topic=run:<id>
-  SSE journal.
-
-  SECURITY POSTURE: localhost-bound like the whole HTTP surface, no auth,
-  read-only. Journal payloads are prose-free by ADR 0002; the manuscript / delta /
-  amendment panes DO show prose the operator already owns — same trust context as
-  the operator's own terminal.
-
-  DEFENSIVE RENDERING: every fetch failure renders an explicit error state; the
-  page never goes blank on a failed request, an empty project, or a dropped SSE.
+  Spindle Operator Console: one embedded HTML file, native CSS/JS, no external
+  requests or build step. GET read models remain compatible. All actions and
+  new reads use /mcp with its normal session, tool profiles, project locks and
+  service validation. Release snapshots stay local; no platform posting.
 -->
 <html lang="en">
 <head>
@@ -67,7 +35,7 @@
     background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
   }
-  nav button[aria-selected="true"] { background: var(--accent); color: #0c0f14; border-color: var(--accent); }
+  nav button[aria-pressed="true"] { background: var(--accent); color: #0c0f14; border-color: var(--accent); }
   main { padding: 16px; max-width: 1100px; margin: 0 auto; }
   .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
   label { color: var(--dim); font-size: 12px; }
@@ -120,25 +88,107 @@
   .ev .pl { color: var(--fg); word-break: break-word; }
   .ev.unknown .kind { color: var(--warn); }
   .sse-state { font: 11px var(--mono); color: var(--dim); margin-left: 8px; }
+
+  :root { color-scheme: dark; }
+  ::selection { background: var(--accent); color: var(--bg); }
+  h2 { font-size: 22px; line-height: 1.25; margin: 22px 0 8px; }
+  h3 { font-size: 16px; margin: 0 0 8px; }
+  p { max-width: 72ch; }
+  button, select, input, textarea { font: inherit; }
+  button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; cursor: pointer; min-height: 36px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:active:not(:disabled) { background: var(--bg); }
+  button:disabled { opacity: .55; cursor: default; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  textarea { display: block; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; width: 100%; min-height: 80px; resize: vertical; caret-color: var(--accent); }
+  textarea::placeholder { color: var(--dim); }
+  button.primary { background: var(--accent); color: #0c0f14; border-color: var(--accent); }
+  .work-item { padding: 20px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .table-scroll { overflow-x: auto; }
+  .episode-title { min-width: 170px; }
+  .table-scroll td { padding-block: 12px; }
+  .series-summary { padding: 14px 0; border-block: 1px solid var(--line); }
+  .series-summary strong { color: var(--fg); }
+  .episode-detail { margin-top: 24px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .md { max-width: 72ch; font: 17px/1.7 Georgia, serif; margin: 20px auto; overflow-wrap: anywhere; }
+  .preview-prose { max-height: 60vh; overflow-y: auto; padding: 0 16px; border: 1px solid var(--line); }
+  details { margin-block: 14px; }
+  summary { cursor: pointer; color: var(--fg); min-height: 32px; }
+  .evidence { border-left-width: 1px; }
+  .err, .note, #feedback { overflow-wrap: anywhere; }
+  #feedback:empty { display: none; }
+  #feedback { max-width: none; padding: 12px; border: 1px solid var(--line); background: var(--panel); }
+  header { flex-wrap: wrap; }
+  nav { flex-wrap: wrap; }
+  select { max-width: 100%; }
+  .loading { min-height: 90px; color: var(--dim); padding-block: 16px; }
+  @media (max-width: 760px) {
+    header { gap: 10px; } nav { margin-left: 0; width: 100%; gap: 6px; }
+    nav button { flex: 1 0 auto; min-height: 42px; }
+    main { padding: 14px; }
+    .row { gap: 8px; } .row select { flex: 1 1 160px; min-width: 0; }
+    .row select[id$="-project"] { flex-basis: calc(100% - 65px); }
+    button { min-height: 42px; } .ev { flex-wrap: wrap; }
+    .episode-table thead { display: none; }
+    .episode-table tr { display: block; padding: 14px 0; border-bottom: 1px solid var(--line); }
+    .episode-table td { display: block; padding: 4px 0; border: 0; }
+    .preview-prose { padding-inline: 10px; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Spindle Operator Console</h1>
-  <span class="badge">v1 · read-only · localhost</span>
-  <nav>
-    <button data-pane="runs" aria-selected="true">Runs</button>
-    <button data-pane="manuscript" aria-selected="false">Manuscript</button>
-    <button data-pane="canon" aria-selected="false">Canon queue</button>
-    <button data-pane="plan" aria-selected="false">Plan queue</button>
+  <span class="badge">local workspace</span>
+  <nav aria-label="Workspace">
+    <button data-pane="series" aria-pressed="true">Series</button>
+    <button data-pane="editorial" aria-pressed="false">Editorial</button>
+    <button data-pane="threads" aria-pressed="false">Threads</button>
+    <button data-pane="runs" aria-pressed="false">Runs</button>
+    <button data-pane="manuscript" aria-pressed="false">Manuscript</button>
+    <button data-pane="canon" aria-pressed="false">Canon queue</button>
+    <button data-pane="plan" aria-pressed="false">Plan queue</button>
   </nav>
 </header>
 <main>
+  <p id="feedback" role="status" aria-live="polite"></p>
+  <section id="pane-series" class="pane active" aria-label="Series">
+    <div class="row">
+      <label for="series-project">Project</label><select id="series-project"></select>
+      <button class="refresh" id="series-refresh">Refresh series</button>
+    </div>
+    <h2>Episodes</h2>
+    <p class="muted">One chapter, one episode. Review the exact prose before recording a local release.</p>
+    <div id="series-out" aria-live="polite"></div>
+    <div id="episode-detail"></div>
+    <details id="usage"><summary>Model usage</summary><div id="usage-out"></div></details>
+  </section>
+  <section id="pane-editorial" class="pane" aria-label="Editorial">
+    <div class="row">
+      <label for="editorial-project">Project</label><select id="editorial-project"></select>
+      <label for="editorial-filter">Show</label><select id="editorial-filter">
+        <option value="">Unresolved work</option><option value="open">New concerns</option>
+        <option value="accepted">Accepted revisions</option><option value="deferred">Deferred</option>
+        <option value="resolved">Resolved</option><option value="dismissed">Dismissed</option>
+      </select><button class="refresh" id="editorial-refresh">Refresh queue</button>
+    </div>
+    <h2>Editorial work</h2>
+    <p class="muted">Reader concerns are suggestions. Accepted revisions guide future drafting until you resolve them.</p>
+    <div id="editorial-out" aria-live="polite"></div>
+  </section>
+  <section id="pane-threads" class="pane" aria-label="Threads">
+    <div class="row"><label for="threads-project">Project</label><select id="threads-project"></select>
+      <button class="refresh" id="threads-refresh">Refresh threads</button></div>
+    <h2>Threads across the series</h2>
+    <p class="muted">Keep long promises visible while the next episode takes shape. Planned payoffs and recorded events are shown separately.</p>
+    <div id="threads-out" aria-live="polite"></div>
+  </section>
 
   <!-- ── Runs ─────────────────────────────────────────────────────────── -->
-  <section id="pane-runs" class="pane active">
+  <section id="pane-runs" class="pane">
     <div class="row">
-      <label>Project</label>
+      <label for="runs-project">Project</label>
       <select id="runs-project"></select>
       <button class="refresh" id="runs-refresh">Refresh</button>
     </div>
@@ -155,9 +205,9 @@
   <!-- ── Manuscript ───────────────────────────────────────────────────── -->
   <section id="pane-manuscript" class="pane">
     <div class="row">
-      <label>Project</label>
+      <label for="ms-project">Project</label>
       <select id="ms-project"></select>
-      <label>Book #</label>
+      <label for="ms-book">Book</label>
       <input type="number" id="ms-book" value="1" min="1" style="min-width:80px">
       <button class="refresh" id="ms-refresh">Compile</button>
     </div>
@@ -167,22 +217,22 @@
   <!-- ── Canon queue ──────────────────────────────────────────────────── -->
   <section id="pane-canon" class="pane">
     <div class="row">
-      <label>Project</label>
+      <label for="canon-project">Project</label>
       <select id="canon-project"></select>
       <button class="refresh" id="canon-refresh">Refresh</button>
     </div>
-    <div class="note">Read-only. Ratify via <code>decide_canon_deltas</code> (console actions arrive in v2).</div>
+    <div class="note">Review the scene evidence and proposed change before adding it to canon.</div>
     <div class="card" id="canon-out"><div class="empty">Pick a project.</div></div>
   </section>
 
   <!-- ── Plan queue ───────────────────────────────────────────────────── -->
   <section id="pane-plan" class="pane">
     <div class="row">
-      <label>Project</label>
+      <label for="plan-project">Project</label>
       <select id="plan-project"></select>
       <button class="refresh" id="plan-refresh">Refresh</button>
     </div>
-    <div class="note">Read-only. Ratify via <code>decide_plan_amendments</code> (console actions arrive in v2).</div>
+    <div class="note">Review the rationale and proposed plan change. Drafted chapters keep their existing protection.</div>
     <div class="card" id="plan-out"><div class="empty">Pick a project.</div></div>
   </section>
 
@@ -208,8 +258,88 @@ async function getJSON(path) {
   return res.json();
 }
 
+// A single native MCP session shared by the console. Never automatically replay
+// a failed write: the user reloads its source before trying again.
+let mcpReady = null, mcpSession = null, mcpVersion = "2025-03-26", rpcId = 0;
+async function rpc(method, params, initialize = false) {
+  const id = ++rpcId;
+  const headers = {"Content-Type":"application/json", "Accept":"application/json, text/event-stream"};
+  if (mcpSession) headers["Mcp-Session-Id"] = mcpSession;
+  if (!initialize) headers["MCP-Protocol-Version"] = mcpVersion;
+  const res = await fetch("/mcp", {method:"POST", headers, body:JSON.stringify({jsonrpc:"2.0", id, method, params}), signal:AbortSignal.timeout(300000)});
+  if (!res.ok) {
+    if (res.status === 404) { mcpReady = null; mcpSession = null; }
+    throw new Error(`Request failed (${res.status}). Refresh the view before retrying.`);
+  }
+  if (initialize) mcpSession = res.headers.get("Mcp-Session-Id");
+  let message;
+  if ((res.headers.get("content-type") || "").includes("text/event-stream")) {
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (!message) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream:!done});
+        let match;
+        while ((match = /\r?\n\r?\n/.exec(buffer))) {
+          const frame = buffer.slice(0, match.index); buffer = buffer.slice(match.index + match[0].length);
+          const data = frame.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n");
+          if (!data) continue;
+          const parsed = JSON.parse(data);
+          if (parsed.id === id) { message = parsed; break; }
+        }
+        if (done && !message) throw new Error("Connection ended before the result. Refresh before retrying.");
+      }
+    } finally { await reader.cancel(); }
+  } else { message = await res.json(); }
+  if (message.error) throw new Error(message.error.message || "Spindle rejected this request.");
+  return message.result;
+}
+async function readyMcp() {
+  if (!mcpReady) mcpReady = (async () => {
+    const result = await rpc("initialize", {protocolVersion:mcpVersion, capabilities:{}, clientInfo:{name:"spindle-console", version:"2"}}, true);
+    mcpVersion = result.protocolVersion;
+    const headers = {"Content-Type":"application/json", "Accept":"application/json, text/event-stream", "MCP-Protocol-Version":mcpVersion};
+    if (mcpSession) headers["Mcp-Session-Id"] = mcpSession;
+    const response = await fetch("/mcp", {method:"POST", headers, body:JSON.stringify({jsonrpc:"2.0", method:"notifications/initialized"})});
+    if (!response.ok) throw new Error("Could not initialize Spindle. Refresh the page.");
+  })().catch(error => { mcpReady = null; mcpSession = null; throw error; });
+  return mcpReady;
+}
+async function callTool(name, args) {
+  await readyMcp();
+  const result = await rpc("tools/call", {name, arguments:args});
+  if (result.isError) throw new Error((result.content || []).map(c => c.text || "").join("\n"));
+  if (result.structuredContent) return result.structuredContent;
+  return JSON.parse((result.content || []).find(c => c.type === "text")?.text || "{}");
+}
+async function readResource(uri) {
+  await readyMcp();
+  const result = await rpc("resources/read", {uri});
+  return JSON.parse(result.contents.find(c => c.text != null).text);
+}
+function feedback(message, error = false) {
+  $("feedback").textContent = message; $("feedback").className = error ? "err" : "";
+}
+async function perform(button, work) {
+  if (button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true; button.textContent = "Working…";
+  try { await work(); }
+  catch (error) { feedback(error.message || String(error), true); }
+  finally { button.disabled = false; button.textContent = label; }
+}
+const projectPickers = ["series", "editorial", "threads", "runs", "ms", "canon", "plan"];
+let activePane = "series", seriesOffset = 0, editorialOffset = 0;
+const renderEpoch = {};
+function loading(id, text) {
+  const epoch = (renderEpoch[id] || 0) + 1; renderEpoch[id] = epoch;
+  $(id).innerHTML = `<div class="loading" role="status">${esc(text)}</div>`;
+  return () => renderEpoch[id] === epoch;
+}
+
 function errorHTML(where, err) {
-  return `<div class="err">Failed to load ${esc(where)}: ${esc(err && err.message || err)}</div>`;
+  return `<div class="err" role="alert">Failed to load ${esc(where)}: ${esc(err && err.message || err)}</div>`;
 }
 
 function pill(text) {
@@ -232,7 +362,14 @@ async function loadProjects(selectId, onChange) {
     sel.innerHTML = projects
       .map((p) => `<option value="${esc(p.project_id)}">${esc(p.name)} — ${esc(p.genre)}</option>`)
       .join("");
-    sel.onchange = onChange;
+    sel.onchange = () => {
+      projectPickers.forEach(prefix => { $(prefix + "-project").value = sel.value; });
+      seriesOffset = 0; editorialOffset = 0;
+      $("episode-detail").replaceChildren(); $("usage-out").replaceChildren();
+      feedback("");
+      Object.keys(renderEpoch).forEach(id => renderEpoch[id]++);
+      onChange();
+    };
     return projects;
   } catch (err) {
     sel.innerHTML = `<option value="">(error)</option>`;
@@ -410,7 +547,7 @@ async function renderCanon() {
   const deltas = (data.deltas || []);
   if (!deltas.length) { box.innerHTML = `<div class="empty">No staged canon deltas.</div>`; return; }
   box.innerHTML = deltas.map((d) => `
-    <div class="card" style="margin-bottom:10px">
+    <article class="work-item">
       <div class="row" style="margin-bottom:4px">
         <strong>${esc(d.delta_class)}</strong>
         ${pill(d.confidence)}
@@ -418,8 +555,10 @@ async function renderCanon() {
         ${d.target_id ? `<span class="kv">→ ${esc(d.target_id)}</span>` : `<span class="kv">(new)</span>`}
       </div>
       <div class="evidence">${esc(d.evidence)}</div>
-      <pre class="payload">${esc(JSON.stringify(d.payload, null, 2))}</pre>
-    </div>`).join("");
+      <details><summary>Proposed canon change</summary><pre class="payload">${esc(JSON.stringify(d.payload, null, 2))}</pre></details>
+      <div class="actions"><button data-queue="canon" data-project="${esc(pid)}" data-id="${esc(d.id)}" data-decision="apply">Add to canon</button>
+      <button data-queue="canon" data-project="${esc(pid)}" data-id="${esc(d.id)}" data-decision="reject">Reject</button></div>
+    </article>`).join("");
 }
 
 // ── Plan queue pane ──────────────────────────────────────────────────────
@@ -435,7 +574,7 @@ async function renderPlan() {
   const amendments = (data.amendments || []);
   if (!amendments.length) { box.innerHTML = `<div class="empty">No staged plan amendments.</div>`; return; }
   box.innerHTML = amendments.map((a) => `
-    <div class="card" style="margin-bottom:10px">
+    <article class="work-item">
       <div class="row" style="margin-bottom:4px">
         <strong>${esc(a.amendment_class)}</strong>
         ${pill(a.confidence)}
@@ -443,16 +582,201 @@ async function renderPlan() {
         <span class="kv">from ch ${esc(a.source_chapter)} (book ${esc(a.book_number)})</span>
       </div>
       <div class="evidence">${esc(a.rationale)}</div>
-      <pre class="payload">${esc(JSON.stringify(a.payload, null, 2))}</pre>
-    </div>`).join("");
+      <details><summary>Proposed plan change</summary><pre class="payload">${esc(JSON.stringify(a.payload, null, 2))}</pre></details>
+      <div class="actions"><button data-queue="plan" data-project="${esc(pid)}" data-id="${esc(a.id)}" data-decision="apply">Apply to plan</button>
+      <button data-queue="plan" data-project="${esc(pid)}" data-id="${esc(a.id)}" data-decision="reject">Reject</button></div>
+    </article>`).join("");
 }
 
+const number = n => Number(n || 0).toLocaleString();
+const placement = p => p ? `Book ${p.book_number}, chapter ${p.chapter_number}` : "No contiguous release yet";
+const episodeArgs = (pid, episode) => ({project_id:pid, book_number:episode.book_number, chapter_number:episode.chapter_number});
+function pager(box, offset, next, render) {
+  const row = document.createElement("div"); row.className = "actions";
+  for (const [label, target] of [["Previous", Math.max(0, offset - 30)], ["Next", next]]) {
+    const b = document.createElement("button"); b.textContent = label;
+    b.disabled = label === "Previous" ? offset === 0 : next == null;
+    b.onclick = () => render(target); row.append(b);
+  }
+  box.append(row);
+}
+async function renderSeries(offset = seriesOffset) {
+  seriesOffset = offset;
+  const pid = $("series-project").value, box = $("series-out");
+  if (!pid) { box.innerHTML = '<p class="empty">Create a project through your writing agent, then refresh the page.</p>'; return; }
+  const current = loading("series-out", "Loading episodes…");
+  try {
+    const data = await callTool("get_series_status", {project_id:pid, offset, limit:30});
+    if (!current()) return;
+    box.innerHTML = `<p class="series-summary"><strong>${esc(placement(data.published_through))}</strong><br>
+      Released: ${number(data.released_episodes)} · Ready to release: ${number(data.ready_backlog)} · Drafted but unreleased: ${number(data.draft_backlog)}</p>`;
+    if (!data.episodes.length) box.innerHTML += '<p class="empty">Plan the first chapter to begin your episode backlog.</p>';
+    else box.innerHTML += `<div class="table-scroll"><table class="episode-table"><thead><tr><th>Episode</th><th>Manuscript</th><th>Release</th><th>Work on this episode</th></tr></thead><tbody>${data.episodes.map((e, i) => `<tr>
+      <td class="episode-title"><strong>${esc(e.title)}</strong><br><span class="muted">Book ${e.book_number}, chapter ${e.chapter_number}</span></td>
+      <td>${number(e.word_count)} words<br>${e.ready ? "Ready" : esc(e.blocking_issues.join("; "))}</td>
+      <td>${e.release_revision ? `Revision ${e.release_revision}${e.changed_since_release ? '<br><span class="note-text">Draft changed</span>' : ''}` : "Unreleased"}</td>
+      <td><div class="actions"><button data-preview="${i}">${e.latest_release_id ? "Preview correction" : "Preview release"}</button>
+      <button data-read="${i}">Run reader review</button>${e.latest_release_id ? `<button data-release="${i}">Read released version</button>` : ''}</div></td></tr>`).join("")}</tbody></table></div>`;
+    box.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => perform(b, () => previewEpisode(pid, data.episodes[Number(b.dataset.preview)])));
+    box.querySelectorAll("[data-release]").forEach(b => b.onclick = () => perform(b, () => showRelease(data.episodes[Number(b.dataset.release)].latest_release_id, pid)));
+    box.querySelectorAll("[data-read]").forEach(b => b.onclick = () => perform(b, () => reviewEpisode(pid, data.episodes[Number(b.dataset.read)])));
+    pager(box, offset, data.next_offset, renderSeries);
+    if ($("usage").open) renderUsage();
+  } catch (err) { if (current()) box.innerHTML = errorHTML("series; refresh to retry", err); }
+}
+async function loadEpisodeDetail(pid, message, tool, args) {
+  const box = $("episode-detail"); box.className = "episode-detail";
+  const current = loading("episode-detail", message);
+  const active = () => current() && $("series-project").value === pid;
+  try {
+    const result = await callTool(tool, args);
+    return active() ? result : null;
+  } catch (error) {
+    if (active()) {
+      box.innerHTML = errorHTML("episode details", error) + '<p>Use an episode action above to retry. If the connection expired, refresh the page first.</p>';
+      box.scrollIntoView({block:"start"});
+    }
+    return null;
+  }
+}
+async function previewEpisode(pid, episode) {
+  const args = episodeArgs(pid, episode);
+  const preview = await loadEpisodeDetail(pid, "Preparing the release preview…", "prepare_episode_release", args);
+  if (!preview) return;
+  const box = $("episode-detail"); box.className = "episode-detail";
+  box.innerHTML = `<h2>${esc(preview.snapshot.title)} · release preview</h2><p>${number(preview.snapshot.word_count)} words. This records an exact copy in your local workspace.</p>
+    ${preview.blocking_issues.length ? `<p class="note">${esc(preview.blocking_issues.join("; "))}</p>` : ''}
+    <div class="preview-prose"><div class="md">${renderMarkdown(preview.snapshot.markdown)}</div></div>
+    <label for="release-note">${preview.previous_release_id ? "Correction note" : "Release note (optional)"}</label>
+    <textarea id="release-note" maxlength="2000" placeholder="What changed in this revision?"></textarea>
+    <div class="actions"><button id="record-release" class="primary" ${preview.blocking_issues.length ? 'disabled' : ''}>${preview.previous_release_id ? "Record correction revision" : "Record local release"}</button></div>`;
+  $("record-release").onclick = event => perform(event.currentTarget, async () => {
+    const note = $("release-note").value.trim();
+    if (preview.previous_release_id && !note) throw new Error("Add a correction note before recording the new revision.");
+    const release = await callTool("release_episode", {...args, expected_source_hash:preview.source_hash, previous_release_id:preview.previous_release_id, note:note || null});
+    feedback(`Local release revision ${release.revision} recorded. Its prose is preserved.`);
+    await renderSeries(); await showRelease(release.id, pid);
+  });
+  box.scrollIntoView({block:"start"});
+}
+async function showRelease(id, pid) {
+  const release = await loadEpisodeDetail(pid, "Loading the released version…", "get_episode_release", {release_id:id});
+  if (!release) return;
+  const box = $("episode-detail"); box.className = "episode-detail";
+  box.innerHTML = `<h2>${esc(release.snapshot.title)} · revision ${release.revision}</h2>
+    <p class="muted">Released ${esc(release.released_at)} · ${number(release.snapshot.word_count)} words</p>
+    ${release.note ? `<p>${esc(release.note)}</p>` : ''}
+    <div class="actions"><button id="download-release">Download Markdown</button>${release.previous_release_id ? '<button id="previous-release">Read previous revision</button>' : ''}</div>
+    <div class="preview-prose"><div class="md">${renderMarkdown(release.snapshot.markdown)}</div></div>`;
+  $("download-release").onclick = () => {
+    const url = URL.createObjectURL(new Blob([release.snapshot.markdown], {type:"text/markdown;charset=utf-8"}));
+    const a = document.createElement("a"); a.href = url; a.download = `book-${release.snapshot.book_number}-chapter-${release.snapshot.chapter_number}-r${release.revision}.md`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  if (release.previous_release_id) $("previous-release").onclick = e => perform(e.currentTarget, () => showRelease(release.previous_release_id, pid));
+  box.scrollIntoView({block:"start"});
+}
+async function reviewEpisode(pid, episode, force = false) {
+  const result = await loadEpisodeDetail(pid, "The reader is reviewing this episode with your configured model…", "read_episode", {...episodeArgs(pid, episode), force});
+  if (!result) return;
+  const {outcome, memory} = result;
+  $("episode-detail").innerHTML = `<h2>Reader review · ${esc(episode.title)}</h2><p>${pill(outcome.engagement)} ${memory.cached ? 'Previously saved reading' : 'New reading'}</p>
+    ${outcome.skip_reason ? `<p class="note">${esc(outcome.skip_reason)}</p>` : ''}
+    ${memory.persistence_note ? `<p class="note">${esc(memory.persistence_note)}</p>` : ''}
+    ${memory.unread_prior_chapters.length ? `<p class="note">${memory.unread_prior_chapters.length} earlier chapters have not been reviewed. This reading has gaps.</p>` : ''}
+    ${memory.stale_records_ignored ? `<p class="muted">${memory.stale_records_ignored} outdated readings were excluded.</p>` : ''}
+    <p>${esc(outcome.notes)}</p>
+    ${(outcome.open_questions || []).length ? `<h3>Open reader questions</h3><ul>${outcome.open_questions.map(q => `<li>${esc(q)}</li>`).join("")}</ul>` : ''}
+    <ul>${(outcome.concerns || []).map(c => `<li>${esc(c.description)}</li>`).join("")}</ul>
+    <div class="actions"><button id="open-editorial">Open editorial queue</button><button id="reread-episode">Run a fresh review</button></div>`;
+  $("open-editorial").onclick = () => switchPane("editorial");
+  $("reread-episode").onclick = e => perform(e.currentTarget, () => reviewEpisode(pid, episode, true));
+  $("episode-detail").scrollIntoView({block:"start"});
+}
+async function renderUsage() {
+  const pid = $("series-project").value;
+  if (!pid) return;
+  const current = loading("usage-out", "Loading recorded usage…");
+  try {
+    const data = await callTool("get_model_usage", {project_id:pid, limit:10});
+    if (!current()) return;
+    $("usage-out").innerHTML = `<p>${number(data.total_calls)} calls · ${number(data.known_input_tokens)} reported input tokens · ${number(data.known_output_tokens)} reported output tokens · ${(data.elapsed_ms/1000).toFixed(1)} seconds</p>
+      <p class="muted">${number(data.calls_with_unknown_tokens)} calls have unknown token usage. ${number(data.unattributed_calls)} calls lack a project association and are excluded here. Token totals include only reported values.</p>`;
+  } catch (err) { if (current()) $("usage-out").innerHTML = errorHTML("usage", err); }
+}
+async function renderEditorial(offset = editorialOffset) {
+  editorialOffset = offset;
+  const pid = $("editorial-project").value, box = $("editorial-out");
+  if (!pid) { box.innerHTML = '<p class="empty">Choose a project to review its editorial work.</p>'; return; }
+  const current = loading("editorial-out", "Loading editorial work…");
+  try {
+    const data = await callTool("get_editorial_queue", {project_id:pid, status:$("editorial-filter").value || null, offset, limit:30});
+    if (!current()) return;
+    box.innerHTML = data.items.length ? `<p class="muted">Items in this view: ${number(data.total)}</p>` : '<p class="empty">No items in this view. Run a reader review from Series to gather concerns.</p>';
+    box.innerHTML += data.items.map((v, i) => `<article class="work-item">
+      <h3>Book ${v.item.book_number}, chapter ${v.item.chapter_number} ${pill(v.item.status)}</h3>
+      <p>${esc(v.item.description)}</p>
+      ${v.source_changed ? '<p class="note">The source has changed since this concern was raised. Read the current chapter before deciding.</p>' : ''}
+      <details><summary>Chapter evidence and decision history</summary><p class="muted">This is a chapter-level concern; scene references identify what was read.</p><p>${esc(v.item.scene_ids.join(", "))}</p>
+      <ol>${v.item.decisions.map(d => `<li>${esc(d.status)} — ${esc(d.note)} <span class="muted">${esc(d.recorded_at)}</span></li>`).join("")}</ol></details>
+      <button data-inspect="${i}">Read current chapter</button><div id="editorial-prose-${i}"></div>
+      <label for="editorial-note-${i}">Revision request or decision note</label>
+      <textarea id="editorial-note-${i}" maxlength="2000" placeholder="What should change, or how was this addressed?"></textarea>
+      <div class="actions"><label for="editorial-status-${i}">Decision</label><select id="editorial-status-${i}">
+      ${[["accepted","Accept revision"],["deferred","Defer"],["resolved","Resolve"],["dismissed","Dismiss"],["open","Reopen"]].map(([value,label]) => `<option value="${value}">${label}</option>`).join("")}</select>
+      <button data-editorial="${i}">Save decision</button></div></article>`).join("");
+    box.querySelectorAll("[data-inspect]").forEach(b => b.onclick = () => perform(b, async () => {
+      const i = Number(b.dataset.inspect), v = data.items[i];
+      const prose = await callTool("compile_manuscript", {project_id:pid, book_number:v.item.book_number, start_chapter:v.item.chapter_number, end_chapter:v.item.chapter_number, write_to_workspace:false});
+      if (current()) $("editorial-prose-"+i).innerHTML = `<div class="preview-prose"><div class="md">${renderMarkdown(prose.markdown)}</div></div>`;
+    }));
+    box.querySelectorAll("[data-editorial]").forEach(b => b.onclick = () => perform(b, async () => {
+      const i = Number(b.dataset.editorial), v = data.items[i];
+      const result = await callTool("decide_editorial_item", {project_id:pid, item_id:v.item.id, expected_revision:v.item.revision, reviewed_source_hash:v.current_source_hash, status:$("editorial-status-"+i).value, note:$("editorial-note-"+i).value});
+      feedback(`Editorial item ${result.status}.`); await renderEditorial();
+    }));
+    pager(box, offset, data.next_offset, renderEditorial);
+  } catch (err) { if (current()) box.innerHTML = errorHTML("editorial queue; refresh to retry", err); }
+}
+async function renderThreads() {
+  const pid = $("threads-project").value, box = $("threads-out");
+  if (!pid) { box.innerHTML = '<p class="empty">Choose a project to follow its threads.</p>'; return; }
+  const current = loading("threads-out", "Loading promises, plot lines and character arcs…");
+  const groups = [["narrative-promises","Promises"],["plot-lines","Plot lines"],["character-arcs","Character arcs"]];
+  const results = await Promise.allSettled(groups.map(([path]) => readResource(`bible://projects/${pid}/${path}`)));
+  if (!current()) return;
+  box.innerHTML = groups.map(([path, title], i) => {
+    const result = results[i];
+    if (result.status === "rejected") return `<h3>${title}</h3>${errorHTML(title, result.reason)}`;
+    const rows = result.value;
+    return `<details open><summary>${title} (${rows.length})</summary>${rows.length ? rows.map(r => `<article class="work-item"><h3>${esc(r.name || r.description || r.arc_type)} ${pill(r.status)}</h3>
+      <p>${esc(r.summary || r.thematic_purpose || "")}</p>
+      ${path === "narrative-promises" ? `<p class="muted">Planted: ${esc(r.planted_at ? placement(r.planted_at) : "unknown")} · Planned payoff: ${esc(r.planned_payoff ? placement(r.planned_payoff) : "unscheduled")}</p>
+        <details><summary>Recorded status history</summary>${(r.status_history || []).length ? `<ol>${r.status_history.map(e => `<li>${esc(e.status)} · ${esc(e.at ? placement(e.at) : "actual date unknown")}${e.note ? ` · ${esc(e.note)}` : ''}${e.replaces_event_id ? ' · correction' : ''}</li>`).join("")}</ol>` : '<p class="muted">No recorded status events; the current status has no confirmed actual date.</p>'}</details>` : ''}
+      ${path === "character-arcs" ? `<p>${esc(r.starting_state)} → ${esc(r.ending_state)}</p>` : ''}</article>`).join("") : '<p class="empty">No threads recorded here yet. Build these with your writing agent as the series takes shape.</p>'}</details>`;
+  }).join("");
+}
+document.addEventListener("click", event => {
+  const b = event.target.closest("button[data-queue]");
+  if (!b) return;
+  perform(b, async () => {
+    const kind = b.dataset.queue;
+    const decision = {action:b.dataset.decision, [kind === "canon" ? "delta_id" : "amendment_id"]:b.dataset.id};
+    const result = await callTool(kind === "canon" ? "decide_canon_deltas" : "decide_plan_amendments", {project_id:b.dataset.project, decided_by:"operator", decisions:[decision]});
+    const failure = result.results.find(r => r.outcome === "failed" || r.outcome === "not_reached");
+    if (failure) throw new Error(failure.error || "Decision was not applied. Refresh and review the item.");
+    feedback(`${kind === "canon" ? "Canon" : "Plan"} proposal ${result.results[0]?.outcome || "decided"}.`);
+    await (kind === "canon" ? renderCanon() : renderPlan());
+  });
+});
+
 // ── Pane switching + wiring ──────────────────────────────────────────────
-const paneRenderers = { runs: renderRuns, manuscript: renderManuscript, canon: renderCanon, plan: renderPlan };
+const paneRenderers = { series: renderSeries, editorial: renderEditorial, threads: renderThreads, runs: renderRuns, manuscript: renderManuscript, canon: renderCanon, plan: renderPlan };
 
 function switchPane(name) {
+  activePane = name;
   document.querySelectorAll("nav button").forEach((b) =>
-    b.setAttribute("aria-selected", String(b.dataset.pane === name)));
+    b.setAttribute("aria-pressed", String(b.dataset.pane === name)));
   document.querySelectorAll(".pane").forEach((p) => p.classList.remove("active"));
   const pane = $("pane-" + name);
   if (pane) pane.classList.add("active");
@@ -471,15 +795,24 @@ $("ms-refresh").addEventListener("click", renderManuscript);
 $("canon-refresh").addEventListener("click", renderCanon);
 $("plan-refresh").addEventListener("click", renderPlan);
 
-// Boot: load each pane's project picker; the Runs pane renders once loaded.
+$("series-refresh").onclick = () => renderSeries();
+$("editorial-refresh").onclick = () => renderEditorial();
+$("editorial-filter").onchange = () => { editorialOffset = 0; renderEditorial(); };
+$("threads-refresh").onclick = renderThreads;
+$("usage").addEventListener("toggle", () => { if ($("usage").open) renderUsage(); });
+
+// Boot all project pickers before rendering the initial series view.
 (async function boot() {
   await Promise.all([
+    loadProjects("series-project", () => renderSeries()),
+    loadProjects("editorial-project", () => renderEditorial()),
+    loadProjects("threads-project", renderThreads),
     loadProjects("runs-project", renderRuns),
-    loadProjects("ms-project", () => {}),
+    loadProjects("ms-project", renderManuscript),
     loadProjects("canon-project", renderCanon),
     loadProjects("plan-project", renderPlan),
   ]);
-  renderRuns();
+  renderSeries();
 })();
 </script>
 </body>

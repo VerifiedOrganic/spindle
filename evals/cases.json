@@ -1,0 +1,446 @@
+[
+  {
+    "id": "S01",
+    "name": "An old promise returns",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      5
+    ],
+    "task": "At the gate, let Mara recognize the missing compass and choose what to risk to recover it.",
+    "criteria": [
+      "Recognizes the compass as the ferryman’s daughter’s property, not her own.",
+      "Advances the promise through an action with a cost.",
+      "Does not claim the compass was already returned."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara promised the ferryman she would return his daughter’s brass compass."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "A toll collector refused passage without a copper."
+      },
+      {
+        "book": 1,
+        "chapter": 3,
+        "summary": "Mara traded her blanket for passage."
+      },
+      {
+        "book": 1,
+        "chapter": 4,
+        "summary": "Ivo spotted a brass compass on a guard’s belt."
+      }
+    ],
+    "promises": [
+      {
+        "description": "Return the ferryman’s daughter’s brass compass.",
+        "planted": [
+          1,
+          1
+        ],
+        "planned": [
+          1,
+          8
+        ]
+      }
+    ]
+  },
+  {
+    "id": "S02",
+    "name": "Plans are not events",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      6
+    ],
+    "task": "Write the moment Mara finally returns the compass in chapter 6.",
+    "criteria": [
+      "The promised chapter-4 payoff did not happen.",
+      "The return occurs now and has an observable recipient.",
+      "The delay has emotional consequences."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara promised to return the compass."
+      },
+      {
+        "book": 1,
+        "chapter": 4,
+        "summary": "Mara reached the ferry too late. The ferryman had left, and she kept the compass."
+      },
+      {
+        "book": 1,
+        "chapter": 5,
+        "summary": "Mara found the ferryman repairing a boat."
+      }
+    ],
+    "promises": [
+      {
+        "description": "Return the brass compass.",
+        "planted": [
+          1,
+          1
+        ],
+        "planned": [
+          1,
+          4
+        ]
+      }
+    ]
+  },
+  {
+    "id": "S03",
+    "name": "A promise reopens",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      6
+    ],
+    "task": "At the ferry, face the consequences of the reopened debt.",
+    "criteria": [
+      "Acknowledges the debt was settled once.",
+      "The new obligation arises from the later loss.",
+      "Does not repeat the old repayment as though it never happened."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara borrowed a boat and promised to return it."
+      },
+      {
+        "book": 1,
+        "chapter": 3,
+        "summary": "Mara returned the boat intact; the ferryman released her debt."
+      },
+      {
+        "book": 1,
+        "chapter": 5,
+        "summary": "Mara borrowed it again and broke its rudder. She promised repairs."
+      }
+    ],
+    "promises": [
+      {
+        "description": "Mara owes the ferryman a working boat.",
+        "planted": [
+          1,
+          1
+        ],
+        "planned": [
+          1,
+          3
+        ],
+        "events": [
+          {
+            "status": "paid_off",
+            "at": [
+              1,
+              3
+            ]
+          },
+          {
+            "status": "reinforced",
+            "at": [
+              1,
+              5
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "S04",
+    "name": "A historical viewpoint",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      4
+    ],
+    "task": "Write chapter 4 from Ivo’s viewpoint. He investigates the stolen toll money without knowing the culprit.",
+    "criteria": [
+      "Ivo cannot know Lysa stole the money until chapter 7.",
+      "Suspicion is distinguished from knowledge.",
+      "No narrator aside reveals the future culprit."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Ivo counts toll money for the ferryman."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "The strongbox is found empty."
+      },
+      {
+        "book": 1,
+        "chapter": 3,
+        "summary": "Ivo finds a torn green sleeve, but several travellers wear green."
+      },
+      {
+        "book": 1,
+        "chapter": 7,
+        "summary": "Lysa confesses privately to Mara that she stole the toll money."
+      }
+    ]
+  },
+  {
+    "id": "S05",
+    "name": "Power has a price",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      3
+    ],
+    "task": "Mara needs to cross the river, but cannot pay another magical toll. Give her a consequential solution.",
+    "criteria": [
+      "No free magic or unexplained restored voice.",
+      "Mara cannot speak until tomorrow.",
+      "The solution follows a physical or interpersonal alternative."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Every ferry charm costs the speaker their voice until the next dawn."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "Mara used a charm at noon. Her voice vanished; it is now evening."
+      }
+    ],
+    "rules": [
+      [
+        "Ferry charm price",
+        "A ferry charm consumes the speaker’s voice until the next dawn. A voiceless person cannot invoke another charm."
+      ]
+    ]
+  },
+  {
+    "id": "S06",
+    "name": "Distinct comic voices",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      3
+    ],
+    "task": "Write an argument over who should carry the leaking bucket, preserving both voices and affection.",
+    "criteria": [
+      "Mara is terse and literal; Ivo elaborates ridiculous practical excuses.",
+      "Humour comes from their conflict and choices.",
+      "Neither voice collapses into identical polished banter."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara answered the boatman in clipped literal sentences. Ivo invented a lengthy excuse involving a very respectable goose."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "They must carry a leaking bucket uphill before the bell rings."
+      }
+    ],
+    "genre": "comic fantasy"
+  },
+  {
+    "id": "S07",
+    "name": "A quiet satisfying ending",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      3
+    ],
+    "task": "End the episode after the rescue, with emotional satisfaction and a reason to return tomorrow.",
+    "criteria": [
+      "Resolves the immediate rescue.",
+      "Does not invent a sudden attacker solely for a cliffhanger.",
+      "Leaves relational anticipation without withholding the rescue outcome."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara and Ivo pull a child from the flooded ditch."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "The child is safe at the station. Ivo has not told Mara why the child’s name affected him."
+      }
+    ]
+  },
+  {
+    "id": "S08",
+    "name": "Revision without forgetting",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      3
+    ],
+    "task": "Continue after the corrected flood account; make Ivo’s changed trust visible.",
+    "criteria": [
+      "Uses the corrected account: Mara stayed with Ivo.",
+      "Does not revive the abandoned version where she fled alone.",
+      "Trust changes through behaviour, not a detached recap."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Corrected accepted account: Mara stayed through the flood and helped Ivo across. The earlier abandoned draft where she fled alone is not canon."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "Ivo quietly hands Mara the map, letting her choose the route for the first time."
+      }
+    ]
+  },
+  {
+    "id": "S09",
+    "name": "Return after a long hiatus",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      4
+    ],
+    "task": "Begin the new arc with a scene that orients a returning reader without dumping the whole series history.",
+    "criteria": [
+      "Establishes the current place and immediate need.",
+      "Recalls the relevant unpaid favour naturally.",
+      "Preserves room for new action instead of summarizing every prior episode."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara owes the miller a favour for hiding Ivo."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "The miller asks for help before the spring thaw."
+      },
+      {
+        "book": 1,
+        "chapter": 3,
+        "summary": "After winter apart, Mara and Ivo reunite beside the iced millrace."
+      }
+    ],
+    "promises": [
+      {
+        "description": "Repay the miller’s favour before the thaw.",
+        "planted": [
+          1,
+          1
+        ]
+      }
+    ]
+  },
+  {
+    "id": "S10",
+    "name": "A consequence across books",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      2,
+      1
+    ],
+    "task": "Open book two at the border. Carry the damage and relationship change from the previous book.",
+    "criteria": [
+      "Mara’s hand remains injured.",
+      "Ivo knows she burned the map to save him.",
+      "The lost map creates a practical obstacle."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 98,
+        "summary": "Mara burns their map to distract the guards."
+      },
+      {
+        "book": 1,
+        "chapter": 99,
+        "summary": "Ivo escapes, then sees Mara’s blistered hand."
+      },
+      {
+        "book": 1,
+        "chapter": 100,
+        "summary": "They reach the border without a map; Ivo thanks her without making a joke."
+      }
+    ]
+  },
+  {
+    "id": "S11",
+    "name": "Promises after 200 chapters",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      2,
+      101
+    ],
+    "task": "At Southwatch, let Mara act on recognizing the brass compass while facing the immediate hunger problem.",
+    "criteria": [
+      "Remembers the chapter-1 promise to the ferryman.",
+      "Continues from Southwatch with no food and Mara’s torn left boot.",
+      "Does not return to the burned ferry or invent food supplies."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Expanded by the deterministic 200-chapter synopsis fixture."
+      }
+    ],
+    "history_chapters": 200,
+    "promises": [
+      {
+        "description": "Return the ferryman’s daughter’s brass compass.",
+        "planted": [
+          1,
+          1
+        ],
+        "planned": [
+          2,
+          110
+        ]
+      }
+    ]
+  },
+  {
+    "id": "S12",
+    "name": "Reader concern becomes a real revision",
+    "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+    "target": [
+      1,
+      3
+    ],
+    "task": "Revise the chapter’s repeated bargaining pattern so failure changes Mara’s next choice, while keeping the key unbought.",
+    "criteria": [
+      "The key remains unbought.",
+      "The failed bargain forces a different next action.",
+      "Avoids merely swapping adjectives or appending an unrelated hook."
+    ],
+    "episodes": [
+      {
+        "book": 1,
+        "chapter": 1,
+        "summary": "Mara bargains for the key and fails. She tries again with the same offer."
+      },
+      {
+        "book": 1,
+        "chapter": 2,
+        "summary": "Accepted editorial direction: keep the key unbought, but make this failed bargain force Mara to ask the ferryman she has been avoiding for help."
+      }
+    ]
+  }
+]

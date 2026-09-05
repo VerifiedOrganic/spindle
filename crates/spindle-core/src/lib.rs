@@ -3,6 +3,7 @@ pub mod context_bundle;
 pub mod model_output;
 pub mod models;
 pub mod provenance;
+pub mod serial;
 pub mod style;
 pub mod subject;
 pub mod subject_snapshot;

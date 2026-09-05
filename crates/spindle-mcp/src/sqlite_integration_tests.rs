@@ -527,14 +527,6 @@ agent = "cli-agent-review"
     );
     std::fs::write(&config_path, config_content).unwrap();
 
-    // Set CLI COMMAND environment variable
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
-
     // 4. Initialize service and configure agents
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
@@ -1377,8 +1369,7 @@ agent = "cli-agent-review"
 ///
 /// Env-var free: the one scene is drafted via the host path
 /// (`authoring_save_scene_draft`) so this test does not touch the
-/// process-global `SPINDLE_MODEL_CLI_COMMAND` (which parallel CLI-agent tests
-/// mutate). Mining and the checkpoint dual-persona review run through the
+/// legacy process-global CLI command. Mining and the checkpoint review use the
 /// built-in local `review` route (deterministic mock miner), no agent config.
 /// The agent-draft emission and the revise arm (findings -> scene_revised ->
 /// clean) are covered deterministically by
@@ -2491,9 +2482,8 @@ agent = "bold-review"
 // =============================================================================
 
 /// The single mock CLI draft/review agent script shared by every CLI-agent
-/// integration fixture (mining, verify/revise). `SPINDLE_MODEL_CLI_COMMAND` is
-/// a PROCESS-global env var, so parallel tests may invoke each other's script;
-/// keeping ONE byte-identical body makes that harmless. Argv is `[route, prompt]`.
+/// integration fixture (mining, verify/revise). Each configured CLI agent uses
+/// its own endpoint, without process-global command mutation. Argv is `[route, prompt]`.
 ///
 /// Draft branch: emits a valid `GeneratedScenePackage`. The prose carries the
 /// `MOCK_CANON_MINE` sentinel (mining tests recognize it; inert everywhere else)
@@ -2598,13 +2588,8 @@ EOF
 fi
 "#;
 
-/// Write the universal mock agent script ONCE to a process-stable path (under
-/// the OS temp dir, not any per-test `TempDir`) and return it. Because
-/// `SPINDLE_MODEL_CLI_COMMAND` is process-global and per-test `TempDir`s are
-/// deleted on drop, a fixture that pointed the env var at a script inside its
-/// own `TempDir` would leave a dangling command for any concurrently-running
-/// test whose draft fires after that dir is cleaned. A single stable path that
-/// lives for the whole test process removes that lifetime race.
+/// Write the shared mock script once. Fixtures configure its path explicitly;
+/// each agent dispatches its own endpoint without mutating the process environment.
 fn universal_mock_agent_path() -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::OnceLock;
@@ -2688,13 +2673,6 @@ agent = "cli-agent-draft"
         extra = config_extra_routing,
     );
     std::fs::write(&config_path, config_content).unwrap();
-
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
 
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
@@ -3599,12 +3577,6 @@ agent = "cli-agent-draft"
         extra = review_config_extra,
     );
     std::fs::write(&config_path, config_content).unwrap();
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
 
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
@@ -4251,13 +4223,6 @@ agent = "cli-agent-draft"
         script = script_path.display(),
     );
     std::fs::write(&config_path, config_content).unwrap();
-
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
 
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
@@ -5155,13 +5120,6 @@ agent = "cli-agent-review"
     );
     std::fs::write(&config_path, config_content).unwrap();
 
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
-
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
         Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
@@ -5677,12 +5635,6 @@ agent = "cli-agent-review"
         script = script_path.display(),
     );
     std::fs::write(&config_path, &start_config).unwrap();
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
 
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
@@ -6090,17 +6042,10 @@ async fn reader_sim_fixture(
     let data_dir = tmp.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
 
-    // Reuse the single process-stable universal mock (SPINDLE_MODEL_CLI_COMMAND
-    // is process-global; a per-fixture script would race parallel tests). The
+    // Reuse the shared universal mock via this fixture’s configured endpoint. The
     // universal draft branch copies any MOCK_READER_* sentinel from the synopsis
     // into the prose, and its review branch handles the reader-sim JSON.
     let script_path = universal_mock_agent_path();
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
 
     let review_ratings_toml = review_ratings
         .iter()
@@ -6755,13 +6700,6 @@ agent = "tame-analyst"
     );
     std::fs::write(&config_path, config_content).unwrap();
 
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
-
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =
         Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
@@ -7320,13 +7258,6 @@ agent = "style-agent"
     )
     .unwrap();
 
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
-
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo = Repository::with_model_router(pool, data_dir.clone(), ModelRouter::local_only());
     let svc = SqliteSpindleService::new(repo);
@@ -7593,12 +7524,6 @@ agent = "cli-agent-draft"
         script = script_path.display(),
     );
     std::fs::write(&config_path, config_content).unwrap();
-    unsafe {
-        std::env::set_var(
-            "SPINDLE_MODEL_CLI_COMMAND",
-            script_path.to_string_lossy().to_string(),
-        );
-    }
 
     let pool = SqlitePool::open(&db_path).await.unwrap();
     let repo =

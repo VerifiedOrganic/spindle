@@ -771,6 +771,7 @@ mod tests {
         let saved = router
             .service
             .save_scene_draft(SaveSceneDraftInput {
+                authorship: Default::default(),
                 project_id,
                 book_number: 1,
                 chapter_number: 1,

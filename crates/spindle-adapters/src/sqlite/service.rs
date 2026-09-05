@@ -116,7 +116,7 @@ const STYLE_EDIT_MAX_CHARS: usize = 60_000;
 /// 20 matches the existing "draft is too thin for a confident prose review"
 /// heuristic; a legitimately shorter scene (flash interstitials) lowers the
 /// floor for its project rather than weakening every project.
-const DEFAULT_MIN_SCENE_WORD_COUNT: usize = 20;
+pub(crate) const DEFAULT_MIN_SCENE_WORD_COUNT: usize = 20;
 
 /// Whole-body placeholder markers. Compared against the FULLY NORMALIZED
 /// body (trimmed, outer punctuation/brackets stripped, lowercased, inner
@@ -176,7 +176,7 @@ fn normalize_body_for_placeholder_match(full_text: &str) -> String {
 /// Why a scene body is a stub, if it is one: a placeholder body regardless
 /// of length, or prose below `min_words`. Whitespace-only bodies count as
 /// having no prose (the empty-text gate reports them separately).
-fn scene_stub_reason(full_text: &str, min_words: usize) -> Option<String> {
+pub(crate) fn scene_stub_reason(full_text: &str, min_words: usize) -> Option<String> {
     let words = full_text.split_whitespace().count();
     if words == 0 {
         return Some("scene has no prose".to_string());
@@ -2360,12 +2360,15 @@ impl SqliteSpindleService {
         &self,
         input: UpdatePromiseStatusInput,
     ) -> Result<UpdatePromiseStatusOutput> {
-        self.repository
-            .update_promise_status(&input.narrative_promise_id, &input.status)
-            .await?;
+        self.repository.update_promise_status(&input).await?;
+        let status = self
+            .repository
+            .get_narrative_promise(&input.narrative_promise_id)
+            .await?
+            .status;
         Ok(UpdatePromiseStatusOutput {
             narrative_promise_id: input.narrative_promise_id,
-            status: input.status,
+            status,
         })
     }
 
@@ -5500,6 +5503,7 @@ impl SqliteSpindleService {
                                 "status": p.status,
                                 "planted_at": p.planted_at,
                                 "planned_payoff": p.planned_payoff,
+                                "status_history": p.status_history,
                                 "notes": p.notes,
                             })
                         })
@@ -6742,7 +6746,7 @@ impl SqliteSpindleService {
         // Hydrate the plan-targeted narrative threads (themes, conflicts, plot
         // lines, theme-connected motifs) at the briefing top level, mirroring
         // the scene-context novel layer. Empty when the chapter has no plan.
-        let active_threads = if let Some(plan) = chapter_plan.as_ref() {
+        let mut active_threads = if let Some(plan) = chapter_plan.as_ref() {
             self.assemble_active_threads(
                 &input.project_id,
                 &active_branch.id,
@@ -6754,6 +6758,16 @@ impl SqliteSpindleService {
         } else {
             Vec::new()
         };
+
+        active_threads.extend(
+            self.editorial_threads(
+                &input.project_id,
+                &active_branch.id,
+                input.book_number,
+                input.chapter_number,
+            )
+            .await?,
+        );
 
         let chapter_scene_orders = self
             .repository
@@ -7990,7 +8004,7 @@ impl SqliteSpindleService {
         // Hydrate the narrative threads this chapter's plan explicitly targets
         // (themes, conflicts, plot lines, theme-connected motifs) so the
         // drafting agent can advance them. No-op when the chapter has no plan.
-        let active_threads = if let Some(plan) = self
+        let mut active_threads = if let Some(plan) = self
             .repository
             .list_chapter_plans_by_project(&input.project_id)
             .await?
@@ -8009,6 +8023,16 @@ impl SqliteSpindleService {
         } else {
             Vec::new()
         };
+
+        active_threads.extend(
+            self.editorial_threads(
+                &input.project_id,
+                &active_branch.id,
+                input.book_number,
+                input.chapter_number,
+            )
+            .await?,
+        );
 
         // Resolve the immediately preceding scene's closing prose so the drafting
         // agent can hand off cleanly from its exit beat. Prefer the same-chapter
@@ -8362,59 +8386,23 @@ impl SqliteSpindleService {
             }
         }
 
-        // Story-so-far: surface compressed digests of this and prior books so
-        // distant book-1/2 events survive into later-book drafting (scene context
-        // otherwise carries no chapter summaries). Capped to keep the prefix bounded.
-        let book_digests = self
-            .repository
-            .list_book_digests_by_project_and_branch(&input.project_id, &active_branch.id)
+        let story_so_far = self
+            .story_so_far(
+                &input.project_id,
+                &active_branch.id,
+                input.book_number,
+                input.chapter_number,
+                input.scene_order,
+            )
             .await?;
-        let prior_digests: Vec<&crate::sqlite::records::StoredBookDigest> = book_digests
-            .iter()
-            .filter(|digest| digest.book_number <= input.book_number)
-            .collect();
-        if !prior_digests.is_empty() {
-            const PER_BOOK_INJECT_CAP: usize = 700;
-            const TOTAL_INJECT_CAP: usize = 2000;
-            let mut sections: Vec<String> = Vec::new();
-            let mut used = 0usize;
-            for digest in &prior_digests {
-                // Synopsis keeps its existing per-book cap; the open-threads
-                // segment gets whatever per-book budget the synopsis leaves
-                // (threads truncate first, synopsis second — never over cap).
-                let head: String = digest.synopsis.chars().take(PER_BOOK_INJECT_CAP).collect();
-                let mut body = head;
-                let thread_budget = PER_BOOK_INJECT_CAP.saturating_sub(body.len());
-                let threads_segment = crate::format::render_open_threads_segment(
-                    &digest.open_threads,
-                    thread_budget.saturating_sub(1), // reserve one byte for the joining newline
-                );
-                if !threads_segment.is_empty() {
-                    body.push('\n');
-                    body.push_str(&threads_segment);
-                }
-                let section = format!(
-                    "Book {} (through ch {}): {}",
-                    digest.book_number, digest.last_chapter_covered, body
-                );
-                if used + section.len() > TOTAL_INJECT_CAP {
-                    break;
-                }
-                used += section.len();
-                sections.push(section);
-            }
-            if !sections.is_empty() {
-                hard_constraints.insert(
-                    0,
-                    HardConstraint {
-                        id: "[STORY SO FAR]".to_string(),
-                        statement: format!(
-                            "STORY SO FAR (established events; do not contradict):\n{}",
-                            sections.join("\n")
-                        ),
-                    },
-                );
-            }
+        if !story_so_far.is_empty() {
+            hard_constraints.insert(
+                0,
+                HardConstraint {
+                    id: "[STORY SO FAR]".into(),
+                    statement: story_so_far,
+                },
+            );
         }
 
         let non_truncatable_cost =
@@ -8784,6 +8772,8 @@ impl SqliteSpindleService {
         let requested_severities_set = requested_severities(&input.severity_filter)?;
         let scope = input.scope.to_scope().map_err(|e| anyhow::anyhow!("{e}"))?;
         let deep_check = input.deep_check.unwrap_or(false);
+        let deep_offset = input.deep_scan_offset.unwrap_or(0);
+        let mut audit_coverage = Vec::new();
 
         let scenes_raw = self
             .repository
@@ -9287,7 +9277,12 @@ impl SqliteSpindleService {
             // when no review model is configured, so the deterministic scan
             // above stands alone.
             if deep_check {
-                issues.extend(self.deep_temporal_coherence_issues(&scenes).await?);
+                let mut coverage = spindle_core::models::AuditCoverage::default();
+                issues.extend(
+                    self.deep_temporal_coherence_issues(&scenes, &mut coverage)
+                        .await?,
+                );
+                audit_coverage.push(coverage);
             }
         }
 
@@ -9328,13 +9323,23 @@ impl SqliteSpindleService {
             }
 
             const PROMISE_PAYOFF_SCAN_CAP: usize = 10;
-            let unscanned = candidates.len().saturating_sub(PROMISE_PAYOFF_SCAN_CAP);
-            candidates.truncate(PROMISE_PAYOFF_SCAN_CAP);
+            let mut coverage = spindle_core::models::AuditCoverage::new(
+                "promise_payoff_detection",
+                candidates.iter().map(|p| p.id.clone()),
+            );
+            coverage.window(deep_offset, PROMISE_PAYOFF_SCAN_CAP);
+            candidates = candidates
+                .into_iter()
+                .skip(deep_offset)
+                .take(PROMISE_PAYOFF_SCAN_CAP)
+                .collect();
+            let unscanned = coverage.eligible.saturating_sub(candidates.len());
 
             issues.extend(
-                self.deep_promise_payoff_issues(&candidates, &scenes, unscanned)
+                self.deep_promise_payoff_issues(&candidates, &scenes, unscanned, &mut coverage)
                     .await?,
             );
+            audit_coverage.push(coverage);
         }
 
         // ── Scene-purpose fulfillment (P3.3, deep tier) ─────────────────
@@ -9381,10 +9386,22 @@ impl SqliteSpindleService {
                     purpose: purpose.to_string(),
                 });
             }
-
-            let unscanned = units.len().saturating_sub(SCENE_PURPOSE_SCAN_CAP);
-            units.truncate(SCENE_PURPOSE_SCAN_CAP);
-            issues.extend(self.deep_scene_purpose_issues(&units, unscanned).await?);
+            let mut coverage = spindle_core::models::AuditCoverage::new(
+                "scene_purpose_fulfillment",
+                units.iter().map(|u| u.scene_id.clone()),
+            );
+            coverage.window(deep_offset, SCENE_PURPOSE_SCAN_CAP);
+            units = units
+                .into_iter()
+                .skip(deep_offset)
+                .take(SCENE_PURPOSE_SCAN_CAP)
+                .collect();
+            let unscanned = coverage.eligible.saturating_sub(units.len());
+            issues.extend(
+                self.deep_scene_purpose_issues(&units, unscanned, &mut coverage)
+                    .await?,
+            );
+            audit_coverage.push(coverage);
         }
 
         // ── Quantity drift: an unexplained multi-band jump ──────────────
@@ -9851,10 +9868,12 @@ impl SqliteSpindleService {
                 // the pattern-based path above. Falls back to an in-process
                 // heuristic when the configured route is local-only or
                 // unavailable. Mirrors `services/mod.rs:6344` in 705b835^.
+                let mut coverage = spindle_core::models::AuditCoverage::default();
                 let semantic_issues = self
-                    .deep_world_rule_compliance_issues(&scenes, &rules)
+                    .deep_world_rule_compliance_issues(&scenes, &rules, &mut coverage)
                     .await?;
                 issues.extend(semantic_issues);
+                audit_coverage.push(coverage);
             }
         }
 
@@ -10979,13 +10998,22 @@ impl SqliteSpindleService {
                         unaware_present,
                     });
                 }
-
-                let unscanned = units.len().saturating_sub(SECRET_LEAK_DEEP_SCAN_CAP);
-                units.truncate(SECRET_LEAK_DEEP_SCAN_CAP);
+                let mut coverage = spindle_core::models::AuditCoverage::new(
+                    "secret_leak",
+                    units.iter().map(|u| u.scene_id.clone()),
+                );
+                coverage.window(deep_offset, SECRET_LEAK_DEEP_SCAN_CAP);
+                units = units
+                    .into_iter()
+                    .skip(deep_offset)
+                    .take(SECRET_LEAK_DEEP_SCAN_CAP)
+                    .collect();
+                let unscanned = coverage.eligible.saturating_sub(units.len());
                 issues.extend(
-                    self.deep_secret_behavioral_leak_issues(&units, unscanned)
+                    self.deep_secret_behavioral_leak_issues(&units, unscanned, &mut coverage)
                         .await?,
                 );
+                audit_coverage.push(coverage);
             }
         }
 
@@ -11012,21 +11040,30 @@ impl SqliteSpindleService {
                 .count(),
         };
 
+        for coverage in &mut audit_coverage {
+            coverage.finish();
+        }
         let format = input.format.unwrap_or(ContextFormat::Json);
         let markdown = if format == ContextFormat::Markdown {
             let budget = input
                 .budget_tokens
                 .unwrap_or(DEFAULT_CHECK_CONSISTENCY_BUDGET_TOKENS);
-            Some(format_consistency_markdown(
-                &issues,
-                &report_sections,
-                budget,
-            ))
+            let mut report = format_consistency_markdown(&issues, &report_sections, budget);
+            if !audit_coverage.is_empty() {
+                // Coverage is protected from prose-budget trimming, like hard findings.
+                report.push_str("\n## Audit coverage\n");
+                for coverage in &audit_coverage {
+                    report.push_str(&format!("- {}: {} eligible; {} model-reviewed; {} heuristic-only; {} not model-reviewed. Next offset: {:?}.\n",
+                        coverage.check_type, coverage.eligible, coverage.evaluated_ids.len(), coverage.heuristic_ids.len(), coverage.not_evaluated_ids.len(), coverage.next_offset));
+                }
+            }
+            Some(report)
         } else {
             None
         };
 
         Ok(spindle_core::models::CheckConsistencyOutput {
+            audit_coverage,
             issues,
             summary,
             report_sections,
@@ -11963,6 +12000,7 @@ impl SqliteSpindleService {
         &self,
         scenes: &[crate::sqlite::records::Scene],
         rules: &[crate::sqlite::records::WorldRule],
+        coverage: &mut spindle_core::models::AuditCoverage,
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
         use crate::format::world_rule_established_before_scene;
         use spindle_core::models::ConsistencyIssue;
@@ -11992,6 +12030,10 @@ impl SqliteSpindleService {
                     .any(|rule| world_rule_established_before_scene(rule, scene))
             })
             .collect();
+        *coverage = spindle_core::models::AuditCoverage::new(
+            "world_rule_compliance",
+            scanned.iter().map(|s| s.id.clone()),
+        );
         let rules_for_scene = |scene: &crate::sqlite::records::Scene| {
             rules
                 .iter()
@@ -12027,9 +12069,13 @@ impl SqliteSpindleService {
                 None => heuristic_world_rule_violations(scene, &applicable_rules),
                 Some(output) => match output {
                     Ok(response) if !response.local_stub => {
-                        parse_deep_world_rule_check_output(&response.output).unwrap_or_else(|_| {
-                            heuristic_world_rule_violations(scene, &applicable_rules)
-                        })
+                        match parse_deep_world_rule_check_output(&response.output) {
+                            Ok(findings) => {
+                                coverage.evaluated_ids.push(scene.id.clone());
+                                findings
+                            }
+                            Err(_) => heuristic_world_rule_violations(scene, &applicable_rules),
+                        }
                     }
                     Ok(_) => heuristic_world_rule_violations(scene, &applicable_rules),
                     // Honest skip on a rating-clearance rejection: the `review`
@@ -12060,6 +12106,9 @@ impl SqliteSpindleService {
                 },
             };
 
+            if !coverage.evaluated_ids.contains(&scene.id) {
+                coverage.heuristic_ids.push(scene.id.clone());
+            }
             for violation in model_violations {
                 let Some(rule) = applicable_rules
                     .iter()
@@ -12223,6 +12272,7 @@ impl SqliteSpindleService {
     async fn deep_temporal_coherence_issues(
         &self,
         scenes: &[crate::sqlite::records::Scene],
+        coverage: &mut spindle_core::models::AuditCoverage,
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
         use spindle_core::models::ConsistencyIssue;
 
@@ -12244,6 +12294,10 @@ impl SqliteSpindleService {
             .iter()
             .filter(|scene| !scene.full_text.trim().is_empty())
             .collect();
+        *coverage = spindle_core::models::AuditCoverage::new(
+            "temporal_coherence",
+            scanned.iter().map(|s| s.id.clone()),
+        );
         let prompts = scanned
             .iter()
             .map(|scene| build_temporal_deep_check_prompt(scene))
@@ -12259,7 +12313,17 @@ impl SqliteSpindleService {
                 // Parse regardless of adapter kind: a non-JSON local stub
                 // (the default `review` route) parses to nothing, so Tier 2 is
                 // a no-op unless a real review model returns structured findings.
-                Ok(output) => parse_deep_temporal_check_output(&output.output).unwrap_or_default(),
+                Ok(output) => match parse_deep_temporal_check_output(&output.output) {
+                    Ok(findings) => {
+                        if output.local_stub {
+                            coverage.heuristic_ids.push(scene.id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(scene.id.clone());
+                        }
+                        findings
+                    }
+                    _ => Vec::new(),
+                },
                 // Honest skip on a rating-clearance rejection: the `review` agent
                 // is not cleared for this scene's rating, so the prose never left.
                 // Emit one info finding that reads as SKIPPED (route + rating, no
@@ -12327,6 +12391,7 @@ impl SqliteSpindleService {
         promises: &[crate::sqlite::records::NarrativePromise],
         scenes: &[crate::sqlite::records::Scene],
         unscanned: usize,
+        coverage: &mut spindle_core::models::AuditCoverage,
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
         use crate::ai::ModelRequest;
         use spindle_core::models::ConsistencyIssue;
@@ -12339,7 +12404,7 @@ impl SqliteSpindleService {
                 check_type: "promise_payoff_detection".to_string(),
                 message: format!(
                     "{unscanned} additional unresolved promise(s) were not scanned for payoff \
-                     (only the 10 most urgent candidates are audited per run)"
+                     (at most 10 candidates are audited per page; inspect audit_coverage.next_offset)"
                 ),
                 entity_ids: Vec::new(),
                 suggested_action: Some(
@@ -12362,15 +12427,26 @@ impl SqliteSpindleService {
                     route: "review".to_string(),
                     prompt: build_promise_payoff_deep_check_prompt(promise, scenes),
                     rating: batch_rating.clone(),
-                    context: None,
+                    context: Some(crate::ai::RequestContext {
+                        project_id: Some(promise.project_id.clone()),
+                        ..Default::default()
+                    }),
                 })
                 .await
             {
                 // A non-JSON local stub (the default `review` route) parses to
                 // nothing, so a local-only deployment degrades to no proposals.
-                Ok(response) => {
-                    parse_deep_promise_payoff_output(&response.output).unwrap_or_default()
-                }
+                Ok(response) => match parse_deep_promise_payoff_output(&response.output) {
+                    Ok(findings) if !response.truncated => {
+                        if response.adapter_kind == "local" {
+                            coverage.heuristic_ids.push(promise.id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(promise.id.clone());
+                        }
+                        findings
+                    }
+                    _ => Vec::new(),
+                },
                 // Honest skip: the review route is unreachable/missing or not
                 // cleared for the batch rating. Emit one info finding that reads
                 // as SKIPPED rather than clean, then stop (every promise hits the
@@ -12445,6 +12521,7 @@ impl SqliteSpindleService {
         &self,
         units: &[ScenePurposeScanUnit],
         unscanned: usize,
+        coverage: &mut spindle_core::models::AuditCoverage,
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
         use spindle_core::models::ConsistencyIssue;
 
@@ -12456,8 +12533,8 @@ impl SqliteSpindleService {
                 check_type: "scene_purpose_fulfillment".to_string(),
                 message: format!(
                     "{unscanned} additional scene(s) with a planned purpose were not scanned for \
-                     purpose fulfillment (only the {SCENE_PURPOSE_SCAN_CAP} earliest scenes in \
-                     scope are audited per run)"
+                     purpose fulfillment (at most {SCENE_PURPOSE_SCAN_CAP} scenes in \
+                     scope are audited per page; inspect audit_coverage.next_offset)"
                 ),
                 entity_ids: Vec::new(),
                 suggested_action: Some(
@@ -12473,8 +12550,15 @@ impl SqliteSpindleService {
                 // A non-JSON local stub (the default `review` route) parses to
                 // an error the caller treats as no finding rather than a guess.
                 Ok(response) => match parse_scene_purpose_output(&response.output) {
-                    Ok(verdict) => verdict,
-                    Err(_) => continue,
+                    Ok(verdict) if !response.truncated && verdict.fulfilled.is_some() => {
+                        if response.adapter_kind == "local" {
+                            coverage.heuristic_ids.push(unit.scene_id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(unit.scene_id.clone());
+                        }
+                        verdict
+                    }
+                    _ => continue,
                 },
                 // Honest skip: the review route is unreachable/missing or not
                 // cleared for the scene rating. Emit one info finding that reads
@@ -12537,6 +12621,7 @@ impl SqliteSpindleService {
         &self,
         units: &[SecretLeakScanUnit],
         unscanned: usize,
+        coverage: &mut spindle_core::models::AuditCoverage,
     ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
         use spindle_core::models::ConsistencyIssue;
 
@@ -12548,8 +12633,8 @@ impl SqliteSpindleService {
                 check_type: "secret_leak".to_string(),
                 message: format!(
                     "{unscanned} additional (scene, secret-set) pair(s) were not scanned for \
-                     behavioral secret leaks (only the {SECRET_LEAK_DEEP_SCAN_CAP} earliest scenes \
-                     in scope are audited per run)"
+                     behavioral secret leaks (at most {SECRET_LEAK_DEEP_SCAN_CAP} scenes \
+                     in scope are audited per page; inspect audit_coverage.next_offset)"
                 ),
                 entity_ids: Vec::new(),
                 suggested_action: Some(
@@ -12564,7 +12649,17 @@ impl SqliteSpindleService {
             let findings = match self.repository.model_router().complete(&request).await {
                 // A non-JSON local stub (the default `review` route) parses to
                 // nothing, so a local-only deployment adds no behavioral findings.
-                Ok(response) => parse_deep_secret_leak_output(&response.output).unwrap_or_default(),
+                Ok(response) => match parse_deep_secret_leak_output(&response.output) {
+                    Ok(findings) if !response.truncated => {
+                        if response.adapter_kind == "local" {
+                            coverage.heuristic_ids.push(unit.scene_id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(unit.scene_id.clone());
+                        }
+                        findings
+                    }
+                    _ => Vec::new(),
+                },
                 // Honest skip: the review route is unreachable/missing or not
                 // cleared for the scene rating. Emit one info finding that reads
                 // as SKIPPED rather than clean, then stop (every unit hits the
@@ -17695,7 +17790,7 @@ impl SqliteSpindleService {
         &self,
         input: spindle_core::models::ExportRecapInput,
     ) -> Result<spindle_core::models::ExportRecapOutput> {
-        use crate::format::{SCENE_RADIX, story_index, story_index_from_placement};
+        use crate::format::{SCENE_RADIX, story_index};
         use spindle_core::models::ExportRecapOutput;
 
         self.repository.get_project(&input.project_id).await?;
@@ -17754,42 +17849,31 @@ impl SqliteSpindleService {
             .list_narrative_promises_by_project_and_branch(&input.project_id, &active_branch.id)
             .await?;
 
-        // Paid off: status paid_off whose payoff placement <= cursor. There is no
-        // recorded *actual* payoff placement (update_promise_status writes only
-        // the status string; the mined payoff path routes through it too), so we
-        // use the author's declared `planned_payoff` when present, and fall back
-        // to `planted_at <= cursor` when it is absent. Reader-secret gated.
-        let mut paid: Vec<&crate::sqlite::records::NarrativePromise> = promises
+        // Only recorded actual events can establish a payoff at this cursor.
+        let mut paid: Vec<_> = promises
             .iter()
-            .filter(|promise| promise.status == "paid_off" && promise.archived_at.is_none())
             .filter(|promise| {
-                let placement = promise
-                    .planned_payoff
-                    .as_ref()
-                    .unwrap_or(&promise.planted_at);
-                story_index_from_placement(placement) <= cursor
+                promise.archived_at.is_none() && promise.status_at(cursor) == Some("paid_off")
             })
             .filter(|promise| !names_secret(&promise.description))
             .collect();
         paid.sort_by(|a, b| a.id.cmp(&b.id));
 
-        // Still open: non-resolved (not paid_off / abandoned) promises planted at
-        // or under the cursor. Reader voice, no urgency jargon. Reader-secret gated.
-        let mut open: Vec<&crate::sqlite::records::NarrativePromise> = promises
+        let mut open: Vec<_> = promises
             .iter()
+            .filter(|promise| promise.archived_at.is_none())
             .filter(|promise| {
-                promise.status != "paid_off"
-                    && promise.status != "abandoned"
-                    && promise.archived_at.is_none()
+                promise
+                    .status_at(cursor)
+                    .is_some_and(|status| status != "paid_off" && status != "abandoned")
             })
-            .filter(|promise| story_index_from_placement(&promise.planted_at) <= cursor)
             .filter(|promise| !names_secret(&promise.description))
             .collect();
         open.sort_by(|a, b| a.id.cmp(&b.id));
 
         markdown.push_str("## Paid off\n\n");
         if paid.is_empty() {
-            markdown.push_str("_Nothing has paid off yet._\n\n");
+            markdown.push_str("_No confirmed payoffs at this point._\n\n");
         } else {
             for promise in &paid {
                 markdown.push_str(&format!("- {}\n", promise.description));
@@ -17799,7 +17883,7 @@ impl SqliteSpindleService {
 
         markdown.push_str("## Questions still hanging\n\n");
         if open.is_empty() {
-            markdown.push_str("_No open questions right now._\n\n");
+            markdown.push_str("_No confirmed open questions at this point._\n\n");
         } else {
             for promise in &open {
                 markdown.push_str(&format!("- {}\n", promise.description));
@@ -18722,6 +18806,7 @@ impl SqliteSpindleService {
         // Gather the chapter's scenes IN SPINE ORDER. The caller supplies the
         // ordered scene ids; we fetch each and drop empty prose. No scenes / all
         // empty ⇒ honest skip before any model call (I8).
+        let mut resolved_scenes = Vec::new();
         let mut prose_blocks: Vec<String> = Vec::new();
         for scene_id in &input.scene_ids {
             let scene = self.repository.get_scene(scene_id).await?;
@@ -18732,16 +18817,39 @@ impl SqliteSpindleService {
                     input.project_id
                 );
             }
-            if scene.full_text.trim().is_empty() {
-                continue;
+            resolved_scenes.push(scene);
+        }
+        resolved_scenes.sort_by_key(|s| (s.book_number, s.chapter_number, s.scene_order));
+        if let Some(first) = resolved_scenes.first() {
+            anyhow::ensure!(
+                resolved_scenes
+                    .iter()
+                    .all(|s| s.branch_id == first.branch_id
+                        && s.book_number == first.book_number
+                        && s.chapter_number == first.chapter_number),
+                "reader simulation scenes must belong to one chapter and branch"
+            );
+        }
+        let rating = max_scene_rating(&resolved_scenes)
+            .into_iter()
+            .chain(input.rating.clone())
+            .max_by_key(|rating| match rating.to_ascii_lowercase().as_str() {
+                "explicit" => 3,
+                "mature" => 2,
+                "teen" => 1,
+                _ => 0,
+            });
+        for scene in &resolved_scenes {
+            if !scene.full_text.trim().is_empty() {
+                prose_blocks.push(format!(
+                    "[chapter {} scene {}]\n{}",
+                    scene.chapter_number, scene.scene_order, scene.full_text
+                ));
             }
-            prose_blocks.push(format!(
-                "[chapter {} scene {}]\n{}",
-                scene.chapter_number, scene.scene_order, scene.full_text
-            ));
         }
         if prose_blocks.is_empty() {
             return Ok(ReaderSimChapterOutcome {
+                open_questions: None,
                 status: "skipped".to_string(),
                 engagement: "skipped".to_string(),
                 notes: String::new(),
@@ -18763,8 +18871,12 @@ impl SqliteSpindleService {
             .complete(&ModelRequest {
                 route: "reader_sim".to_string(),
                 prompt: prompt.clone(),
-                rating: input.rating.clone(),
-                context: None,
+                rating: rating.clone(),
+                context: Some(crate::ai::RequestContext {
+                    project_id: Some(input.project_id.clone()),
+                    scene_id: resolved_scenes.first().map(|s| s.id.clone()),
+                    ..Default::default()
+                }),
             })
             .await
         {
@@ -18782,8 +18894,12 @@ impl SqliteSpindleService {
                         .complete(&ModelRequest {
                             route: "review".to_string(),
                             prompt: prompt.clone(),
-                            rating: input.rating.clone(),
-                            context: None,
+                            rating: rating.clone(),
+                            context: Some(crate::ai::RequestContext {
+                                project_id: Some(input.project_id.clone()),
+                                scene_id: resolved_scenes.first().map(|s| s.id.clone()),
+                                ..Default::default()
+                            }),
                         })
                         .await
                     {
@@ -18800,8 +18916,12 @@ impl SqliteSpindleService {
 
         // Strict parse; malformed → keep prior notes, engagement "unparsed",
         // never guess (I8). The reader loses no memory.
-        match parse_reader_sim_output(&response.output) {
+        match (!response.truncated)
+            .then(|| parse_reader_sim_output(&response.output))
+            .flatten()
+        {
             Some(parsed) => Ok(ReaderSimChapterOutcome {
+                open_questions: parsed.open_questions,
                 status: "read".to_string(),
                 engagement: parsed.engagement,
                 notes: parsed.notes,
@@ -18809,6 +18929,7 @@ impl SqliteSpindleService {
                 skip_reason: None,
             }),
             None => Ok(ReaderSimChapterOutcome {
+                open_questions: None,
                 status: "unparsed".to_string(),
                 engagement: "unparsed".to_string(),
                 notes: input.prior_notes.clone(),
@@ -19354,6 +19475,8 @@ impl SqliteSpindleService {
                     narrative_promise_id: promise_id,
                     status,
                     note: None,
+                    source_scene_id: Some(delta.scene_id.clone()),
+                    ..Default::default()
                 })
                 .await?;
                 Ok(None)
@@ -22364,7 +22487,7 @@ impl SqliteSpindleService {
         let prior_is_agent = prior
             .draft_origin
             .as_deref()
-            .is_some_and(|o| o.starts_with("agent:"));
+            .is_some_and(|o| o.starts_with("agent:") || o == "assistant:host");
         let pending_exists = !self
             .repository
             .list_style_edit_candidates(&input.project_id, branch_id, Some("pending"))
@@ -22533,7 +22656,9 @@ impl SqliteSpindleService {
         //     fresh pair).
         // The capture predicate keys on `starts_with("agent:")`, so both explicit
         // and non-explicit agent stamps trip it uniformly.
-        let mut draft_origin: Option<String> = None;
+        let mut draft_origin = (input.authorship
+            == spindle_core::models::DraftAuthorship::Assistant)
+            .then(|| "assistant:host".to_string());
         if matches!(
             input.content_rating,
             spindle_core::models::ContentRating::Explicit
@@ -22662,6 +22787,16 @@ impl SqliteSpindleService {
                 save_input.scene_order,
             )
             .await?;
+
+        // A changed human draft ceases to be AI-authored even when learning is
+        // disabled. Metadata-only saves retain the existing prose provenance.
+        if !is_agent_save
+            && prior_scene
+                .as_ref()
+                .is_none_or(|prior| prior.full_text != save_input.full_text)
+        {
+            draft_origin = Some("operator".to_string());
+        }
 
         // Knowledge-learned package (design §2.3 path 2): validate every secret
         // link BEFORE any write so an invalid link fails the save atomically —
@@ -27356,7 +27491,10 @@ fn build_reader_sim_prompt(
          [{{\"severity\":\"info|warning\",\"description\":\"<a craft observation>\"}}]}}\n\
          `notes` REPLACES your prior notes (self-contained, not a diff). Raise a \
          concern only for a real craft signal (engagement dip, retread, unpaid \
-         setup); an empty concerns array is fine.",
+         setup); an empty concerns array is fine. Also return `open_questions`, an array of \
+         at most 12 unresolved reader questions, preserving older questions until the prose \
+         answers them. Keep those separate from your replacement notes. Missing chapters \
+         are unknown; never invent events to fill a gap.",
         header = READER_SIM_HEADER,
         promise = contract.promise,
         style = style,
@@ -27370,6 +27508,8 @@ fn build_reader_sim_prompt(
 /// spells out; unknown extras are ignored.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct RawReaderSimOutput {
+    #[serde(default)]
+    open_questions: Option<Vec<String>>,
     engagement: String,
     #[serde(default)]
     notes: String,
@@ -27386,6 +27526,7 @@ struct RawReaderSimConcern {
 
 /// The normalized reader-sim read (engagement + notes + validated concerns).
 struct ParsedReaderSim {
+    open_questions: Option<Vec<String>>,
     engagement: String,
     notes: String,
     concerns: Vec<spindle_core::models::ReaderSimConcern>,
@@ -27428,6 +27569,7 @@ fn parse_reader_sim_output(output: &str) -> Option<ParsedReaderSim> {
         })
         .collect();
     Some(ParsedReaderSim {
+        open_questions: raw.open_questions,
         engagement,
         notes: raw.notes,
         concerns,
@@ -27450,6 +27592,7 @@ fn reader_sim_skip_outcome(
         ),
     };
     spindle_core::models::ReaderSimChapterOutcome {
+        open_questions: None,
         status: "skipped".to_string(),
         engagement: "skipped".to_string(),
         notes: String::new(),
@@ -29513,6 +29656,7 @@ mod tests {
 
         let output = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec![
@@ -31286,6 +31430,7 @@ mod tests {
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::book(1),
                 checks: vec!["scene_stub_text".to_string()],
@@ -31848,6 +31993,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promise_history_tracks_actual_payoff_reopening_correction_and_unknown_dates() {
+        use crate::format::story_index;
+        use spindle_core::models::ExportRecapInput;
+        let (_tmp, svc) = fresh_service().await;
+        let project_id = recap_project(&svc, "Promise history").await;
+        let placement = |chapter| StoryPlacement {
+            book_number: 1,
+            chapter_number: chapter,
+            scene_order: Some(1),
+            note: None,
+        };
+        let id = svc
+            .create_narrative_promise(CreateNarrativePromiseInput {
+                project_id: project_id.clone(),
+                promise_type: "mystery".into(),
+                description: "The missing key".into(),
+                planted_at: placement(1),
+                planned_payoff: Some(placement(2)),
+                notes: vec![],
+            })
+            .await
+            .unwrap()
+            .narrative_promise_id;
+        svc.update_promise_status(UpdatePromiseStatusInput {
+            narrative_promise_id: id.clone(),
+            status: "paid_off".into(),
+            at: Some(placement(40)),
+            note: Some("The key was recovered".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        svc.update_promise_status(UpdatePromiseStatusInput {
+            narrative_promise_id: id.clone(),
+            status: "reopened".into(),
+            at: Some(placement(50)),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let promise = svc.repository.get_narrative_promise(&id).await.unwrap();
+        assert_eq!(promise.status_at(story_index(1, 3, 9)), Some("planted"));
+        assert_eq!(promise.status_at(story_index(1, 45, 9)), Some("paid_off"));
+        assert_eq!(promise.status_at(story_index(1, 50, 9)), Some("reopened"));
+        assert_eq!(
+            promise.status_history[0].note.as_deref(),
+            Some("The key was recovered")
+        );
+        let correction = UpdatePromiseStatusInput {
+            narrative_promise_id: id.clone(),
+            status: "paid_off".into(),
+            at: Some(placement(42)),
+            replaces_event_id: Some(promise.status_history[0].id.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            svc.update_promise_status(correction.clone())
+                .await
+                .unwrap()
+                .status,
+            "reopened"
+        );
+        assert!(svc.update_promise_status(correction).await.is_err());
+        let promise = svc.repository.get_narrative_promise(&id).await.unwrap();
+        assert_eq!(promise.status_at(story_index(1, 41, 9)), Some("planted"));
+        assert_eq!(promise.status_at(story_index(1, 43, 9)), Some("paid_off"));
+        let recap = svc
+            .export_recap(ExportRecapInput {
+                project_id,
+                book_number: 1,
+                through_chapter: 43,
+                write_to_workspace: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            recap
+                .markdown
+                .split("## Questions still hanging")
+                .next()
+                .unwrap()
+                .contains("The missing key")
+        );
+
+        // The generic mutation path must also journal; omitting a date never
+        // converts the planned chapter into an asserted historical payoff.
+        svc.repository
+            .update_entity_field(
+                "narrative_promise",
+                &id,
+                "status",
+                serde_json::json!("paid_off"),
+            )
+            .await
+            .unwrap();
+        let promise = svc.repository.get_narrative_promise(&id).await.unwrap();
+        assert_eq!(promise.status_history.len(), 4);
+        assert_eq!(promise.status_at(story_index(1, 45, 9)), None);
+        let mut legacy = promise;
+        legacy.status_history.clear();
+        assert_eq!(legacy.status_at(i64::MAX), None);
+
+        let (other, scene_id, _) = project_with_scene(&svc, "Other project").await;
+        assert_ne!(other.project_id, legacy.project_id);
+        assert!(
+            svc.update_promise_status(UpdatePromiseStatusInput {
+                narrative_promise_id: id.clone(),
+                status: "paid_off".into(),
+                source_scene_id: Some(scene_id),
+                ..Default::default()
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            svc.repository
+                .get_narrative_promise(&id)
+                .await
+                .unwrap()
+                .status_history
+                .len(),
+            4
+        );
+    }
+
+    #[tokio::test]
     async fn export_recap_folds_summaries_and_promises_at_cursor() {
         use spindle_core::models::{
             CreateNarrativePromiseInput, ExportRecapInput, SaveSummaryInput, StoryPlacement,
@@ -31905,7 +32176,14 @@ mod tests {
         svc.update_promise_status(UpdatePromiseStatusInput {
             narrative_promise_id: paid.narrative_promise_id.clone(),
             status: "paid_off".into(),
+            at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 2,
+                scene_order: Some(1),
+                note: None,
+            }),
             note: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -33240,6 +33518,7 @@ agent = "slow-review"
         // contemplative chapter-ending scene.
         let consistency = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["style_compliance".into()],
@@ -40038,7 +40317,7 @@ rating = "explicit"
         // The author splits scene 2 into two scenes in the file.
         std::fs::write(
             &pushed.target_path,
-            "first body\n\n---\n\nsecond body part one\n\n---\n\nsecond body part two",
+            "first body\n\n<!-- spindle-scene -->\n\nsecond body part one\n\n<!-- spindle-scene -->\n\nsecond body part two",
         )
         .unwrap();
 
@@ -40123,7 +40402,10 @@ rating = "explicit"
         // Assert: 2 scene entries, file contains delimited bodies.
         assert_eq!(report.scenes.len(), 2);
         let written = std::fs::read_to_string(&report.target_path).unwrap();
-        assert_eq!(written, "scene one body\n\n---\n\nscene two body");
+        assert_eq!(
+            written,
+            "scene one body\n\n<!-- spindle-scene -->\n\nscene two body"
+        );
 
         // Sanity: temp dir contains the file we just wrote.
         let _ = tmp;
@@ -40912,6 +41194,7 @@ rating = "explicit"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: Vec::new(),
@@ -41144,6 +41427,7 @@ rating = "explicit"
         .unwrap();
 
         let input = || CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks: vec!["chronology".to_string()],
@@ -41332,6 +41616,7 @@ rating = "explicit"
         .unwrap();
 
         let input = |checks: Vec<String>| CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks,
@@ -41439,6 +41724,7 @@ rating = "explicit"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: Vec::new(),
@@ -42101,6 +42387,7 @@ rating = "explicit"
         .unwrap();
 
         let input = |deep: bool| CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks: vec!["temporal_coherence".to_string()],
@@ -42181,6 +42468,7 @@ rating = "explicit"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["temporal_coherence".to_string()],
@@ -42395,6 +42683,7 @@ agent = "review-dead"
 
         fn temporal_input(project_id: &str) -> CheckConsistencyInput {
             CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.to_string(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["temporal_coherence".to_string()],
@@ -42408,6 +42697,7 @@ agent = "review-dead"
 
         fn world_rule_input(project_id: &str) -> CheckConsistencyInput {
             CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.to_string(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["world_rule_compliance".to_string()],
@@ -43357,6 +43647,7 @@ agent = "review-dead"
 
     fn quantity_drift_input(project_id: &str) -> spindle_core::models::CheckConsistencyInput {
         spindle_core::models::CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.to_string(),
             scope: spindle_core::models::ConsistencyScopeInput::full(),
             checks: vec!["quantity_drift".into()],
@@ -43821,6 +44112,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(spindle_core::models::CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project.project_id.clone(),
                 scope: spindle_core::models::ConsistencyScopeInput::full(),
                 checks: vec!["currency_consistency".into()],
@@ -43922,6 +44214,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(spindle_core::models::CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: spindle_core::models::ConsistencyScopeInput::full(),
                 checks: vec!["affordability".into()],
@@ -44172,6 +44465,62 @@ agent = "review-dead"
     }
 
     #[tokio::test]
+    async fn serial_context_keeps_recent_books_and_old_commitments_without_future_summaries() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let project_id = recap_project(&svc, "Long serial").await;
+        let branch = svc.repository.get_active_branch(&project_id).await.unwrap();
+        for book in 1..=6 {
+            for chapter in 1..=40 {
+                svc.repository
+                    .save_summary(&SaveSummaryInput {
+                        project_id: project_id.clone(),
+                        book_number: book,
+                        chapter_number: chapter,
+                        entity_type: None,
+                        entity_id: None,
+                        summary: format!("BOOK{book}CH{chapter} {}", "物語".repeat(300)),
+                        key_events: vec![],
+                        character_changes: vec![],
+                        relationship_shifts: vec![],
+                        arc_advances: vec![],
+                        promise_events: vec![],
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        svc.create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: project_id.clone(),
+            promise_type: "mystery".into(),
+            description: "ANCIENTKEY still missing".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: None,
+            notes: vec![],
+        })
+        .await
+        .unwrap();
+        let context = svc
+            .story_so_far(&project_id, &branch.id, 6, 20, 1)
+            .await
+            .unwrap();
+        assert!(context.contains("BOOK6CH19"), "{context}");
+        assert!(context.contains("BOOK5CH40"), "{context}");
+        assert!(context.contains("ANCIENTKEY"), "{context}");
+        assert!(!context.contains("BOOK6CH20") && !context.contains("BOOK6CH40"));
+        assert!(context.contains("earlier books omitted"));
+        assert!(context.len() <= 2000, "{} bytes", context.len());
+        assert!(
+            !context.contains("BOOK1CH"),
+            "early books must not crowd out recent ones"
+        );
+    }
+
+    #[tokio::test]
     async fn scene_context_surfaces_story_so_far_digest() {
         use spindle_core::models::{
             ContentRating, ContextFormat, GetSceneContextInput, SaveSceneDraftInput,
@@ -44241,7 +44590,7 @@ agent = "review-dead"
             .get_scene_context(GetSceneContextInput {
                 project_id: proj.project_id.clone(),
                 book_number: 1,
-                chapter_number: 1,
+                chapter_number: 2,
                 chapter_id: None,
                 scene_order: 1,
                 character_ids: Vec::new(),
@@ -44538,6 +44887,7 @@ agent = "review-dead"
             narrative_promise_id: promise.narrative_promise_id.clone(),
             status: "active".into(),
             note: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -44771,6 +45121,7 @@ agent = "review-dead"
             narrative_promise_id: promise.narrative_promise_id,
             status: "paid_off".into(),
             note: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -45168,6 +45519,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["pacing_drift".to_string()],
@@ -45482,6 +45834,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["knowledge_timing".to_string()],
@@ -45609,6 +45962,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["pacing_budget_audit".to_string()],
@@ -47179,6 +47533,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: Vec::new(),
@@ -47268,6 +47623,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: Vec::new(),
@@ -47988,6 +48344,7 @@ agent = "review-dead"
         // 3. Run check_consistency and assert warning for missing usage
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["research_accuracy".to_string()],
@@ -48075,6 +48432,7 @@ agent = "review-dead"
         // 5. Run check_consistency and assert warnings for both missing usage AND orphaned claim
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: proj.project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["research_accuracy".to_string()],
@@ -48765,6 +49123,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["motif_usage_audit".to_string()],
@@ -48823,6 +49182,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 // Two-chapter scope: below the ≥3 threshold, so no unused-info
                 // noise either.
@@ -48898,6 +49258,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["motif_usage_audit".to_string()],
@@ -48970,6 +49331,7 @@ agent = "review-dead"
         // Wide scope (3 chapters) → info "declared but unused".
         let wide = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["motif_usage_audit".to_string()],
@@ -48994,6 +49356,7 @@ agent = "review-dead"
         // Narrow scope (2 chapters) → no unused-info noise.
         let narrow = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::chapter_range(1, 1, 1, 2),
                 checks: vec!["motif_usage_audit".to_string()],
@@ -49042,6 +49405,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["theme_placement_audit".to_string()],
@@ -49103,6 +49467,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["theme_placement_audit".to_string()],
@@ -49144,6 +49509,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["theme_placement_audit".to_string()],
@@ -49304,6 +49670,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["plot_line_convergence_audit".to_string()],
@@ -49380,6 +49747,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["plot_line_convergence_audit".to_string()],
@@ -49425,6 +49793,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["plot_line_convergence_audit".to_string()],
@@ -49529,6 +49898,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["arc_milestone_audit".to_string()],
@@ -49585,6 +49955,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["arc_milestone_audit".to_string()],
@@ -49632,6 +50003,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["arc_milestone_audit".to_string()],
@@ -49666,6 +50038,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["arc_milestone_audit".to_string()],
@@ -49711,6 +50084,7 @@ agent = "review-dead"
         // Overdue before the update.
         let before = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["arc_milestone_audit".to_string()],
@@ -49749,6 +50123,7 @@ agent = "review-dead"
 
         let after = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["arc_milestone_audit".to_string()],
@@ -49822,6 +50197,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["conflict_escalation_audit".to_string()],
@@ -49872,6 +50248,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["conflict_escalation_audit".to_string()],
@@ -49903,6 +50280,7 @@ agent = "review-dead"
 
         let out = svc
             .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.clone(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["conflict_escalation_audit".to_string()],
@@ -50124,6 +50502,7 @@ agent = "review-dead"
             project_id: &str,
         ) -> Vec<spindle_core::models::ConsistencyIssue> {
             svc.check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.to_string(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["secret_leak".to_string()],
@@ -50490,6 +50869,7 @@ agent = "review-dead"
             deep: bool,
         ) -> Vec<spindle_core::models::ConsistencyIssue> {
             svc.check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.to_string(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["secret_leak".to_string()],
@@ -50911,6 +51291,7 @@ agent = "review-safe"
     ) -> spindle_core::models::CheckConsistencyInput {
         use spindle_core::models::{CheckConsistencyInput, ConsistencyScopeInput};
         CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.to_string(),
             scope: ConsistencyScopeInput::full(),
             checks: vec!["promise_payoff_detection".to_string()],
@@ -51243,6 +51624,7 @@ agent = "review-safe"
             narrative_promise_id: promise_id.clone(),
             status: "paid_off".into(),
             note: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -51585,6 +51967,7 @@ agent = "review-safe"
 
         fn purpose_input(project_id: &str, deep: bool) -> CheckConsistencyInput {
             CheckConsistencyInput {
+                deep_scan_offset: None,
                 project_id: project_id.to_string(),
                 scope: ConsistencyScopeInput::full(),
                 checks: vec!["scene_purpose_fulfillment".to_string()],
@@ -51978,6 +52361,25 @@ agent = "review-rated"
                 "12 eligible - 10 scanned = 2 unscanned: {}",
                 summary.message
             );
+            let coverage = &deep.audit_coverage[0];
+            assert_eq!((coverage.eligible, coverage.next_offset), (12, Some(10)));
+            assert!(
+                coverage.evaluated_ids.is_empty(),
+                "local stubs are not model reviews"
+            );
+            assert_eq!(coverage.heuristic_ids.len(), 10);
+            assert_eq!(coverage.not_evaluated_ids.len(), 12);
+            let mut next = purpose_input(&project_id, true);
+            next.deep_scan_offset = coverage.next_offset;
+            let page = svc.check_consistency(next).await.unwrap();
+            let next = &page.audit_coverage[0];
+            assert_eq!(next.heuristic_ids.len(), 2);
+            assert!(
+                next.heuristic_ids
+                    .iter()
+                    .all(|id| !coverage.heuristic_ids.contains(id))
+            );
+            assert_eq!(next.next_offset, None);
         }
 
         // ── (h) parser units ───────────────────────────────────────────────
@@ -53574,7 +53976,7 @@ agent = "review-safe"
             .reader_sim_chapter(ReaderSimChapterInput {
                 project_id: project.project_id.clone(),
                 scene_ids: vec![scene_id.clone()],
-                rating: Some("explicit".to_string()),
+                rating: Some("general".to_string()),
                 prior_notes: String::new(),
             })
             .await
@@ -57096,6 +57498,57 @@ agent = "review-dead"
         }
 
         // Test 2a: opt-out project → no capture.
+        #[tokio::test]
+        async fn host_assistant_rewrites_are_not_human_feedback() {
+            let (_tmp, svc) = fresh_service_local().await;
+            let (project_id, branch_id, scene_id) =
+                agent_drafted_scene(&svc, "host-ai", "Original draft.").await;
+            enable_style_learning(&svc, &project_id).await;
+            let input = SaveSceneDraftInput {
+                project_id: project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "The host assistant revised this prose.".into(),
+                summary: "opening".into(),
+                authorship: spindle_core::models::DraftAuthorship::Assistant,
+                ..Default::default()
+            };
+            let saved = svc.save_scene_draft(input).await.unwrap();
+            assert_eq!(saved.draft_origin, "assistant:host");
+            assert!(
+                svc.repository
+                    .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            operator_resave(&svc, &project_id, "The author chose a quieter sentence.").await;
+            let pending = svc
+                .repository
+                .list_style_edit_candidates(&project_id, &branch_id, Some("pending"))
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(
+                pending[0].agent_draft,
+                "The host assistant revised this prose."
+            );
+            assert_eq!(
+                pending[0].operator_edit,
+                "The author chose a quieter sentence."
+            );
+            assert_eq!(
+                svc.repository
+                    .get_scene(&scene_id)
+                    .await
+                    .unwrap()
+                    .draft_origin
+                    .as_deref(),
+                Some("operator")
+            );
+        }
+
         #[tokio::test]
         async fn no_capture_when_project_opted_out() {
             let (_tmp, svc) = fresh_service_local().await;

@@ -638,6 +638,7 @@ impl Repository {
         data_dir: PathBuf,
         model_router: ModelRouter,
     ) -> Self {
+        let model_router = model_router.with_usage_pool(pool.clone());
         Self {
             inner: Arc::new(Inner {
                 pool,
@@ -8225,23 +8226,65 @@ impl Repository {
             .await
     }
 
-    pub async fn update_promise_status(&self, promise_id: &str, status: &str) -> Result<()> {
-        let promise_id = promise_id.to_string();
-        let status = status.to_string();
-        let now = timestamp_to_micros(chrono::Utc::now());
+    pub async fn update_promise_status(
+        &self,
+        input: &spindle_core::models::UpdatePromiseStatusInput,
+    ) -> Result<()> {
+        use crate::format::{CHAPTER_RADIX, SCENE_RADIX, story_index, story_index_from_placement};
+        use spindle_core::models::PromiseStatusEvent;
+        anyhow::ensure!(
+            !input.status.trim().is_empty(),
+            "promise status must not be empty"
+        );
+        let input = input.clone();
         self.inner
             .pool
             .write(move |conn| {
-                let n = conn.execute(
-                    "UPDATE narrative_promise SET status = ?1, updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![&status, now, &promise_id],
-                )?;
-                if n == 0 {
-                    return Err(rusqlite::Error::QueryReturnedNoRows);
-                }
-                Ok(())
+                Ok((|| -> Result<()> {
+                    let tx = conn.transaction()?;
+                    let mut promise = tx.query_row(
+                        &format!("SELECT {NARRATIVE_PROMISE_COLUMNS} FROM narrative_promise WHERE id = ?1"),
+                        [&input.narrative_promise_id], |row| NarrativePromise::try_from(row))?;
+                    let mut at = input.at;
+                    if let Some(scene_id) = &input.source_scene_id {
+                        let scene = tx.query_row(&format!("SELECT {SCENE_COLUMNS} FROM scene WHERE id = ?1"),
+                            [scene_id], |row| Scene::try_from(row))?;
+                        anyhow::ensure!(scene.project_id == promise.project_id && scene.branch_id == promise.branch_id,
+                            "promise evidence must belong to the same project and branch");
+                        if let Some(at) = &at {
+                            anyhow::ensure!(at.book_number == scene.book_number && at.chapter_number == scene.chapter_number
+                                && at.scene_order.is_none_or(|order| order == scene.scene_order),
+                                "promise placement must match its evidence scene");
+                        }
+                        at = Some(StoryPlacement { book_number: scene.book_number, chapter_number: scene.chapter_number,
+                            scene_order: Some(scene.scene_order), note: at.and_then(|p| p.note) });
+                    }
+                    if let Some(at) = &at {
+                        anyhow::ensure!(at.book_number > 0 && (0..CHAPTER_RADIX as i32).contains(&at.chapter_number)
+                            && at.scene_order.is_none_or(|s| (0..SCENE_RADIX as i32).contains(&s)),
+                            "promise placement is out of range");
+                        anyhow::ensure!(story_index(at.book_number, at.chapter_number, at.scene_order.unwrap_or((SCENE_RADIX - 1) as i32))
+                            >= story_index_from_placement(&promise.planted_at), "promise event cannot precede its planting");
+                    }
+                    if let Some(id) = &input.replaces_event_id {
+                        anyhow::ensure!(promise.status_history.iter().any(|e| &e.id == id)
+                            && !promise.status_history.iter().any(|e| e.replaces_event_id.as_ref() == Some(id)),
+                            "replacement must name a current event of this promise");
+                    }
+                    let now = chrono::Utc::now();
+                    promise.status_history.push(PromiseStatusEvent {
+                        id: mint_id("promise_event"), previous_status: promise.status.clone(),
+                        status: input.status.clone(), at, source_scene_id: input.source_scene_id,
+                        note: input.note, replaces_event_id: input.replaces_event_id, recorded_at: now.to_rfc3339(),
+                    });
+                    let status = promise.status_at(i64::MAX).unwrap_or(&input.status);
+                    tx.execute("UPDATE narrative_promise SET status = ?1, status_history = ?2, updated_at = ?3 WHERE id = ?4",
+                        rusqlite::params![status, serde_json::to_string(&promise.status_history)?, timestamp_to_micros(now), &promise.id])?;
+                    tx.commit()?;
+                    Ok(())
+                })())
             })
-            .await?;
+            .await??;
         Ok(())
     }
 
@@ -10945,6 +10988,18 @@ impl Repository {
     ) -> Result<()> {
         if !column_is_updatable(table, field) {
             anyhow::bail!("column '{field}' on '{table}' is not in the update allowlist");
+        }
+        if table == "narrative_promise" && field == "status" {
+            return self
+                .update_promise_status(&spindle_core::models::UpdatePromiseStatusInput {
+                    narrative_promise_id: entity_id.to_owned(),
+                    status: value
+                        .as_str()
+                        .context("promise status must be a string")?
+                        .to_owned(),
+                    ..Default::default()
+                })
+                .await;
         }
         let table = table.to_string();
         let entity_id = entity_id.to_string();

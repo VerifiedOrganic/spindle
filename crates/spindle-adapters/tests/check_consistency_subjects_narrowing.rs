@@ -109,6 +109,7 @@ async fn check_consistency_subjects_list_filters_scene_set() {
 
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks: Vec::new(),

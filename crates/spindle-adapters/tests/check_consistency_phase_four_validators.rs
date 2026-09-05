@@ -69,6 +69,7 @@ async fn check_consistency_emits_phase_four_validator_findings() {
 
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks: Vec::new(),
@@ -158,6 +159,7 @@ async fn secrecy_class_world_rule_scans_dialogue_only() {
 
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks: Vec::new(),
@@ -200,6 +202,7 @@ async fn secrecy_class_world_rule_scans_dialogue_only() {
 
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: proj.project_id.clone(),
             scope: ConsistencyScopeInput::full(),
             checks: Vec::new(),

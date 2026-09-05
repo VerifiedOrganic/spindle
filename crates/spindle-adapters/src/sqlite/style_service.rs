@@ -2925,6 +2925,7 @@ impl SqliteSpindleService {
             };
 
             let save_input = spindle_core::models::SaveSceneDraftInput {
+                authorship: spindle_core::models::DraftAuthorship::Assistant,
                 project_id: input.project_id.clone(),
                 book_number: existing_scene.book_number,
                 chapter_number: existing_scene.chapter_number,

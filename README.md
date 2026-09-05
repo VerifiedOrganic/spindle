@@ -1,5 +1,11 @@
 # Spindle
 
+For focused serial-fiction work, run the MCP server with `SPINDLE_TOOL_PROFILE=authoring`
+and load the `authoring-supervisor` skill. This smaller tool set covers planning,
+drafting, continuity, checkpoint review, recovery, and manuscript export. Leave
+the variable unset for the complete toolbox. Host AI prose should declare
+`authorship: "assistant"`; optional style learning uses subsequent human edits.
+
 **A story bible that keeps your novel consistent across hundreds of pages.**
 
 Spindle is a local-first writing companion for long-form fiction. It gives your
@@ -8,8 +14,9 @@ threads, and prose — so the scene you draft in chapter 32 still knows what
 happened in chapter 3, who's holding the cursed sword, and which promises to
 the reader haven't paid off yet.
 
-It runs entirely on your machine. Your manuscript, canon, and revisions never
-leave your laptop.
+The database and console run on your machine. Manuscript, canon and revisions
+are stored locally; configured model providers receive the context needed for
+the calls you make.
 
 ## The problem Spindle solves
 
@@ -43,6 +50,26 @@ revise without losing earlier work.
   ingest it, extract characters and world canon, and pick up where you left
   off.
 - **EPUB export.** Ship the finished book.
+
+## Long-running series
+
+The local `/console` brings together episodes, editorial work, thread history,
+manuscript reading and canon/plan decisions. Use `SPINDLE_HTTP_ADDR=127.0.0.1:8937`
+to serve it, then open `http://127.0.0.1:8937/console`.
+
+- `get_series_status` shows the contiguous release cursor and draft backlog.
+- `prepare_episode_release` → `release_episode` records a local immutable
+  chapter snapshot. Corrections append revisions; nothing is posted externally.
+- `read_episode` retains reader memory across runs and books, invalidating
+  outdated readings after manuscript, contract or model changes.
+- `get_editorial_queue` → `decide_editorial_item` turns reader concerns into
+  reviewed revision requests. Accepted work enters drafting guidance.
+- `get_model_usage` reports provider tokens, elapsed time and unknown usage.
+  Deep consistency checks expose explicit `audit_coverage` and paging.
+
+See [the implementation ledger](docs/serial-fiction-implementation.md) and
+[the comparison kit](evals/README.md). The **plot-architect** skill describes
+planning at series, arc and episode horizons.
 
 ## Who it's for
 
@@ -153,9 +180,10 @@ agent hasn't declared that scene's content rating — it skips honestly instead.
 Nothing machine-derived reaches your bible without an explicit ratification step.
 
 **Operator console.** In HTTP mode (`SPINDLE_HTTP_ADDR`), Spindle serves a
-read-only console at `/console` — a single embedded page that shows run status,
-the compiled manuscript, and the staged ratify queues, and follows a run's
-event journal live. It reads only; ratification stays in the tools.
+single embedded page at `/console` for series releases, editorial work, thread
+history, run status, the compiled manuscript, and staged ratify queues. It follows
+a run's event journal live. Author decisions use the same guarded MCP tools as
+other clients; the `GET /console/api/*` endpoints remain read-only.
 
 See [`docs/authoring-supervisor.md`](docs/authoring-supervisor.md) for the full
 flow.

@@ -20,6 +20,41 @@ relationship direction, plot outcome, or explicit-content policy. Apply local
 fixes, rerun the relevant checks/reviews, record carried-forward directives,
 and continue.
 
+## Serial workflow and the author’s editorial queue
+
+For webserials, first read `get_series_status` and the **plot-architect** skill’s
+three-horizon recipe. Draft in short batches inside a flexible arc, anchored to
+the stable reader contract. `SPINDLE_TOOL_PROFILE=authoring` supplies the compact
+workflow; use the complete toolbox for specialist worldbuilding or imports.
+
+At chapter review, use `read_episode` instead of carrying notes in chat. It
+persists reader notes and open questions across runs and books, validates source,
+branch, reader contract and model configuration, and reports unread gaps.
+Unchanged episodes reuse their reading; `force: true` requests a fresh model
+review. A skipped, unparsed or unstored reading is unresolved coverage.
+
+Successful source-validated readings stage concerns in `get_editorial_queue`.
+Review their chapter evidence and current manuscript. Use
+`decide_editorial_item` with the queue’s current source hash and item revision:
+accept a specific revision request, defer, resolve after checking the changed
+prose, dismiss with a reason, or reopen. Accepted requests appear in chapter and
+scene guidance until resolved. These are craft decisions, not canon writes.
+Do not attribute an agent decision or AI rewrite to human preference. Preserve
+explicit author decisions; do not resolve an accepted request just because a
+later model failed to repeat the concern.
+
+The local `/console` exposes series backlog, thread history, reader reviews,
+editorial decisions, and staged canon/plan actions beside manuscript reading.
+Use `get_model_usage` to report actual provider tokens and elapsed time;
+unknown tokens remain unknown. Inspect deep `audit_coverage` separately from
+finding counts, including heuristic-only and unsampled records.
+
+When the author wants an episode released, call `prepare_episode_release`,
+review the exact markdown and blockers, then pass its source hash and previous
+release ID to `release_episode`. This stores an immutable local snapshot only.
+Read or export that exact snapshot using `get_episode_release`; correct it by
+recording a new revision and a note. No publication platform is contacted.
+
 ## Workflow
 
 ### 1. Prepare and Verify Run Requirements
@@ -222,7 +257,7 @@ its structured continuity package, then call `authoring_execute_next` again. Do
 not opt into agent drafting unless the user explicitly asks for a fully
 automated/offloaded run.
 
-`authoring_save_scene_draft` is mandatory for host-drafted authoring scenes.
+`authoring_save_scene_draft` is mandatory for host-drafted authoring scenes. Pass `authorship: "assistant"` for prose you compose or revise; use `"human"` only for the author's own writing. This declaration does not replace any required rating-clearance receipt.
 Include `character_states`, `canonical_facts`, `relationship_updates`, `beats`,
 and `continuity_notes`. If the scene introduces no durable canon changes, add a
 `continuity_notes` entry saying that explicitly. Do not use generic

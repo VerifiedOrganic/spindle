@@ -654,6 +654,7 @@ async fn test_style_drift_rejects_cross_project_scene() {
 
     let scene = svc
         .save_scene_draft(SaveSceneDraftInput {
+            authorship: Default::default(),
             project_id: other_project.project_id.clone(),
             book_number: 1,
             chapter_number: 1,
@@ -1209,6 +1210,7 @@ async fn test_drift_chapter_level_and_summary_score() {
 
     let scene_1 = svc
         .save_scene_draft(SaveSceneDraftInput {
+            authorship: Default::default(),
             project_id: project_id.clone(),
             book_number: 1,
             chapter_number: 1,
@@ -1224,6 +1226,7 @@ async fn test_drift_chapter_level_and_summary_score() {
 
     let scene_2 = svc
         .save_scene_draft(SaveSceneDraftInput {
+            authorship: Default::default(),
             project_id: project_id.clone(),
             book_number: 1,
             chapter_number: 1,
@@ -1880,6 +1883,7 @@ async fn test_plan_style_revision_suite() {
 
     let other_scene = svc
         .save_scene_draft(SaveSceneDraftInput {
+            authorship: Default::default(),
             project_id: other_project_id.clone(),
             book_number: 1,
             chapter_number: 1,
@@ -1916,6 +1920,7 @@ async fn test_plan_style_revision_suite() {
     // Test 4: Scene planning
     let my_scene = svc
         .save_scene_draft(SaveSceneDraftInput {
+            authorship: Default::default(),
             project_id: project_id.clone(),
             book_number: 1,
             chapter_number: 1,
@@ -2155,6 +2160,7 @@ async fn test_style_revision_patch_lifecycle() {
 
     // Create two scenes in the chapter
     let scene_input_1 = SaveSceneDraftInput {
+        authorship: Default::default(),
         project_id: project_id.clone(),
         book_number: book.book_number,
         chapter_number: 1,
@@ -2178,6 +2184,7 @@ async fn test_style_revision_patch_lifecycle() {
     let scene_id_1 = scene_out_1.scene_id;
 
     let scene_input_2 = SaveSceneDraftInput {
+        authorship: Default::default(),
         project_id: project_id.clone(),
         book_number: book.book_number,
         chapter_number: 1,
@@ -2394,6 +2401,7 @@ async fn test_style_revision_patch_lifecycle() {
 
     // Now mutate the scene text so the hash changes
     let scene_mutate_input = SaveSceneDraftInput {
+        authorship: Default::default(),
         project_id: project_id.clone(),
         book_number: book.book_number,
         chapter_number: 1,
@@ -2585,6 +2593,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
     // Create one scene with initial text
     let initial_text = "Initial scene prose before patch.".to_string();
     let scene_input = SaveSceneDraftInput {
+        authorship: Default::default(),
         project_id: project_id.clone(),
         book_number: book.book_number,
         chapter_number: 1,
@@ -2803,6 +2812,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
 
     // Mutate the scene text to trigger a stale hash
     let mutate_input = SaveSceneDraftInput {
+        authorship: Default::default(),
         project_id: project_id.clone(),
         book_number: book.book_number,
         chapter_number: 1,
@@ -2898,6 +2908,7 @@ async fn test_style_revision_patch_evaluation() {
     // Save initial scene draft
     let initial_text = "This is a remarkably long sentence that triggers drift.".to_string();
     let scene_input = SaveSceneDraftInput {
+        authorship: Default::default(),
         project_id: project_id.clone(),
         book_number: book.book_number,
         chapter_number: 1,

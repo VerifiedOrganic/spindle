@@ -212,27 +212,11 @@ pub struct Scene {
     pub summary: String,
     pub content_rating: String,
     pub tone: Option<String>,
-    /// Provenance of the persisted prose — the single source of truth for the
-    /// three-way vocabulary the style-learning capture policy keys on
-    /// (evolution §3.9):
-    ///
-    /// * `agent:<agent-id>` — the run's draft agent authored this prose. Stamped
-    ///   by `save_scene_draft` for EVERY agent-origin save regardless of rating
-    ///   (the agent-draft seam always passes a valid `draft`-route
-    ///   `generation_id`). This is the style-contrast signal: only agent drafts
-    ///   are a style edit's "before".
-    /// * `host` — a hybrid host draft through `authoring_save_scene_draft`. The
-    ///   operator's own prose, not an agent style signal; an operator re-save
-    ///   over it never captures.
-    /// * `operator` — re-stamped by the capture policy after it stages a
-    ///   candidate, so a later same-scene save is recognized as
-    ///   operator-over-operator (replace the pending pair, never a fresh one).
-    ///
-    /// `NULL` is the pre-provenance default (legacy rows / plain operator saves
-    /// that were never an agent or host draft); it reads as "not an agent draft"
-    /// and therefore never triggers capture. The capture predicate matches on
-    /// `starts_with("agent:")`, so both explicit and non-explicit agent stamps
-    /// trip it uniformly.
+    /// Provenance of the persisted prose. `agent:<id>` identifies a routed
+    /// generation; `assistant:host` identifies explicit host-AI authorship.
+    /// Both can supply the before-text for opt-in human-edit learning.
+    /// `operator` identifies human-authored changes. Legacy `host` and NULL
+    /// remain unknown/human for capture purposes, never retroactive AI evidence.
     pub draft_origin: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
@@ -1022,7 +1006,7 @@ impl<'a> TryFrom<&Row<'a>> for Motif {
 // =============================================================================
 
 pub const NARRATIVE_PROMISE_COLUMNS: &str = "id, project_id, branch_id, promise_type, description, status, planted_at, \
-     planned_payoff, notes, archived_at, created_at, updated_at";
+     planned_payoff, notes, archived_at, created_at, updated_at, status_history";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NarrativePromise {
@@ -1032,6 +1016,8 @@ pub struct NarrativePromise {
     pub promise_type: String,
     pub description: String,
     pub status: String,
+    #[serde(default)]
+    pub status_history: Vec<spindle_core::models::PromiseStatusEvent>,
     pub planted_at: StoredStoryPlacement,
     pub planned_payoff: Option<StoredStoryPlacement>,
     pub notes: Vec<String>,
@@ -1051,6 +1037,7 @@ impl<'a> TryFrom<&Row<'a>> for NarrativePromise {
             promise_type: row::text(r, 3)?,
             description: row::text(r, 4)?,
             status: row::text(r, 5)?,
+            status_history: row::json(r, 12)?,
             planted_at: row::json(r, 6)?,
             planned_payoff: row::opt_json(r, 7)?,
             notes: row::json(r, 8)?,
@@ -1058,6 +1045,52 @@ impl<'a> TryFrom<&Row<'a>> for NarrativePromise {
             created_at: row::time(r, 10)?,
             updated_at: row::time(r, 11)?,
         })
+    }
+}
+
+impl NarrativePromise {
+    /// Reader-visible state at a story cursor. An undated transition cannot
+    /// establish historical state; a later dated event can establish it again.
+    pub fn status_at(&self, cursor: i64) -> Option<&str> {
+        use crate::format::{SCENE_RADIX, story_index, story_index_from_placement};
+        if story_index_from_placement(&self.planted_at) > cursor {
+            return None;
+        }
+        let superseded: std::collections::HashSet<&str> = self
+            .status_history
+            .iter()
+            .filter_map(|event| event.replaces_event_id.as_deref())
+            .collect();
+        let mut selected = None;
+        let mut latest_unknown = None;
+        for (index, event) in self.status_history.iter().enumerate() {
+            if superseded.contains(event.id.as_str()) {
+                continue;
+            }
+            let Some(at) = &event.at else {
+                latest_unknown = Some(index);
+                continue;
+            };
+            let position = story_index(
+                at.book_number,
+                at.chapter_number,
+                at.scene_order.unwrap_or((SCENE_RADIX - 1) as i32),
+            );
+            if position <= cursor && selected.is_none_or(|(pos, _, _)| position >= pos) {
+                selected = Some((position, index, event.status.as_str()));
+            }
+        }
+        if let Some((_, index, status)) = selected {
+            return latest_unknown
+                .filter(|unknown| *unknown > index)
+                .is_none()
+                .then_some(status);
+        }
+        let initial = self
+            .status_history
+            .first()
+            .map_or(self.status.as_str(), |e| e.previous_status.as_str());
+        (latest_unknown.is_none() && initial == "planted").then_some(initial)
     }
 }
 

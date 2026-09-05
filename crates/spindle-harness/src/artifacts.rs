@@ -281,6 +281,8 @@ pub struct CheckpointReaderSimSection {
 /// One chapter's reader-sim result inside a checkpoint report (evolution §3.6).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CheckpointReaderSimChapter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<spindle_core::serial::ReaderMemoryTrace>,
     pub chapter: i32,
     /// `high` | `steady` | `dipping` | `unparsed` | `skipped`.
     pub engagement: String,

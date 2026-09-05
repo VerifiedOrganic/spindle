@@ -233,8 +233,9 @@ for lightweight monitoring.
   snapshot (unchanged); with `?topic=run:<authoring_run_id>` it streams that
   authoring run's append-only event journal, `seq`-resumable via `Last-Event-ID`
   (ADR 0002).
-- `/console` serves a read-only operator console (a single embedded HTML page)
-  backed by localhost-only `GET /console/api/*` reads over the service layer.
+- `/console` serves a single embedded operator page. Localhost-only
+  `GET /console/api/*` endpoints remain read-only; series, reader review,
+  release and author-decision actions use the guarded MCP tools at `/mcp`.
 
 ## Current cleanup direction
 

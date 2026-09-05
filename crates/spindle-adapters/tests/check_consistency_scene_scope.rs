@@ -173,6 +173,7 @@ async fn scene_order_narrows_findings_to_one_scene() {
     // Whole-chapter scope sees BOTH violations.
     let chapter_out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: ConsistencyScopeInput::chapter_range(1, 1, 1, 1),
             checks: Vec::new(),
@@ -207,6 +208,7 @@ async fn scene_order_narrows_findings_to_one_scene() {
     };
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: scene_two,
             checks: Vec::new(),
@@ -253,6 +255,7 @@ async fn scene_order_with_multi_chapter_range_is_input_error() {
     };
     let err = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: bad,
             checks: Vec::new(),
@@ -294,6 +297,7 @@ async fn preexisting_scope_json_without_scene_order_is_unchanged() {
     let (_tmp, svc, project_id, _mara) = two_scene_fixture().await;
     let from_literal = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope,
             checks: vec!["tone_consistency".into(), "knowledge_timing".into()],
@@ -307,6 +311,7 @@ async fn preexisting_scope_json_without_scene_order_is_unchanged() {
         .unwrap();
     let from_builder = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: ConsistencyScopeInput::chapter_range(1, 1, 1, 1),
             checks: vec!["tone_consistency".into(), "knowledge_timing".into()],
@@ -338,6 +343,7 @@ async fn scene_scope_still_runs_chapter_level_checks() {
     let (_tmp, svc, project_id, _mara) = two_scene_fixture().await;
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: ConsistencyScopeInput {
                 scene_order: Some(2),
@@ -405,6 +411,7 @@ async fn scene_verify_checks_run_deterministically_with_no_model_calls() {
     let checks: Vec<String> = SCENE_VERIFY_CHECKS.iter().map(|c| c.to_string()).collect();
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: ConsistencyScopeInput {
                 scene_order: Some(1),
@@ -588,6 +595,7 @@ async fn secret_leak_scene_scope_fires_only_on_scoped_scene() {
     // Scope to ch 2 scene 1 only: the sc-1 leak fires, the sc-2 leak does not.
     let out = svc
         .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: ConsistencyScopeInput {
                 scene_order: Some(1),

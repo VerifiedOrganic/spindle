@@ -47,6 +47,38 @@ Use this sequence when planning or restructuring existing material:
 9. Call `check_consistency` after major re-structure to verify promise,
    pacing, and continuity impact.
 
+## Long-running webserials: three planning horizons
+
+Use one existing chapter as one release episode. Work in three horizons rather
+than freezing a hundreds-chapter scene list:
+
+- **Series:** the stable reader contract (`promise`, `style_notes`, `boundaries`),
+  enduring world rules, major character destinations, and long promises. Store
+  these in the existing project, world-rule, character-arc and promise records.
+  Change the contract only when the author changes the intended experience.
+- **Current arc:** a flexible book outline plus plot lines, conflicts and arc
+  milestones. Name the question the arc will answer, irreversible character
+  changes, promises it should advance, and an exit condition. Keep later arcs
+  at this level of detail; update them in response to what the prose earns.
+- **Next episode:** a concrete `plan_chapter` scene list with purpose, POV,
+  location, rating and intended change. Name one local satisfaction and one
+  reason to return. A reason to return may be curiosity, emotional anticipation,
+  humour or consequence; do not force a cliffhanger into every ending.
+
+Before extending the series, read `get_series_status`, the narrative-promises,
+plot-lines and character-arcs resources, and `get_editorial_queue`. Distinguish
+published episodes from drafted backlog. Preserve released prose as history;
+corrections are explicit release revisions, not silent replacements.
+
+After each episode, compare intent with the accepted prose, save a summary, and
+advance only the threads that actually moved. `planned_payoff` is an expectation.
+Use `update_promise_status` with `source_scene_id` or actual `at` placement when a
+promise is reinforced, paid off or reopened. Correct an erroneous event through
+`replaces_event_id`; never assign a planned date to an unknown actual payoff.
+
+At an arc boundary, re-evaluate open questions and unfinished promises before
+starting a new book. Plan the next short batch, leaving room for discovery.
+
 ## The Three P's: Promise, Progress, Payoff (Sanderson)
 
 Every story — and every arc within a story — follows this rhythm:
@@ -62,8 +94,8 @@ momentum even when characters are losing ground.
 The payoff must be "surprising yet inevitable" — the reader didn't predict the exact outcome,
 but looking back, every element was set up.
 
-Call `update_entity` on the project to set the `reader_contract` with tone_promise,
-plot_promise, and character_promise. This contract is loaded by the scene-writer skill
+Call `update_entity` on the project to update `promise`, `style_notes`, and
+`boundaries`, the persisted reader-contract fields. This contract is loaded by the scene-writer skill
 for every scene written.
 
 ---

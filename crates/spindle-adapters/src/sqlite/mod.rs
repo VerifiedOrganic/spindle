@@ -13,6 +13,7 @@ mod project_resources;
 pub mod records;
 pub mod repository;
 pub mod row;
+mod serial_service;
 pub mod service;
 pub mod source_bridge;
 pub mod style_helper;

@@ -132,8 +132,8 @@ pub struct StyleDirective {
 pub struct StyleIntent {
     /// The genre demands humor (comedy, rom-com, satire, "raunchy", ...).
     pub wants_comedy: bool,
-    /// The genre demands fast, serialized pacing (webnovel, litrpg,
-    /// progression, "punchy", ...).
+    /// The creative contract asks for fast pacing, rather than merely naming
+    /// a publishing format or genre.
     pub wants_fast_pacing: bool,
     /// Chapters should end on hooks/cliffhangers rather than resolution beats.
     pub wants_hook_endings: bool,
@@ -230,19 +230,12 @@ impl StyleDirective {
             "absurd",
         ]);
         let wants_fast_pacing = has_any(&[
-            "webnovel",
-            "web novel",
-            "litrpg",
-            "gamelit",
-            "progression",
-            "serial",
             "punchy",
             "snappy",
             "fast pac",
             "page-turner",
             "pageturner",
             "fast-pac",
-            "gacha",
         ]);
         let ending = self
             .narrator_voice
@@ -250,15 +243,30 @@ impl StyleDirective {
             .and_then(|voice| voice.chapter_ending_style.as_deref())
             .unwrap_or("")
             .to_lowercase();
-        let wants_hook_endings = wants_fast_pacing
-            || ending.contains("hook")
-            || ending.contains("cliffhang")
-            || has_any(&[
-                "hook ending",
-                "cliffhanger",
-                "chapter hook",
-                "end on a hook",
-            ]);
+        // Distribution format and fast pacing do not require cliffhangers.
+        // Explicit ending direction takes precedence over broad style language.
+        let ending_text = if ending.is_empty() {
+            &haystack
+        } else {
+            &ending
+        };
+        let declines_hooks = [
+            "no cliffhang",
+            "without cliffhang",
+            "avoid cliffhang",
+            "no hook",
+            "without hook",
+            "not every",
+            "quiet",
+            "reflective",
+            "resolution",
+        ]
+        .iter()
+        .any(|phrase| ending_text.contains(phrase));
+        let wants_hook_endings = !declines_hooks
+            && ["hook", "cliffhang"]
+                .iter()
+                .any(|phrase| ending_text.contains(phrase));
 
         // Only treat the project as deliberately literary when it says so AND
         // it is not also asking for comedy/fast pacing (a literary comedy still
@@ -423,7 +431,7 @@ mod tests {
             "A raunchy, funny gacha power-fantasy romp",
             vec![
                 "Raunchy modern comedy tone".to_string(),
-                "Webnovel pacing with clear progression".to_string(),
+                "Fast-paced webnovel with clear progression".to_string(),
             ],
             vec!["Focus on raunchy comedy and fun over dark themes".to_string()],
             vec![StyleRule {
@@ -453,6 +461,41 @@ mod tests {
         assert!(intent.wants_fast_pacing);
         assert!(intent.wants_hook_endings);
         assert!(!intent.is_literary);
+    }
+
+    #[test]
+    fn serial_format_does_not_override_the_requested_pace_or_ending() {
+        let mut directive = StyleDirective::assemble(
+            "Fantasy",
+            "webserial",
+            "Patient character growth",
+            vec![],
+            vec![],
+            vec![],
+            None,
+        );
+        assert!(!directive.intent().wants_fast_pacing);
+        assert!(!directive.intent().wants_hook_endings);
+        assert!(
+            !directive
+                .render_markdown()
+                .unwrap()
+                .contains("quiet/reflective/grief")
+        );
+        directive.style_notes.push("Punchy pacing".into());
+        assert!(directive.intent().wants_fast_pacing);
+        assert!(!directive.intent().wants_hook_endings);
+        directive.narrator_voice = Some(NarratorVoice {
+            chapter_ending_style: Some("Cliffhanger endings".into()),
+            ..Default::default()
+        });
+        assert!(directive.intent().wants_hook_endings);
+        directive
+            .narrator_voice
+            .as_mut()
+            .unwrap()
+            .chapter_ending_style = Some("Quiet resolution without cliffhangers".into());
+        assert!(!directive.intent().wants_hook_endings);
     }
 
     #[test]

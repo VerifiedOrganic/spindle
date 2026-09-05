@@ -439,21 +439,29 @@ impl SourceBridge {
             // length-check upserts; we no longer need a separate
             // normalization pass — the slicer emits source byte ranges
             // directly via `AnalyzedScene::source_byte_range`.
-            let _source_text = match std::fs::read_to_string(&source_path) {
+            let source_text = match std::fs::read_to_string(&source_path) {
                 Ok(t) => t,
                 Err(_) => {
                     unresolved_links += links.len();
                     continue;
                 }
             };
-            let slicer_offsets =
+            let managed_ranges = source_text
+                .contains(SOURCE_BRIDGE_SCENE_DELIMITER)
+                .then(|| delimiter_split_ranges(&source_text, SOURCE_BRIDGE_SCENE_DELIMITER));
+            let slicer_offsets = if managed_ranges.is_some() {
+                SourceSceneOffsetsByPosition {
+                    scene_offsets: BTreeMap::new(),
+                }
+            } else {
                 match scene_offsets_from_import_slicer(self.repository.data_dir(), &source_path) {
                     Ok(offsets) => offsets,
                     Err(_) => {
                         unresolved_links += links.len();
                         continue;
                     }
-                };
+                }
+            };
 
             let links_by_scene_id: BTreeMap<String, &SceneSourceLink> = links
                 .iter()
@@ -477,6 +485,21 @@ impl SourceBridge {
                 let mut sorted_scene_orders: Vec<i32> =
                     scenes.iter().map(|s| s.scene_order).collect();
                 sorted_scene_orders.sort_unstable();
+                if let Some(ranges) = &managed_ranges {
+                    // A push writes exactly one chapter. Use its explicit
+                    // boundaries, just as pull does, never the prose slicer's
+                    // guesses about blank lines or Markdown horizontal rules.
+                    if db_scenes_by_chapter.len() == 1 && ranges.len() == sorted_scene_orders.len()
+                    {
+                        positional_offsets.extend(
+                            sorted_scene_orders
+                                .iter()
+                                .zip(ranges)
+                                .map(|(order, range)| ((*chapter_number, *order), *range)),
+                        );
+                    }
+                    continue;
+                }
                 for (pos_0, scene_order) in sorted_scene_orders.iter().enumerate() {
                     let slicer_key = (*chapter_number, (pos_0 + 1) as i32);
                     if let Some(range) = slicer_offsets.scene_offsets.get(&slicer_key).copied() {

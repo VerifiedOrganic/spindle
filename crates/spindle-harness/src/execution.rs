@@ -260,6 +260,7 @@ async fn draft_scene(
             .context("scene artifact missing generated package")?;
         let save_output = client
             .save_scene_draft(&SaveSceneDraftInput {
+                authorship: spindle_core::models::DraftAuthorship::Assistant,
                 project_id: state.project_id.clone(),
                 book_number: state.book_number,
                 chapter_number,
@@ -632,6 +633,7 @@ async fn scene_verify_findings(
     };
     let output = client
         .check_consistency(&CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: project_id.to_string(),
             scope,
             checks: spindle_core::models::SCENE_VERIFY_CHECKS
@@ -972,6 +974,7 @@ async fn run_checkpoint(
 ) -> Result<String> {
     let consistency = client
         .check_consistency(&CheckConsistencyInput {
+            deep_scan_offset: None,
             project_id: state.project_id.clone(),
             scope: ConsistencyScopeInput::chapter_range(
                 state.book_number,
