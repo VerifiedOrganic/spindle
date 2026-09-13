@@ -1440,7 +1440,7 @@ mod tests {
         let source_path = tmp.path().join("ch1.txt");
         std::fs::write(
             &source_path,
-            "Chapter 1\n\nThe night was long. Aaron walked the gate.\n\n* * *\n\nAaron paused.\n",
+            "Chapter 1\n\nThe night was long. The sentry walked the gate.\n\n* * *\n\nThe sentry paused.\n",
         )
         .unwrap();
 

@@ -320,7 +320,8 @@ as `bible://references/<name>` resources:
   cleanly to try-fail cycle design.
 - `bible://references/mru-guide` — Motivation-Reaction Unit construction at
   the beat level.
-- `bible://references/anti-slop` — Catch generic structural patterns
-  (weightless conflicts, telegraphed payoffs) before they ossify in the plan.
+- `bible://references/anti-slop` — Fiction shelf catalog plus StoryScope
+  editorial questions (theme-stated, no-subplots, tidy endings) before those
+  defaults ossify in the plan.
 - `bible://references/voice-differentiation` — Useful when planning
   ensemble-cast scenes with multiple POVs.

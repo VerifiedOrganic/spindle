@@ -696,28 +696,34 @@ After the initial save and validation, run a quality gate before committing any
 state changes. This prevents bad prose from polluting the Bible with incorrect
 state updates.
 
-**Anti-Slop Check**: Scan your prose for AI writing tells. These are words and
-patterns that signal machine-generated text. If you find them, rewrite:
+**Anti-slop check (fiction shelves, not an AI detector):** Scan the draft
+against the **12 named shelves** in `bible://references/anti-slop`. There is
+no 100+ pattern dump. A hit is a craft problem, not proof of authorship. Do
+not synonym-swap the flagged line — go back to the scene beat and rewrite the
+moment (at most one or two from-beats passes).
 
-| Slop Pattern | Why It's Bad | Fix |
-|-------------|-------------|-----|
-| "a testament to" | Generic filler | Cut entirely or be specific |
-| "the weight of [emotion]" | Cliché abstraction | Show the physical sensation |
-| "couldn't help but" | Removes agency | Character chooses to do it |
-| "a dance of [abstract]" | Purple prose tell | Describe the actual movement |
-| "sent shivers down [body part]" | Dead metaphor | Find a fresh sensation |
-| "eyes that held [emotion]" | Eyes don't hold things | Describe what the eyes DO |
-| "the air crackled with [tension/energy]" | Atmosphere cliché | Use a specific sensory detail |
-| "in that moment" | Temporal padding | Cut. The moment is implicit. |
-| "something shifted" | Vague non-event | Name what shifted and how |
-| "a mix of [emotion] and [emotion]" | Telling, not showing | Show both emotions via behavior |
-| "let out a breath [they] didn't know [they] were holding" | Most overused AI line in existence | Just describe the exhale |
-| "[they] found [themselves]" | Passive self-discovery | Character actively does/realizes |
-| "the [noun] seemed to [verb]" | Hedging weakens the image | Commit: the noun verbed. |
-| "with a sense of [noun]" | Abstract padding | Show the sense through action |
-| "it was as if" | Simile crutch when overused | Use sparingly; prefer direct imagery |
+Hard shelves fail this gate when over the default limit. Soft shelves are
+advisory on save (do not block the save). `said_bookism` stays **soft-only**
+unless the project's style profile promotes it. Genre/style notes may disable
+or soften any shelf.
 
-**See `bible://references/anti-slop` for the full 100+ pattern list.**
+| Shelf ID | Default | If it hits |
+| --- | --- | --- |
+| `contrast_not_x_but_y` | **hard** ≤1/chapter | Dramatize the true state; do not stack "not X but Y" |
+| `emotion_cocktail` | **hard** 0 | Play one feeling through action; no "mix of X and Y" |
+| `fishing_ending` | **hard** 0 | End on a choice, cost, or new fact — not an outlook slogan |
+| `said_bookism` | **soft** ≤2 non-`said`/chapter | Prefer `said` / action beats; do not fail a save |
+| `body_reactions` | soft | Specific body/task, not jaw/stomach/held-breath stock |
+| `eye_department` | soft | What the look *does*, not eyes that "hold" a noun |
+| `gesture_rack` | soft | One character-owned beat, not shrug/nod/sigh rotation |
+| `atmosphere_prefabs` | soft | One noticed sensory fact, not crackling air |
+| `naming_watchlist` | soft | Cut hedges (`suddenly`, `somehow`, `couldn't help but`) |
+| `rhythm_cadence` | soft | Vary for pressure; no metronome fragments |
+| `triadic_listing` | soft | Keep the one detail that changes the next action |
+| `solitary_fade` | soft | When alone, root place + body + mundane life — no empty fade |
+
+**See `bible://references/anti-slop` for examples, rewrite-from-beats
+directions, StoryScope editorial questions, and the non-port list.**
 
 Also check:
 - **Voice consistency**: Re-read each character's dialogue. Does it match the
@@ -985,5 +991,5 @@ For deeper craft knowledge, read these reference resources:
   before/after examples.
 - `bible://references/voice-differentiation` — How to create and maintain
   distinct character voices.
-- `bible://references/anti-slop` — The full anti-slop pattern catalog used by
-  Step 5b.
+- `bible://references/anti-slop` — Fiction shelf catalog (12 shelves, hard vs
+  soft) used by Step 5b. Not an AI detector; not a 100+ pattern list.

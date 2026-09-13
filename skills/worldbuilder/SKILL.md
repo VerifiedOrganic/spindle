@@ -528,8 +528,8 @@ Before declaring a world "ready for writing," verify:
 The four embedded craft references most relevant to worldbuilders are
 exposed as `bible://references/<name>` resources:
 
-- `bible://references/anti-slop` — Avoiding generic AI prose patterns when
-  describing locations, magic, and world atmosphere.
+- `bible://references/anti-slop` — Fiction shelf catalog for generic prose
+  when describing locations, magic, and world atmosphere.
 - `bible://references/voice-differentiation` — Useful when writing dialogue
   that reflects faction, cultural, or class differences.
 - `bible://references/swain-scene-sequel` and `bible://references/mru-guide`

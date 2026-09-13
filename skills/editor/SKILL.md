@@ -281,8 +281,8 @@ The editor diagnoses. Other skills treat.
 
 The shipped craft references most relevant to editorial work:
 
-- `bible://references/anti-slop` — AI writing patterns to flag and eliminate
-  during craft review (Step 4).
+- `bible://references/anti-slop` — Fiction shelf catalog (hard vs soft) to
+  flag during craft review (Step 4). Editorial, not an AI detector.
 - `bible://references/voice-differentiation` — Voice diagnosis when
   `voice_drift` findings need editorial judgment.
 - `bible://references/swain-scene-sequel` — Scene structure diagnosis when
