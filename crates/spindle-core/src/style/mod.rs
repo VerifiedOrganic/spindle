@@ -22,6 +22,7 @@
 //! semantic and belongs to the LLM-backed review persona — this scanner is the
 //! cheap, always-on first line, not the whole defense.
 
+pub mod antislop;
 pub mod profile;
 pub mod scanner;
 

@@ -25979,10 +25979,9 @@ fn detect_merge_scene_conflicts(
             };
             let (target_scene, target_scene_is_local) = if let Some(scene) = target_local_scene {
                 (scene, true)
-            } else if let Some(scene) = fallback_scene {
-                (scene, false)
             } else {
-                return None;
+                let scene = fallback_scene?;
+                (scene, false)
             };
 
             if scene_revision_fingerprint(source_scene) == scene_revision_fingerprint(target_scene)
