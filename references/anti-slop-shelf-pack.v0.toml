@@ -1,0 +1,191 @@
+# Fiction anti-slop shelf pack — schema stub v0
+#
+# Authoritative human catalog: references/anti-slop.md
+# Design / packet fields:      docs/fiction-anti-slop.md
+#
+# Phase 0: IDs, severity, limits, and policy only.
+# Phase 1 (not this pack): matcher lists, Rust scanner, live counts.
+# Do not add Voices / tech non-ports (BLUF, buzzlist, em-dash gates,
+# Flesch, detector %, FAQ endings, delve-as-tech-gate).
+
+schema_version = 0
+pack_id = "fiction.default"
+pack_version = "0.1.1"
+domain = "fiction"
+catalog_uri = "bible://references/anti-slop"
+catalog_path = "references/anti-slop.md"
+# Genre / derived style profiles may disable or soften any shelf.
+# Phase 0: empty. Phase 1 fills from ReaderContract / applied style profile.
+# Example overlay (commented; not applied):
+# [[genre_overrides]]
+# profile = "example.comedy-webnovel"
+# disable = []
+# soften = ["said_bookism", "triadic_listing"]
+# promote_to_hard = []
+genre_overrides = []
+
+[policy]
+fiction_only = true
+# Later scanner + harness: auto_strict clears only when this is 0.
+auto_strict_requires_hard_count_zero = true
+# Soft findings surface on save_scene_draft; they do not fail the save.
+soft_on_save = true
+# When max_revise_attempts > 0 (verify/revise on), hard over-limit fails closed.
+fail_closed_hard_on_verify_revise = true
+# Rewrite-from-beats, not paraphrase-humanizer. At most 1–2 passes.
+max_rewrite_from_beats = 2
+# said_bookism has a numeric default but must not be hard unless a profile
+# promotes it (product lock).
+said_bookism_soft_only_by_default = true
+
+# ---------------------------------------------------------------------------
+# Hard shelves (defaults)
+# ---------------------------------------------------------------------------
+
+[[shelves]]
+id = "contrast_not_x_but_y"
+severity = "hard"
+default_limit = 1
+limit_scope = "chapter"
+enabled = true
+rewrite = "from_beats"
+# Phase 1 matcher slot (empty in Phase 0).
+matchers = []
+
+[[shelves]]
+id = "emotion_cocktail"
+severity = "hard"
+default_limit = 0
+limit_scope = "chapter"
+enabled = true
+rewrite = "from_beats"
+family = ["mix of X and Y", "equal parts", "swirl of conflicting emotions"]
+matchers = []
+
+[[shelves]]
+id = "fishing_ending"
+severity = "hard"
+default_limit = 0
+limit_scope = "scene_or_chapter_close"
+enabled = true
+rewrite = "from_beats"
+family = ["outlook", "only time will tell", "tomorrow would bring", "real journey"]
+matchers = []
+
+[[shelves]]
+id = "said_bookism"
+# Product lock: numeric default exists, class stays soft unless a profile
+# sets promote_to_hard.
+severity = "soft"
+default_limit = 2
+limit_scope = "chapter"
+enabled = true
+rewrite = "from_beats"
+allowed_tags = ["said", "asked"]
+matchers = []
+
+# ---------------------------------------------------------------------------
+# Soft shelves (defaults)
+# ---------------------------------------------------------------------------
+
+[[shelves]]
+id = "body_reactions"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+matchers = []
+
+[[shelves]]
+id = "eye_department"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+matchers = []
+
+[[shelves]]
+id = "gesture_rack"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+matchers = []
+
+[[shelves]]
+id = "atmosphere_prefabs"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+matchers = []
+
+[[shelves]]
+id = "naming_watchlist"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+# Explicitly not a delve-as-tech-gate.
+exclude_as_tech_gate = ["delve"]
+matchers = []
+
+[[shelves]]
+id = "rhythm_cadence"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+# Em-dash counts are a non-port. Do not add dash matchers here.
+matchers = []
+
+[[shelves]]
+id = "triadic_listing"
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+matchers = []
+
+[[shelves]]
+id = "solitary_fade"
+# Soft-only by default. May inform a later revise digest; does not fail a save.
+# Fiction grounding (place + body + mundane action when alone), not BLUF.
+severity = "soft"
+default_limit = "advisory_cluster"
+limit_scope = "scene"
+enabled = true
+rewrite = "from_beats"
+alias = "ungrounded_solitude"
+# Not a tech structure gate.
+non_port = "not_bluf"
+matchers = []
+
+# ---------------------------------------------------------------------------
+# Later packet fields (documented, not populated in Phase 0)
+# ---------------------------------------------------------------------------
+
+[packet_fields]
+# Injected into get_scene_context / get_chapter_briefing in a later phase.
+# See docs/fiction-anti-slop.md § Packet fields.
+
+[packet_fields.voice_samples]
+status = "reserved"
+shape = "short project-local excerpts of on-voice narrator and named speakers"
+persist_source_prose = false
+
+[packet_fields.scene_negatives]
+status = "reserved"
+shape = "compact do-not-repeat examples tied to this scene's beats or prior hits"
+
+[packet_fields.compact_shelf_digest]
+status = "reserved"
+shape = "budget-capped enabled shelf ids + severity + limits for the active profile"
+full_catalog_uri = "bible://references/anti-slop"

@@ -544,3 +544,5 @@ Run this sequence when you start a new implementation task.
   class vocabularies, journal kinds/payloads) referenced above.
 - `docs/continuity-quantity-design.md`, `docs/continuity-timing-design.md`: the
   quantity and temporal continuity spine the editorial loop builds on.
+- `docs/fiction-anti-slop.md`: Phase 0 fiction anti-slop contract (shelf
+  catalog, product locks, reserved packet fields). No scanner in this phase.

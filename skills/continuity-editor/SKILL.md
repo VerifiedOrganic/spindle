@@ -565,7 +565,8 @@ character thinness, pacing drag, thematic incoherence.
 - Are MRUs in the correct order (motivation before reaction)?
 - Is show-don't-tell consistently applied?
 - Are there filter words ("felt", "seemed", "realized")?
-- Are there AI slop patterns? (See `bible://references/anti-slop`.)
+- Do any fiction anti-slop shelves fire? (See `bible://references/anti-slop`.
+  Editorial shelves, not an authorship detector.)
 - Is POV discipline maintained throughout?
 - Are dialogue tags minimal and action beats doing the work?
 - Is sentence length varied for rhythm?
@@ -626,9 +627,9 @@ checks one chapter/entity at a time and dedupe as you go.
 
 The shipped craft references most relevant to continuity work:
 
-- `bible://references/anti-slop` — Pattern catalog for prose-level drift the
-  Phase 4 validators don't catch (cliché abstractions, filter-word creep,
-  generic emotional shorthand).
+- `bible://references/anti-slop` — Fiction shelf catalog for prose-level
+  drift the Phase 4 validators don't catch (cocktails, fishing endings,
+  body/eye/gesture stock, filter-word clusters).
 - `bible://references/voice-differentiation` — Reference for diagnosing voice
   drift findings beyond raw forbidden-word matches.
 - `bible://references/swain-scene-sequel` and `bible://references/mru-guide`

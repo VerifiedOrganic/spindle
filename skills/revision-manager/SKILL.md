@@ -324,4 +324,5 @@ The shipped craft references most relevant when revising:
 - `bible://references/mru-guide` — Useful when revising MRU order issues.
 - `bible://references/voice-differentiation` — Useful when a `voice_drift`
   finding is the trigger for revision.
-- `bible://references/anti-slop` — Final pass before merging back to main.
+- `bible://references/anti-slop` — Fiction shelf catalog for the final prose
+  pass before merging back to main.

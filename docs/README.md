@@ -17,6 +17,9 @@ Start here if you are new to the repository.
 - [`project-local-workspaces.md`](project-local-workspaces.md) — guide to project-local workspaces (`.spindle/`), setup, resolution logic, and Git conventions.
 - [`local-markdown-style-profiles.md`](local-markdown-style-profiles.md) —
   design for deriving reusable style cards from user-provided Markdown corpora.
+- [`fiction-anti-slop.md`](fiction-anti-slop.md) — Phase 0 fiction anti-slop
+  contract (shelf IDs, product locks, reserved packet fields). Human catalog:
+  [`references/anti-slop.md`](../references/anti-slop.md).
 - [`spindle-harness-usage.md`](spindle-harness-usage.md) — operator workflow
   for the `spindle-harness` batch drafting CLI.
 - [`spindle-harness-seed.example.json`](spindle-harness-seed.example.json) —

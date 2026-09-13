@@ -494,8 +494,8 @@ For deeper craft knowledge, read the embedded craft references via
 
 - `bible://references/voice-differentiation` — Voice differentiation
   techniques, dialect construction, verbal tic design, and worked examples.
-- `bible://references/anti-slop` — Avoiding generic AI prose patterns when
-  drafting dialogue and characterization.
+- `bible://references/anti-slop` — Fiction shelf catalog when drafting
+  dialogue and characterization.
 - `bible://references/swain-scene-sequel` — Scene/sequel structure and how
   characters reveal under pressure.
 - `bible://references/mru-guide` — Motivation-Reaction Unit construction for
