@@ -2712,7 +2712,7 @@ impl SqliteSpindleService {
                         std::slice::from_ref(&existing_scene),
                     )
                     .await?;
-                if let Some(snap) = preflight_context.scenes.iter_mut().next() {
+                if let Some(snap) = preflight_context.scenes.first_mut() {
                     snap.full_text = scene_patch.revised_text.clone();
                 }
                 let registry = crate::sqlite::validators::phase_four_validator_registry();
