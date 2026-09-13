@@ -1,8 +1,12 @@
 # Fiction anti-slop
 
-Status: **Phase 1 scanner** lives at `style/antislop/` in `spindle-core`. It
-loads the Phase 0 pack + catalog. Soft shelves (including `solitary_fade` and
-`said_bookism` by product lock) are warnings and do not increment `hard_count`.
+Status: **Phase 2 writing-packet digest** is live. `compact_shelf_digest`,
+`voice_samples`, and `scene_negatives` ride `get_scene_context` /
+`get_chapter_briefing`, guidance/standards, and harness draft prompts. The
+Phase 1 scanner still lives at `style/antislop/` in `spindle-core`. Soft
+shelves (including `solitary_fade` and `said_bookism` by product lock) are
+warnings and do not increment `hard_count`. Soft-on-save / hard-on-verify
+semantics are unchanged.
 
 This is the current design contract for fiction anti-slop. The human catalog is
 [`references/anti-slop.md`](../references/anti-slop.md). The versioned pack stub
@@ -97,11 +101,10 @@ Required per-shelf fields: `id`, `severity` (`hard` \| `soft`),
 `matchers` staying empty is intentional. Phase 0 does not ship regex, lexicons,
 or a scanner.
 
-## Packet fields (later — not on `SceneContextOutput` yet)
+## Packet fields (Phase 2)
 
-These fields are **reserved** for a later context-packet / briefing slice.
-They are not implemented on `SceneContextOutput` or `ChapterBriefing` in
-Phase 0. Do not invent parallel names.
+These fields are on `SceneContextOutput`, `SceneContextEnvelope`, and (for
+the digest) `GetChapterBriefingOutput`. Do not invent parallel names.
 
 ### `voice_samples`
 
@@ -109,15 +112,17 @@ Short, **project-local** excerpts of on-voice prose: narrator plus named
 speakers that already exist on the branch.
 
 - Purpose: give rewrite-from-beats a positive target.
-- Source: applied style profile guidance, prior *accepted* scenes, or
-  narrator-voice notes — not a copyrighted corpus dump.
+- Source (Phase 2): applied style-profile guidance (`do_rules`,
+  `prompt_snippet`, narrator notes). Prior *accepted* scenes remain a later
+  hook — not a copyrighted corpus dump.
 - Persistence rule: match existing style-profile policy — do not persist long
   source excerpts by default; samples in the packet stay budget-capped.
 
 ### `scene_negatives`
 
-Compact "do not repeat this" examples tied to **this** scene's beats or to
-prior shelf hits on the same chapter/run.
+Compact "do not repeat this" examples. Phase 2 hooks come from style-profile
+`avoid_rules` (shelf id attached when the note names a shelf or cocktail
+family). Prior shelf hits on the same chapter/run remain a later hook.
 
 - Purpose: stop the next draft from regenerating the same cocktail, fishing
   closer, or eye-department stack.
@@ -163,10 +168,11 @@ When a scanner exists, wire it as follows — do not implement this in Phase 0:
 claim a missing "100+" pattern list. The authoring supervisor does not repeat
 that claim.
 
-## Out of scope (Phase 1)
+## Out of scope (Phase 2)
 
 - Wiring the scanner into `save_scene_draft` / verify / `auto_strict`
-- DTO fields on `SceneContextOutput`
 - Dual-persona revise
 - Promoting `said_bookism` to hard in the default pack
 - Porting Voices / tech gates
+- Persisting source-corpus voice samples (hooks come from style-profile
+  guidance only)

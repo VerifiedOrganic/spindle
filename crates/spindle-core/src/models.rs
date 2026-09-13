@@ -1577,6 +1577,15 @@ pub struct SceneContextOutput {
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
     pub budget: SceneContextBudgetMeta,
+    /// Budget-capped fiction shelf digest for the active genre/style profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
+    /// Project-local on-voice excerpts from style-profile guidance (not a corpus dump).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<crate::style::antislop::VoiceSample>,
+    /// Compact do-not-repeat notes from style-profile avoid rules / shelf hooks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<crate::style::antislop::SceneNegative>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1587,6 +1596,12 @@ pub struct SceneContextEnvelope {
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
     pub budget: SceneContextBudgetMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<crate::style::antislop::VoiceSample>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<crate::style::antislop::SceneNegative>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_markdown: Option<String>,
 }
@@ -1682,6 +1697,10 @@ pub struct GetChapterBriefingOutput {
     pub active_threads: Vec<ActiveThreadSummary>,
     pub scene_seed: ChapterBriefingSceneSeed,
     pub scene_context: Option<SceneContextOutput>,
+    /// Same digest as the bundled scene context, repeated so a briefing-only
+    /// caller does not have to unpack `scene_context` to see the shelves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

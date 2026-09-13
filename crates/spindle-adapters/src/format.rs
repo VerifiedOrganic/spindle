@@ -471,6 +471,25 @@ pub fn format_chapter_briefing_scene_context_markdown(
                 lines.push(format!("  status: {status}"));
             }
         }
+        if let Some(digest) = scene_context.compact_shelf_digest.as_ref() {
+            lines.push(format!(
+                "- compact_shelf_digest: {} shelves ({})",
+                digest.shelves.len(),
+                digest.catalog_uri
+            ));
+        }
+        if !scene_context.voice_samples.is_empty() {
+            lines.push(format!(
+                "- voice_samples: {} on-voice hook(s)",
+                scene_context.voice_samples.len()
+            ));
+        }
+        if !scene_context.scene_negatives.is_empty() {
+            lines.push(format!(
+                "- scene_negatives: {} do-not-repeat hook(s)",
+                scene_context.scene_negatives.len()
+            ));
+        }
         if let Some(warning) = scene_context.scene.agency_check.warning.as_deref() {
             lines.push(format!("- Agency warning: {warning}"));
         }
@@ -1024,11 +1043,55 @@ pub fn format_search_bible_markdown(query: &str, results: &[SearchBibleResultIte
 // Scene context markdown
 // =============================================================================
 
+pub fn format_writing_packet_markdown(
+    digest: Option<&spindle_core::style::antislop::CompactShelfDigest>,
+    voice_samples: &[spindle_core::style::antislop::VoiceSample],
+    scene_negatives: &[spindle_core::style::antislop::SceneNegative],
+) -> String {
+    use spindle_core::style::antislop::{
+        WritingPacketHooks, render_compact_shelf_digest_markdown,
+        render_writing_packet_hooks_markdown,
+    };
+    let mut parts = Vec::new();
+    if let Some(digest) = digest {
+        parts.push(render_compact_shelf_digest_markdown(digest));
+    }
+    let hooks = WritingPacketHooks {
+        voice_samples: voice_samples.to_vec(),
+        scene_negatives: scene_negatives.to_vec(),
+    };
+    let hooks_markdown = render_writing_packet_hooks_markdown(&hooks);
+    if !hooks_markdown.is_empty() {
+        parts.push(hooks_markdown);
+    }
+    parts.join("\n\n")
+}
+
 pub fn format_scene_context_markdown(
     standards: Option<&str>,
     hard_constraints: &[HardConstraint],
     novel: &SceneContextNovelLayer,
     scene: &SceneContextSceneLayer,
+) -> String {
+    format_scene_context_markdown_with_packet(
+        standards,
+        hard_constraints,
+        novel,
+        scene,
+        None,
+        &[],
+        &[],
+    )
+}
+
+pub fn format_scene_context_markdown_with_packet(
+    standards: Option<&str>,
+    hard_constraints: &[HardConstraint],
+    novel: &SceneContextNovelLayer,
+    scene: &SceneContextSceneLayer,
+    compact_shelf_digest: Option<&spindle_core::style::antislop::CompactShelfDigest>,
+    voice_samples: &[spindle_core::style::antislop::VoiceSample],
+    scene_negatives: &[spindle_core::style::antislop::SceneNegative],
 ) -> String {
     let mut lines = vec!["# Scene context".to_string()];
 
@@ -1045,6 +1108,12 @@ pub fn format_scene_context_markdown(
         .and_then(|directive| directive.render_markdown())
     {
         lines.push(directive);
+    }
+
+    let packet_markdown =
+        format_writing_packet_markdown(compact_shelf_digest, voice_samples, scene_negatives);
+    if !packet_markdown.is_empty() {
+        lines.push(format!("\n{packet_markdown}"));
     }
 
     lines.push(format_scene_context_reader_contract_markdown(

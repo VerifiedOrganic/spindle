@@ -553,6 +553,12 @@ pub struct SceneContextEnvelope {
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
     pub budget: SceneContextBudgetMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<spindle_core::style::antislop::CompactShelfDigest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<spindle_core::style::antislop::VoiceSample>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<spindle_core::style::antislop::SceneNegative>,
 }
 
 #[derive(Debug, Clone)]
