@@ -37944,10 +37944,12 @@ agent = "explicit-agent"
             .await
             .unwrap();
 
-        let mut guidance = StyleProfileGuidance::default();
-        guidance.do_rules = vec!["Name the tool, not the mood.".into()];
-        guidance.avoid_rules = vec!["a mix of relief and dread".into()];
-        guidance.prompt_snippet = "Short clauses. Concrete work.".into();
+        let guidance = StyleProfileGuidance {
+            do_rules: vec!["Name the tool, not the mood.".into()],
+            avoid_rules: vec!["a mix of relief and dread".into()],
+            prompt_snippet: "Short clauses. Concrete work.".into(),
+            ..Default::default()
+        };
         let profile_id = "style_profile:packet-hooks".to_string();
         let card = StyleProfileCard {
             profile_id: profile_id.clone(),

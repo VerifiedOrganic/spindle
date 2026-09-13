@@ -289,7 +289,7 @@ mod tests {
         assert!(markdown.contains("solitary_fade"));
         assert!(markdown.contains("bible://references/anti-slop"));
         assert!(markdown.contains("from-beats"));
-        assert!(!markdown.contains("paraphrase"));
+        assert!(markdown.contains("not a paraphrase-humanizer"));
         assert!(!markdown.contains("BLUF"));
         assert!(!markdown.contains("Flesch"));
     }
@@ -340,14 +340,19 @@ mod tests {
     #[test]
     fn style_profile_guidance_supplies_voice_sample_and_scene_negative_hooks() {
         let pack = ShelfPack::load_default().expect("pack");
-        let mut guidance = crate::style::StyleProfileGuidance::default();
-        guidance.do_rules = vec!["Keep the mill ledger in the POV's hands.".into()];
-        guidance.avoid_rules = vec![
-            "a mix of relief and dread".into(),
-            "Do not close on fishing_ending outlook slogans.".into(),
-        ];
-        guidance.prompt_snippet = "Short clauses. Concrete tools. No thesis hinges.".into();
-        guidance.narrator_voice.notes = vec!["The narrator names the work, not the mood.".into()];
+        let guidance = crate::style::StyleProfileGuidance {
+            do_rules: vec!["Keep the mill ledger in the POV's hands.".into()],
+            avoid_rules: vec![
+                "a mix of relief and dread".into(),
+                "Do not close on fishing_ending outlook slogans.".into(),
+            ],
+            prompt_snippet: "Short clauses. Concrete tools. No thesis hinges.".into(),
+            narrator_voice: crate::style::NarratorVoice {
+                notes: vec!["The narrator names the work, not the mood.".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let hooks = writing_packet_hooks_from_guidance(&guidance, &pack);
         assert!(
