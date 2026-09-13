@@ -3,7 +3,8 @@
 //! Run with `--nocapture` to print the soft-vs-hard report used in the PR.
 
 use spindle_core::style::antislop::{
-    AntiSlopReport, DEFAULT_CATALOG_MARKDOWN, NON_PORTS, ScanInput, Severity, ShelfPack, scan,
+    AntiSlopReport, DEFAULT_CATALOG_MARKDOWN, NON_PORTS, ScanInput, Severity, ShelfPack,
+    compact_shelf_digest, render_compact_shelf_digest_markdown, scan,
 };
 
 fn print_report(label: &str, report: &AntiSlopReport) {
@@ -117,4 +118,42 @@ fn non_ports_are_absent() {
     for id in NON_PORTS {
         assert!(pack.shelf(id).is_none());
     }
+}
+
+#[test]
+fn compact_shelf_digest_is_the_writing_packet_slice() {
+    let pack = ShelfPack::load_default().expect("v0 pack");
+    let digest = compact_shelf_digest(&pack, None);
+    print_report(
+        "compact_shelf_digest (packet slice)",
+        &scan(&pack, &ScanInput::fiction("She locked the door.")),
+    );
+    println!(
+        "digest pack={}@{} shelves={} catalog={} rewrite_max_passes={}",
+        digest.pack_id,
+        digest.pack_version,
+        digest.shelves.len(),
+        digest.catalog_uri,
+        digest.rewrite_max_passes
+    );
+    for shelf in &digest.shelves {
+        println!(
+            "  - {} {:?} enabled={} overlay={:?}",
+            shelf.id, shelf.severity, shelf.enabled, shelf.profile_overlay
+        );
+    }
+    assert_eq!(digest.shelves.len(), 12);
+    assert!(
+        digest
+            .shelves
+            .iter()
+            .any(|shelf| shelf.id == "solitary_fade"
+                && shelf.severity == Severity::Soft
+                && shelf.enabled)
+    );
+    let markdown = render_compact_shelf_digest_markdown(&digest);
+    println!("{markdown}");
+    assert!(markdown.contains("compact_shelf_digest"));
+    assert!(!markdown.contains("voice_samples"));
+    assert!(markdown.contains("bible://references/anti-slop"));
 }

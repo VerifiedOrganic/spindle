@@ -1595,6 +1595,28 @@ fn assemble_host_scene_prompt(
         "source_path": scene.source_path,
     }))?;
     let scene_context_json = serde_json::to_string_pretty(&scene_context)?;
+    let packet_section = {
+        use spindle_core::style::antislop::{
+            WritingPacketHooks, render_compact_shelf_digest_markdown,
+            render_writing_packet_hooks_markdown,
+        };
+        let mut parts = Vec::new();
+        if let Some(digest) = scene_context.compact_shelf_digest.as_ref() {
+            parts.push(render_compact_shelf_digest_markdown(digest));
+        }
+        let hooks_markdown = render_writing_packet_hooks_markdown(&WritingPacketHooks {
+            voice_samples: scene_context.voice_samples.clone(),
+            scene_negatives: scene_context.scene_negatives.clone(),
+        });
+        if !hooks_markdown.is_empty() {
+            parts.push(hooks_markdown);
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", parts.join("\n\n"))
+        }
+    };
 
     Ok(format!(
         concat!(
@@ -1616,7 +1638,9 @@ fn assemble_host_scene_prompt(
             "- Preserve continuity from the chapter briefing and scene context.\n",
             "- Treat chapter briefing Continuity sheets as authoritative for character details, habits, voice, state, relationships, recent appearances, and location continuity.\n",
             "- Keep the scene aligned to the requested content rating and tone target.\n",
-            "- Use empty arrays instead of null when you have no structured updates.\n\n",
+            "- Use empty arrays instead of null when you have no structured updates.\n",
+            "- Honor compact_shelf_digest in this prompt. Soft shelves are advisory on save; hard shelves fail-closed only when verify/revise is on. Rewrite-from-beats at most 1-2 times — do not paraphrase-humanize.\n\n",
+            "{packet_section}",
             "Editorial directives:\n{directives}\n\n",
             "{threads_section}",
             "Scene manifest:\n{manifest_json}\n\n",
@@ -1625,6 +1649,7 @@ fn assemble_host_scene_prompt(
             "Scene context envelope:\n{scene_context_json}\n\n",
             "Scene-writer skill guidance:\n{scene_writer_skill}\n"
         ),
+        packet_section = packet_section,
         directives = directives,
         threads_section = threads_section,
         manifest_json = manifest_json,
@@ -1688,6 +1713,8 @@ fn build_scene_mcp_pull_prompt(
             "- Call set_active_project for the project_id in the scene manifest if your MCP session is not already scoped.\n",
             "- Call get_chapter_briefing for this project/book/chapter/scene.\n",
             "- Call get_scene_context for this exact scene, including the listed character_ids and location_id.\n",
+            "- Use compact_shelf_digest, voice_samples, and scene_negatives from those packets. Full catalog: bible://references/anti-slop.\n",
+            "- Soft shelves are advisory on save. Hard shelves fail-closed only when verify/revise is on. Rewrite-from-beats at most 1-2 times; do not paraphrase-humanize.\n",
             "- Read bible://skills/scene-writer if your local skill profile has not already loaded it.\n",
             "- If research_required is true or research_tags are present, call research_pack_for_scene for this exact scene and use only supported research claims.\n\n",
             "Output schema:\n",
@@ -2417,6 +2444,9 @@ mod tests {
                 token_budget: None,
                 novel_layer_truncated: false,
             },
+            compact_shelf_digest: None,
+            voice_samples: Vec::new(),
+            scene_negatives: Vec::new(),
         }
     }
 
@@ -2458,6 +2488,63 @@ mod tests {
         let promises = vec![promise("A slow-burn romance", "watch")];
         assert!(format_threads_to_advance(&[], &promises).is_none());
         assert!(format_threads_to_advance(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn host_prompt_embeds_compact_shelf_digest_and_style_hooks() {
+        use spindle_core::style::antislop::{
+            CompactShelfDigest, CompactShelfEntry, SceneNegative, Severity, ShelfLimit, VoiceSample,
+        };
+
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let mut envelope = sample_envelope(Vec::new(), Vec::new());
+        envelope.compact_shelf_digest = Some(CompactShelfDigest {
+            pack_id: "fiction.default".into(),
+            pack_version: "0.1.1".into(),
+            catalog_uri: "bible://references/anti-slop".into(),
+            profile: None,
+            rewrite_max_passes: 2,
+            shelves: vec![CompactShelfEntry {
+                id: "solitary_fade".into(),
+                severity: Severity::Soft,
+                default_limit: ShelfLimit::Label("advisory_cluster".into()),
+                limit_scope: "scene".into(),
+                enabled: true,
+                profile_overlay: None,
+            }],
+        });
+        envelope.voice_samples = vec![VoiceSample {
+            speaker: "narrator".into(),
+            excerpt: "Name the tool, not the mood.".into(),
+            source: "style_profile.do_rules".into(),
+        }];
+        envelope.scene_negatives = vec![SceneNegative {
+            shelf_id: Some("emotion_cocktail".into()),
+            note: "a mix of relief and dread".into(),
+            source: "style_profile.avoid_rules".into(),
+        }];
+
+        let prompt = assemble_host_scene_prompt(
+            &state,
+            &chapter,
+            &scene,
+            "chapter briefing markdown",
+            &envelope,
+            "scene-writer skill text",
+            String::new(),
+        )
+        .expect("host prompt assembles");
+
+        assert!(prompt.contains("compact_shelf_digest"));
+        assert!(prompt.contains("solitary_fade"));
+        assert!(prompt.contains("voice_samples"));
+        assert!(prompt.contains("Name the tool, not the mood."));
+        assert!(prompt.contains("scene_negatives"));
+        assert!(prompt.contains("emotion_cocktail"));
+        assert!(prompt.contains("Rewrite-from-beats"));
+        assert!(!prompt.contains("paraphrase-humanize") || prompt.contains("do not paraphrase"));
     }
 
     #[test]
@@ -2707,6 +2794,9 @@ mod tests {
         assert!(prompt.contains("\"project_id\": \"project:test\""));
         assert!(prompt.contains("get_chapter_briefing"));
         assert!(prompt.contains("get_scene_context"));
+        assert!(prompt.contains("compact_shelf_digest"));
+        assert!(prompt.contains("voice_samples"));
+        assert!(prompt.contains("scene_negatives"));
         assert!(prompt.contains("research_pack_for_scene"));
         assert!(!prompt.contains("Scene context envelope:"));
         assert!(!prompt.contains("Scene-writer skill guidance:"));

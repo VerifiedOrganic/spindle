@@ -12,11 +12,18 @@
 //! Persist path for [`AntiSlopReport`] is sketched; this phase does not write it.
 
 mod pack;
+mod packet;
 mod scan;
 
 pub use pack::{
     AntislopError, DEFAULT_CATALOG_MARKDOWN, DEFAULT_PACK_TOML, GenreOverride, PackPolicy,
     RewriteMode, Severity, ShelfLimit, ShelfPack, ShelfSpec,
+};
+pub use packet::{
+    CompactShelfDigest, CompactShelfEntry, ProfileOverlay, SceneNegative, VoiceSample,
+    WritingPacketHooks, assemble_writing_packet, compact_shelf_digest,
+    genre_override_from_style_texts, render_compact_shelf_digest_markdown,
+    render_writing_packet_hooks_markdown, writing_packet_hooks_from_guidance,
 };
 pub use scan::{AntiSlopHit, AntiSlopReport, ScanInput, ScanSurface, persist_path_sketch, scan};
 
@@ -245,5 +252,143 @@ mod tests {
         let path = persist_path_sketch("proj_1", "branch_main", "scene_9");
         assert!(path.contains("anti_slop_report.json"));
         assert!(path.contains("scene_9"));
+    }
+
+    #[test]
+    fn compact_shelf_digest_lists_twelve_fiction_shelves_with_effective_severity() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let digest = compact_shelf_digest(&pack, None);
+        assert_eq!(digest.pack_id, "fiction.default");
+        assert_eq!(digest.catalog_uri, "bible://references/anti-slop");
+        assert_eq!(digest.rewrite_max_passes, 2);
+        assert_eq!(digest.shelves.len(), 12);
+        assert!(digest.shelves.iter().any(|s| s.id == "solitary_fade"
+            && s.severity == Severity::Soft
+            && s.enabled
+            && s.profile_overlay.is_none()));
+        assert!(
+            digest
+                .shelves
+                .iter()
+                .any(|s| s.id == "said_bookism" && s.severity == Severity::Soft && s.enabled)
+        );
+        assert!(
+            digest
+                .shelves
+                .iter()
+                .any(|s| s.id == "contrast_not_x_but_y" && s.severity == Severity::Hard)
+        );
+        for id in NON_PORTS {
+            assert!(
+                digest.shelves.iter().all(|s| s.id != *id),
+                "{id} must not appear in the fiction digest"
+            );
+        }
+        let markdown = render_compact_shelf_digest_markdown(&digest);
+        assert!(markdown.contains("compact_shelf_digest"));
+        assert!(markdown.contains("solitary_fade"));
+        assert!(markdown.contains("bible://references/anti-slop"));
+        assert!(markdown.contains("from-beats"));
+        assert!(!markdown.contains("paraphrase"));
+        assert!(!markdown.contains("BLUF"));
+        assert!(!markdown.contains("Flesch"));
+    }
+
+    #[test]
+    fn compact_shelf_digest_applies_profile_disable_soften_promote() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let overlay = genre_override_from_style_texts(
+            "style_profile:comedy",
+            &[
+                "disable fishing_ending".to_string(),
+                "soften contrast_not_x_but_y".to_string(),
+                "promote said_bookism".to_string(),
+            ],
+        );
+        assert_eq!(overlay.profile, "style_profile:comedy");
+        assert_eq!(overlay.disable, vec!["fishing_ending".to_string()]);
+        assert_eq!(overlay.soften, vec!["contrast_not_x_but_y".to_string()]);
+        assert_eq!(overlay.promote_to_hard, vec!["said_bookism".to_string()]);
+
+        let digest = compact_shelf_digest(&pack, Some(&overlay));
+        let fishing = digest
+            .shelves
+            .iter()
+            .find(|s| s.id == "fishing_ending")
+            .expect("fishing_ending");
+        assert!(!fishing.enabled);
+        assert_eq!(fishing.profile_overlay, Some(ProfileOverlay::Disabled));
+
+        let contrast = digest
+            .shelves
+            .iter()
+            .find(|s| s.id == "contrast_not_x_but_y")
+            .expect("contrast");
+        assert!(contrast.enabled);
+        assert_eq!(contrast.severity, Severity::Soft);
+        assert_eq!(contrast.profile_overlay, Some(ProfileOverlay::Softened));
+
+        let bookism = digest
+            .shelves
+            .iter()
+            .find(|s| s.id == "said_bookism")
+            .expect("said_bookism");
+        assert_eq!(bookism.severity, Severity::Hard);
+        assert_eq!(bookism.profile_overlay, Some(ProfileOverlay::PromotedHard));
+    }
+
+    #[test]
+    fn style_profile_guidance_supplies_voice_sample_and_scene_negative_hooks() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let mut guidance = crate::style::StyleProfileGuidance::default();
+        guidance.do_rules = vec!["Keep the mill ledger in the POV's hands.".into()];
+        guidance.avoid_rules = vec![
+            "a mix of relief and dread".into(),
+            "Do not close on fishing_ending outlook slogans.".into(),
+        ];
+        guidance.prompt_snippet = "Short clauses. Concrete tools. No thesis hinges.".into();
+        guidance.narrator_voice.notes = vec!["The narrator names the work, not the mood.".into()];
+
+        let hooks = writing_packet_hooks_from_guidance(&guidance, &pack);
+        assert!(
+            hooks
+                .voice_samples
+                .iter()
+                .any(|sample| sample.excerpt.contains("mill ledger")
+                    && sample.source.contains("do_rules"))
+        );
+        assert!(
+            hooks
+                .voice_samples
+                .iter()
+                .any(|sample| sample.excerpt.contains("Short clauses")
+                    && sample.source.contains("prompt_snippet"))
+        );
+        assert!(hooks.voice_samples.iter().any(
+            |sample| sample.speaker == "narrator" && sample.excerpt.contains("names the work")
+        ));
+        assert!(
+            hooks
+                .scene_negatives
+                .iter()
+                .any(|neg| neg.shelf_id.as_deref() == Some("emotion_cocktail")
+                    && neg.note.contains("mix of relief"))
+        );
+        assert!(
+            hooks
+                .scene_negatives
+                .iter()
+                .any(|neg| neg.shelf_id.as_deref() == Some("fishing_ending"))
+        );
+        assert!(
+            hooks
+                .voice_samples
+                .iter()
+                .all(|sample| sample.excerpt.split_whitespace().count() <= 40)
+        );
+        let rendered = render_writing_packet_hooks_markdown(&hooks);
+        assert!(rendered.contains("voice_samples"));
+        assert!(rendered.contains("scene_negatives"));
+        assert!(!rendered.contains("100+"));
     }
 }

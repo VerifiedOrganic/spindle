@@ -395,6 +395,23 @@ If drafting is blocked by errors (e.g., validator hard constraints or agent exec
 - If an automated draft is unparseable or poisoned (e.g. an agent narrated around the JSON and the parse failed), the harness discards the poisoned completion automatically, so the next `authoring_execute_next` re-dispatches a fresh draft. To force a clean re-draft explicitly, call `authoring_resolve_block` with `target_phase: "redraft"` — it resets the scene to pending-draft (clears the stored generation, deletes the stale artifact, clears verify state) so the next execute re-drafts it from scratch.
 - To pause the run boundaries cleanly without losing progress, call `authoring_cancel_run`. A paused run will not advance through `authoring_execute_next`.
 
+## Fiction anti-slop (writing packet)
+
+Draft context already includes `compact_shelf_digest` on `get_scene_context`
+and `get_chapter_briefing`. Use that digest — do not invent a 100+ pattern
+list, and do not paste the full catalog into prompts. `voice_samples` and
+`scene_negatives` on the packet are style-profile hooks: rewrite from the
+beat toward the samples, and do not repeat the negatives.
+
+Product locks (do not weaken them):
+
+- Soft shelves stay advisory on save. Do not fail a save for `solitary_fade`
+  or other soft IDs.
+- Hard shelves fail-closed only when verify/revise is on (`max_revise_attempts`
+  > 0). Do not change that split.
+- Rewrite-from-beats, at most 1–2 passes. Do not synonym-swap to "humanize."
+- Fiction only. No Voices / BLUF / Flesch / delve-as-tech-gate ports.
+
 ## Style learning from edits (opt-in)
 
 When you hand-edit an agent-drafted scene, that edit can teach the project's style profile.

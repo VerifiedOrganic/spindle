@@ -169,23 +169,23 @@ non_port = "not_bluf"
 matchers = []
 
 # ---------------------------------------------------------------------------
-# Later packet fields (documented, not populated in Phase 0)
+# Packet fields (Phase 2 writing packet)
 # ---------------------------------------------------------------------------
 
 [packet_fields]
-# Injected into get_scene_context / get_chapter_briefing in a later phase.
+# Injected into get_scene_context / get_chapter_briefing / harness prompts.
 # See docs/fiction-anti-slop.md § Packet fields.
 
 [packet_fields.voice_samples]
-status = "reserved"
+status = "populated"
 shape = "short project-local excerpts of on-voice narrator and named speakers"
 persist_source_prose = false
 
 [packet_fields.scene_negatives]
-status = "reserved"
+status = "populated"
 shape = "compact do-not-repeat examples tied to this scene's beats or prior hits"
 
 [packet_fields.compact_shelf_digest]
-status = "reserved"
+status = "populated"
 shape = "budget-capped enabled shelf ids + severity + limits for the active profile"
 full_catalog_uri = "bible://references/anti-slop"

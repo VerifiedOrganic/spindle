@@ -702,10 +702,17 @@ no 100+ pattern dump. A hit is a craft problem, not proof of authorship. Do
 not synonym-swap the flagged line — go back to the scene beat and rewrite the
 moment (at most one or two from-beats passes).
 
-Hard shelves fail this gate when over the default limit. Soft shelves are
-advisory on save (do not block the save). `said_bookism` stays **soft-only**
-unless the project's style profile promotes it. Genre/style notes may disable
-or soften any shelf.
+The writing packet (`get_scene_context` / `get_chapter_briefing`) already
+carries `compact_shelf_digest` — id, severity, limit, limit_scope, and any
+style-profile overlay (disabled / softened / promoted). Use that digest
+instead of restating the full catalog. When the packet includes
+`voice_samples`, treat them as the on-voice rewrite-from-beats target. When
+it includes `scene_negatives`, do not regenerate those rejected moves.
+
+Hard shelves fail this gate when over the default limit **and**
+verify/revise is on. Soft shelves are advisory on save (do not block the
+save). `said_bookism` stays **soft-only** unless the project's style profile
+promotes it. Genre/style notes may disable or soften any shelf.
 
 | Shelf ID | Default | If it hits |
 | --- | --- | --- |

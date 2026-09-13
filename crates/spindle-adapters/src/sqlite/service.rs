@@ -7059,6 +7059,9 @@ impl SqliteSpindleService {
             scene_context.as_ref(),
             &scene_seed,
         );
+        let compact_shelf_digest = scene_context
+            .as_ref()
+            .and_then(|context| context.compact_shelf_digest.clone());
         let mut output = GetChapterBriefingOutput {
             hard_constraints: hard_constraints.clone(),
             canonical_facts: if hard_constraints_compacted {
@@ -7075,6 +7078,7 @@ impl SqliteSpindleService {
             active_threads,
             scene_seed,
             scene_context,
+            compact_shelf_digest,
         };
 
         let mut bundle = build_chapter_briefing_bundle(
@@ -7289,6 +7293,43 @@ impl SqliteSpindleService {
     ///   * No explicit-draft hard constraint is appended (the SQLite service
     ///     does not own a `ModelRouter`); the reference appended one when
     ///     the `draft` route had an explicit-rating override.
+    async fn assemble_fiction_writing_packet(
+        &self,
+        project_id: &str,
+        active_style_profile_id: Option<&str>,
+        style_notes: &[String],
+        style_rules: &[spindle_core::style::StyleRule],
+    ) -> (
+        Option<spindle_core::style::antislop::CompactShelfDigest>,
+        Vec<spindle_core::style::antislop::VoiceSample>,
+        Vec<spindle_core::style::antislop::SceneNegative>,
+    ) {
+        let Ok(pack) = spindle_core::style::antislop::ShelfPack::load_default() else {
+            return (None, Vec::new(), Vec::new());
+        };
+        let profile = match active_style_profile_id {
+            Some(profile_id) => self
+                .repository
+                .get_style_profile(project_id, profile_id)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        let mut style_texts = style_notes.to_vec();
+        for rule in style_rules {
+            style_texts.push(rule.rule_name.clone());
+            style_texts.push(rule.description.clone());
+        }
+        let (digest, hooks) = spindle_core::style::antislop::assemble_writing_packet(
+            &pack,
+            active_style_profile_id,
+            &style_texts,
+            profile.as_ref().map(|card| &card.guidance),
+        );
+        (Some(digest), hooks.voice_samples, hooks.scene_negatives)
+    }
+
     pub async fn get_scene_context(
         &self,
         input: spindle_core::models::GetSceneContextInput,
@@ -8437,6 +8478,25 @@ impl SqliteSpindleService {
         );
         let novel_layer_truncated = !budget_report.truncated_section_ids.is_empty();
 
+        let style_notes = novel_layer
+            .style_directive
+            .as_ref()
+            .map(|directive| directive.style_notes.as_slice())
+            .unwrap_or(novel_layer.reader_contract.style_notes.as_slice());
+        let style_rules = novel_layer
+            .style_directive
+            .as_ref()
+            .map(|directive| directive.style_rules.as_slice())
+            .unwrap_or(&[]);
+        let (compact_shelf_digest, voice_samples, scene_negatives) = self
+            .assemble_fiction_writing_packet(
+                &input.project_id,
+                novel_layer.active_style_profile_id.as_deref(),
+                style_notes,
+                style_rules,
+            )
+            .await;
+
         Ok(SceneContextOutput {
             hard_constraints,
             canonical_facts: canonical_fact_read_models,
@@ -8447,6 +8507,9 @@ impl SqliteSpindleService {
                 token_budget: Some(budget_tokens),
                 novel_layer_truncated,
             },
+            compact_shelf_digest,
+            voice_samples,
+            scene_negatives,
         })
     }
 
@@ -8568,13 +8631,21 @@ impl SqliteSpindleService {
             .unwrap_or(spindle_core::models::ContextFormat::Markdown);
         let include_standards = input.wants_standards();
         let payload = self.get_scene_context(input).await?;
+        let packet_markdown = crate::format::format_writing_packet_markdown(
+            payload.compact_shelf_digest.as_ref(),
+            &payload.voice_samples,
+            &payload.scene_negatives,
+        );
         let context_markdown =
             (format == spindle_core::models::ContextFormat::Markdown).then(|| {
-                crate::format::format_scene_context_markdown(
+                crate::format::format_scene_context_markdown_with_packet(
                     None,
                     &payload.hard_constraints,
                     &payload.novel,
                     &payload.scene,
+                    payload.compact_shelf_digest.as_ref(),
+                    &payload.voice_samples,
+                    &payload.scene_negatives,
                 )
             });
 
@@ -8595,6 +8666,10 @@ impl SqliteSpindleService {
                     standards.push_str(directive.trim_start());
                     standards.push_str("\n\n");
                 }
+                if !packet_markdown.is_empty() {
+                    standards.push_str(&packet_markdown);
+                    standards.push_str("\n\n");
+                }
                 standards.push_str(crate::guidance::standards_text());
                 standards
             } else {
@@ -8603,6 +8678,9 @@ impl SqliteSpindleService {
             novel: payload.novel,
             scene: payload.scene,
             budget: payload.budget,
+            compact_shelf_digest: payload.compact_shelf_digest,
+            voice_samples: payload.voice_samples,
+            scene_negatives: payload.scene_negatives,
             context_markdown,
         })
     }
@@ -37741,6 +37819,21 @@ agent = "explicit-agent"
             "Oathbound wardens hold the line."
         );
         assert_eq!(ctx.budget.token_budget, Some(4000));
+        let digest = ctx
+            .compact_shelf_digest
+            .as_ref()
+            .expect("writing packet must include compact_shelf_digest");
+        assert_eq!(digest.shelves.len(), 12);
+        assert!(
+            digest
+                .shelves
+                .iter()
+                .any(|shelf| shelf.id == "solitary_fade"
+                    && shelf.severity == spindle_core::style::antislop::Severity::Soft
+                    && shelf.enabled)
+        );
+        assert_eq!(digest.catalog_uri, "bible://references/anti-slop");
+        assert!(digest.rewrite_max_passes <= 2);
 
         let envelope = svc
             .get_scene_context_envelope(GetSceneContextInput {
@@ -37765,8 +37858,202 @@ agent = "explicit-agent"
             envelope
                 .context_markdown
                 .as_deref()
-                .is_some_and(|markdown| markdown.contains("# Scene context")),
+                .is_some_and(|markdown| markdown.contains("# Scene context")
+                    && markdown.contains("compact_shelf_digest")
+                    && markdown.contains("solitary_fade")),
             "public envelope should include markdown when requested"
+        );
+        assert!(
+            envelope.standards.contains("compact_shelf_digest"),
+            "guidance/standards must carry the shelf digest"
+        );
+        assert!(envelope.compact_shelf_digest.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_scene_context_hooks_voice_samples_and_scene_negatives_from_style_profile() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterVoiceProfileData, ContextFormat,
+            CreateCharacterInput, CreateLocationInput, GetSceneContextInput, WorldStateInput,
+        };
+        use spindle_core::style::{
+            StyleCorpusMetrics, StyleCorpusSummary, StyleProfileCard, StyleProfileGuidance,
+            StyleProfileSourcePolicy, StyleProfileStatus,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "PacketHooks".into(),
+                project_type: "novel".into(),
+                genre: "comedy".into(),
+                reader_contract: ReaderContract {
+                    promise: "Keep it funny.".into(),
+                    style_notes: vec!["disable fishing_ending".into()],
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let mara = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: proj.project_id.clone(),
+                name: "Mara".into(),
+                summary: "A warden who tells jokes.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        let gate = svc
+            .create_location(CreateLocationInput {
+                project_id: proj.project_id.clone(),
+                name: "Ash Gate".into(),
+                kind: "fortress".into(),
+                realm: None,
+                summary: "A wall.".into(),
+                initial_state: WorldStateInput {
+                    controlling_faction: None,
+                    status: None,
+                    prosperity: None,
+                    stability: None,
+                    threat_level: None,
+                    sensory_details: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let mut guidance = StyleProfileGuidance::default();
+        guidance.do_rules = vec!["Name the tool, not the mood.".into()];
+        guidance.avoid_rules = vec!["a mix of relief and dread".into()];
+        guidance.prompt_snippet = "Short clauses. Concrete work.".into();
+        let profile_id = "style_profile:packet-hooks".to_string();
+        let card = StyleProfileCard {
+            profile_id: profile_id.clone(),
+            project_id: proj.project_id.clone(),
+            name: "Packet hooks".into(),
+            status: StyleProfileStatus::Ready,
+            created_at: "2026-09-13T00:00:00Z".into(),
+            updated_at: "2026-09-13T00:00:00Z".into(),
+            corpus: StyleCorpusSummary {
+                source_count: 0,
+                analyzed_source_count: 0,
+                skipped_source_count: 0,
+                total_words: 0,
+                total_characters: 0,
+                chunk_count: 0,
+                source_refs: Vec::new(),
+                warnings: Vec::new(),
+            },
+            metrics: StyleCorpusMetrics {
+                average_sentence_words: 0.0,
+                median_sentence_words: 0.0,
+                p90_sentence_words: 0.0,
+                average_paragraph_words: 0.0,
+                median_paragraph_words: 0.0,
+                dialogue_line_ratio: 0.0,
+                dialogue_word_ratio: 0.0,
+                question_mark_rate_per_1k_words: 0.0,
+                exclamation_rate_per_1k_words: 0.0,
+                semicolon_rate_per_1k_words: 0.0,
+                em_dash_rate_per_1k_words: 0.0,
+                ellipsis_rate_per_1k_words: 0.0,
+                first_person_pronoun_rate_per_1k_words: 0.0,
+                third_person_pronoun_rate_per_1k_words: 0.0,
+                top_functional_markers: Vec::new(),
+            },
+            guidance,
+            source_policy: StyleProfileSourcePolicy {
+                local_user_provided: true,
+                source_text_persisted: false,
+                max_excerpt_words: 0,
+                allowed_roots: Vec::new(),
+                metrics_only: true,
+                source_sample_word_budget: None,
+                source_paths: Vec::new(),
+                recursive: None,
+                include_globs: None,
+                exclude_globs: None,
+                max_files: None,
+                max_bytes_per_file: None,
+                max_total_words: None,
+            },
+            model_receipt: None,
+            quality: Default::default(),
+            archived_at: None,
+            parent_profile_id: None,
+            refreshed_from_profile_id: None,
+            version_number: None,
+            refreshed_at: None,
+        };
+        svc.repository().insert_style_profile(&card).await.unwrap();
+        svc.repository()
+            .set_active_style_profile_id(&proj.project_id, Some(profile_id.clone()))
+            .await
+            .unwrap();
+
+        let ctx = svc
+            .get_scene_context(GetSceneContextInput {
+                project_id: proj.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                character_ids: vec![mara.character_id.clone()],
+                max_character_count: None,
+                location_id: gate.location_id.clone(),
+                format: Some(ContextFormat::Json),
+                budget_tokens: Some(4000),
+                token_budget: None,
+                sections: None,
+            })
+            .await
+            .unwrap();
+
+        let digest = ctx
+            .compact_shelf_digest
+            .as_ref()
+            .expect("digest present with profile overlay");
+        let fishing = digest
+            .shelves
+            .iter()
+            .find(|shelf| shelf.id == "fishing_ending")
+            .expect("fishing_ending");
+        assert!(!fishing.enabled);
+        assert_eq!(
+            fishing.profile_overlay,
+            Some(spindle_core::style::antislop::ProfileOverlay::Disabled)
+        );
+        assert!(
+            ctx.voice_samples
+                .iter()
+                .any(|sample| sample.excerpt.contains("Name the tool"))
+        );
+        assert!(
+            ctx.scene_negatives
+                .iter()
+                .any(|neg| neg.shelf_id.as_deref() == Some("emotion_cocktail"))
         );
     }
 
@@ -38843,6 +39130,12 @@ rating = "explicit"
             briefing.scene_context.is_some(),
             "scene_context should be folded in when scene_order + character_ids + location_id are pinned"
         );
+        let digest = briefing
+            .compact_shelf_digest
+            .as_ref()
+            .expect("chapter briefing must carry compact_shelf_digest");
+        assert_eq!(digest.shelves.len(), 12);
+        assert!(briefing.briefing_markdown.contains("compact_shelf_digest"));
     }
 
     #[tokio::test]
