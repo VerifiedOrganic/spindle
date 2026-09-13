@@ -1,13 +1,12 @@
-# Fiction anti-slop (Phase 0)
+# Fiction anti-slop
 
-Status: **Phase 0 shipped** (docs/data only). No Rust scanner.
+Status: **Phase 1 scanner** lives at `style/antislop/` in `spindle-core`. It
+loads the Phase 0 pack + catalog. Soft shelves (including `solitary_fade` and
+`said_bookism` by product lock) are warnings and do not increment `hard_count`.
 
 This is the current design contract for fiction anti-slop. The human catalog is
 [`references/anti-slop.md`](../references/anti-slop.md). The versioned pack stub
 is [`references/anti-slop-shelf-pack.v0.toml`](../references/anti-slop-shelf-pack.v0.toml).
-
-Phase 1 (not this work) may add a `style/antislop/` scanner that loads the pack.
-Do not treat this doc as claiming that scanner exists.
 
 ## Why this exists
 
@@ -164,10 +163,10 @@ When a scanner exists, wire it as follows — do not implement this in Phase 0:
 claim a missing "100+" pattern list. The authoring supervisor does not repeat
 that claim.
 
-## Out of scope (Phase 0)
+## Out of scope (Phase 1)
 
-- Rust `style/antislop/` (or any crate scanner)
+- Wiring the scanner into `save_scene_draft` / verify / `auto_strict`
 - DTO fields on `SceneContextOutput`
-- Matcher lexicons
+- Dual-persona revise
 - Promoting `said_bookism` to hard in the default pack
 - Porting Voices / tech gates

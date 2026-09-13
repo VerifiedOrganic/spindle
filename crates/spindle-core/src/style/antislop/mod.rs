@@ -1,0 +1,249 @@
+//! Fiction anti-slop scanner (Phase 1).
+//!
+//! Loads the Phase 0 shelf pack (`references/anti-slop-shelf-pack.v0.toml`)
+//! and the human catalog (`references/anti-slop.md`). Soft shelves stay
+//! warnings and never increment [`AntiSlopReport::hard_count`]. Hard shelves
+//! increment `hard_count` only when they exceed the pack limit.
+//!
+//! Fiction-only. Does not port Voices / BLUF / delve-as-tech-gate / Flesch /
+//! detector / em-dash gates.
+//!
+//! Rewrite directions are rewrite-from-beats (≤1–2), not paraphrase-humanizer.
+//! Persist path for [`AntiSlopReport`] is sketched; this phase does not write it.
+
+mod pack;
+mod scan;
+
+pub use pack::{
+    AntislopError, DEFAULT_CATALOG_MARKDOWN, DEFAULT_PACK_TOML, GenreOverride, PackPolicy,
+    RewriteMode, Severity, ShelfLimit, ShelfPack, ShelfSpec,
+};
+pub use scan::{AntiSlopHit, AntiSlopReport, ScanInput, ScanSurface, persist_path_sketch, scan};
+
+/// Tech / Voices gates that must not appear as fiction shelves.
+pub const NON_PORTS: &[&str] = &[
+    "bluf",
+    "tech_buzzlist",
+    "em_dash_gate",
+    "flesch",
+    "detector_percent",
+    "faq_ending",
+    "delve_as_tech_gate",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fiction(prose: &str) -> ScanInput<'_> {
+        ScanInput::fiction(prose)
+    }
+
+    #[test]
+    fn default_pack_loads_twelve_fiction_shelves() {
+        let pack = ShelfPack::load_default().expect("embedded v0 pack");
+        assert_eq!(pack.schema_version, 0);
+        assert_eq!(pack.pack_id, "fiction.default");
+        assert_eq!(pack.domain, "fiction");
+        assert_eq!(pack.shelves.len(), 12);
+        assert!(pack.policy.fiction_only);
+        assert!(pack.policy.said_bookism_soft_only_by_default);
+        assert!(pack.policy.max_rewrite_from_beats <= 2);
+        assert_eq!(
+            pack.shelf("solitary_fade").map(|s| s.severity),
+            Some(Severity::Soft)
+        );
+        assert_eq!(
+            pack.shelf("said_bookism").map(|s| s.severity),
+            Some(Severity::Soft)
+        );
+        assert_eq!(
+            pack.shelf("contrast_not_x_but_y").map(|s| s.severity),
+            Some(Severity::Hard)
+        );
+        assert!(DEFAULT_CATALOG_MARKDOWN.contains("solitary_fade"));
+        assert!(DEFAULT_CATALOG_MARKDOWN.contains("Rewrite from the beat."));
+    }
+
+    #[test]
+    fn said_bookism_stays_soft_under_product_lock_even_if_pack_says_hard() {
+        let mut pack = ShelfPack::load_default().expect("pack");
+        pack.shelf_mut("said_bookism").unwrap().severity = Severity::Hard;
+        let prose =
+            "\"Leave,\" she hissed.\n\"Please,\" he breathed.\n\"Impossible,\" she gasped.\n";
+        let report = scan(&pack, &fiction(prose));
+        let bookism: Vec<_> = report
+            .hits
+            .iter()
+            .filter(|hit| hit.shelf_id == "said_bookism")
+            .collect();
+        assert!(
+            !bookism.is_empty(),
+            "expected over-limit said_bookism hits: {report:?}"
+        );
+        assert!(bookism.iter().all(|hit| hit.severity == Severity::Soft));
+        assert_eq!(report.hard_count, 0);
+    }
+
+    #[test]
+    fn solitary_fade_hits_are_soft_and_do_not_increment_hard_count() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "She spent the afternoon thinking about what he'd said.\n\n\
+                     Hours passed.\n\n\
+                     Later, at the meeting, she told him everything.";
+        let report = scan(&pack, &fiction(prose));
+        let fades: Vec<_> = report
+            .hits
+            .iter()
+            .filter(|hit| hit.shelf_id == "solitary_fade")
+            .collect();
+        assert!(
+            !fades.is_empty(),
+            "expected solitary_fade hits, got {report:?}"
+        );
+        assert!(fades.iter().all(|hit| hit.severity == Severity::Soft));
+        assert_eq!(
+            report.hard_count, 0,
+            "solitary_fade must not contribute to hard_count: {report:?}"
+        );
+        assert!(report.soft_count >= 1);
+        assert!(
+            fades
+                .iter()
+                .all(|hit| hit.rewrite == RewriteMode::FromBeats)
+        );
+    }
+
+    #[test]
+    fn hard_over_limit_increments_hard_count() {
+        let pack = ShelfPack::load_default().expect("pack");
+        // contrast limit 1: two hinges => 1 hard finding
+        // emotion_cocktail limit 0: one mix => 1 hard finding
+        let prose = "It wasn't anger. It was disappointment.\n\
+                     This wasn't a homecoming. It was a reckoning.\n\
+                     She felt a mix of relief and dread when the letter came.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report.hits.iter().any(|hit| hit.shelf_id == "contrast_not_x_but_y"
+                && hit.severity == Severity::Hard),
+            "{report:?}"
+        );
+        assert!(
+            report
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "emotion_cocktail" && hit.severity == Severity::Hard),
+            "{report:?}"
+        );
+        assert_eq!(report.hard_count, 2, "{report:?}");
+    }
+
+    #[test]
+    fn one_allowed_contrast_does_not_increment_hard_count() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "It wasn't anger. It was disappointment. He set the cup down.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| hit.shelf_id != "contrast_not_x_but_y"),
+            "within-limit contrast should stay silent: {report:?}"
+        );
+        assert_eq!(report.hard_count, 0);
+    }
+
+    #[test]
+    fn fishing_ending_is_hard_at_the_close() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "She locked the till and stood in the doorway.\n\n\
+                     She didn't know what tomorrow would bring.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "fishing_ending" && hit.severity == Severity::Hard),
+            "{report:?}"
+        );
+        assert!(report.hard_count >= 1);
+    }
+
+    #[test]
+    fn non_fiction_surface_is_skipped() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "It wasn't a design doc. It was a reckoning.\n\
+                     A mix of hope and terror. Only time would tell.";
+        let report = scan(
+            &pack,
+            &ScanInput {
+                prose,
+                surface: ScanSurface::Other,
+            },
+        );
+        assert!(report.skipped);
+        assert_eq!(report.hard_count, 0);
+        assert_eq!(report.soft_count, 0);
+        assert!(report.hits.is_empty());
+    }
+
+    #[test]
+    fn non_ports_are_not_shelves_and_delve_is_not_a_gate() {
+        let pack = ShelfPack::load_default().expect("pack");
+        for id in NON_PORTS {
+            assert!(pack.shelf(id).is_none(), "{id} must not be a fiction shelf");
+        }
+        let prose = "She wanted to delve into the cellar ledgers.\n\
+                     Leverage? Synergy? Unlock the FAQ.\n\
+                     Readability grade: easy. Detector score: none.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| !NON_PORTS.contains(&hit.shelf_id.as_str())),
+            "non-port gates must not fire: {report:?}"
+        );
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| hit.shelf_id != "naming_watchlist"
+                    || !hit.excerpt.to_lowercase().contains("delve")),
+            "delve must not be a naming_watchlist tech gate: {report:?}"
+        );
+    }
+
+    #[test]
+    fn rewrite_is_from_beats_not_paraphrase() {
+        let pack = ShelfPack::load_default().expect("pack");
+        assert_eq!(pack.policy.max_rewrite_from_beats, 2);
+        assert!(
+            pack.shelves
+                .iter()
+                .all(|s| s.rewrite == RewriteMode::FromBeats)
+        );
+        let report = scan(
+            &pack,
+            &fiction("She felt a mix of relief and dread.\nHours passed."),
+        );
+        assert!(!report.hits.is_empty());
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| hit.rewrite == RewriteMode::FromBeats)
+        );
+        assert!(report.rewrite_max_passes <= 2);
+        assert!(report.hits.iter().all(|hit| {
+            hit.rewrite_hint.contains("beat") && !hit.rewrite_hint.contains("paraphrase")
+        }));
+    }
+
+    #[test]
+    fn persist_path_is_sketched_not_wired() {
+        let path = persist_path_sketch("proj_1", "branch_main", "scene_9");
+        assert!(path.contains("anti_slop_report.json"));
+        assert!(path.contains("scene_9"));
+    }
+}
