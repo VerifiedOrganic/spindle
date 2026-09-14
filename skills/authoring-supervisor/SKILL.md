@@ -406,10 +406,18 @@ beat toward the samples, and do not repeat the negatives.
 Product locks (do not weaken them):
 
 - Soft shelves stay advisory on save. Do not fail a save for `solitary_fade`
-  or other soft IDs.
+  or other soft IDs. `save_scene_draft` attaches an `anti_slop` report; it
+  does not fail the write.
 - Hard shelves fail-closed only when verify/revise is on (`max_revise_attempts`
-  > 0). Do not change that split.
+  1 or 2). The scene-scoped `anti_slop` check is a `warning` for hard
+  over-limit only.
 - Rewrite-from-beats, at most 1–2 passes. Do not synonym-swap to "humanize."
+  After a rewrite, re-lint; leftover hard IDs stay visible (parked residuals).
+- `auto_strict` requires `anti_slop.hard_count == 0`. Soft-only must not
+  invent a hard finding.
+- Dual-persona review injects the report. Craft Technician cites shelf IDs
+  (or NONE). Literary Critic uses the structure block — not BLUF / Voices /
+  Flesch / delve.
 - Fiction only. No Voices / BLUF / Flesch / delve-as-tech-gate ports.
 
 ## Style learning from edits (opt-in)

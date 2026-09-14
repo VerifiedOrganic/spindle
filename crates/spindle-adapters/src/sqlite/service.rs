@@ -8920,6 +8920,26 @@ impl SqliteSpindleService {
         // checkpoint policies approve/block on errors+warnings — the HARD
         // gate against shipping stubs is the Blocking `scene_stub_text`
         // preflight issue, which export enforces.
+        if should_run_check(&requested_checks_set, "anti_slop")
+            && let Some(pack) = load_anti_slop_pack()
+        {
+            for scene in &scenes {
+                let report = spindle_core::style::antislop::scan(
+                    &pack,
+                    &spindle_core::style::antislop::ScanInput::fiction(&scene.full_text),
+                );
+                for finding in spindle_core::style::antislop::verify_findings(&report) {
+                    issues.push(ConsistencyIssue {
+                        severity: finding.severity,
+                        check_type: finding.check_type,
+                        message: finding.message,
+                        entity_ids: vec![scene.id.clone()],
+                        suggested_action: Some(finding.suggested_action),
+                    });
+                }
+            }
+        }
+
         if should_run_check(&requested_checks_set, "scene_stub_text") {
             let min_scene_words = project
                 .min_scene_word_count
@@ -14584,6 +14604,27 @@ impl SqliteSpindleService {
             chapter_id: Some(format!("{}.{}", scene.book_number, scene.chapter_number)),
             scene_id: Some(scene.id.clone()),
         });
+        let antislop_injection = scan_scene_anti_slop(&scene.full_text)
+            .as_ref()
+            .map(spindle_core::style::antislop::dual_persona_injection);
+        let literary_antislop = antislop_injection
+            .as_ref()
+            .map(|injection| {
+                format!(
+                    "\n\n{}\n\n{}",
+                    injection.report_block, injection.literary_critic_structure_block
+                )
+            })
+            .unwrap_or_default();
+        let craft_antislop = antislop_injection
+            .as_ref()
+            .map(|injection| {
+                format!(
+                    "\n\n{}\n\n{}",
+                    injection.report_block, injection.craft_technician_block
+                )
+            })
+            .unwrap_or_default();
         let router = self.repository.model_router();
         {
             let literary_request = ModelRequest {
@@ -14601,7 +14642,7 @@ impl SqliteSpindleService {
                          Format your response as:\n\
                          STRENGTHS:\n- one strength per line\n\n\
                          CONCERNS:\n- one concern per line\n\n\
-                         Be specific to THIS scene. Reference actual lines, images, or moments.",
+                         Be specific to THIS scene. Reference actual lines, images, or moments.{literary_antislop}",
                     scene.summary, scene.full_text
                 ),
                 rating: review_rating.clone(),
@@ -14624,7 +14665,7 @@ impl SqliteSpindleService {
                          Format your response as:\n\
                          STRENGTHS:\n- one strength per line\n\n\
                          CONCERNS:\n- one concern per line\n\n\
-                         Be specific to THIS scene. Quote actual phrases that need work.",
+                         Be specific to THIS scene. Quote actual phrases that need work.{craft_antislop}",
                     scene.tone.as_deref().unwrap_or("unspecified"),
                     scene.summary,
                     scene.full_text
@@ -23033,6 +23074,11 @@ impl SqliteSpindleService {
             .any(|hit| hit.severity == spindle_core::style::StyleDriftSeverity::Warning);
         let style_warnings: Vec<String> = style_hits.into_iter().map(|hit| hit.message).collect();
 
+        // Fiction anti-slop: attach the scan as advisory. Soft and hard hits
+        // never fail this write. Hard over-limit fail-closes only when the
+        // verify/revise loop is on (scene-scoped `anti_slop` check).
+        let anti_slop = scan_scene_anti_slop(&scene.full_text);
+
         Ok(SaveSceneDraftOutput {
             scene_id: scene.id.clone(),
             status: status.to_string(),
@@ -23056,6 +23102,7 @@ impl SqliteSpindleService {
             // A freshly saved scene is not yet clocked, so the scan is prose-only
             // (no suppression to apply). Advisory `warning`s — never blocks a save.
             temporal_findings: scan_temporal_findings(&scene.id, &scene.full_text, None),
+            anti_slop,
         })
     }
 
@@ -25859,9 +25906,10 @@ fn derive_literary_concerns(scene: &crate::sqlite::records::Scene) -> Vec<String
         concerns
             .push("tone metadata is missing, which weakens pacing and voice review".to_string());
     }
-    if concerns.is_empty() {
-        concerns.push("no major reader-level concerns detected in this heuristic pass".to_string());
-    }
+    concerns.push(
+        "structure: judge opening pressure, turn, close, and lived-in space — not BLUF or tech structure"
+            .to_string(),
+    );
     concerns
 }
 
@@ -25879,6 +25927,19 @@ fn derive_craft_concerns(scene: &crate::sqlite::records::Scene) -> Vec<String> {
             "alternative placeholder language should be revised into story-specific prose"
                 .to_string(),
         );
+    }
+    if let Some(report) = scan_scene_anti_slop(&scene.full_text) {
+        let hard = spindle_core::style::antislop::verify_findings(&report);
+        if hard.is_empty() {
+            concerns.push(
+                "NONE — no hard fiction shelf to cite from the injected anti-slop report"
+                    .to_string(),
+            );
+        } else {
+            for finding in hard {
+                concerns.push(format!("cite `{}`: {}", finding.shelf_id, finding.message));
+            }
+        }
     }
     if concerns.is_empty() {
         concerns.push("no major craft-level concerns detected in this heuristic pass".to_string());
@@ -26159,6 +26220,25 @@ type PriceFactGroups =
 
 fn should_run_check(requested_checks: &std::collections::BTreeSet<String>, check: &str) -> bool {
     requested_checks.is_empty() || requested_checks.contains(check)
+}
+
+fn load_anti_slop_pack() -> Option<spindle_core::style::antislop::ShelfPack> {
+    match spindle_core::style::antislop::ShelfPack::load_default() {
+        Ok(pack) => Some(pack),
+        Err(error) => {
+            tracing::warn!(error = %error, "fiction anti-slop pack failed to load; skipping scan");
+            None
+        }
+    }
+}
+
+/// Advisory scan for `save_scene_draft`. Never fails the save.
+fn scan_scene_anti_slop(prose: &str) -> Option<spindle_core::style::antislop::AntiSlopReport> {
+    let pack = load_anti_slop_pack()?;
+    Some(spindle_core::style::antislop::scan(
+        &pack,
+        &spindle_core::style::antislop::ScanInput::fiction(prose),
+    ))
 }
 
 /// Render the pre-draft in-world-time hard constraint: the previous scene's end

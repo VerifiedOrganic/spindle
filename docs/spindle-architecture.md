@@ -545,5 +545,5 @@ Run this sequence when you start a new implementation task.
 - `docs/continuity-quantity-design.md`, `docs/continuity-timing-design.md`: the
   quantity and temporal continuity spine the editorial loop builds on.
 - `docs/fiction-anti-slop.md`: fiction anti-slop contract (shelf catalog,
-  product locks, reserved packet fields). Phase 1 scanner:
-  `spindle-core` `style/antislop/`.
+  product locks, writing-packet digest, Phase 3 critic / revise loop).
+  Scanner + rewrite-from-beats contracts: `spindle-core` `style/antislop/`.

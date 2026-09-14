@@ -141,8 +141,10 @@ run_dual_persona_review({
 ```
 
 This provides both a Literary Critic perspective (reader engagement, emotional
-truth, character depth) and a Craft Technician perspective (MRU ordering,
-show-don't-tell, POV discipline, dialogue technique). The result is persisted
+truth, character depth, plus a structure block: opening / turn / close /
+lived-in space — not BLUF) and a Craft Technician perspective (MRU ordering,
+show-don't-tell, POV discipline, dialogue technique, and shelf-ID citations
+from the injected anti-slop report). The result is persisted
 as a `PersistedDualPersonaReview` record with a `review_id` and `status` so
 you can reference it later.
 

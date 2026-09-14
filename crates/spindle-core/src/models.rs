@@ -2355,6 +2355,11 @@ pub struct SaveSceneDraftOutput {
     /// never blocks a save.
     #[serde(default)]
     pub temporal_findings: Vec<ConsistencyIssue>,
+    /// Fiction anti-slop scan of the saved prose. Soft and hard hits are
+    /// advisory on save — this field never fails the write. Hard over-limit
+    /// fail-closes only on the verify/revise path when that loop is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anti_slop: Option<crate::style::antislop::AntiSlopReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -4169,6 +4174,7 @@ pub const SCENE_VERIFY_CHECKS: &[&str] = &[
     "world_rule_semantic_drift",  // prose trips a world-rule scan pattern
     "voice_drift",                // dialogue drifts from a character's voice profile
     "style_compliance",           // prose drifts from an applied style profile
+    "anti_slop",                  // fiction hard shelves over limit (Phase 3 verify)
                                   // ── Deliberately EXCLUDED (deep-only or cross-chapter trend) ──
                                   // "promise_payoff_detection"   — deep-only (model tier)
                                   // "scene_purpose_fulfillment"  — deep-only (model tier)
@@ -7792,6 +7798,10 @@ mod tests {
                 "scene-verify subset must exclude {excluded}"
             );
         }
+        assert!(
+            SCENE_VERIFY_CHECKS.contains(&"anti_slop"),
+            "Phase 3: hard shelves join the scene-scoped verify set"
+        );
     }
 
     #[test]

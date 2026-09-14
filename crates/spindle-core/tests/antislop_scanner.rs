@@ -3,8 +3,9 @@
 //! Run with `--nocapture` to print the soft-vs-hard report used in the PR.
 
 use spindle_core::style::antislop::{
-    AntiSlopReport, DEFAULT_CATALOG_MARKDOWN, NON_PORTS, ScanInput, Severity, ShelfPack,
-    compact_shelf_digest, render_compact_shelf_digest_markdown, scan,
+    ANTI_SLOP_CHECK, AntiSlopReport, DEFAULT_CATALOG_MARKDOWN, NON_PORTS, ScanInput, Severity,
+    ShelfPack, auto_strict_blocks, compact_shelf_digest, dual_persona_injection,
+    render_compact_shelf_digest_markdown, rewrite_from_beats_prompt, scan, verify_findings,
 };
 
 fn print_report(label: &str, report: &AntiSlopReport) {
@@ -156,4 +157,45 @@ fn compact_shelf_digest_is_the_writing_packet_slice() {
     assert!(markdown.contains("compact_shelf_digest"));
     assert!(!markdown.contains("voice_samples"));
     assert!(markdown.contains("bible://references/anti-slop"));
+}
+
+#[test]
+fn phase3_revise_loop_contracts() {
+    let pack = ShelfPack::load_default().expect("v0 pack");
+    let hard = scan(
+        &pack,
+        &ScanInput::fiction(
+            "It wasn't anger. It was disappointment.\n\
+             This wasn't a homecoming. It was a reckoning.\n\
+             She felt a mix of relief and dread.",
+        ),
+    );
+    print_report("phase3 hard verify (rewrite-from-beats)", &hard);
+    let prompt = rewrite_from_beats_prompt(&hard);
+    println!("{prompt}");
+    assert!(prompt.contains("beat"));
+    assert!(prompt.to_lowercase().contains("paraphrase"));
+    let findings = verify_findings(&hard);
+    assert!(findings.iter().all(|f| f.check_type == ANTI_SLOP_CHECK));
+    assert!(auto_strict_blocks(&hard));
+    let injection = dual_persona_injection(&hard);
+    println!("{}", injection.craft_technician_block);
+    println!("{}", injection.literary_critic_structure_block);
+    assert!(injection.craft_technician_block.contains("NONE"));
+    assert!(
+        injection
+            .literary_critic_structure_block
+            .contains("structure")
+    );
+
+    let soft = scan(
+        &pack,
+        &ScanInput::fiction(
+            "She spent the afternoon thinking about what he'd said.\n\nHours passed.",
+        ),
+    );
+    print_report("phase3 soft-only (must not fail-close)", &soft);
+    assert_eq!(soft.hard_count, 0);
+    assert!(verify_findings(&soft).is_empty());
+    assert!(!auto_strict_blocks(&soft));
 }

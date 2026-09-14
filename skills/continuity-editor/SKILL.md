@@ -560,13 +560,16 @@ character thinness, pacing drag, thematic incoherence.
 - Are there passages where attention wanders? Why?
 - Does the scene earn its emotional moments or reach for them cheaply?
 - Is there anything that feels contrived, convenient, or unearned?
+- Structure block only: opening / turn / close / lived-in space. Not BLUF,
+  Voices, Flesch, or delve-as-tech-gate. Do not score fiction shelves.
 
 **Persona 2 — Craft Technician**: Read the prose as a writing professor.
 - Are MRUs in the correct order (motivation before reaction)?
 - Is show-don't-tell consistently applied?
 - Are there filter words ("felt", "seemed", "realized")?
 - Do any fiction anti-slop shelves fire? (See `bible://references/anti-slop`.
-  Editorial shelves, not an authorship detector.)
+  Editorial shelves, not an authorship detector.) Cite each matching shelf
+  ID, or write NONE. Rewrite-from-beats ≤1–2; do not paraphrase-humanize.
 - Is POV discipline maintained throughout?
 - Are dialogue tags minimal and action beats doing the work?
 - Is sentence length varied for rhythm?

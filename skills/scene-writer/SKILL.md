@@ -714,6 +714,13 @@ verify/revise is on. Soft shelves are advisory on save (do not block the
 save). `said_bookism` stays **soft-only** unless the project's style profile
 promotes it. Genre/style notes may disable or soften any shelf.
 
+When verify/revise is on and a hard shelf remains, rewrite from the beat
+(at most 1–2 passes), then re-save so the scanner re-lints. Do not
+paraphrase-humanize the flagged sentence. Leftover hard IDs stay visible
+as residuals. Dual-persona review will inject the same report: Craft
+Technician cites shelf IDs; Literary Critic judges structure (opening /
+turn / close / lived-in space) without BLUF or tech gates.
+
 | Shelf ID | Default | If it hits |
 | --- | --- | --- |
 | `contrast_not_x_but_y` | **hard** ≤1/chapter | Dramatize the true state; do not stack "not X but Y" |
