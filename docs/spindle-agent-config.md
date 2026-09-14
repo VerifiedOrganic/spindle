@@ -32,9 +32,13 @@ defaults.
 
 For `provider = "cli"`, `endpoint` is the executable name or path for that
 specific agent. Completion passes the route and prompt as two arguments.
-Configured endpoints take precedence over `SPINDLE_MODEL_CLI_COMMAND`; that
-environment variable remains a fallback for legacy CLI routes without an
-endpoint. Different rated agents therefore dispatch different executables.
+When the prompt exceeds the OS single-argument limit (Linux `MAX_ARG_STRLEN`
+is 128 KiB), Spindle writes it to a tempfile and invokes
+`<endpoint> <route> --prompt-file <path>` instead — the same overflow path
+as grok-cli. Configured endpoints take precedence over
+`SPINDLE_MODEL_CLI_COMMAND`; that environment variable remains a fallback
+for legacy CLI routes without an endpoint. Different rated agents therefore
+dispatch different executables.
 
 ## Config file locations
 
