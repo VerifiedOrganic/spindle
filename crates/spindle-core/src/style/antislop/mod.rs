@@ -169,6 +169,30 @@ mod tests {
     }
 
     #[test]
+    fn close_window_scan_does_not_panic_on_emdash_char_boundary() {
+        let pack = ShelfPack::load_default().expect("pack");
+        // Em dash is 3 UTF-8 bytes. Place it so `len - 400` lands inside the
+        // glyph (the Phase 3 save-path scan hit this on long fiction).
+        let prefix = "a".repeat(3700);
+        let fishing = " Only time would tell.";
+        let pad = 398 - fishing.len();
+        let prose = format!("{prefix}—{}{fishing}", "b".repeat(pad));
+        let close_start = prose.len().saturating_sub(400);
+        assert!(
+            !prose.is_char_boundary(close_start),
+            "fixture must land inside the em dash (idx {close_start})"
+        );
+        let report = scan(&pack, &fiction(&prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "fishing_ending"),
+            "{report:?}"
+        );
+    }
+
+    #[test]
     fn fishing_ending_is_hard_at_the_close() {
         let pack = ShelfPack::load_default().expect("pack");
         let prose = "She locked the till and stood in the doorway.\n\n\
