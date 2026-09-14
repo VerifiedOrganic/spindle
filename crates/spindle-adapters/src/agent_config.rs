@@ -12,6 +12,59 @@ pub struct SpindleConfigFile {
     #[serde(default)]
     pub routing: Vec<RoutingRule>,
     pub health_check: Option<HealthCheckConfig>,
+    /// Route the manuscript-import routes (`import_extract`, `import_synthesize`)
+    /// through the operator's explicit-cleared offload agent.
+    ///
+    /// Import routes carry the full manuscript yet are deliberately exempt from
+    /// the rating gate (ratings do not exist until analysis runs), so a
+    /// rating-based explicit offload never engages for them — by default an
+    /// import dispatch goes to whatever default agent is bound to the route,
+    /// even if the operator offloads explicit work elsewhere. Stricter provider
+    /// safety classifiers (e.g. Qwen) can then refuse the un-offloaded prose.
+    /// Setting this `true` makes import resolve to the same explicit-cleared
+    /// agent that serves `draft` at the `explicit` rating (or an
+    /// `import_*`-specific explicit override), honoring the offload. Opt-in so a
+    /// deliberately configured import chair is never silently overridden.
+    #[serde(default)]
+    pub route_import_to_explicit: bool,
+    /// Optional fiction anti-slop overlay. Defaults stay as the pack.
+    #[serde(default)]
+    pub anti_slop: AntiSlopProjectConfig,
+}
+
+/// Project-local `[anti_slop]` overlay. Empty means pack defaults.
+/// `said_bookism` stays soft unless `promote_to_hard` lists it.
+/// `experimental_structural` is off by default (product lock).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AntiSlopProjectConfig {
+    #[serde(default)]
+    pub disable: Vec<String>,
+    #[serde(default)]
+    pub soften: Vec<String>,
+    #[serde(default)]
+    pub promote_to_hard: Vec<String>,
+    /// StoryScope-inspired observations. Off unless explicitly true.
+    #[serde(default)]
+    pub experimental_structural: bool,
+}
+
+impl AntiSlopProjectConfig {
+    pub fn is_empty(&self) -> bool {
+        self.disable.is_empty() && self.soften.is_empty() && self.promote_to_hard.is_empty()
+    }
+
+    pub fn to_overlay(&self) -> Option<spindle_core::style::antislop::GenreOverride> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(spindle_core::style::antislop::GenreOverride {
+                profile: "project.config".to_string(),
+                disable: self.disable.clone(),
+                soften: self.soften.clone(),
+                promote_to_hard: self.promote_to_hard.clone(),
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +148,12 @@ pub struct LoadedAgentConfig {
     #[serde(default)]
     pub routing: Vec<RoutingRule>,
     pub health_check: HealthCheckConfig,
+    /// See [`SpindleConfigFile::route_import_to_explicit`].
+    #[serde(default)]
+    pub route_import_to_explicit: bool,
+    /// See [`SpindleConfigFile::anti_slop`].
+    #[serde(default)]
+    pub anti_slop: AntiSlopProjectConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,9 +211,11 @@ pub fn resolve_config_path(explicit: Option<&str>) -> anyhow::Result<Option<Path
         anyhow::bail!("agent config file not found: {}", path.display());
     }
 
-    Ok(default_config_candidates()
-        .into_iter()
-        .find(|path| path.exists()))
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_config = std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from);
+    Ok(crate::workspace::resolve_workspace_config_path(
+        &cwd, env_config,
+    ))
 }
 
 pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentConfig> {
@@ -164,6 +225,8 @@ pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentCo
             agents: Vec::new(),
             routing: Vec::new(),
             health_check: default_health_check_config(),
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         });
     };
 
@@ -177,6 +240,8 @@ pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentCo
         agents: config.agents,
         routing: config.routing,
         health_check: normalized_health_check_config(config.health_check),
+        route_import_to_explicit: config.route_import_to_explicit,
+        anti_slop: config.anti_slop,
     })
 }
 
@@ -286,8 +351,14 @@ fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
     // Routing rules are unique per (route, rating). A rule with `rating: None`
     // acts as the default for the route; at most one default per route. A
     // rule with `rating: Some(...)` overrides the default for that rating; at
-    // most one such override per (route, rating) pair.
-    let mut seen_routes: BTreeSet<(String, Option<String>)> = BTreeSet::new();
+    // most one such override per (route, rating) pair — UNLESS the collision is
+    // an exact-duplicate triple (same agent too), which is merely redundant
+    // config. Those are not fatal: the loader surfaces them as a lint warning
+    // (see `configuration_warnings`) rather than failing the whole load.
+    // Values map each (route, normalized-rating) key to the agent that first
+    // claimed it so a same-key/different-agent conflict still hard-fails.
+    let mut seen_routes: std::collections::BTreeMap<(String, Option<String>), String> =
+        std::collections::BTreeMap::new();
     let allowed_ratings = ["general", "teen", "mature", "explicit"];
     for rule in &config.routing {
         if rule.route.trim().is_empty() {
@@ -310,18 +381,25 @@ fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
                 .as_deref()
                 .map(|r| r.trim().to_ascii_lowercase()),
         );
-        if !seen_routes.insert(key) {
-            match rule.rating.as_deref() {
-                Some(rating) => anyhow::bail!(
-                    "duplicate routing rule for route {} with rating {}",
-                    rule.route,
-                    rating
-                ),
-                None => anyhow::bail!(
-                    "duplicate default routing rule for route {} (only one rule per route may omit `rating`)",
-                    rule.route
-                ),
+        if let Some(existing_agent) = seen_routes.get(&key) {
+            // Same (route, rating) claimed twice. Only fail when the agents
+            // differ (a genuine ambiguity); an identical triple is redundant
+            // and left for the load-time lint to warn about.
+            if existing_agent != &rule.agent {
+                match rule.rating.as_deref() {
+                    Some(rating) => anyhow::bail!(
+                        "duplicate routing rule for route {} with rating {}",
+                        rule.route,
+                        rating
+                    ),
+                    None => anyhow::bail!(
+                        "duplicate default routing rule for route {} (only one rule per route may omit `rating`)",
+                        rule.route
+                    ),
+                }
             }
+        } else {
+            seen_routes.insert(key, rule.agent.clone());
         }
         if !known_agents.contains(rule.agent.as_str()) {
             anyhow::bail!(
@@ -367,7 +445,7 @@ provider = "openai-compatible"
 endpoint = "http://localhost:11434/v1"
 model = "mistral"
 max_context = 32000
-ratings = ["safe", "mature", "explicit"]
+ratings = ["general", "teen", "mature", "explicit"]
 quality_tier = "primary"
 capabilities = ["system_prompt"]
 
@@ -402,6 +480,11 @@ temperature = 0.3
 route = "import_validate"
 agent = "local-http"
 temperature = 0.1
+
+[[routing]]
+route = "style_analyze"
+agent = "local-http"
+temperature = 0.2
 "#
 }
 
@@ -456,6 +539,8 @@ mod tests {
             ],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("duplicate agent ids should fail");
 
@@ -497,6 +582,8 @@ mod tests {
                 rating: None,
             }],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("unknown routing agent should fail");
 
@@ -538,6 +625,8 @@ mod tests {
                 rating: None,
             }],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("invalid temperature should fail");
 
@@ -598,6 +687,8 @@ mod tests {
                 make_routing("draft", "explicit-agent", Some("explicit")),
             ],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect("default + per-rating overrides for the same route should validate");
     }
@@ -611,6 +702,8 @@ mod tests {
                 make_routing("draft", "agent-b", None),
             ],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("two default rules for the same route must fail");
         assert!(
@@ -628,6 +721,8 @@ mod tests {
                 make_routing("draft", "agent-b", Some("explicit")),
             ],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("two rules for the same (route, rating) must fail");
         assert!(
@@ -644,6 +739,8 @@ mod tests {
             agents: vec![make_agent("agent-a")],
             routing: vec![make_routing("draft", "agent-a", Some("nc-17"))],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("unknown rating values must be rejected");
         assert!(
@@ -681,6 +778,8 @@ mod tests {
             agents: vec![make_grok_agent("grok-local")],
             routing: vec![make_routing("draft", "grok-local", Some("explicit"))],
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect("grok-cli agent with full optional fields should validate");
     }
@@ -693,6 +792,8 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("invalid effort should fail");
         assert!(
@@ -709,6 +810,8 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("zero max_turns should fail");
         assert!(
@@ -725,6 +828,8 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("grok-only fields on non-grok provider should fail");
         let msg = err.to_string();
@@ -774,6 +879,30 @@ rating = "explicit"
         assert_eq!(agent.deny_tools, vec!["mcp__spindle__delete_scene"]);
         assert_eq!(agent.extra_args, vec!["--check"]);
         validate_config(&parsed).expect("validates");
+    }
+
+    #[test]
+    fn parses_anti_slop_project_overlay() {
+        let parsed: SpindleConfigFile = toml::from_str(
+            r#"
+[anti_slop]
+disable = ["fishing_ending"]
+soften = ["contrast_not_x_but_y"]
+promote_to_hard = ["said_bookism"]
+"#,
+        )
+        .expect("parse");
+        assert_eq!(parsed.anti_slop.disable, vec!["fishing_ending"]);
+        assert_eq!(parsed.anti_slop.soften, vec!["contrast_not_x_but_y"]);
+        assert_eq!(parsed.anti_slop.promote_to_hard, vec!["said_bookism"]);
+        assert!(
+            !parsed.anti_slop.experimental_structural,
+            "experimental_structural must default off"
+        );
+        let overlay = parsed.anti_slop.to_overlay().expect("overlay");
+        assert_eq!(overlay.profile, "project.config");
+        assert_eq!(overlay.disable, vec!["fishing_ending"]);
+        validate_config(&parsed).expect("anti_slop-only config is valid");
     }
 
     #[test]

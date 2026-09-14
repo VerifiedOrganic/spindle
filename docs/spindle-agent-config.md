@@ -30,19 +30,32 @@ The current implementation lets you:
 When no config file exists, Spindle keeps the existing built-in local route
 defaults.
 
+For `provider = "cli"`, `endpoint` is the executable name or path for that
+specific agent. Completion passes the route and prompt as two arguments.
+When the prompt exceeds the OS single-argument limit (Linux `MAX_ARG_STRLEN`
+is 128 KiB), Spindle writes it to a tempfile and invokes
+`<endpoint> <route> --prompt-file <path>` instead — the same overflow path
+as grok-cli. Configured endpoints take precedence over
+`SPINDLE_MODEL_CLI_COMMAND`; that environment variable remains a fallback
+for legacy CLI routes without an endpoint. Different rated agents therefore
+dispatch different executables.
+
 ## Config file locations
 
 Spindle resolves agent config in this order:
 
 1. `SPINDLE_CONFIG`, if set
-2. `./spindle.toml` in the current working directory
-3. `~/.spindle/config.toml`
+2. the nearest project-local `.spindle/config.toml` found by walking up from
+   the current working directory
+3. `./spindle.toml` in the current working directory
+4. `~/.spindle/config.toml`
 
 If none of those files exist, Spindle starts with the default built-in routes.
 
 ## Config shape
 
-The shipped parser currently supports `[[agents]]` and `[[routing]]`.
+The shipped parser currently supports `[[agents]]`, `[[routing]]`, and an
+optional `[anti_slop]` overlay.
 
 ```toml
 [[agents]]
@@ -83,7 +96,33 @@ agent = "local-http"
 [[routing]]
 route = "import_validate"
 agent = "local-http"
+
+[[routing]]
+route = "research"
+agent = "local-http"
+
+[[routing]]
+route = "style_analyze"
+agent = "local-http"
+
+# Optional. Empty / omitted = fiction pack defaults.
+# said_bookism stays soft unless listed under promote_to_hard.
+# experimental_structural is off unless explicitly true.
+[anti_slop]
+disable = []
+soften = []
+promote_to_hard = []
+experimental_structural = false
 ```
+
+`[anti_slop]` is a project overlay on the fiction shelf pack, not a new
+scanner. `disable` skips a shelf, `soften` keeps a hard shelf advisory, and
+`promote_to_hard` is the only way `said_bookism` (or another soft ID) becomes
+hard. Soft-on-save stays advisory. Chapter-scoped quotas roll across
+scenes. Learned suppressions apply when present. `experimental_structural`
+emits StoryScope notes only when true — never a fail gate. See
+[`authoring-supervisor.md`](authoring-supervisor.md) and
+[`fiction-anti-slop.md`](fiction-anti-slop.md).
 
 ## Route names
 
@@ -91,10 +130,13 @@ The current runtime understands these route names:
 
 - `draft`
 - `review`
+- `research`
 - `embedding`
 - `import_extract`
 - `import_synthesize`
 - `import_validate`
+- `style_analyze`
+- `style_revise`
 
 `embedding` stays local by default, but it now switches through the same config
 path when you bind that route to an HTTP agent. Spindle uses the configured
@@ -133,6 +175,16 @@ agent = "default-draft"
 route = "draft"
 agent = "uncensored"
 rating = "explicit"
+
+[[routing]]
+route = "review"
+agent = "default-draft"
+
+[[routing]]
+route = "review"
+agent = "uncensored"
+rating = "explicit"
+system_prompt = "You are reviewing explicit adult manuscript prose for a fictional book project. Give critique only; do not continue the scene."
 ```
 
 Resolution order at request time:
@@ -143,11 +195,21 @@ Resolution order at request time:
    `rating` field).
 3. If neither exists for the requested route, the request errors.
 
+Scene drafting, continuations, research, and dual-persona review all forward
+their content rating to the router. That means explicit scenes can offload both
+drafting and review to explicit-capable backends while general review stays on
+the default reviewer.
+
 Server-side request paths that honor `rating` today:
 
+- `complete_generation` / scene drafting receipts.
 - `complete_continuation` (used by the public `continue_generation` MCP tool;
   pass `rating: "explicit"` on `ContinueGenerationInput` to land continuations
   on the explicit-capable agent).
+- `revise_generation`, which preserves the source receipt's rating.
+- `research_query`, which passes its optional `rating` to the `research` route.
+- `run_dual_persona_review`, which passes the saved scene `content_rating` to
+  the `review` route.
 - Any future request paths that flow through `ModelRouter::complete` and pass
   `rating` on `ModelRequest`.
 
@@ -159,6 +221,146 @@ Validation rules enforced by the loader:
 
 Inspect the loaded rules through the `bible://config/routing` resource. The
 `rating` and `system_prompt` fields are surfaced on each rule when configured.
+
+## Mixed-rating chapters
+
+Rating is a property of the **scene**, not the chapter, book, or run. A chapter
+planned as General, General, Explicit dispatches its first two scenes to the
+default agent and only the third to the explicit-capable one. Nothing collapses
+those three ratings into a single chapter-level value.
+
+The rating travels from `plan_chapter`'s per-scene `content_rating` through the
+stored chapter plan, into the authoring run's per-scene state, and reaches the
+router at dispatch time for each scene individually — for drafting, for
+continuations, and for review (`run_dual_persona_review` and the checkpoint deep
+tiers pass the saved scene's own `content_rating`). To route a mixed chapter you
+need one `[[routing]]` default rule plus one `rating = "explicit"` override, as
+in the example above; nothing per-chapter is required.
+
+### Preflight over the planned rating set
+
+`authoring_prepare_run` / `authoring_start_run` compute the set of **distinct**
+ratings across every planned scene in the chapter range, then check route
+coverage once per rating. So:
+
+- Adding one Explicit scene to an otherwise-General chapter **does** require an
+  explicit-capable `draft` route; the run blocks without one, and the reported
+  `missing_requirements` entry names `explicit`.
+- It does **not** require the General scenes to be servable by that explicit
+  agent, and it does not report the covered ratings as gaps.
+
+The same per-rating pass runs for the `mine` route (under
+`mining_policy: "propose_all"`) and the `review` route (under the auto checkpoint
+policies).
+
+### Context does not cross the rating boundary
+
+Per-scene routing would be hollow if the prompt smuggled the prose across
+anyway. Drafting a General scene that follows an Explicit one assembles context —
+including the previous scene's closing prose — and dispatches it to the *General*
+route, i.e. an agent the operator never cleared for explicit content.
+
+So `get_scene_context` elides across that boundary: when the preceding scene is
+Explicit and the scene being drafted is not, `previous_scene_tail.excerpt`
+carries the neighbour's stored **summary** instead of its prose, and
+`elided_reason` explains the substitution. The markdown rendering labels it
+rather than presenting it as closing lines:
+
+```
+## PREVIOUS SCENE (closing)
+Ch 1.2 [prose withheld — previous scene is explicit; this scene is rated
+general and drafts on a route that may not be cleared for explicit content,
+so its closing prose is replaced by the scene summary]
+Summary: Mara and the smith finally give in.
+```
+
+Elision is a rating boundary, not a blanket filter — an Explicit scene following
+an Explicit one still receives the real closing prose, because it routes to the
+cleared agent. The policy **fails closed**: if the target scene has no planned
+rating and has not been drafted (so its clearance cannot be established), the
+explicit neighbour is elided rather than gambled. Planning your scenes' ratings
+is what restores the full hand-off.
+
+## Import routes and content
+
+The manuscript-import routes (`import_extract`, `import_synthesize`) carry your
+full manuscript prose, but they are **not rating-gated**. The rating gate cannot
+protect you here: content ratings are assigned by *analysis*, which runs during
+and after import, so at import time there is no rating to gate on. Import is also
+a direct operator action on your own manuscript — you point Spindle at your text
+and choose which agents run the import.
+
+Because the gate does not apply, the obligation is **informed configuration**: if
+your manuscript contains explicit content, configure `import_extract` and
+`import_synthesize` agents you trust with it end to end — for example, the same
+explicit-cleared local agents you use for drafting. An import agent that is not
+cleared for explicit content will still see your full explicit manuscript; the
+gate will not stop it.
+
+If you offload explicit work to a separate agent and want import to follow that
+offload without wiring each import route by hand, set the top-level flag:
+
+```toml
+route_import_to_explicit = true
+```
+
+With it enabled, `import_extract` and `import_synthesize` resolve to your
+explicit-cleared offload agent — the agent that serves `draft` at the `explicit`
+rating (or an `import_*`-specific `rating = "explicit"` override if you defined
+one) — instead of their default chair. This keeps un-rated manuscript prose off a
+default agent whose provider safety classifier would refuse it (e.g. Qwen). It is
+opt-in: a deliberately configured import chair is never overridden unless you set
+the flag. If no explicit-cleared agent is configured, import falls back to its
+default chair.
+
+As a nudge, `configure_agents` emits an advisory warning when an import route's
+agent does **not** declare the `explicit` rating while another configured agent
+does — a heuristic sign that you work with explicit content somewhere but your
+import chair is not cleared for it. It is advisory, not an error: import routes
+are not rating-gated, so ensure the agent may see your full manuscript (or set
+`route_import_to_explicit = true`). The advisory is suppressed when the flag is
+enabled.
+
+## Research routing
+
+`route = "research"` is the first-class route for agent-assisted factual
+research. Research agents should return structured source/note/claim JSON and
+must not draft story prose. Use a default research route for ordinary setting,
+technical, historical, and social research. Add a rating-specific override for
+adult/explicit factual research so those queries do not fall through to the
+general research model.
+
+```toml
+[[agents]]
+id = "general-research"
+name = "General research model"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "research-model"
+api_key_env = "RESEARCH_API_KEY"
+
+[[agents]]
+id = "explicit-research"
+name = "Explicit/adult factual research model"
+provider = "grok-cli"
+endpoint = "grok"
+model = "grok-build"
+ratings = ["safe", "mature", "explicit"]
+agent_profile = "spindle-researcher"
+
+[[routing]]
+route = "research"
+agent = "general-research"
+
+[[routing]]
+route = "research"
+agent = "explicit-research"
+rating = "explicit"
+```
+
+When `research_query` is called with `rating = "explicit"`, Spindle requires
+the explicit research override. This is stricter than generic model routing:
+explicit research should never silently use the unrated research route.
 
 ## Startup behavior
 
@@ -358,13 +560,34 @@ invoke any write tools.
 the completed output (`prior_output + output`), including the resolved route,
 rating, agent id, and output hash. When `save_scene_draft` receives explicit
 sexual prose (`content_rating: "explicit"` plus explicit sexual language), it
-rejects the save unless the caller passes that receipt's `generation_id`. For
-valid explicit generation receipts, Spindle persists the server-held generation
-output instead of trusting caller-resubmitted bytes. The receipt must be from:
+rejects the save unless the caller passes that receipt's `generation_id`. The
+receipt must be from:
 
 - `route: "draft"`
 - `rating: "explicit"`
 - an agent whose `ratings` includes `"explicit"`
+
+The receipt is **provenance only**. The caller's `full_text` is authoritative
+and is what Spindle persists; the receipt proves the save was authorized by a
+cleared, explicit-capable draft generation and supplies the `agent:{id}` stamp.
+Spindle does not substitute the receipt's output for your prose — in practice a
+receipt carries agent narration and truncated turn fragments alongside the
+prose, so treating it as the source of truth silently destroyed real drafts.
+
+**One receipt authorizes one scene.** The first explicit save presenting a
+receipt binds it to that scene's `(book, chapter, scene_order)` placement.
+Re-saving the *same* scene with the same `generation_id` stays legal, so retries
+and re-saves work. Presenting it for a *different* scene is rejected:
+
+```
+generation_id "model_generation:7:a1b2c3d4e5f6" already authorized a different
+scene (book 1, chapter 1, scene 3); each explicit save needs its own receipt
+```
+
+This matters most in mixed-rating chapters (below): without it, a single trip
+through the explicit-capable agent would blanket-authorize explicit saves across
+every neighbouring scene, each stamped `agent:{id}` as though that agent had
+written it.
 
 This is a hard server-side gate. Explicit sexual scene text must be produced
 through the explicit draft route and saved with the returned `generation_id`.
@@ -510,9 +733,16 @@ This implementation keeps the current architecture boundaries intact.
 - `spindle-adapters` owns TOML loading, validation, and the runtime router
 - `spindle-mcp` owns the config tools, config resources, and startup reload
 
-The current system does not persist agents or routing rules in SurrealDB. The
-active source of truth is the resolved `spindle.toml` file plus environment
-variables used for API key resolution.
+The active source of truth is the resolved `spindle.toml` file plus environment variables used for API key resolution.
+
+## Privacy & Routing Implications for style_analyze and style_revise
+
+The `style_analyze` and `style_revise` routes handle processing of user-provided drafting corpora and target prose. Because these may contain sensitive or copyrighted material, Spindle provides specific privacy controls:
+
+1. **`metrics_only` Mode**: When creating a style profile, if `metrics_only` is set to `true`, Spindle completely strips all raw prose chunks from the synthesis prompt. The prompt only includes deterministic statistics (average sentence length, dialogue ratios, punctuation rates) and high-level structure metadata. This prevents any source text from leaking to the model.
+2. **Local vs. External Routing**:
+   - **External routing** (e.g., routing `style_analyze` to an external API provider like OpenAI or Anthropic): Chunks of the source corpus (up to `source_sample_word_budget`) will be sent over the network.
+   - **Local routing**: To keep the corpus completely offline, route `style_analyze` to a locally running model provider (e.g., llama.cpp or Ollama on localhost) or use the local fallback.
 
 ## Next steps
 

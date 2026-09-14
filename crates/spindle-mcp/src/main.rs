@@ -1,7 +1,10 @@
+mod handshake;
 mod http;
+mod internal_listener;
 mod json_utils;
 mod proxy;
 mod resources;
+mod run_journal;
 mod server;
 mod tools;
 
@@ -13,14 +16,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use dirs::data_local_dir;
 use rmcp::ServiceExt;
-use rmcp::transport::io::stdio;
 use spindle_adapters::SqlitePool;
-use spindle_adapters::agent_config::resolve_config_path;
 use spindle_adapters::sqlite::Repository as SpindleRepository;
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber::EnvFilter;
 
 use crate::proxy::ProxyHandler;
@@ -49,6 +48,8 @@ enum McpCommand {
         #[arg(long, default_value_t = true)]
         global: bool,
     },
+    /// Initialize a project-local Spindle workspace in the current directory (creates `.spindle/`).
+    Init,
 }
 
 #[tokio::main]
@@ -70,25 +71,57 @@ async fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            McpCommand::Init => {
+                let cwd = std::env::current_dir().context("getting current directory")?;
+                let spindle_dir = init_project_workspace(&cwd)?;
+
+                println!(
+                    "Initialized Spindle project-local workspace at {}",
+                    spindle_dir.display()
+                );
+                return Ok(());
+            }
         }
     }
 
-    let data_dir = default_data_dir();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_data_dir = std::env::var_os("SPINDLE_DATA_DIR").map(PathBuf::from);
+    let env_config = std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from);
+    let ws = spindle_adapters::workspace::resolve_workspace(&cwd, env_data_dir, env_config);
+
+    let data_dir = ws.data_dir;
+    let db_path = ws.db_path;
+    let config_path = ws.config_path.map(|p| p.display().to_string());
 
     // Explicit HTTP-only mode (no stdio, no proxy).
+    //
+    // HTTP-mode primacy decision (live-run bug 4, HTTP-mode arm): an HTTP-mode
+    // server that holds the DB ALSO claims primacy and writes the addr file.
+    // Rationale: the server's own run-phase actions (mining, checkpoint
+    // execution, scene verify) dispatch back to `/mcp` by reading the addr file
+    // (tools.rs), NOT by reading SPINDLE_HTTP_ADDR. Without the addr file an
+    // `authoring_execute_next` served over HTTP would fail its dispatch arm with
+    // `no primary server found` — exactly the stdio-mode bug, one transport over.
+    // Because HTTP mode's `/mcp` listener serves the identical MCP surface at a
+    // known address, the addr file simply points at that same address. The addr
+    // file is removed on shutdown. (The external harness still reaches the server
+    // via --server-url; the addr file serves the server's own dispatch-back.)
     if let Some(addr) = http_listen_addr()? {
-        let db = init_sqlite(&data_dir).await?;
-        let service = build_service(db, &data_dir);
-        http::serve(service, addr).await?;
-        return Ok(());
+        let db = init_sqlite(&db_path).await?;
+        let service = build_service(db, &data_dir, config_path);
+        write_addr_file(&data_dir, addr)?;
+        tracing::info!("http mode: claimed primacy; addr file points at {addr}/mcp");
+        let result = http::serve(service, addr).await;
+        remove_addr_file(&data_dir);
+        return result;
     }
 
     // Default: try to become primary, fall back to secondary with failover.
-    match init_sqlite(&data_dir).await {
-        Ok(db) => run_primary(build_service(db, &data_dir), &data_dir).await,
+    match init_sqlite(&db_path).await {
+        Ok(db) => run_primary(build_service(db, &data_dir, config_path), &data_dir).await,
         Err(e) if is_lock_error(&e) => {
             tracing::info!("database locked, starting in proxy mode");
-            run_secondary(&data_dir).await
+            run_secondary(&data_dir, &db_path).await
         }
         Err(e) => Err(e),
     }
@@ -97,53 +130,102 @@ async fn main() -> anyhow::Result<()> {
 /// Open or create the SQLite-backed Spindle DB at the canonical path inside
 /// `data_dir`. Phase 6 replaces the SurrealDB embedded engine — same data
 /// directory, different on-disk format.
-async fn init_sqlite(data_dir: &Path) -> anyhow::Result<SqlitePool> {
-    std::fs::create_dir_all(data_dir).context("creating spindle data dir")?;
-    let db_path = data_dir.join("spindle.sqlite");
-    SqlitePool::open(&db_path)
+async fn init_sqlite(db_path: &Path) -> anyhow::Result<SqlitePool> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).context("creating spindle data dir")?;
+    }
+    SqlitePool::open(db_path)
         .await
         .with_context(|| format!("opening SQLite DB at {}", db_path.display()))
 }
 
-pub fn build_service(db: SqlitePool, data_dir: &Path) -> SpindleService {
+pub fn build_service(
+    db: SqlitePool,
+    data_dir: &Path,
+    config_path: Option<String>,
+) -> SpindleService {
     let repository = SpindleRepository::new(db, data_dir.to_path_buf());
     let service = SpindleService::new(repository);
-    let _ = service.configure_agents(spindle_core::models::ConfigureAgentsInput {
-        config_path: configured_agent_config_path(),
-    });
+    let _ = service.configure_agents(spindle_core::models::ConfigureAgentsInput { config_path });
     service
 }
 
-/// Primary mode: owns the DB, starts an HTTP listener for secondaries,
-/// serves this session over stdio.
+fn init_project_workspace(cwd: &Path) -> anyhow::Result<PathBuf> {
+    let spindle_dir = cwd.join(".spindle");
+    std::fs::create_dir_all(&spindle_dir).context("creating .spindle directory")?;
+    std::fs::create_dir_all(spindle_dir.join("artifacts"))
+        .context("creating artifacts directory")?;
+    std::fs::create_dir_all(spindle_adapters::workspace::runtime_dir(&spindle_dir))
+        .context("creating runtime directory")?;
+
+    let config_path = spindle_dir.join("config.toml");
+    if !config_path.exists() {
+        std::fs::write(&config_path, DEFAULT_LOCAL_CONFIG)
+            .context("writing default config.toml")?;
+    }
+
+    Ok(spindle_dir)
+}
+
+const DEFAULT_LOCAL_CONFIG: &str = r#"# Spindle local agent configuration
+# Documented at docs/spindle-agent-config.md
+
+# [[agents]]
+# id = "local-http"
+# name = "Local HTTP model"
+# provider = "openai-compatible"
+# endpoint = "http://localhost:11434/v1"
+# model = "mistral"
+# api_key_env = "OPENAI_API_KEY"
+
+# [[routing]]
+# route = "draft"
+# agent = "local-http"
+"#;
+
+/// Primary mode: owns the DB, starts the internal MCP listener for
+/// dispatch-back (and secondaries), serves this session over stdio.
+///
+/// The internal listener is an accept LOOP that serves each connection to
+/// completion and keeps accepting (bug 4b — a single internal session ending
+/// never tears it down). It runs for the whole process lifetime; the addr file
+/// is written on claim and removed only here on real shutdown (when this
+/// process's own stdio session ends — the primary's exit path).
 async fn run_primary(service: SpindleService, data_dir: &Path) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
+    let listener = internal_listener::spawn_internal_listener(service.clone()).await?;
+    let addr = listener.addr();
     write_addr_file(data_dir, addr)?;
     tracing::info!("primary: internal MCP listener on {addr}");
 
-    let ct = tokio_util::sync::CancellationToken::new();
-    let router = http::mcp_router(service.clone(), ct.clone());
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router)
-            .with_graceful_shutdown(async move { ct.cancelled_owned().await })
-            .await;
-    });
+    // Serve over a duplex and bridge the real stdio ourselves so the handshake
+    // shim can answer pre-`initialize` vendor probes (Antigravity sends
+    // `server/discover` first) that rmcp would otherwise treat as fatal.
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let stdio_bridge = tokio::spawn(bridge_stdio(client_io));
 
     let server = SpindleMcpServer::new(service);
     let running = server
-        .serve(stdio())
+        .serve(server_io)
         .await
         .context("failed to start spindle mcp server")?;
     let _ = running.waiting().await;
+    // Drain the bridge before tearing down: a tool listing is ~500 KB on a
+    // single line, and aborting here would truncate a response already handed
+    // to the transport. The timeout is a backstop against a wedged client pipe.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), stdio_bridge).await;
 
+    // Real shutdown: this primary's stdio session ended. Stop the accept loop
+    // and drop the addr file so a successor can claim primacy. Also tear down
+    // any listener this process claimed lazily.
+    listener.shutdown();
     remove_addr_file(data_dir);
+    internal_listener::shutdown_lazy_listener(data_dir).await;
     Ok(())
 }
 
 /// Secondary mode: proxy stdio to the primary's HTTP endpoint.
 /// If the primary dies, try to promote to primary or reconnect to a new one.
-async fn run_secondary(data_dir: &Path) -> anyhow::Result<()> {
+async fn run_secondary(data_dir: &Path, db_path: &Path) -> anyhow::Result<()> {
     // We need to own stdin/stdout across reconnections, so serve over a
     // duplex channel and bridge the real stdio ourselves.
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
@@ -180,7 +262,7 @@ async fn run_secondary(data_dir: &Path) -> anyhow::Result<()> {
         // Small delay to let the old primary release the lock.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        if proxy::try_promote(data_dir).await? {
+        if proxy::try_promote(db_path).await? {
             // Promoted — try_promote blocks until this session ends.
             return Ok(());
         }
@@ -193,52 +275,30 @@ async fn run_secondary(data_dir: &Path) -> anyhow::Result<()> {
     }
 
     let _ = stdio_bridge.await;
+    // Real shutdown: tear down any listener this secondary claimed lazily.
+    internal_listener::shutdown_lazy_listener(data_dir).await;
     Ok(())
 }
 
 /// Bidirectional bridge between real stdin/stdout and a duplex channel.
 /// Runs until stdin closes or the duplex peer drops.
+///
+/// Client traffic passes through the handshake shim, which answers vendor
+/// probes sent before `initialize` instead of letting rmcp abort the process.
 pub async fn bridge_stdio(duplex: tokio::io::DuplexStream) -> anyhow::Result<()> {
-    let (duplex_read, mut duplex_write) = tokio::io::split(duplex);
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-
-    // stdin → duplex_write (client messages to server)
-    let to_server = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdin).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut msg = line.into_bytes();
-            msg.push(b'\n');
-            if duplex_write.write_all(&msg).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // duplex_read → stdout (server messages to client)
-    let to_client = tokio::spawn(async move {
-        let mut lines = BufReader::new(duplex_read).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut msg = line.into_bytes();
-            msg.push(b'\n');
-            if stdout.write_all(&msg).await.is_err() {
-                break;
-            }
-            let _ = stdout.flush().await;
-        }
-    });
-
-    let _ = tokio::try_join!(to_server, to_client);
-    Ok(())
+    handshake::bridge_with_shim(tokio::io::stdin(), tokio::io::stdout(), duplex).await
 }
 
 // ── Addr file helpers ───────────────────────────────────────────────────────
 
-fn addr_file_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("spindle.addr")
+pub(crate) fn addr_file_path(data_dir: &Path) -> PathBuf {
+    spindle_adapters::workspace::runtime_dir(data_dir).join("spindle.addr")
 }
 
 pub fn write_addr_file(data_dir: &Path, addr: SocketAddr) -> anyhow::Result<()> {
+    if let Some(parent) = addr_file_path(data_dir).parent() {
+        std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
+    }
     std::fs::write(addr_file_path(data_dir), addr.to_string()).context("failed to write addr file")
 }
 
@@ -278,29 +338,22 @@ fn init_tracing() {
         .try_init();
 }
 
+#[cfg(test)]
 fn default_data_dir() -> PathBuf {
-    std::env::var_os("SPINDLE_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_platform_data_dir)
+    spindle_adapters::workspace::default_data_dir()
 }
 
+#[cfg(test)]
 fn configured_agent_config_path() -> Option<String> {
     std::env::var("SPINDLE_CONFIG").ok().or_else(|| {
-        resolve_config_path(None)
-            .ok()
-            .flatten()
-            .map(|path| path.display().to_string())
+        spindle_adapters::workspace::default_config_path().map(|path| path.display().to_string())
     })
 }
 
+#[cfg(test)]
 fn default_platform_data_dir() -> PathBuf {
-    data_local_dir()
-        .map(|path| path.join("spindle"))
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".spindle-data")
-        })
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    spindle_adapters::workspace::default_platform_data_dir_for_cwd(&cwd)
 }
 
 #[cfg(test)]
@@ -370,5 +423,21 @@ mod tests {
         write_addr_file(temp.path(), addr).expect("write");
         let read_back = read_addr_file(temp.path()).expect("read");
         assert_eq!(read_back, addr);
+        assert!(temp.path().join("runtime").join("spindle.addr").exists());
+        assert!(!temp.path().join("spindle.addr").exists());
+    }
+
+    #[test]
+    fn init_project_workspace_creates_local_layout() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let workspace = init_project_workspace(temp.path()).expect("init workspace");
+
+        assert_eq!(workspace, temp.path().join(".spindle"));
+        assert!(workspace.join("artifacts").is_dir());
+        assert!(workspace.join("runtime").is_dir());
+        assert!(workspace.join("config.toml").is_file());
+
+        let config = std::fs::read_to_string(workspace.join("config.toml")).expect("read config");
+        assert!(config.contains("Spindle local agent configuration"));
     }
 }

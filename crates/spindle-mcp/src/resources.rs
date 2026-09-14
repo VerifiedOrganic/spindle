@@ -213,6 +213,35 @@ impl ResourceRouter {
             );
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/research"),
+                    format!("project {project_id} research"),
+                )
+                .with_description("Concise list of all sources, notes, and claims in the project-local research library.")
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+            resources.push(
+                RawResource::new(
+                    format!("bible://projects/{project_id}/research/tags"),
+                    format!("project {project_id} research tags"),
+                )
+                .with_description("All unique tags used in the project-local research library.")
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+            resources.push(
+                RawResource::new(
+                    format!("bible://projects/{project_id}/research/usage"),
+                    format!("project {project_id} research usage"),
+                )
+                .with_description(
+                    "Durable research usage records for drafted scenes in this project.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/reader-contract"),
                     format!("project {project_id} reader contract"),
                 )
@@ -346,6 +375,40 @@ impl ResourceRouter {
 
             resources.push(
                 RawResource::new(
+                    format!("bible://projects/{project_id}/style-profiles"),
+                    format!("project {project_id} derived style profiles"),
+                )
+                .with_description("Style profile summaries list derived from user-provided Markdown. Resource-only read; use create_style_profile_from_markdown tool to write.")
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+
+            resources.push(
+                RawResource::new(
+                    format!("bible://projects/{project_id}/style-profile-applications"),
+                    format!("project {project_id} applied style profile history"),
+                )
+                .with_description(
+                    "List the history of applied style profiles and their rollback status.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+
+            resources.push(
+                RawResource::new(
+                    format!("bible://projects/{project_id}/style-revision-patch-audits"),
+                    format!("project {project_id} style revision patch audit history"),
+                )
+                .with_description(
+                    "List the history of applied style revision patches and their rollback status.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            );
+
+            resources.push(
+                RawResource::new(
                     format!("bible://projects/{project_id}/imports"),
                     format!("project {project_id} import sessions"),
                 )
@@ -414,6 +477,33 @@ impl ResourceRouter {
                 .with_mime_type("application/json")
                 .no_annotation(),
             RawResourceTemplate::new(
+                "bible://projects/{project_id}/style-profiles/{profile_id}",
+                "derived style profile card detail",
+            )
+            .with_description(
+                "Read the complete derived style profile card detail, including synthesized guidance and model receipt. Resource-only read; use get_style_profile tool for direct tool invocation.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/style-profiles/{profile_id}/sources",
+                "derived style profile sources",
+            )
+            .with_description(
+                "Read the list of sources for a derived style profile including metadata fingerprints. Exposes metadata only, never raw prose.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/style-profiles/{profile_id}/refresh-preview",
+                "derived style profile refresh preview",
+            )
+            .with_description(
+                "Read a preview refresh output comparing the old profile to a newly built candidate. Exposes metadata only, never raw prose.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
                 "bible://projects/{project_id}/chapters/{book_number}/{chapter_number}/scenes",
                 "chapter scenes",
             )
@@ -447,6 +537,42 @@ impl ResourceRouter {
             )
             .with_description(
                 "Read a paginated slice of persisted research_query entries for a project, newest first. Resource-only cached read; use research_query tool for new queries.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research",
+                "research library",
+            )
+            .with_description(
+                "Read all sources, notes, and claims from the project-local research library.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research/tags",
+                "research tags",
+            )
+            .with_description(
+                "Read all unique tags used in the project-local research library.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research/usage",
+                "research usage log",
+            )
+            .with_description(
+                "Read all durable research usage records for a project.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "bible://projects/{project_id}/research/usage/{scene_id}",
+                "research usage for scene",
+            )
+            .with_description(
+                "Read all durable research usage records for a specific scene.",
             )
             .with_mime_type("application/json")
             .no_annotation(),
@@ -610,7 +736,9 @@ impl ResourceRouter {
 mod tests {
     use super::*;
     use spindle_adapters::sqlite::{Repository, SqlitePool};
-    use spindle_core::models::{CreateProjectInput, ReaderContract};
+    use spindle_core::models::{
+        ContentRating, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
+    };
     use tempfile::TempDir;
 
     async fn fresh_router() -> (TempDir, ResourceRouter, String) {
@@ -635,6 +763,58 @@ mod tests {
             .await
             .unwrap();
         (tmp, ResourceRouter::new(service), project.project_id)
+    }
+
+    #[tokio::test]
+    async fn direct_scene_resource_includes_saved_prose() {
+        let (_tmp, router, project_id) = fresh_router().await;
+        let saved = router
+            .service
+            .save_scene_draft(SaveSceneDraftInput {
+                authorship: Default::default(),
+                project_id,
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Mara stood at the Ash Gate, listening for the old bell.".to_string(),
+                summary: "Mara waits at the gate.".to_string(),
+                content_rating: ContentRating::General,
+                tone: Some("grim".to_string()),
+                generation_id: None,
+                source_path: None,
+                location_id: None,
+                research_source_ids: Vec::new(),
+                research_note_ids: Vec::new(),
+                research_claim_ids: Vec::new(),
+                research_query_pack_input: None,
+                research_context_hash: None,
+                knowledge_learned: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let uri = format!("bible://{}", saved.scene_id);
+        let read = router.read_resource(&uri).await.unwrap();
+        let text = match &read.contents[0] {
+            ResourceContents::TextResourceContents { text, .. } => text,
+            ResourceContents::BlobResourceContents { .. } => {
+                panic!("scene resource should be json text")
+            }
+        };
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(value["id"].as_str(), Some(saved.scene_id.as_str()));
+        assert_eq!(value["table"].as_str(), Some("scene"));
+        assert_eq!(
+            value["full_text"].as_str(),
+            Some("Mara stood at the Ash Gate, listening for the old bell.")
+        );
+        assert_eq!(value["summary"].as_str(), Some("Mara waits at the gate."));
+        assert_eq!(value["book_number"].as_i64(), Some(1));
+        assert_eq!(value["chapter_number"].as_i64(), Some(1));
+        assert_eq!(value["scene_order"].as_i64(), Some(1));
+        assert_eq!(value["word_count"].as_u64(), Some(11));
     }
 
     #[tokio::test]
@@ -679,6 +859,112 @@ mod tests {
             ResourceContents::BlobResourceContents { .. } => {
                 panic!("branches resource should be text")
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn research_resources_are_listed_and_readable() {
+        let (_tmp, router, project_id) = fresh_router().await;
+        let research_uri = format!("bible://projects/{project_id}/research");
+        let tags_uri = format!("bible://projects/{project_id}/research/tags");
+
+        let resources = router.list_resources().await.unwrap();
+        assert!(resources.resources.iter().any(|r| r.uri == research_uri));
+        assert!(resources.resources.iter().any(|r| r.uri == tags_uri));
+
+        let res = router.read_resource(&research_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert!(text.contains("sources"));
+                assert!(text.contains("notes"));
+                assert!(text.contains("claims"));
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let tags_res = router.read_resource(&tags_uri).await.unwrap();
+        match &tags_res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let usage_uri = format!("bible://projects/{project_id}/research/usage");
+        assert!(resources.resources.iter().any(|r| r.uri == usage_uri));
+
+        let usage_res = router.read_resource(&usage_uri).await.unwrap();
+        match &usage_res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert!(text.contains("[]"));
+            }
+            _ => panic!("expected text resource"),
+        }
+    }
+
+    #[tokio::test]
+    async fn style_resources_are_listed_and_readable() {
+        let (_tmp, router, project_id) = fresh_router().await;
+        let style_uri = format!("bible://projects/{project_id}/style-profiles");
+        let style_applications_uri =
+            format!("bible://projects/{project_id}/style-profile-applications");
+        let style_patch_audits_uri =
+            format!("bible://projects/{project_id}/style-revision-patch-audits");
+        let resources = router.list_resources().await.unwrap();
+        assert!(resources.resources.iter().any(|r| r.uri == style_uri));
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|r| r.uri == style_applications_uri)
+        );
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|r| r.uri == style_patch_audits_uri)
+        );
+
+        let res = router.read_resource(&style_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let res = router.read_resource(&style_applications_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
+        }
+
+        let res = router.read_resource(&style_patch_audits_uri).await.unwrap();
+        match &res.contents[0] {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(mime_type.as_deref(), Some("application/json"));
+                assert_eq!(text.trim(), "[]");
+            }
+            _ => panic!("expected text resource"),
         }
     }
 }

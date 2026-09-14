@@ -83,7 +83,9 @@ like `list_projects`, `search_bible`, or read resources like
 
 Create a JSON file that describes exactly what chapters and scenes to write.
 Every scene must include `character_ids`, `location_id`, and `content_rating`
-because the Spindle DB does not store these on chapter plans.
+because the authoring harness uses those fields to route drafts and build
+scene context. MCP-native runs can store the same fields directly on
+`plan_chapter` scene entries.
 
 ### Minimal Seed — 2 Chapters, 3 Scenes Total
 
@@ -350,6 +352,82 @@ refusing to write harness state because initialization is not continuity-safe
 
 Fix the seed file and re-run init.
 
+### Primacy, the addr file, and HTTP mode
+
+Spindle's run-phase actions (mining, checkpoint execution, scene verify) dispatch
+back to the server's own MCP surface over HTTP. The executor discovers where to
+connect by reading `.spindle/runtime/spindle.addr`, which names the **primary's
+internal MCP listener**, and connecting to `http://<addr>/mcp`.
+
+Primacy is claimed in two ways:
+
+- **At startup** (fast path): the first stdio-mode process to open the DB becomes
+  primary, starts the internal listener (an accept loop that serves each session
+  to completion and keeps accepting — a session close never tears it down), and
+  writes the addr file. The addr file is removed only on real shutdown.
+- **Lazily at dispatch time**: if a process needs to dispatch but no live primary
+  owns the addr file yet (e.g. it started before the workspace was initialized,
+  or it came up as a secondary), it claims primacy on the spot — binding a
+  listener and atomically writing the addr file — then proceeds. The claim is
+  idempotent and race-safe: whoever wins the atomic addr-file create is primary;
+  a loser defers to the live winner. A stale addr file naming a dead listener is
+  reclaimed.
+
+**HTTP mode also claims primacy.** A server started with `SPINDLE_HTTP_ADDR`
+writes the addr file pointing at its own `SPINDLE_HTTP_ADDR` listener (removed on
+shutdown). This is deliberate: the server's own run-phase dispatch reads the addr
+file, not `SPINDLE_HTTP_ADDR`, so without it an `authoring_execute_next` served
+over HTTP would fail its dispatch arm with `no primary server found`. Because the
+HTTP `/mcp` listener serves the identical MCP surface, the addr file simply points
+at that same address. (External harnesses still connect via `--server-url`; the
+addr file exists for the server's own dispatch-back.)
+
+### Console (read-only operator console v1)
+
+When Spindle runs in HTTP mode, a read-only operator console is served at
+`/console` on the same listener. It is a single embedded HTML page (no build
+step, no external requests — nothing leaves localhost) and needs nothing beyond
+a browser.
+
+**Enable it** by starting the server with `SPINDLE_HTTP_ADDR` set to a localhost
+address, then open the console:
+
+```bash
+SPINDLE_HTTP_ADDR=127.0.0.1:4321 cargo run -p spindle-mcp
+# then browse to:
+open http://127.0.0.1:4321/console
+```
+
+**What v1 shows** (four panes):
+
+- **Runs** — pick a project → the latest authoring run's chapter/scene/phase grid
+  (mine / verify / revise statuses, checkpoint states), plus a **live timeline**
+  that streams the run's event journal over SSE (`/events?topic=run:<id>`),
+  resuming automatically on reconnect and rendering any event kind — including
+  ones added in later phases — generically. Host-saved drafts show an
+  `anti_slop` summary (hard/soft counts and shelf IDs, no excerpts).
+- **Manuscript** — pick a project + book number → the compiled Markdown rendered
+  in a reading pane (via `compile_manuscript`; undrafted scenes are flagged).
+- **Canon queue** — the `staged` canon deltas awaiting ratification (class, scene
+  ref, confidence, evidence quote, payload). Read-only.
+- **Plan queue** — the `staged` plan amendments awaiting ratification (class,
+  target chapter, rationale, payload). Read-only.
+
+**Read-only + security posture.** The console never mutates anything. Its data
+comes from localhost-only `GET /console/api/*` endpoints that call the service
+layer thinly (the browser cannot practically speak the `/mcp` streamable-HTTP
+transport's session handshake with zero dependencies, so these GET reads are the
+sanctioned fallback). It is localhost-bound and unauthenticated — the same trust
+context as your own terminal. Ratify staged deltas/amendments with
+`decide_canon_deltas` / `decide_plan_amendments` from that terminal; console
+actions arrive in v2.
+
+**v2 roadmap.** Actions (ratify/reject deltas and amendments, resolve blocked
+checkpoints) via the `POST /mcp` transport, the thread board (promises ×
+chapters, arcs, plot lines, motif density — deferred until a promise/arc list
+surface exists), and the SvelteKit packaging decision (the v1 single-file page
+is the owner-flagged interim choice).
+
 ---
 
 ## Step 4: Check Status
@@ -434,7 +512,7 @@ The harness determines the next action automatically based on state:
 | Scene is `draft_saved` | `CommitSceneChanges` | Calls `commit_scene_changes` with character states, facts, relationships from the artifact |
 | Scene is `changes_committed` | `AnnotateSceneBeats` | Calls `annotate_scene_beats` with beats from the artifact |
 | All scenes `beats_annotated` | `SaveChapterSummary` | Generates a summary prompt, sends to model, calls `save_summary` |
-| N chapters completed | `RunCheckpoint` | Runs `check_consistency`, samples scenes for `run_dual_persona_review`, reads pacing/promises, creates save point |
+| N chapters completed | `RunCheckpoint` | Runs `check_consistency`, samples scenes for later dual-persona review, reads pacing/promises, creates save point |
 | Checkpoint pending review | `AwaitCheckpointReview` | Refuses to continue until you review the checkpoint |
 
 ### Expected Output
@@ -516,7 +594,7 @@ draft book scene 12.1              → save_scene_draft
 commit scene changes 12.1          → commit_scene_changes
 annotate beats 12.1                → annotate_scene_beats
 save summary for chapter 12        → save_summary
-run checkpoint for chapters 11-12  → check_consistency + dual_persona_review + create_save_point
+run checkpoint for chapters 11-12  → shallow check_consistency + sampled scene IDs + create_save_point
 (pauses — awaiting human review)
 ```
 
@@ -527,8 +605,10 @@ That is 13 steps total for this batch.
 ## Step 7: Review a Checkpoint
 
 When the harness runs a checkpoint, it creates a save point in Spindle and
-writes a detailed report artifact. It then refuses to continue until you
-review.
+writes a detailed report artifact. The report includes instructions for the
+separate deep consistency audit and sampled scene IDs for dual-persona review.
+Run those model-heavy checks as separate resumable calls before marking the
+checkpoint reviewed.
 
 ### Read the Report
 
@@ -540,16 +620,24 @@ cat ~/spindle-harness-artifacts/checkpoints/chapter-0011-0012.json | python3 -m 
 
 The report contains:
 - `consistency` — full output of `check_consistency`
-- `sampled_reviews` — `run_dual_persona_review` results for sampled scenes
+- `deep_consistency` — recorded output from the separate `check_consistency`
+  call with `deep_check: true`
+- `sampled_reviews` — persisted `run_dual_persona_review` results for sampled scenes, filled when checkpoint review is closed
 - `pacing_overview` — current pacing state
 - `chapter_summaries` — summaries for the chapters in range
 - `narrative_promises` — promise tracking status
 - `save_point` — the save point ID for rollback
 - `sampled_scene_ids` — which scenes were reviewed
 
-### Mark the Checkpoint as Reviewed
+### Run Sampled Reviews and Mark the Checkpoint Reviewed
 
-After reviewing, approve the checkpoint and optionally add new directives:
+Run `check_consistency` with `deep_check: true` for the checkpoint range and
+record it with `authoring_record_checkpoint_audit` when using the MCP authoring
+supervisor. Run `run_dual_persona_review` with `rounds: 2` for each
+`sampled_scene_ids` entry, fix local findings before approval, then approve the
+checkpoint and optionally add new directives. Use `authoring_save_scene_draft`
+for host-written revisions so revised prose carries character states, canonical
+facts, relationship updates, beats, and continuity notes into the commit step:
 
 ```bash
 cargo run -p spindle-harness -- review-checkpoint \

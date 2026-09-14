@@ -102,7 +102,9 @@ impl ServerHandler for SpindleMcpServer {
 
 Grok users: `init_grok_skills` now defaults to installing into your global `~/.grok/skills/` (recommended). Pass `global=false` + `target_dir` only if you specifically want repo-scoped adapters. This gives you the full set of Spindle skills (spindle, spindle-scene-writer, spindle-character-creator, etc.) as first-class Grok skills.
 
-Model routes are exposed as read-only resources under `bible://system/model-routes`. Direct entity resources can be read with the `bible://{table}:{id}` template, for example `bible://scene:xyz789`."
+Model routes are exposed as read-only resources under `bible://system/model-routes`. Direct entity resources can be read with the `bible://{table}:{id}` template, for example `bible://scene:xyz789`.
+
+MCP clients without resource support (e.g. Kimi): use the `list_skills`, `get_skill`, and `get_reference` tools — they return the same content as the `bible://skills/*` and `bible://references/*` resources."
                     .to_string(),
             )
             .with_server_info(Implementation::new("spindle", env!("CARGO_PKG_VERSION")))
@@ -130,10 +132,41 @@ Model routes are exposed as read-only resources under `bible://system/model-rout
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.tool_router
-            .call_tool(&request.name, request.arguments.as_ref())
-            .await
-            .map_err(error_data)
+        use futures_util::FutureExt;
+        use std::panic::AssertUnwindSafe;
+
+        // Panic guard. A panic inside a tool handler unwinds past the response
+        // writer, so the caller receives NOTHING and blocks until its own
+        // timeout — a ~60s hang with no diagnostic instead of an error, and an
+        // authoring run parked with no state advance. That is the worst failure
+        // mode this server has: it reads as a deadlock, while the panic message
+        // goes only to a stderr nobody is tailing. (Lived example: the stale
+        // addr-file reclamation path panicked on a nested `block_on`, which
+        // presented as `authoring_execute_next` hanging forever.)
+        //
+        // Converting the panic into an MCP error is a DIAGNOSTIC net, not a
+        // correctness mechanism: a handler that panicked may have left a
+        // poisoned lock or half-applied state behind. Naming the panic still
+        // beats hanging on it — the caller can log it, fail the step, and move
+        // on instead of stalling the loop.
+        let call = self
+            .tool_router
+            .call_tool(&request.name, request.arguments.as_ref());
+        match AssertUnwindSafe(call).catch_unwind().await {
+            Ok(result) => result.map_err(error_data),
+            Err(panic) => {
+                let detail = panic_message(panic.as_ref());
+                tracing::error!(
+                    tool = %request.name,
+                    panic = %detail,
+                    "tool handler panicked; returning an error instead of hanging the caller"
+                );
+                Err(McpError::internal_error(
+                    format!("tool {} panicked: {detail}", request.name),
+                    None::<serde_json::Value>,
+                ))
+            }
+        }
     }
 
     async fn list_resources(
@@ -171,6 +204,19 @@ fn error_data(error: anyhow::Error) -> McpError {
     McpError::internal_error(error.to_string(), None::<serde_json::Value>)
 }
 
+/// Best-effort message out of a caught panic payload. `panic!` produces either a
+/// `&'static str` or a formatted `String`; anything else is an opaque payload we
+/// can only acknowledge.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic with a non-string payload".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -180,6 +226,34 @@ mod tests {
     use spindle_adapters::sqlite::Repository as SpindleRepository;
 
     use super::*;
+
+    /// The panic guard is only useful if the caller learns WHY. A guard that
+    /// reported "panicked" with no detail would trade a silent hang for a silent
+    /// error — the operator still could not tell a nested-runtime panic from an
+    /// unwrap on missing config.
+    #[test]
+    fn panic_message_recovers_both_standard_payload_shapes() {
+        // `panic!("literal")` yields a &'static str payload.
+        let literal =
+            std::panic::catch_unwind(|| panic!("static literal panic")).expect_err("must unwind");
+        assert_eq!(panic_message(literal.as_ref()), "static literal panic");
+
+        // A formatted `panic!` yields a String payload — this is the shape tokio
+        // uses for "Cannot start a runtime from within a runtime".
+        let formatted =
+            std::panic::catch_unwind(|| panic!("formatted {} panic", 42)).expect_err("must unwind");
+        assert_eq!(panic_message(formatted.as_ref()), "formatted 42 panic");
+    }
+
+    #[test]
+    fn panic_message_acknowledges_opaque_payloads() {
+        let opaque =
+            std::panic::catch_unwind(|| std::panic::panic_any(7u8)).expect_err("must unwind");
+        assert_eq!(
+            panic_message(opaque.as_ref()),
+            "panic with a non-string payload"
+        );
+    }
 
     async fn server() -> SpindleMcpServer {
         let temp = tempdir().expect("temp dir");

@@ -123,9 +123,29 @@ fn chapter_heading(multi_book: bool, book: &EpubBook, chapter: &EpubChapter) -> 
     };
 
     match &chapter.title {
+        // Front matter names itself. Forcing "Chapter 0: Prologue" onto it
+        // leaks the storage model into the reader's view.
+        Some(title) if is_front_matter_title(title) => format!("{prefix}{title}"),
         Some(title) => format!("{prefix}Chapter {}: {title}", chapter.number),
         None => format!("{prefix}Chapter {}", chapter.number),
     }
+}
+
+/// Title words that name front/back matter instead of a numbered chapter. The
+/// import slicer already recognizes this vocabulary when cutting a manuscript
+/// apart; the exporter honors the same set so a round trip is stable.
+const FRONT_MATTER_WORDS: [&str; 3] = ["prologue", "epilogue", "interlude"];
+
+/// True when the title's leading word names front/back matter. Matching is on
+/// a whole word, so an ordinary chapter titled "Prologues of War" is untouched.
+fn is_front_matter_title(title: &str) -> bool {
+    let leading_word: String = title
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphabetic())
+        .flat_map(char::to_lowercase)
+        .collect();
+    FRONT_MATTER_WORDS.contains(&leading_word.as_str())
 }
 
 /// Convert scene prose into XHTML. Double newlines become paragraph breaks;
@@ -620,6 +640,75 @@ mod tests {
         assert!(content.contains("dark and stormy night"));
         assert!(content.contains("<p>"));
         assert!(content.contains("The Beginning"));
+    }
+
+    fn heading_for(number: i32, title: Option<&str>) -> String {
+        let book = EpubBook {
+            number: 1,
+            title: None,
+            chapters: Vec::new(),
+        };
+        let chapter = EpubChapter {
+            number,
+            title: title.map(String::from),
+            body: String::new(),
+        };
+        chapter_heading(false, &book, &chapter)
+    }
+
+    #[test]
+    fn front_matter_titles_render_without_chapter_prefix() {
+        // A prologue is not "Chapter 0". Its title is the heading, verbatim.
+        assert_eq!(
+            heading_for(0, Some("Prologue: Sol System, Off-Season")),
+            "Prologue: Sol System, Off-Season"
+        );
+    }
+
+    #[test]
+    fn front_matter_detection_covers_epilogue_and_interlude_any_case() {
+        assert_eq!(heading_for(0, Some("Prologue")), "Prologue");
+        assert_eq!(heading_for(16, Some("Epilogue")), "Epilogue");
+        assert_eq!(
+            heading_for(7, Some("interlude — Krev'lax")),
+            "interlude — Krev'lax"
+        );
+        assert_eq!(
+            heading_for(3, Some("PROLOGUE: All Caps")),
+            "PROLOGUE: All Caps"
+        );
+    }
+
+    #[test]
+    fn ordinary_titles_keep_the_chapter_prefix() {
+        assert_eq!(
+            heading_for(1, Some("The Beginning")),
+            "Chapter 1: The Beginning"
+        );
+        assert_eq!(heading_for(2, None), "Chapter 2");
+        // Must match on a whole word, not a bare prefix.
+        assert_eq!(
+            heading_for(4, Some("Prologues of War")),
+            "Chapter 4: Prologues of War"
+        );
+    }
+
+    #[test]
+    fn multi_book_front_matter_still_gets_the_book_label() {
+        let book = EpubBook {
+            number: 2,
+            title: Some("System Boot".to_string()),
+            chapters: Vec::new(),
+        };
+        let chapter = EpubChapter {
+            number: 0,
+            title: Some("Prologue: Sol System".to_string()),
+            body: String::new(),
+        };
+        assert_eq!(
+            chapter_heading(true, &book, &chapter),
+            "System Boot — Prologue: Sol System"
+        );
     }
 
     #[test]

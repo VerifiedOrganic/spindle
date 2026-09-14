@@ -133,7 +133,9 @@ already know the Truth and use it to change the world around them.
 ## Step 1: Core Identity
 
 Ask the user (or infer from context):
-- **Name**: What are they called? Any nicknames?
+- **Name**: What are they called? Any nicknames? (Nicknames, titles, and
+  alternate names go in `aliases` — they resolve through `find_entity`
+  exactly like the primary name.)
 - **Role in story**: protagonist, deuteragonist, antagonist, love interest, mentor,
   ally, foil, comic relief, threshold guardian
 - **One-sentence summary**: Who are they in 15 words?
@@ -143,14 +145,18 @@ Call `create_character` with the full typed input:
 ```
 project_id, name, summary, role,
 realm: Option<String>,
-voice_profile: CharacterVoiceProfileData,
-emotional_profile: CharacterEmotionalProfileData,
+aliases: Vec<String>,                             // optional: nicknames/titles/other names
+voice_profile: CharacterVoiceProfileData,        // optional: omit/null → empty profile
+emotional_profile: CharacterEmotionalProfileData, // optional: omit/null → empty profile
 initial_state: Option<CharacterStatePatch>
 ```
 
-Voice and emotional profiles are required at create time and may be edited
-later with `set_character_voice_profile` (voice) or by appending state patches
-via `commit_character_state` (mutable emotional state, goals, status).
+Voice and emotional profiles are optional at create time (omit them or pass
+null for minor characters — they default to empty profiles) and may be added
+or edited later with `set_character_voice_profile` (voice) or by appending
+state patches via `commit_character_state` (mutable emotional state, goals,
+status). For major characters, provide both up front so downstream voice
+checks are grounded.
 
 ---
 
@@ -488,8 +494,8 @@ For deeper craft knowledge, read the embedded craft references via
 
 - `bible://references/voice-differentiation` — Voice differentiation
   techniques, dialect construction, verbal tic design, and worked examples.
-- `bible://references/anti-slop` — Avoiding generic AI prose patterns when
-  drafting dialogue and characterization.
+- `bible://references/anti-slop` — Fiction shelf catalog when drafting
+  dialogue and characterization.
 - `bible://references/swain-scene-sequel` — Scene/sequel structure and how
   characters reveal under pressure.
 - `bible://references/mru-guide` — Motivation-Reaction Unit construction for

@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
     // 3. Characters.
     let mara = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Mara".into(),
             summary: "Oathbound warden of the Ash Gate.".into(),
@@ -100,6 +101,7 @@ async fn main() -> Result<()> {
 
     let aldric = svc
         .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: proj.project_id.clone(),
             name: "Aldric".into(),
             summary: "Scribe of the marches.".into(),
@@ -178,6 +180,7 @@ async fn main() -> Result<()> {
                 beat_structure: vec!["arrival".into(), "first dark".into()],
                 character_ids: vec![mara.character_id.clone()],
                 purpose: "establishing".into(),
+                ..Default::default()
             }],
         })
         .await?;
@@ -198,6 +201,7 @@ async fn main() -> Result<()> {
             tone: Some("grim".into()),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         })
         .await?;
     println!("\n[7] scene = {} ({})", scene.scene_id, scene.status);

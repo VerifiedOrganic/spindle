@@ -35,6 +35,12 @@ pub struct SqlitePool {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for SqlitePool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqlitePool").finish_non_exhaustive()
+    }
+}
+
 struct Inner {
     writer: AsyncConnection,
     readers: Vec<AsyncConnection>,

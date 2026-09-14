@@ -1,0 +1,29 @@
+-- =============================================================================
+-- V0036: per-project minimum scene word count (live-run stub-scene bug).
+--
+-- Scenes whose `full_text` was literally "placeholder" (1 word) and a
+-- 5-word fragment passed every gate in a live run — `preflight_book_export`
+-- reported `issues: []`, `compile_manuscript` reported `missing_scenes: []`
+-- (rendering the word "placeholder" as the scene body), and
+-- `check_consistency` reported 0 errors — and an EPUB was exported and read
+-- before anyone noticed. The only scene-content check anywhere was
+-- `full_text.trim().is_empty()`.
+--
+-- Spindle now flags stub scenes (placeholder bodies, or prose below a word
+-- floor) in `preflight_book_export` (Blocking `scene_stub_text`),
+-- `compile_manuscript` (`stub_scenes`), and `check_consistency`
+-- (`scene_stub_text` warnings). The floor is per-project:
+--
+--   * project.min_scene_word_count — NULL (pre-upgrade + default) = the
+--     built-in floor of 20 words (matching the existing "draft is too thin
+--     for a confident prose review" heuristic). Set a different floor by
+--     writing a positive integer through the existing update_entity column
+--     path (the column is added to the update allowlist, mirroring V0031's
+--     project.style_learning convention). Placeholder bodies are flagged
+--     regardless of any floor.
+--
+-- Additive and optional: a database created before V0036 upgrades cleanly
+-- and every existing project reads back NULL, i.e. the default floor.
+-- =============================================================================
+
+ALTER TABLE project ADD COLUMN min_scene_word_count INTEGER;

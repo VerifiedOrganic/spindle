@@ -175,9 +175,12 @@ The `revise_scene` tool returns a rich envelope:
 - **byte_offsets_changed** (`Vec<TextByteRange>`): Byte ranges that changed,
   useful for surgical re-validation.
 - **chars_added** / **chars_deleted**: Coarse diff metrics.
-- **world_rule_hits**, **voice_drift**, **retcon_findings**: Validator
-  findings on the revised scene, returned inline so you can decide whether
-  to commit or revise again before saving state.
+- **world_rule_hits**, **voice_drift**, **retcon_findings**,
+  **temporal_findings**: Validator findings on the revised scene, returned
+  inline so you can decide whether to commit or revise again before saving
+  state. `temporal_findings` are advisory intra-scene time-jump warnings
+  (unsignaled morning→night skips, time-of-day drift, unrendered declared
+  spans), recomputed on the revised prose.
 
 ### Step 3: Cascade Resolution
 
@@ -245,6 +248,34 @@ Present this to the user in a clear format. Help them decide by analyzing:
 
 ---
 
+## Subagent orchestration (Claude Code / grok)
+
+Comparing alternatives or branches (Scenario 2, Scenario 3, `diff_branches`) is
+independent read-only assessment work per candidate — a natural fan-out. If your
+harness supports subagents (Claude Code's Task/Agent tool, grok's subagents),
+assess the candidates in parallel; otherwise assess them sequentially inline —
+same evaluation, only the concurrency changes.
+
+**Write discipline (non-negotiable):** subagents research and report only. Every
+state-mutating call stays in the main context — the revision-manager decides and
+writes. Subagents read (`get_scene_context`, `diff_branches`, `search_bible`,
+`compare_alternatives`, `check_consistency`) and return an assessment. They never
+call `select_alternative`, `merge_branch`, `switch_branch`, `revise_scene`,
+`create_branch`, `restore_scene_version`, `resolve_revision_marker`, or any other
+branch/scene write, and they never run the persisted `run_dual_persona_review`.
+
+Fan-out for a comparison: dispatch **one subagent per alternative or branch**,
+each reading only its own candidate and returning an independent structured
+assessment against the same rubric — tension, theme advancement, pacing fit,
+protagonist agency, hook strength, continuity risk — with scene-anchored
+evidence and *no* peeking at the other candidates (independence prevents
+anchoring bias). The revision-manager (main context) then collates the
+independent assessments into the comparison **verdict**, presents it, and
+executes the winning `select_alternative` / `merge_branch` itself. Without
+subagents, assess each candidate one at a time before forming the verdict.
+
+---
+
 ## Skill Chains
 
 - **← scene-writer**: When a scene needs revision, the scene-writer handles the actual rewrite.
@@ -253,6 +284,34 @@ Present this to the user in a clear format. Help them decide by analyzing:
 - **→ scene-writer**: After branching, use scene-writer to draft on the new branch.
 - **→ continuity-editor**: After merging, run a consistency check to verify the merge is clean.
 - **→ plot-architect**: If revision reveals pacing problems, the plot-architect rebalances.
+
+---
+
+## Style learning from edits
+
+Hand-revising an agent-drafted scene is signal for the project's style profile.
+When a project opts in (`style_learning`), Spindle captures each operator edit
+over an agent draft as a *style-edit candidate* that feeds the existing
+style-refresh flow — no new tools.
+
+- **Enable**: set `style_learning` to `1` via `update_entity` on the project
+  (`changes: { "style_learning": 1 }`); `0` or unset disables it.
+- **What's captured**: an operator re-save of an agent-drafted scene with
+  changed prose (trim-compared). A second edit of the same scene replaces the
+  pending candidate (one per scene, latest wins). Agent-over-agent revise-loop
+  saves and operator-over-operator edits are not captured; scenes over 60k chars
+  are skipped.
+- **Review gate**: `preview_refresh_style_profile` lists pending candidates by
+  scene ref with a prose-free diff summary; `refresh_style_profile` feeds the
+  included edits as positive examples and marks them `consumed`. Pass
+  `dismiss_candidate_ids` to drop candidates instead. Nothing enters a profile
+  without you running refresh — the preview→refresh pair is the review gate.
+- **Explicit withholding**: explicit-rated candidates are withheld from refresh
+  unless the `style_analyze` route's agent declares `explicit`; the preview notes
+  the withholding and the candidates stay pending.
+
+See `docs/local-markdown-style-profiles.md` → "Style Learning from Edits" for
+the full rules.
 
 ---
 
@@ -265,4 +324,5 @@ The shipped craft references most relevant when revising:
 - `bible://references/mru-guide` — Useful when revising MRU order issues.
 - `bible://references/voice-differentiation` — Useful when a `voice_drift`
   finding is the trigger for revision.
-- `bible://references/anti-slop` — Final pass before merging back to main.
+- `bible://references/anti-slop` — Fiction shelf catalog for the final prose
+  pass before merging back to main.

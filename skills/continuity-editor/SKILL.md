@@ -54,12 +54,15 @@ Use this triage loop when diagnosing continuity concerns:
 
 Call `check_consistency` with `scope: ConsistencyScopeInput` (a struct with
 `scope_type: "full" | "book" | "chapter_range"` and the matching numeric
-range fields) and optionally specify which `checks` to run by name. The four
+range fields) and optionally specify which `checks` to run by name. The five
 Phase 4 validators (`canonical_fact_prose_drift`, `world_rule_semantic_drift`,
-`voice_drift`, `retcon_reachability`) run by default and are cached per
-`scene_text_hash` and validator-context hash. Relevant canon, style, voice,
-and timeline writes invalidate their validator cache rows; the context hash
-also prevents stale hits when metadata changes outside the normal service path.
+`voice_drift`, `retcon_reachability`, `style_compliance`) run by default and
+are cached per `scene_text_hash` and validator-context hash. Relevant canon,
+style, voice, and timeline writes invalidate their validator cache rows; the
+context hash also prevents stale hits when metadata changes outside the normal
+service path. The story-time checks below (`chronology`, `knowledge_timing`,
+`pacing_drift`) are deterministic — not cached Phase 4 validators — and are
+requested by name or run as part of a full audit.
 
 Here's what each check does and why it matters:
 
@@ -156,6 +159,11 @@ fact, do not mutate it — call `register_canonical_fact` with
 `migrate_canonical_fact` to convert legacy untyped facts into the typed
 shape.
 
+`register_canonical_fact` accepts a fact with no `scene_id` — a
+planned-and-pending fact decided in planning before its scene exists (placed
+by book/chapter only). Once the dramatising scene is drafted, attach it with
+`bind_canonical_fact_to_scene`.
+
 ### 10. Try-Fail Cycle Tracking
 Reviews `conflict.try_fail_cycles`:
 - Do conflicts have enough attempts before resolution? (minimum 2-3)
@@ -168,6 +176,270 @@ Reviews `conflict.stated_consequences` and world-rule evidence in scoped scenes:
 - Are stated threats being backed up with on-page demonstrations?
 - Are world rules being shown, not just told?
 - Are consequences proportional to the established severity?
+
+### 12. In-world Chronology (`chronology`)
+Active only when the project declares a calendar (`set_project_calendar`) and
+scenes carry clocks (`set_scene_clock`). Flags any scene set earlier in story
+time than its predecessor on the same timeline `thread_key` that is **not**
+marked `flashback`/`flashforward`/`concurrent`. This is the multi-book timing
+guard — it catches a scene that silently rewinds the clock.
+
+**What to do when flagged**: if the rewind is intentional, set the scene's
+`temporal_mode` accordingly (or give it its own `thread_key`); if it's an
+error, correct the scene's `day_index`. A no-op for projects that never declare
+story-time.
+
+### 13. Knowledge Timing (`knowledge_timing`)
+Active when `knowledge_fact` records carry a `learned_at` position. Flags a
+scene whose prose names a present character alongside a fact they do not learn
+until a later book/chapter — a character acting on information they shouldn't
+have yet. High-precision/low-recall, so it is an advisory warning.
+
+**What to do when flagged**: move the reveal earlier, record the character
+learning the fact sooner, or revise the prose to remove the leak. This is the
+ordinary-knowledge complement to the time-travel `future_knowledge` checks in
+section 9.
+
+### 14. Pacing Drift (`pacing_drift`)
+Active for books with a planned pacing curve. Reads per-beat `intensity`
+annotations and flags when realized per-chapter intensity falls across three or
+more consecutive chapters — a sustained sag (a sagging middle). A single dip is
+intentional; a sustained slide is drift.
+
+**What to do when flagged**: raise the stakes or add a turn in the affected
+chapters — or, if the de-escalation is deliberate (a lull before a finale),
+accept it. Quality depends on honest beat-intensity annotation from
+scene-writer; flat annotations blind this check.
+
+### 15. Quantity Drift (`quantity_drift`)
+Active when the project declares a quantity scheme (`set_project_quantity_scheme`,
+or `derive_quantity_scheme_from_system_overlay`). Flags when a subject's tracked
+band jumps more than the scheme's `max_band_jump` ordered tiers between
+consecutive stamps without a `change_reason` — the wealth/progression analogue of
+chronology drift.
+
+**What to do when flagged**: if the jump is legitimate (an inheritance, a
+cultivation breakthrough), re-commit the reading via `commit_quantity_state` with
+a `change_reason`; otherwise stage it across intermediate bands or fix the stamp.
+
+### 16. Currency Consistency (`currency_consistency`)
+Active when a scheme declares denominations. Converts numeric price facts to base
+units and flags two prices for the same good (same `subject`/`predicate`) that
+disagree once converted — e.g. "5 silver" and "100 copper" under a 10:1 scheme.
+
+**What to do when flagged**: reconcile the prices (supersede the wrong one via
+`register_canonical_fact` + `supersedes_fact_id`) or correct the denomination.
+
+### 17. Affordability (`affordability`)
+Advisory (INFO). When a scene names a price (the same `<number> <unit>` pattern
+`scan_scene_prices` detects) above a present character's tracked wealth — both
+reduced to base units — it raises a tripwire. High-precision/low-recall: it only
+fires when both a price mention and a tracked amount exist.
+
+**What to do when flagged**: confirm the character can afford it (a loan, savings
+off-page), or update their tracked amount via `commit_quantity_state`.
+
+### 18. In-Scene Temporal Coherence (`temporal_coherence`)
+The within-scene, forward-looking complement to §12 chronology (which is the
+*between-scene* guard). Scans each scene's prose for time-of-day markers and
+flags three things: **teleporting time** — a large forward time-of-day skip
+(e.g. morning → night) with no transition beat or scene break; **drifting time**
+— prose that contradicts its own established time of day (it is night, then the
+same scene refers to morning); and an **unrendered declared span** — a scene
+whose clock declares `duration_days` >= 1 but whose prose renders the span as
+one unbroken block with no transition. The time vocabulary includes parts of
+day, meal names, canonical hours (matins, vespers…), and explicit meridian clock
+times (`8 a.m.`, `11 p.m.`). Prose-only and **calendar-free**: it runs even when
+the project declares no calendar. High-precision/low-recall (a conservative
+band-jump threshold, word-boundary matching, greeting and recollection guards),
+so every finding is an advisory **warning**. Suppressed by a transition marker or
+scene break between the times, by an in-scene recollection ("she remembered"), by
+`temporal_mode` flashback/flashforward/concurrent, and at week-or-coarser
+`precision`.
+
+The same scan surfaces at **three enforcement points**, all advisory: on
+`save_scene_draft` and `revise_scene` (the `temporal_findings` field — immediate
+feedback while drafting), inside `commit_scene_changes` (a `temporal_findings`
+field that never blocks the commit under any `continuity_gate`), and across the
+whole branch via this `check_consistency` arm.
+
+That deterministic scan is **Tier 1** (high precision, fixed vocabulary). Pass
+`deep_check: true` to `check_consistency` to add **Tier 2**: a model-backed
+semantic pass that reads each scene's prose and catches the jumps a fixed
+lexicon cannot — idiomatic elapsed time ("three cigarettes later"), implied
+light/meal/errand cues, and drift phrased in prose. It reuses the `review` model
+route, is opt-in (one model call per scene), and degrades to nothing when no
+review model is configured, so Tier 1 always stands on its own. Its findings
+carry the same `temporal_coherence` check_type and `warning` severity.
+
+**What to do when flagged**: add an explicit transition beat ("Hours later,") or
+a scene break (`***`) at the jump; split a multi-block scene into separately
+clocked scenes with `set_scene_clock`; reconcile the contradicting time-of-day
+references; or, for a deliberate rewind, stamp `temporal_mode: "flashback"`. The
+prevention side is the `[IN-WORLD TIME]` hard constraint surfaced in
+`get_scene_context` / `get_chapter_briefing`, which feeds the previous scene's
+end clock **and location** forward so the writer anchors where and when the new
+scene starts. Persist the setting by passing `location_id` to `save_scene_draft`.
+
+### 19. Motif Usage Audit (`motif_usage_audit`)
+Metadata-only (beat annotations plus motif fields — never prose). For each
+non-archived motif with a `max_uses_per_chapter` limit, it counts beat-annotation
+motif links per chapter within scope and raises a **warning** when a chapter goes
+**over** the limit (exactly at the limit is clean). A motif with no limit is
+skipped for overuse. A motif declared but never linked by any beat annotation in
+scope raises an **info**, but only when the scope covers **≥3 chapters**, so small
+scopes stay quiet.
+
+**What to do when flagged**: thin the motif's links in the offending chapter (or
+raise `max_uses_per_chapter`) for overuse; annotate a scene with the motif, or
+archive it, for the unused-info case.
+
+### 20. Theme Placement Audit (`theme_placement_audit`)
+Metadata-only. When a theme's `introduction_point` or `resolution_point` resolves
+to a chapter **within scope** but no beat annotation in that chapter links the
+theme, it raises an **info** naming the theme and the chapter. Placements that are
+NULL or outside scope are silent.
+
+**What to do when flagged**: annotate a scene in that chapter with the theme
+(`annotate_scene_beats`), or move the theme's placement to a chapter where it is
+actually developed.
+
+### 21. Promise-Payoff Detection (`promise_payoff_detection`) — deep only
+Model-backed **Tier 2**, opt-in via `deep_check: true` (silent otherwise). After
+a long agent run, promises the prose has *already* paid off keep nagging as
+overdue in §4 tracking, and genuinely dropped threads hide among those false
+alarms. This check reads the scoped prose and **proposes** — it never writes —
+that an unresolved promise which appears delivered be confirmed via
+`update_promise_status`. It selects non-resolved (not `paid_off`/`abandoned`,
+not archived) promises in scope, ranks them by §4 urgency (overdue > due > soon >
+watch, tiebreak id), and audits the **10 most urgent**; if more than 10 exist,
+one summary **info** finding reports how many were **not scanned** (never a
+silent cap). Each positive match is an **info** finding naming the promise id, a
+truncated description, the scene reference, and (when supplied) a sanitized
+evidence excerpt — the message ends with `confirm with update_promise_status`.
+It reuses the `review` model route (one call per promise, the full scoped prose
+concatenated) and degrades to no proposals when the local stub is in play. If the
+review route is unreachable it emits ONE honest-skip info finding that reads as
+**SKIPPED** — a route failure never masquerades as a clean scan.
+
+**What to do when flagged**: read the cited scene; if the payoff truly landed,
+call `update_promise_status(promise_id, "paid_off")`; if it did not, reinforce
+the thread or move `planned_payoff`. For the SKIPPED finding, configure a review
+model route and re-run. For the summary "not scanned" finding, narrow the scope
+or resolve higher-urgency promises first, then re-run.
+
+### 22. Plot-Line Convergence Audit (`plot_line_convergence_audit`)
+Metadata-only (beat annotations plus plot-line fields — never prose). A plot
+line declares which conflicts/themes it expects to braid together at its
+convergence via `connected_conflict_ids` / `connected_theme_ids` (both default
+`[]`, so a plot line that declares neither is silent). When a plot line's
+`convergence_points` resolve to a chapter **within scope** but **no** beat
+annotation in that chapter links **any** of the declared connected conflicts (as
+`conflict_ids`) OR connected themes (as `theme_ids`), it raises an **info**
+naming the plot line and the chapter. Convergences outside scope, or plot lines
+with no declared connections, stay quiet.
+
+**What to do when flagged**: annotate a scene in the convergence chapter with a
+connected conflict/theme (`annotate_scene_beats`), or revise the plot line's
+`convergence_points` / connected-id declarations so the braid lands where it is
+actually written.
+
+### 23. Arc Milestone Audit (`arc_milestone_audit`)
+Metadata-only. A character-arc milestone carries a `placement` (where it is due)
+and, once demonstrated, a `reached_at` marker. For each milestone placed at a
+chapter **P** in or before the scope end that is **not** marked reached: if the
+manuscript already runs past P (max scoped chapter **≥ P+1**) it raises a
+**warning** naming the arc and milestone label and the number of chapters
+overdue (`max_scoped_chapter − P`); if the scope has only reached P (max **== P**)
+it raises an **info** "due now". A milestone with a `reached_at` marker is silent
+regardless, and a milestone with no `placement` is silent. Mark a milestone
+reached with `update_arc_milestone(arc_id, label, reached_at=...)` — a targeted
+patch that preserves the milestone's other fields. (The whole `milestones`
+array remains writable through `update_entity` for bulk edits; read it back
+first via `get_entity(table="character_arc")` or `get_character_snapshot`.)
+
+**What to do when flagged**: demonstrate the milestone in the prose and set its
+`reached_at` via `update_arc_milestone`, or move the milestone's `placement`
+the same way if the arc has legitimately slipped.
+
+### 24. Conflict Escalation Audit (`conflict_escalation_audit`)
+Metadata-only. A conflict's `escalation_demonstrated` array is index-aligned
+with `escalation_stages`: each entry is the placement where that stage was
+demonstrated, or `null`/absent for not-yet-demonstrated (a shorter-than-stages
+vector reads as all-`null` beyond its length). When any pair of stages **(i < j)**
+has a later stage **j demonstrated** while an earlier stage **i is not**, it
+raises a **warning** naming the conflict and the out-of-order stage labels. All
+demonstrated stages in order, or a conflict with no demonstration markers at all,
+is silent.
+
+**What to do when flagged**: demonstrate the earlier escalation stage before the
+later one (or reorder the writing), or correct the `escalation_demonstrated`
+markers (via `update_entity` on the `conflict`) if the demonstrations are
+mislabeled.
+
+### 25. Secret Leak (`secret_leak`)
+The audience-direction complement to `knowledge_timing`. Where `knowledge_timing`
+asks "does the *speaker* know this yet?", `secret_leak` asks the audience
+question: "did an out-of-circle character act on a secret they were never told?"
+A **secret** is a `canonical_fact` marked `secret = true`; its **circle of trust**
+is derived — every character with a `knowledge_fact` row linked back to that fact
+via `secret_of_fact_id`, placement-stamped by `learned_at`.
+
+Deterministic tier (always runs, no `deep_check` needed): for each scoped scene,
+for each secret fact whose circle **at that scene's story cursor** does not
+include a **present** character, the check scans that out-of-circle character's
+**attributed dialogue** (reusing the `voice_drift` speaker attribution) for the
+secret's value lexeme (reusing `canonical_fact_prose_drift`'s whole-word matcher,
+uninverted — a *hit* is the violation). A hit raises a **warning** naming the
+fact, the character, the scene reference, and the reveal status ("no recorded
+reveal to `<character>` before this scene"). An **insider** speaking the secret is
+clean, and a reveal recorded in an **earlier** scene puts the speaker inside the
+circle at the later cursor (so it is clean); a reveal only in a **later** scene
+does not excuse an earlier leak. Cursor-aware, so a ch-12 reveal never leaks
+backward into a ch-9 flashback. Behavioral/narration leaks (a character avoiding
+a place they have no reason to avoid) are the **deep tier** (`deep_check`), a
+later wave — v1 scans dialogue only. Silent for projects with no secret facts.
+
+**What to do when flagged**: this is a deliberate-irony triage point. If the
+reveal is intended (she told him off-page, or he guessed), record it —
+`record_knowledge` with `secret_of_fact_id` set and `learned_at` at the reveal's
+placement — which expands the circle and clears the finding. Otherwise the
+dialogue genuinely leaks: route to scene-writer to revise it out. Mark a reviewed
+false positive by recording the reveal or dismissing it with a note, mirroring how
+other findings are triaged at checkpoints.
+
+### 26. Scene-Purpose Fulfillment (`scene_purpose_fulfillment`) — deep only
+Model-backed **Tier 2**, opt-in via `deep_check: true` (silent otherwise). The
+chapter plan assigns each planned scene a `purpose`; this check asks whether the
+*drafted* scene actually accomplishes that purpose on the page. For each scoped
+persisted scene that has BOTH non-empty prose AND a chapter-plan scene entry with
+a non-empty `purpose`, it makes one `review` call carrying the scene's prose and
+its planned purpose (a scene with no plan entry or an empty purpose is skipped
+silently — there is nothing to audit). It audits the **10 earliest scenes in
+story order**; if more exist, one summary **info** finding reports how many were
+**not scanned** (never a silent cap). A `fulfilled:false` verdict raises ONE
+**info** finding (advisory — purpose drift is editorial judgment, not an error)
+naming the scene reference, the planned purpose, and the model's one-sentence
+assessment; a `fulfilled:true` verdict is silent (silence is the pass). The parse
+is strict: a malformed payload yields no finding for that scene, and a verdict
+that omits the `fulfilled` field is discarded — the check never guesses. Each
+call carries the scene's own content rating, so an explicit scene's audit only
+reaches an explicit-cleared route; if the route is unreachable or uncleared it
+emits ONE honest-skip info finding that reads as **SKIPPED**, never a clean scan.
+Degrades to no findings when the local stub is in play.
+
+**What to do when flagged — false-positive triage first**: purpose drift is often
+the story *improving*, not breaking. Read the cited scene against its planned
+purpose and decide which of three cases applies: (a) the scene genuinely fails or
+wanders from a purpose it still owes the plan → route to scene-writer to revise
+it toward that purpose (or replan the beat); (b) the scene diverges *deliberately*
+and the divergence is better than the plan → this is not a defect: leave a replan
+note and update the plan's `purpose` (re-`plan_chapter`) so the plan matches what
+the prose actually does; (c) the verdict is a plain false positive (the purpose
+did land, the model missed it) → dismiss with a note. Only case (a) is a real
+revision. For the SKIPPED finding, configure a review model route cleared for the
+scene's rating and re-run; for the summary "not scanned" finding, narrow the scope
+and re-run.
 
 ---
 
@@ -213,6 +485,15 @@ Use these shipped Phase 4 validator IDs as your live evidence package:
 - `world_rule_semantic_drift`
 - `voice_drift`
 - `retcon_reachability`
+- `style_compliance`
+
+The deterministic story-time and quantity checks (`chronology`,
+`knowledge_timing`, `pacing_drift`, `quantity_drift`, `currency_consistency`,
+`affordability`), the metadata audits (`motif_usage_audit`,
+`theme_placement_audit`, `plot_line_convergence_audit`, `arc_milestone_audit`,
+`conflict_escalation_audit`), and the secret-knowledge audit (`secret_leak`) are
+requested by name and reported via the `check_type` field on each issue rather
+than as Phase 4 validator rows.
 
 Example:
 - Canon says `cole.age = 20`.
@@ -233,6 +514,20 @@ use those alias names when calling live checks; use the concrete IDs above.
 | Agency deficit | → scene-writer (write active-choice scene) |
 | Tone deviation | → scene-writer (revise scene tone) |
 | Knowledge contradiction | → scene-writer (revise to remove forbidden knowledge) |
+| Chronology drift (`chronology`) | → scene-writer (set `temporal_mode`/`thread_key` or fix `day_index`) |
+| Knowledge timing (`knowledge_timing`) | → scene-writer (move the reveal) or → plot-architect (reschedule) |
+| Pacing drift (`pacing_drift`) | → plot-architect (rebalance) or → scene-writer (raise the stakes) |
+| Quantity drift (`quantity_drift`) | → scene-writer / worldbuilder (re-commit with a `change_reason`, or stage the change) |
+| Currency consistency (`currency_consistency`) | → worldbuilder (reconcile prices / fix the denomination) |
+| Affordability (`affordability`) | → scene-writer (confirm the purchase or update tracked wealth) |
+| Motif usage (`motif_usage_audit`) | → scene-writer (thin/annotate the motif) or → plot-architect (raise `max_uses_per_chapter` or archive) |
+| Theme placement (`theme_placement_audit`) | → scene-writer (annotate the theme in that chapter) or → plot-architect (move the placement) |
+| Promise-payoff candidate (`promise_payoff_detection`, deep) | → plot-architect / bible-librarian (confirm with `update_promise_status("paid_off")`, or reinforce the thread if not actually landed) |
+| Plot-line convergence (`plot_line_convergence_audit`) | → scene-writer (annotate a connected conflict/theme in the convergence chapter) or → plot-architect (revise `convergence_points` / connected-id declarations) |
+| Arc milestone (`arc_milestone_audit`) | → scene-writer (demonstrate the milestone and set `reached_at`) or → plot-architect (move the milestone `placement`) |
+| Conflict escalation (`conflict_escalation_audit`) | → scene-writer (demonstrate the earlier stage first) or → plot-architect (correct the `escalation_demonstrated` markers) |
+| Secret leak (`secret_leak`) | → scene-writer (revise the leaking dialogue) or, if the reveal is intended, `record_knowledge` with `secret_of_fact_id` to expand the circle |
+| Scene-purpose drift (`scene_purpose_fulfillment`, deep) | → scene-writer (revise the scene toward its planned purpose) if it genuinely wandered, or → plot-architect (`plan_chapter` to update the scene's `purpose`) if the divergence improves the story; dismiss with a note if the purpose actually landed |
 
 If a world rule has a legitimate exception, encode it as a separate
 `world_rule` (e.g. with `relevance_tags: ["exception"]` and a
@@ -265,12 +560,16 @@ character thinness, pacing drag, thematic incoherence.
 - Are there passages where attention wanders? Why?
 - Does the scene earn its emotional moments or reach for them cheaply?
 - Is there anything that feels contrived, convenient, or unearned?
+- Structure block only: opening / turn / close / lived-in space. Not BLUF,
+  Voices, Flesch, or delve-as-tech-gate. Do not score fiction shelves.
 
 **Persona 2 — Craft Technician**: Read the prose as a writing professor.
 - Are MRUs in the correct order (motivation before reaction)?
 - Is show-don't-tell consistently applied?
 - Are there filter words ("felt", "seemed", "realized")?
-- Are there AI slop patterns? (See `bible://references/anti-slop`.)
+- Do any fiction anti-slop shelves fire? (See `bible://references/anti-slop`.
+  Editorial shelves, not an authorship detector.) Cite each matching shelf
+  ID, or write NONE. Rewrite-from-beats ≤1–2; do not paraphrase-humanize.
 - Is POV discipline maintained throughout?
 - Are dialogue tags minimal and action beats doing the work?
 - Is sentence length varied for rhythm?
@@ -283,6 +582,34 @@ character thinness, pacing drag, thematic incoherence.
    ("this is a minor stylistic preference") rather than real problems.
 
 This loop typically takes 2-3 iterations to produce clean prose.
+
+---
+
+## Subagent orchestration (Claude Code / grok)
+
+A multi-chapter continuity sweep is naturally shardable: evidence-gathering for
+each chapter (or each tracked entity) is independent read-only work. If your
+harness supports subagents (Claude Code's Task/Agent tool, grok's subagents),
+fan the sweep out; otherwise walk the chapters/entities sequentially inline —
+the diagnosis is identical, only the concurrency changes.
+
+**Write discipline (non-negotiable):** subagents research and report only. Every
+state-mutating call stays in the main context. Subagents call read-only tools —
+`check_consistency`, `find_scenes_referencing`, `find_entity`, `get_entity`,
+`get_scene_context`, and the `bible://.../continuity/health` resource — and
+return structured findings. They never call `commit_character_state`,
+`register_canonical_fact`, `update_promise_status`, `set_arc_pacing_constraints`,
+`migrate_canonical_fact`, `commit_quantity_state`, or any `update_*`/`commit_*`
+write. The continuity-editor (main context) decides and writes.
+
+Fan-out for a sweep: dispatch **one subagent per chapter** (for a chapter-range
+audit) or **one per entity** (for a subject-scoped audit, `subjects: [...]`),
+each running its scoped `check_consistency` plus backreference lookups and
+returning findings keyed by scene id, check_type, and severity. The supervisor
+then **merges and dedupes** — the same drift often surfaces from adjacent
+chapters or from two entities that share a scene — ranks by severity, and hands
+each surviving issue to the owning skill. Without subagents, run the scoped
+checks one chapter/entity at a time and dedupe as you go.
 
 ---
 
@@ -303,9 +630,9 @@ This loop typically takes 2-3 iterations to produce clean prose.
 
 The shipped craft references most relevant to continuity work:
 
-- `bible://references/anti-slop` — Pattern catalog for prose-level drift the
-  Phase 4 validators don't catch (cliché abstractions, filter-word creep,
-  generic emotional shorthand).
+- `bible://references/anti-slop` — Fiction shelf catalog for prose-level
+  drift the Phase 4 validators don't catch (cocktails, fishing endings,
+  body/eye/gesture stock, filter-word clusters).
 - `bible://references/voice-differentiation` — Reference for diagnosing voice
   drift findings beyond raw forbidden-word matches.
 - `bible://references/swain-scene-sequel` and `bible://references/mru-guide`

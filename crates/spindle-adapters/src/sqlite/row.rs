@@ -122,8 +122,10 @@ pub fn blob_f32_as_f64(row: &Row<'_>, idx: usize) -> rusqlite::Result<Vec<f64>> 
         ));
     }
     Ok(bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c) as f64)
         .collect())
 }
 

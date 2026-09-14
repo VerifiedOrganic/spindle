@@ -51,11 +51,17 @@ impl McpHarnessClient {
                 config_path,
             } => {
                 let workspace_root = workspace_root();
+                let manifest_path = workspace_root.join("Cargo.toml");
                 let transport = TokioChildProcess::new(
                     tokio::process::Command::new("cargo").configure(|command| {
-                        command
-                            .args(["run", "-q", "-p", "spindle-mcp"])
-                            .current_dir(workspace_root);
+                        command.args([
+                            "run",
+                            "-q",
+                            "--manifest-path",
+                            &manifest_path.to_string_lossy(),
+                            "-p",
+                            "spindle-mcp",
+                        ]);
                         if let Some(data_dir) = data_dir {
                             command.env("SPINDLE_DATA_DIR", data_dir);
                         }
@@ -132,9 +138,9 @@ impl McpHarnessClient {
                         character_ids: first_scene.character_ids.clone(),
                         location_id: Some(first_scene.location_id.clone()),
                         format: Some(ContextFormat::Markdown),
-                        budget_tokens: Some(3500),
+                        budget_tokens: Some(12_000),
                         recent_chapter_limit: Some(1),
-                        token_budget: Some(3500),
+                        token_budget: Some(12_000),
                     },
                 )
                 .await
@@ -159,18 +165,96 @@ impl McpHarnessClient {
                 })
                 .collect();
 
-            let chapter_plan = briefing.chapter_plan.map(|plan| ChapterPlanSnapshot {
-                synopsis: plan.synopsis,
-                pov_character_id: plan.pov_character_id,
-                scenes: plan
-                    .scenes
-                    .into_iter()
-                    .map(|scene| PlannedSceneSnapshot {
+            let mut chapter_plan = None;
+            if let Some(plan) = briefing.chapter_plan {
+                let mut planned_scenes = Vec::new();
+                for scene in plan.scenes {
+                    let harness_scene = chapter
+                        .scenes
+                        .iter()
+                        .find(|s| s.scene_order == scene.scene_order);
+                    let scene_location = harness_scene.map(|s| s.location_id.clone());
+
+                    let research_tags = scene.research_tags.clone();
+                    let explicit_query = scene.explicit_query.clone();
+
+                    let pack = self
+                        .call_tool::<_, spindle_core::models::ResearchPackForSceneOutput>(
+                            "research_pack_for_scene",
+                            &spindle_core::models::ResearchPackForSceneInput {
+                                project_id: state.project_id.clone(),
+                                branch_id: Some(state.active_branch_id.clone()),
+                                scene_summary: Some(scene.summary.clone()),
+                                scene_location,
+                                character_ids: scene.character_ids.clone(),
+                                tags: research_tags.clone(),
+                                explicit_query: explicit_query.clone(),
+                                limit: Some(10),
+                            },
+                        )
+                        .await
+                        .unwrap_or(spindle_core::models::ResearchPackForSceneOutput {
+                            sources: vec![],
+                            notes: vec![],
+                            claims: vec![],
+                        });
+
+                    let research_pack_empty =
+                        pack.sources.is_empty() && pack.notes.is_empty() && pack.claims.is_empty();
+
+                    let mut research_tags_matched = true;
+                    if !research_tags.is_empty() {
+                        let mut found_tag = false;
+                        for t in &research_tags {
+                            let t_lower = t.to_lowercase();
+                            for s in &pack.sources {
+                                if s.tags.iter().any(|st| st.to_lowercase() == t_lower) {
+                                    found_tag = true;
+                                    break;
+                                }
+                            }
+                            if found_tag {
+                                break;
+                            }
+                            for n in &pack.notes {
+                                if n.tags.iter().any(|nt| nt.to_lowercase() == t_lower) {
+                                    found_tag = true;
+                                    break;
+                                }
+                            }
+                            if found_tag {
+                                break;
+                            }
+                            for c in &pack.claims {
+                                if c.tags.iter().any(|ct| ct.to_lowercase() == t_lower) {
+                                    found_tag = true;
+                                    break;
+                                }
+                            }
+                            if found_tag {
+                                break;
+                            }
+                        }
+                        research_tags_matched = found_tag;
+                    }
+
+                    planned_scenes.push(PlannedSceneSnapshot {
                         scene_order: scene.scene_order,
                         character_ids: scene.character_ids,
-                    })
-                    .collect(),
-            });
+                        research_required: scene.research_required,
+                        research_tags: scene.research_tags,
+                        explicit_query,
+                        research_pack_empty,
+                        research_tags_matched,
+                    });
+                }
+
+                chapter_plan = Some(ChapterPlanSnapshot {
+                    synopsis: plan.synopsis,
+                    pov_character_id: plan.pov_character_id,
+                    scenes: planned_scenes,
+                });
+            }
 
             chapters.insert(
                 chapter.chapter_number,
@@ -225,8 +309,44 @@ impl McpHarnessClient {
         self.call_tool("annotate_scene_beats", input).await
     }
 
+    pub async fn mine_scene_canon(
+        &self,
+        input: &spindle_core::models::MineSceneCanonInput,
+    ) -> Result<spindle_core::models::MineSceneCanonOutput> {
+        self.call_tool("mine_scene_canon", input).await
+    }
+
+    pub async fn replan_chapter(
+        &self,
+        input: &spindle_core::models::ReplanChapterInput,
+    ) -> Result<spindle_core::models::ReplanChapterOutput> {
+        self.call_tool("replan_chapter", input).await
+    }
+
     pub async fn save_summary(&self, input: &SaveSummaryInput) -> Result<SaveSummaryOutput> {
         self.call_tool("save_summary", input).await
+    }
+
+    /// True when the chapter_summary row with `chapter_summary_id` still exists
+    /// for (book, chapter) on the project's active branch. Used by the
+    /// save-summary step's stale-artifact guard (defect item 2): a summary
+    /// artifact's save_summary_output is idempotency proof only while the row
+    /// it references is really persisted.
+    pub async fn chapter_summary_row_exists(
+        &self,
+        project_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        chapter_summary_id: &str,
+    ) -> Result<bool> {
+        let summaries: Vec<ChapterSummaryRowResource> = self
+            .read_json_resource(format!("bible://projects/{project_id}/chapter-summaries"))
+            .await?;
+        Ok(summaries.iter().any(|summary| {
+            summary.book_number == book_number
+                && summary.chapter_number == chapter_number
+                && summary.id == chapter_summary_id
+        }))
     }
 
     pub async fn check_consistency(
@@ -259,6 +379,13 @@ impl McpHarnessClient {
         input: &ContinueGenerationInput,
     ) -> Result<ContinueGenerationOutput> {
         self.call_tool("continue_generation", input).await
+    }
+
+    pub async fn research_pack_for_scene(
+        &self,
+        input: &spindle_core::models::ResearchPackForSceneInput,
+    ) -> Result<spindle_core::models::ResearchPackForSceneOutput> {
+        self.call_tool("research_pack_for_scene", input).await
     }
 
     pub async fn read_text_resource(&self, uri: String) -> Result<String> {
@@ -382,22 +509,11 @@ fn select_draft_route_binding(
             agent.status
         );
     }
-    if !agent.route_names.is_empty()
-        && agent
-            .route_names
-            .iter()
-            .any(|route_name| route_name != "draft")
-    {
-        anyhow::bail!(
-            "draft agent {} is not dedicated to the draft route; test_agent would be ambiguous",
-            agent.id
-        );
-    }
-
     Ok(DraftRouteBinding {
         route_name: route.route_name.clone(),
         agent_id: agent.id.clone(),
         rating: draft_rule.rating.clone().or(requested_rating),
+        caller_should_send_brief: route.caller_should_send_brief,
     })
 }
 
@@ -437,6 +553,12 @@ pub struct SceneContextEnvelope {
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
     pub budget: SceneContextBudgetMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<spindle_core::style::antislop::CompactShelfDigest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<spindle_core::style::antislop::VoiceSample>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<spindle_core::style::antislop::SceneNegative>,
 }
 
 #[derive(Debug, Clone)]
@@ -444,6 +566,7 @@ pub struct DraftRouteBinding {
     pub route_name: String,
     pub agent_id: String,
     pub rating: Option<String>,
+    pub caller_should_send_brief: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -472,6 +595,13 @@ struct ChapterSummaryResource {
     chapter_number: i32,
 }
 
+#[derive(serde::Deserialize)]
+struct ChapterSummaryRowResource {
+    id: String,
+    book_number: i32,
+    chapter_number: i32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,8 +621,16 @@ mod tests {
     }
 
     fn rule(agent_id: &str, rating: Option<&str>) -> AgentRoutingRuleSummary {
+        rule_for_route("draft", agent_id, rating)
+    }
+
+    fn rule_for_route(
+        route_name: &str,
+        agent_id: &str,
+        rating: Option<&str>,
+    ) -> AgentRoutingRuleSummary {
         AgentRoutingRuleSummary {
-            route_name: "draft".to_string(),
+            route_name: route_name.to_string(),
             agent_id: agent_id.to_string(),
             fallback_agent_id: None,
             purpose: Some("drafting".to_string()),
@@ -577,5 +715,34 @@ mod tests {
 
         assert_eq!(binding.agent_id, "default-draft");
         assert_eq!(binding.rating.as_deref(), Some("mature"));
+    }
+
+    #[test]
+    fn select_draft_route_binding_allows_shared_draft_research_agent() {
+        let routes = vec![
+            route("draft", "shared-model", None),
+            route("research", "shared-model", None),
+        ];
+        let routing = AgentRoutingConfigOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            rules: vec![
+                rule_for_route("draft", "grok-local", None),
+                rule_for_route("research", "grok-local", None),
+            ],
+        };
+        let mut shared_agent = agent("grok-local");
+        shared_agent.route_names = vec!["draft".to_string(), "research".to_string()];
+        let agents = ListAgentsOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            agents: vec![shared_agent],
+        };
+
+        let binding = select_draft_route_binding(&routes, &routing, &agents, None).unwrap();
+
+        assert_eq!(binding.agent_id, "grok-local");
+        assert_eq!(binding.route_name, "draft");
+        assert_eq!(binding.rating, None);
     }
 }

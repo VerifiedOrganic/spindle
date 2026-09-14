@@ -2089,6 +2089,7 @@ dependencies = [
  "base64",
  "chrono",
  "dirs",
+ "futures-util",
  "html2text",
  "refinery",
  "reqwest 0.12.28",
@@ -2101,6 +2102,7 @@ dependencies = [
  "spindle-skills",
  "sqlite-vec",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rusqlite",
  "toml 0.9.12+spec-1.1.0",
@@ -2118,6 +2120,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -2129,6 +2132,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "spindle-core",
  "tokio",
  "tracing",
@@ -2141,9 +2145,11 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "dirs",
  "futures-core",
+ "futures-util",
  "reqwest 0.12.28",
  "rmcp",
  "schemars",
@@ -2151,6 +2157,7 @@ dependencies = [
  "serde_json",
  "spindle-adapters",
  "spindle-core",
+ "spindle-harness",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2158,6 +2165,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]

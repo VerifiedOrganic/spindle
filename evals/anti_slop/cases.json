@@ -1,0 +1,210 @@
+{
+  "pack_id": "fiction.default",
+  "domain": "fiction",
+  "shelf_ids": [
+    "contrast_not_x_but_y",
+    "emotion_cocktail",
+    "fishing_ending",
+    "said_bookism",
+    "body_reactions",
+    "eye_department",
+    "gesture_rack",
+    "atmosphere_prefabs",
+    "naming_watchlist",
+    "rhythm_cadence",
+    "triadic_listing",
+    "solitary_fade"
+  ],
+  "preference_dims": [
+    "contrast_hinge",
+    "emotion_cocktail",
+    "outlook_close",
+    "lived_in_solitude",
+    "said_bookism"
+  ],
+  "interpretation": "Labeled editorial observations only. Not a quality superiority claim.",
+  "cases": [
+    {
+      "id": "AS01",
+      "name": "clean beat, no shelves",
+      "prose": "She locked the shop and walked toward the hall. The union card sat in her coat.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [],
+        "must_exclude": ["contrast_not_x_but_y", "emotion_cocktail", "fishing_ending", "solitary_fade"]
+      }
+    },
+    {
+      "id": "AS02",
+      "name": "one contrast stays within hard limit",
+      "prose": "It wasn't anger. It was disappointment. He set the cup down.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [],
+        "must_exclude": ["contrast_not_x_but_y"]
+      },
+      "preference_dims": {
+        "contrast_hinge": "present"
+      }
+    },
+    {
+      "id": "AS03",
+      "name": "contrast over limit plus cocktail is hard",
+      "prose": "It wasn't anger. It was disappointment.\nThis wasn't a homecoming. It was a reckoning.\nShe felt a mix of relief and dread.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 2,
+        "must_include": [
+          {"shelf_id": "contrast_not_x_but_y", "severity": "hard"},
+          {"shelf_id": "emotion_cocktail", "severity": "hard"}
+        ]
+      },
+      "preference_dims": {
+        "contrast_hinge": "present",
+        "emotion_cocktail": "present"
+      }
+    },
+    {
+      "id": "AS04",
+      "name": "fishing ending is hard at the close",
+      "prose": "She locked the till and stood in the doorway.\n\nShe didn't know what tomorrow would bring.",
+      "expect": {
+        "skipped": false,
+        "must_include": [
+          {"shelf_id": "fishing_ending", "severity": "hard"}
+        ]
+      },
+      "preference_dims": {
+        "outlook_close": "present"
+      }
+    },
+    {
+      "id": "AS05",
+      "name": "said_bookism over limit stays soft",
+      "prose": "\"Leave,\" she hissed.\n\"Please,\" he breathed.\n\"Impossible,\" she gasped.\n",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "said_bookism", "severity": "soft"}
+        ]
+      },
+      "preference_dims": {
+        "said_bookism": "present"
+      }
+    },
+    {
+      "id": "AS06",
+      "name": "solitary_fade is soft and not in hard_count",
+      "prose": "She spent the afternoon thinking about what he'd said.\n\nHours passed.\n\nLater, at the meeting, she told him everything.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "solitary_fade", "severity": "soft"}
+        ]
+      },
+      "preference_dims": {
+        "lived_in_solitude": "absent"
+      }
+    },
+    {
+      "id": "AS07",
+      "name": "body_reactions cluster is soft",
+      "prose": "Her jaw tightened as she opened the lockbox. Her stomach dropped when the slot was empty.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "body_reactions", "severity": "soft"}
+        ]
+      }
+    },
+    {
+      "id": "AS08",
+      "name": "eye_department cluster is soft",
+      "prose": "His gaze pierced her. Her eyes darkened with fury and she did not sit.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "eye_department", "severity": "soft"}
+        ]
+      }
+    },
+    {
+      "id": "AS09",
+      "name": "gesture_rack cluster is soft",
+      "prose": "He shrugged and ran a hand through his hair. \"I don't know.\"",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "gesture_rack", "severity": "soft"}
+        ]
+      }
+    },
+    {
+      "id": "AS10",
+      "name": "atmosphere_prefabs cluster is soft",
+      "prose": "The air crackled with tension. Silence hung heavy over the table.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "atmosphere_prefabs", "severity": "soft"}
+        ]
+      }
+    },
+    {
+      "id": "AS11",
+      "name": "naming_watchlist cluster is soft and delve is not a gate",
+      "prose": "She suddenly reached for the latch. In that moment something shifted, and she wanted to delve into the cellar ledgers.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "naming_watchlist", "severity": "soft"}
+        ],
+        "must_exclude": ["delve_as_tech_gate", "bluf", "flesch"]
+      }
+    },
+    {
+      "id": "AS12",
+      "name": "rhythm_cadence stack is soft",
+      "prose": "He ran.\nHe fell.\nHe rose.\nThe kettle clicked.\nShe sat.\nShe stood.\nShe left.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "rhythm_cadence", "severity": "soft"}
+        ]
+      }
+    },
+    {
+      "id": "AS13",
+      "name": "triadic_listing is soft",
+      "prose": "He remembered the smell of rain, the taste of copper, the weight of regret. The alley held blood, ash, and memory.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "triadic_listing", "severity": "soft"}
+        ]
+      }
+    },
+    {
+      "id": "AS14",
+      "name": "non-ports stay absent on a tech-flavored paragraph",
+      "prose": "Leverage? Synergy? Unlock the FAQ. Readability grade: easy. Detector score: none. She wanted to delve into the cellar ledgers.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [],
+        "must_exclude": ["bluf", "tech_buzzlist", "em_dash_gate", "flesch", "detector_percent", "faq_ending", "delve_as_tech_gate"]
+      }
+    }
+  ]
+}

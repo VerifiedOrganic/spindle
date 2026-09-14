@@ -34,6 +34,11 @@ pub struct ChapterPlanSnapshot {
 pub struct PlannedSceneSnapshot {
     pub scene_order: i32,
     pub character_ids: Vec<String>,
+    pub research_required: Option<bool>,
+    pub research_tags: Vec<String>,
+    pub explicit_query: Option<String>,
+    pub research_pack_empty: bool,
+    pub research_tags_matched: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,10 +97,30 @@ pub enum NextAction {
         chapter_number: i32,
         scene_order: i32,
     },
+    AwaitResearch {
+        chapter_number: i32,
+        scene_order: i32,
+        missing_tags: Vec<String>,
+        query: Option<String>,
+        location: Option<String>,
+    },
+    VerifyScene {
+        chapter_number: i32,
+        scene_order: i32,
+    },
+    ReviseScene {
+        chapter_number: i32,
+        scene_order: i32,
+        attempt: i32,
+    },
     CommitSceneChanges {
         chapter_number: i32,
         scene_order: i32,
         scene_id: String,
+    },
+    MineScene {
+        chapter_number: i32,
+        scene_order: i32,
     },
     AnnotateSceneBeats {
         chapter_number: i32,
@@ -103,6 +128,9 @@ pub enum NextAction {
         scene_id: String,
     },
     SaveChapterSummary {
+        chapter_number: i32,
+    },
+    ReplanChapter {
         chapter_number: i32,
     },
     Complete,
@@ -131,6 +159,42 @@ impl std::fmt::Display for NextAction {
                 chapter_number,
                 scene_order,
             } => write!(f, "draft book scene {chapter_number}.{scene_order}"),
+            Self::AwaitResearch {
+                chapter_number,
+                scene_order,
+                missing_tags,
+                query,
+                location,
+            } => {
+                let tags_str = if missing_tags.is_empty() {
+                    "none".to_string()
+                } else {
+                    missing_tags.join(", ")
+                };
+                let query_str = query.as_deref().unwrap_or("none");
+                let location_str = location.as_deref().unwrap_or("none");
+                write!(
+                    f,
+                    "await_research: chapter {chapter_number} scene {scene_order} needs research. \
+                     Searched tags: [{tags_str}], query: \"{query_str}\", location: \"{location_str}\". \
+                     Suggested action: use research tools (e.g. research_add_source, research_add_note, research_add_claim) to add relevant research, then resume."
+                )
+            }
+            Self::VerifyScene {
+                chapter_number,
+                scene_order,
+            } => write!(
+                f,
+                "verify scene for chapter {chapter_number} scene {scene_order}"
+            ),
+            Self::ReviseScene {
+                chapter_number,
+                scene_order,
+                attempt,
+            } => write!(
+                f,
+                "revise scene for chapter {chapter_number} scene {scene_order} (attempt {attempt})"
+            ),
             Self::CommitSceneChanges {
                 chapter_number,
                 scene_order,
@@ -138,6 +202,13 @@ impl std::fmt::Display for NextAction {
             } => write!(
                 f,
                 "commit scene changes for chapter {chapter_number} scene {scene_order} ({scene_id})"
+            ),
+            Self::MineScene {
+                chapter_number,
+                scene_order,
+            } => write!(
+                f,
+                "mine canon for chapter {chapter_number} scene {scene_order}"
             ),
             Self::AnnotateSceneBeats {
                 chapter_number,
@@ -149,6 +220,9 @@ impl std::fmt::Display for NextAction {
             ),
             Self::SaveChapterSummary { chapter_number } => {
                 write!(f, "save summary for chapter {chapter_number}")
+            }
+            Self::ReplanChapter { chapter_number } => {
+                write!(f, "replan future plans after chapter {chapter_number}")
             }
             Self::Complete => write!(f, "complete"),
         }
@@ -381,15 +455,6 @@ fn validate_state_shape(state: &HarnessState) -> Vec<Finding> {
                     ),
                 ));
             }
-            if scene.phase != ScenePhase::Pending && scene.scene_artifact_path.is_none() {
-                findings.push(Finding::error(
-                    "missing_scene_artifact",
-                    format!(
-                        "chapter {} scene {} is {:?} but has no scene artifact path for safe resume",
-                        chapter.chapter_number, scene.scene_order, scene.phase
-                    ),
-                ));
-            }
         }
     }
 
@@ -397,7 +462,7 @@ fn validate_state_shape(state: &HarnessState) -> Vec<Finding> {
 }
 
 fn reconcile_chapter_plan(
-    chapter: &crate::state::ChapterState,
+    chapter: &mut crate::state::ChapterState,
     snapshot: &ChapterSnapshot,
     findings: &mut Vec<Finding>,
 ) {
@@ -457,10 +522,16 @@ fn reconcile_chapter_plan(
         .iter()
         .map(|scene| (scene.scene_order, scene))
         .collect::<BTreeMap<_, _>>();
-    for scene in &chapter.scenes {
+    for scene in &mut chapter.scenes {
         let Some(plan_scene) = plan_by_order.get(&scene.scene_order) else {
             continue;
         };
+        scene.research_required = plan_scene.research_required;
+        scene.research_tags = plan_scene.research_tags.clone();
+        scene.explicit_query = plan_scene.explicit_query.clone();
+        scene.research_pack_empty = plan_scene.research_pack_empty;
+        scene.research_tags_matched = plan_scene.research_tags_matched;
+
         if scene.character_ids != plan_scene.character_ids {
             findings.push(Finding::error(
                 "chapter_plan_character_mismatch",
@@ -515,15 +586,6 @@ fn reconcile_persisted_scenes(
                         ),
                     ));
                 }
-                if scene.phase != ScenePhase::Pending && scene.scene_artifact_path.is_none() {
-                    findings.push(Finding::error(
-                        "missing_scene_artifact",
-                        format!(
-                            "chapter {} scene {} exists in Spindle but has no scene artifact path for safe resume",
-                            chapter.chapter_number, scene.scene_order
-                        ),
-                    ));
-                }
             }
             None => {
                 if scene.phase != ScenePhase::Pending || scene.scene_id.is_some() {
@@ -556,6 +618,19 @@ fn reconcile_persisted_scenes(
     }
 }
 
+/// True when the harness has recorded actual run work on this scene — a saved
+/// artifact, verify/mine outcomes, spent revise budget, diagnostics, or a
+/// block. A scene whose phase was merely promoted from persisted bible reality
+/// (pre-existing prose from outside any run) carries none of these.
+fn scene_has_run_evidence(scene: &crate::state::SceneState) -> bool {
+    scene.scene_artifact_path.is_some()
+        || scene.draft_diagnostics.is_some()
+        || scene.blocked_reason.is_some()
+        || scene.verify_status.is_some()
+        || scene.mine_status.is_some()
+        || scene.revise_attempts > 0
+}
+
 fn reconcile_summary_state(
     chapter: &mut crate::state::ChapterState,
     summary_exists: bool,
@@ -578,6 +653,32 @@ fn reconcile_summary_state(
                     ),
                 ));
             }
+        } else if chapter.scenes.iter().all(|scene| {
+            scene.phase == ScenePhase::BeatsAnnotated
+                || (matches!(
+                    scene.phase,
+                    ScenePhase::DraftSaved | ScenePhase::ChangesCommitted
+                ) && !scene_has_run_evidence(scene))
+        }) {
+            // Adopt pre-existing reality (defect item 1): the chapter has a
+            // persisted summary, every scene has persisted prose, and the run
+            // recorded no work of its own on the lagging scenes — they were
+            // promoted from bible reality (this pass or a previous, stuck
+            // one). Mark them beats_annotated and the summary saved so the
+            // run continues from what already exists instead of deadlocking.
+            // Deliberate: adopted scenes skip in-run commit/mine/beats — the
+            // prose predates the run; mine adopted scenes manually if needed.
+            for scene in &mut chapter.scenes {
+                scene.phase = ScenePhase::BeatsAnnotated;
+            }
+            chapter.summary_saved = true;
+            findings.push(Finding::info(
+                "adopted_preexisting_chapter",
+                format!(
+                    "chapter {} has pre-existing prose and a persisted summary from outside this run; adopted scenes as beats_annotated and marked summary_saved",
+                    chapter.chapter_number
+                ),
+            ));
         } else {
             findings.push(Finding::error(
                 "summary_phase_mismatch",
@@ -658,13 +759,23 @@ fn validate_checkpoint_history(state: &HarnessState, findings: &mut Vec<Finding>
 }
 
 fn validate_completion_order(state: &HarnessState, findings: &mut Vec<Finding>) {
-    let mut saw_incomplete = false;
+    // Chapters normally complete strictly in order, but the documented
+    // revise-during-checkpoint flow legitimately REOPENS a completed chapter
+    // (summary invalidated, a scene back to draft_saved) while later chapters
+    // in the same range stay complete. A reopened chapter has scene progress;
+    // a chapter the loop somehow skipped entirely has none — only the latter
+    // is corruption worth blocking on.
+    let mut saw_untouched_incomplete = false;
     for chapter in &state.chapters {
         if !chapter.summary_saved {
-            saw_incomplete = true;
+            let untouched = chapter
+                .scenes
+                .iter()
+                .all(|scene| scene.phase == ScenePhase::Pending);
+            saw_untouched_incomplete = saw_untouched_incomplete || untouched;
             continue;
         }
-        if saw_incomplete {
+        if saw_untouched_incomplete {
             findings.push(Finding::error(
                 "completion_gap",
                 format!(
@@ -689,6 +800,26 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
         };
     }
 
+    // Opt-in living-outline replan sits AFTER a chapter's summary is saved and
+    // BEFORE that chapter's checkpoint (ADR 0003, evolution §3.5). Only when the
+    // run opted into `propose_all` AND a summarized chapter has not yet been
+    // replanned does the scheduler yield ReplanChapter; otherwise scheduling is
+    // byte-identical to the pre-replan loop. A `Some(_)` replan_status (any
+    // outcome) means the pass already ran, so it never re-fires — the checkpoint
+    // then proceeds. Placed before the interval-checkpoint trigger so a just-
+    // summarized chapter is replanned before its boundary checkpoint; because it
+    // runs at most once per chapter it never delays the checkpoint indefinitely.
+    if replan_enabled(state)
+        && let Some(chapter) = state
+            .chapters
+            .iter()
+            .find(|chapter| chapter.summary_saved && chapter.replan_status.is_none())
+    {
+        return NextAction::ReplanChapter {
+            chapter_number: chapter.chapter_number,
+        };
+    }
+
     let completed_since_checkpoint = contiguous_completed_after_last_checkpoint(state);
     if completed_since_checkpoint.len() >= state.checkpoint_interval {
         return NextAction::RunCheckpoint {
@@ -705,12 +836,58 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
         for scene in &chapter.scenes {
             match scene.phase {
                 ScenePhase::Pending => {
+                    let is_required = scene.research_required.unwrap_or(false);
+                    let has_required_tags = !scene.research_tags.is_empty();
+
+                    if (is_required && scene.research_pack_empty)
+                        || (has_required_tags && !scene.research_tags_matched)
+                    {
+                        return NextAction::AwaitResearch {
+                            chapter_number: chapter.chapter_number,
+                            scene_order: scene.scene_order,
+                            missing_tags: scene.research_tags.clone(),
+                            query: scene.explicit_query.clone(),
+                            location: Some(scene.location_id.clone()),
+                        };
+                    }
+
                     return NextAction::DraftScene {
                         chapter_number: chapter.chapter_number,
                         scene_order: scene.scene_order,
                     };
                 }
                 ScenePhase::DraftSaved => {
+                    // Opt-in in-run verify/revise sits between draft and commit
+                    // (evolution §3.2, I7). When the run set a revise budget the
+                    // saved draft is verified first; warning-or-worse findings
+                    // drive up to `max` bounded revisions before commit. With the
+                    // budget disabled (None/0) scheduling is byte-identical to the
+                    // pre-verify loop: straight to CommitSceneChanges.
+                    if let Some(max) = revise_budget(state) {
+                        match scene.verify_status.as_deref() {
+                            // Not yet verified: run the deterministic scene check.
+                            None => {
+                                return NextAction::VerifyScene {
+                                    chapter_number: chapter.chapter_number,
+                                    scene_order: scene.scene_order,
+                                };
+                            }
+                            // Findings with budget left: revise, then re-verify.
+                            // If the budget is spent but state still reads
+                            // "findings" (the executor should have parked), treat
+                            // it defensively as parked and commit — never loop.
+                            Some("findings") if scene.revise_attempts < max => {
+                                return NextAction::ReviseScene {
+                                    chapter_number: chapter.chapter_number,
+                                    scene_order: scene.scene_order,
+                                    attempt: scene.revise_attempts + 1,
+                                };
+                            }
+                            // clean | parked_findings | error | findings-exhausted:
+                            // fall through to commit.
+                            _ => {}
+                        }
+                    }
                     return NextAction::CommitSceneChanges {
                         chapter_number: chapter.chapter_number,
                         scene_order: scene.scene_order,
@@ -721,6 +898,19 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
                     };
                 }
                 ScenePhase::ChangesCommitted => {
+                    // Opt-in canon mining sits between commit and beats
+                    // (evolution §3.1, I7). Only when the run opted into
+                    // `propose_all` AND this scene has not been mined yet does
+                    // the scheduler yield MineScene; otherwise scheduling is
+                    // byte-identical to the pre-mining loop. A `Some(_)`
+                    // mine_status (any outcome) means the pass already ran, so
+                    // it never re-fires.
+                    if mining_enabled(state) && scene.mine_status.is_none() {
+                        return NextAction::MineScene {
+                            chapter_number: chapter.chapter_number,
+                            scene_order: scene.scene_order,
+                        };
+                    }
                     return NextAction::AnnotateSceneBeats {
                         chapter_number: chapter.chapter_number,
                         scene_order: scene.scene_order,
@@ -749,6 +939,38 @@ fn determine_next_action(state: &HarnessState) -> NextAction {
     }
 
     NextAction::Complete
+}
+
+/// True when the run opted into canon mining (`mining_policy == "propose_all"`).
+/// `None` (pre-upgrade / default) and any other value — including the explicit
+/// `"disabled"` — leave the loop exactly as it behaved before mining existed.
+/// The policy string is validated at `authoring_start_run`; the scheduler is
+/// deliberately lenient so an unknown value never diverts the loop.
+fn mining_enabled(state: &HarnessState) -> bool {
+    state.mining_policy.as_deref() == Some("propose_all")
+}
+
+/// True when the run opted into living-outline replanning (`replan_policy ==
+/// "propose_all"`). `None` (pre-upgrade / default) and any other value —
+/// including the explicit `"disabled"` — leave the loop exactly as it behaved
+/// before replanning existed. The policy string is validated at
+/// `authoring_start_run`; the scheduler is deliberately lenient so an unknown
+/// value never diverts the loop.
+fn replan_enabled(state: &HarnessState) -> bool {
+    state.replan_policy.as_deref() == Some("propose_all")
+}
+
+/// The run's bounded in-run revise budget, or `None` when the loop is disabled
+/// (evolution §3.2). `None` (pre-upgrade / default) and `Some(0)` both mean
+/// "no verify/revise step" so the loop is byte-identical to before; a positive
+/// budget is the max number of `ReviseScene` passes a scene may take. The value
+/// is validated `0..=2` at `authoring_start_run`; the scheduler is lenient so an
+/// out-of-band value never strands the loop.
+fn revise_budget(state: &HarnessState) -> Option<i32> {
+    match state.max_revise_attempts {
+        Some(n) if n > 0 => Some(n),
+        _ => None,
+    }
 }
 
 fn contiguous_completed_after_last_checkpoint(state: &HarnessState) -> Vec<i32> {
@@ -800,6 +1022,7 @@ mod tests {
                         content_rating: ContentRating::Teen,
                         tone: Some("tense".to_string()),
                         source_path: None,
+                        ..Default::default()
                     }],
                 },
                 ChapterSeed {
@@ -813,6 +1036,7 @@ mod tests {
                         content_rating: ContentRating::Teen,
                         tone: Some("grim".to_string()),
                         source_path: None,
+                        ..Default::default()
                     }],
                 },
             ],
@@ -835,6 +1059,11 @@ mod tests {
                             scenes: vec![PlannedSceneSnapshot {
                                 scene_order: 1,
                                 character_ids: vec!["character:pov".to_string()],
+                                research_required: None,
+                                research_tags: vec![],
+                                explicit_query: None,
+                                research_pack_empty: false,
+                                research_tags_matched: true,
                             }],
                         }),
                     },
@@ -850,6 +1079,11 @@ mod tests {
                             scenes: vec![PlannedSceneSnapshot {
                                 scene_order: 1,
                                 character_ids: vec!["character:pov".to_string()],
+                                research_required: None,
+                                research_tags: vec![],
+                                explicit_query: None,
+                                research_pack_empty: false,
+                                research_tags_matched: true,
                             }],
                         }),
                     },
@@ -860,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_promotes_existing_scene_to_draft_saved_and_blocks_without_artifact() {
+    fn reconcile_promotes_existing_scene_to_draft_saved_without_artifact() {
         let state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
         let mut snapshot = snapshot();
         snapshot
@@ -877,16 +1111,17 @@ mod tests {
             );
 
         let outcome = reconcile_state(state, &snapshot);
-        assert!(outcome.has_errors());
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
         let chapter = outcome.state.chapter(1).expect("chapter");
         assert_eq!(chapter.scenes[0].phase, ScenePhase::DraftSaved);
         assert_eq!(chapter.scenes[0].scene_id.as_deref(), Some("scene:1"));
-        assert_eq!(outcome.next_action, NextAction::Blocked);
-        assert!(
-            outcome
-                .findings
-                .iter()
-                .any(|finding| { finding.code == "missing_scene_artifact" })
+        assert_eq!(
+            outcome.next_action,
+            NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
         );
     }
 
@@ -938,7 +1173,9 @@ mod tests {
     }
 
     #[test]
-    fn summary_without_beats_is_blocked() {
+    fn summary_without_scene_prose_is_blocked() {
+        // A persisted summary with NO persisted scene prose is genuinely
+        // inconsistent: there is nothing to adopt, so the residue rule holds.
         let state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
         let mut snapshot = snapshot();
         snapshot.summarized_chapters.insert(1);
@@ -948,8 +1185,144 @@ mod tests {
         assert_eq!(outcome.next_action, NextAction::Blocked);
     }
 
+    // ── Residue reconciliation: adopt pre-existing content (defect item 1) ──
+
+    /// A snapshot where chapter 1's scene exists in the bible AND the chapter
+    /// has a persisted summary — the "earlier out-of-band pass" shape.
+    fn preexisting_content_snapshot() -> ProjectSnapshot {
+        let mut snapshot = snapshot();
+        snapshot.summarized_chapters.insert(1);
+        snapshot
+            .chapters
+            .get_mut(&1)
+            .expect("chapter 1")
+            .scenes
+            .insert(
+                1,
+                PersistedScene {
+                    scene_id: "scene:1".to_string(),
+                    scene_order: 1,
+                },
+            );
+        snapshot
+    }
+
     #[test]
-    fn draft_saved_scene_without_artifact_blocks() {
+    fn fresh_run_adopts_preexisting_prose_and_summary_as_complete() {
+        // A brand-new run over a chapter that already has bible prose and a
+        // persisted chapter summary must ADOPT that reality: scenes land at
+        // beats_annotated, summary_saved flips true, and the run proceeds
+        // (here: straight to the chapter's checkpoint) instead of blocking on
+        // "persisted summary but scenes not beats_annotated".
+        let state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        let outcome = reconcile_state(state, &preexisting_content_snapshot());
+
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
+        let chapter = outcome.state.chapter(1).expect("chapter");
+        assert_eq!(chapter.scenes[0].phase, ScenePhase::BeatsAnnotated);
+        assert!(chapter.summary_saved);
+        assert_eq!(
+            outcome.next_action,
+            NextAction::RunCheckpoint {
+                start_chapter: 1,
+                end_chapter: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn stuck_run_with_promoted_draft_saved_scenes_adopts_on_next_reconcile() {
+        // A run that already deadlocked persisted its scenes at draft_saved
+        // (the promotion outcome) with NO run-recorded artifact. The next
+        // reconcile must recognize "no run evidence" and adopt, un-sticking
+        // the run without direct SQLite surgery.
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::DraftSaved;
+
+        let outcome = reconcile_state(state, &preexisting_content_snapshot());
+
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
+        let chapter = outcome.state.chapter(1).expect("chapter");
+        assert_eq!(chapter.scenes[0].phase, ScenePhase::BeatsAnnotated);
+        assert!(chapter.summary_saved);
+    }
+
+    #[test]
+    fn run_authored_draft_with_artifact_still_trips_residue_rule() {
+        // A scene the RUN drafted (scene_artifact_path recorded) that sits at
+        // draft_saved while a persisted summary exists is genuinely
+        // inconsistent mid-pipeline state — the residue rule must still block;
+        // adoption only applies to scenes with no run evidence.
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::DraftSaved;
+        chapter.scenes[0].scene_artifact_path =
+            Some("scenes/chapter-0001/scene-001.json".to_string());
+
+        let outcome = reconcile_state(state, &preexisting_content_snapshot());
+        assert!(outcome.has_errors(), "{:?}", outcome.findings);
+        assert!(
+            outcome
+                .findings
+                .iter()
+                .any(|finding| finding.code == "summary_phase_mismatch"),
+            "{:?}",
+            outcome.findings
+        );
+        assert_eq!(outcome.next_action, NextAction::Blocked);
+    }
+
+    #[test]
+    fn reopened_chapter_before_complete_later_chapter_is_not_a_completion_gap() {
+        // Chapter 1 was completed, checkpointed, then reopened for revision
+        // (summary invalidated, scene back to draft_saved) while chapter 2 in
+        // the same checkpoint range stayed complete. That is the documented
+        // revise-during-checkpoint flow, not corruption — no completion_gap
+        // error. (A chapter with zero progress before a complete one still
+        // errors.)
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        {
+            let chapter1 = state.chapter_mut(1).expect("chapter 1");
+            chapter1.scenes[0].scene_id = Some("scene:1".to_string());
+            chapter1.scenes[0].phase = ScenePhase::DraftSaved;
+            chapter1.scenes[0].scene_artifact_path =
+                Some("scenes/chapter-0001/scene-001.json".to_string());
+            chapter1.summary_saved = false;
+        }
+        {
+            let chapter2 = state.chapter_mut(2).expect("chapter 2");
+            chapter2.scenes[0].scene_id = Some("scene:2".to_string());
+            chapter2.scenes[0].phase = ScenePhase::BeatsAnnotated;
+            chapter2.summary_saved = true;
+        }
+        state.normalize();
+
+        let mut findings = Vec::new();
+        validate_completion_order(&state, &mut findings);
+        assert!(
+            findings.iter().all(|f| f.code != "completion_gap"),
+            "reopened chapter must not trip completion_gap: {findings:?}"
+        );
+
+        // Zero-progress chapter 1 before complete chapter 2 is still an error.
+        let chapter1 = state.chapter_mut(1).expect("chapter 1");
+        chapter1.scenes[0].phase = ScenePhase::Pending;
+        chapter1.scenes[0].scene_id = None;
+        chapter1.scenes[0].scene_artifact_path = None;
+        state.normalize();
+        let mut findings = Vec::new();
+        validate_completion_order(&state, &mut findings);
+        assert!(
+            findings.iter().any(|f| f.code == "completion_gap"),
+            "a skipped chapter must still trip completion_gap: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn draft_saved_scene_without_artifact_can_commit() {
         let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
         let chapter = state.chapter_mut(1).expect("chapter 1");
         chapter.scenes[0].scene_id = Some("scene:1".to_string());
@@ -970,13 +1343,295 @@ mod tests {
             );
 
         let outcome = reconcile_state(state, &snapshot);
-        assert!(outcome.has_errors());
-        assert_eq!(outcome.next_action, NextAction::Blocked);
-        assert!(
-            outcome
-                .findings
-                .iter()
-                .any(|finding| { finding.code == "missing_scene_artifact" })
+        assert!(!outcome.has_errors(), "{:?}", outcome.findings);
+        assert_eq!(
+            outcome.next_action,
+            NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
         );
+    }
+
+    /// Advance a chapter-1 scene to `ChangesCommitted` and return its state so
+    /// the mining-scheduler tests can toggle `mining_policy` / `mine_status`
+    /// against a single committed scene without re-deriving the whole fixture.
+    fn committed_state(mining_policy: Option<&str>, mine_status: Option<&str>) -> HarnessState {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        state.mining_policy = mining_policy.map(str::to_string);
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::ChangesCommitted;
+        chapter.scenes[0].mine_status = mine_status.map(str::to_string);
+        state
+    }
+
+    #[test]
+    fn propose_all_committed_scene_without_mine_status_schedules_mine_before_beats() {
+        let state = committed_state(Some("propose_all"), None);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::MineScene {
+                chapter_number: 1,
+                scene_order: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn propose_all_committed_scene_with_mine_status_schedules_beats() {
+        let state = committed_state(Some("propose_all"), Some("staged"));
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::AnnotateSceneBeats {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
+        );
+    }
+
+    // ── P4 living-outline replan scheduling (ADR 0003, evolution §3.5) ──
+
+    /// A state where chapter 1's single scene is fully beats-annotated and the
+    /// chapter summary is saved (so chapter 1 is "complete"), chapter 2 still
+    /// pending. `replan_policy`/`replan_status` are set on chapter 1 so the
+    /// replan-vs-checkpoint fork can be exercised deterministically.
+    fn summarized_state(replan_policy: Option<&str>, replan_status: Option<&str>) -> HarnessState {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        state.replan_policy = replan_policy.map(str::to_string);
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::BeatsAnnotated;
+        chapter.summary_saved = true;
+        chapter.replan_status = replan_status.map(str::to_string);
+        state.normalize();
+        state
+    }
+
+    #[test]
+    fn propose_all_after_summary_schedules_replan_before_checkpoint() {
+        // With replan_policy propose_all and chapter 1 summarized but not yet
+        // replanned, ReplanChapter fires BEFORE the interval checkpoint.
+        let state = summarized_state(Some("propose_all"), None);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::ReplanChapter { chapter_number: 1 }
+        );
+    }
+
+    #[test]
+    fn propose_all_after_replan_proceeds_to_checkpoint() {
+        // Once chapter 1's replan_status is Some (any outcome) the pass has run;
+        // the checkpoint for its boundary proceeds (never re-fires, never delays
+        // the checkpoint indefinitely).
+        for status in ["staged", "skipped", "no_targets", "error"] {
+            let state = summarized_state(Some("propose_all"), Some(status));
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::RunCheckpoint {
+                    start_chapter: 1,
+                    end_chapter: 1,
+                },
+                "replan_status {status:?} must let the checkpoint proceed"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_policy_after_summary_schedules_checkpoint_never_replan() {
+        // policy None (pre-upgrade / default) and policy "disabled" both keep the
+        // existing byte-identical schedule: straight to the checkpoint, no
+        // ReplanChapter ever.
+        for policy in [None, Some("disabled")] {
+            let state = summarized_state(policy, None);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::RunCheckpoint {
+                    start_chapter: 1,
+                    end_chapter: 1,
+                },
+                "policy {policy:?} must not schedule ReplanChapter"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_policy_committed_scene_schedules_beats_never_mine() {
+        // policy None (pre-upgrade / default) and policy "disabled" both keep the
+        // existing byte-identical schedule: straight to AnnotateSceneBeats.
+        for policy in [None, Some("disabled")] {
+            let state = committed_state(policy, None);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::AnnotateSceneBeats {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    scene_id: "scene:1".to_string(),
+                },
+                "policy {policy:?} must not schedule MineScene"
+            );
+        }
+    }
+
+    // ── P2.2 in-run verify/revise scheduling (evolution §3.2) ──
+
+    /// Advance a chapter-1 scene to `DraftSaved` and set the run's revise budget
+    /// plus the scene's verify state, so the verify/revise scheduler tests can
+    /// exercise the `DraftSaved` fork against one scene.
+    fn draft_saved_state(
+        max_revise_attempts: Option<i32>,
+        verify_status: Option<&str>,
+        revise_attempts: i32,
+    ) -> HarnessState {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+        state.max_revise_attempts = max_revise_attempts;
+        let chapter = state.chapter_mut(1).expect("chapter 1");
+        chapter.scenes[0].scene_id = Some("scene:1".to_string());
+        chapter.scenes[0].phase = ScenePhase::DraftSaved;
+        chapter.scenes[0].verify_status = verify_status.map(str::to_string);
+        chapter.scenes[0].revise_attempts = revise_attempts;
+        state
+    }
+
+    #[test]
+    fn revise_disabled_draft_saved_schedules_commit_byte_identical() {
+        // None (pre-upgrade / default) and explicit 0 both keep the existing
+        // schedule: DraftSaved -> CommitSceneChanges, no VerifyScene.
+        for budget in [None, Some(0)] {
+            let state = draft_saved_state(budget, None, 0);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::CommitSceneChanges {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    scene_id: "scene:1".to_string(),
+                },
+                "budget {budget:?} must go straight to commit"
+            );
+        }
+    }
+
+    #[test]
+    fn enabled_draft_saved_without_verify_schedules_verify() {
+        let state = draft_saved_state(Some(1), None, 0);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::VerifyScene {
+                chapter_number: 1,
+                scene_order: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn findings_with_attempts_remaining_schedules_revise_with_next_attempt() {
+        let state = draft_saved_state(Some(2), Some("findings"), 0);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::ReviseScene {
+                chapter_number: 1,
+                scene_order: 1,
+                attempt: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn clean_or_parked_or_error_verify_schedules_commit() {
+        for status in ["clean", "parked_findings", "error"] {
+            let state = draft_saved_state(Some(2), Some(status), 0);
+            assert_eq!(
+                determine_next_action(&state),
+                NextAction::CommitSceneChanges {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    scene_id: "scene:1".to_string(),
+                },
+                "verify_status {status} must proceed to commit"
+            );
+        }
+    }
+
+    #[test]
+    fn findings_with_attempts_exhausted_defensively_schedules_commit() {
+        // Defensive: the executor parks on the last attempt, but if state still
+        // reads "findings" with the budget spent, treat it as parked and commit
+        // rather than looping forever.
+        let state = draft_saved_state(Some(1), Some("findings"), 1);
+        assert_eq!(
+            determine_next_action(&state),
+            NextAction::CommitSceneChanges {
+                chapter_number: 1,
+                scene_order: 1,
+                scene_id: "scene:1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_await_research_when_empty_or_unmatched_tags() {
+        let mut state = HarnessState::from_seed(seed(), "bible_branch:main".to_string());
+
+        // 1. With research required but pack empty
+        {
+            let chapter = state.chapter_mut(1).expect("chapter 1");
+            chapter.scenes[0].research_required = Some(true);
+            chapter.scenes[0].research_pack_empty = true;
+            chapter.scenes[0].research_tags_matched = true;
+
+            let mut snapshot = snapshot();
+            if let Some(plan) = snapshot
+                .chapters
+                .get_mut(&1)
+                .and_then(|ch| ch.chapter_plan.as_mut())
+            {
+                plan.scenes[0].research_required = Some(true);
+                plan.scenes[0].research_pack_empty = true;
+                plan.scenes[0].research_tags_matched = true;
+            }
+
+            let outcome = reconcile_state(state.clone(), &snapshot);
+            assert!(matches!(
+                outcome.next_action,
+                NextAction::AwaitResearch {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    ..
+                }
+            ));
+        }
+
+        // 2. With required tags not matched
+        {
+            let chapter = state.chapter_mut(1).expect("chapter 1");
+            chapter.scenes[0].research_required = Some(false);
+            chapter.scenes[0].research_pack_empty = false;
+            chapter.scenes[0].research_tags = vec!["tag1".to_string()];
+            chapter.scenes[0].research_tags_matched = false;
+
+            let mut snapshot = snapshot();
+            if let Some(plan) = snapshot
+                .chapters
+                .get_mut(&1)
+                .and_then(|ch| ch.chapter_plan.as_mut())
+            {
+                plan.scenes[0].research_required = Some(false);
+                plan.scenes[0].research_pack_empty = false;
+                plan.scenes[0].research_tags = vec!["tag1".to_string()];
+                plan.scenes[0].research_tags_matched = false;
+            }
+
+            let outcome = reconcile_state(state.clone(), &snapshot);
+            assert!(matches!(
+                outcome.next_action,
+                NextAction::AwaitResearch {
+                    chapter_number: 1,
+                    scene_order: 1,
+                    ..
+                }
+            ));
+        }
     }
 }

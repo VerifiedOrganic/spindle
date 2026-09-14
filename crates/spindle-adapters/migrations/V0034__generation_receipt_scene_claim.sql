@@ -1,0 +1,58 @@
+-- =============================================================================
+-- V0034: bind an explicit generation receipt to the scene it authorizes.
+--
+-- THE HOLE: `save_scene_draft` requires a `generation_id` receipt to persist
+-- prose at `content_rating: "explicit"`. The receipt proved route (`draft`),
+-- rating (`explicit`), and that the producing agent was explicit-capable — but
+-- it named no SCENE. Nothing stopped one receipt from authorizing an unlimited
+-- number of explicit saves: mint a single receipt on chapter 1 scene 3, then
+-- replay that same `generation_id` across every other scene in the book. One
+-- trip through the cleared agent blanket-authorized explicit prose that agent
+-- never produced, and every one of those scenes was stamped
+-- `draft_origin: agent:<id>` as though it had.
+--
+-- That matters more, not less, in a MIXED-RATING chapter — the shape this
+-- column exists to serve. Per-scene routing means a chapter can hold one
+-- Explicit scene among General ones and only that scene dispatches to the
+-- explicit-capable agent. An unbound receipt let that single legitimate
+-- clearance be spent on its neighbours, collapsing the per-scene guarantee the
+-- rest of the routing stack works to maintain.
+--
+-- THE FIX — BIND ON FIRST USE: `claimed_scene_key` starts NULL. The first
+-- explicit save presenting a receipt stamps it with that scene's natural key
+-- (`{project_id}|{book}|{chapter}|{scene_order}`). Every later explicit save
+-- presenting the same receipt must match that key or it is rejected.
+--
+-- WHY BIND ON FIRST USE RATHER THAN AT MINT TIME: the receipt is minted by
+-- `continue_generation`, which runs BEFORE the scene row exists — a first draft
+-- has no scene id to bind to, and `ContinueGenerationInput` carries no
+-- book/chapter/scene_order. Binding at mint would have required widening a
+-- public MCP tool schema and updating every caller. First-use binding gets the
+-- same end state (a receipt authorizes exactly one scene) using identity the
+-- SAVE call already carries, with no schema movement.
+--
+-- WHY NOT SINGLE-USE (burn on first save): re-saving the same scene is
+-- legitimate and common — a transient failure retry, or an operator re-saving
+-- the same draft. A burned receipt would fail those. Keying on the scene lets
+-- same-scene retries through while rejecting cross-scene replay, which is the
+-- actual abuse.
+--
+-- SCOPE — EXPLICIT SAVES ONLY: non-explicit saves may also pass a
+-- `generation_id`, but purely to stamp `agent:<id>` provenance (they are not
+-- receipt-gated: prose at those ratings saves fine with no receipt at all).
+-- Claiming on that path would let an incidental General save consume the
+-- clearance its Explicit sibling needs. So only the explicit branch claims.
+--
+--   * claimed_scene_key — NULL until an explicit save binds it, then the
+--     `{project_id}|{book_number}|{chapter_number}|{scene_order}` natural key
+--     of the one scene this receipt authorizes. Deliberately a natural key and
+--     not a scene id FK: the binding is decided before the scene row is
+--     guaranteed to exist, and (like project_id/branch_id on this table) a
+--     receipt must survive the scene's deletion for audit.
+--
+-- Additive and optional: existing rows read back NULL, i.e. unclaimed, and
+-- behave exactly as before until their first explicit save. A deployment that
+-- never saves explicit prose is entirely unaffected.
+-- =============================================================================
+
+ALTER TABLE generation_receipt ADD COLUMN claimed_scene_key TEXT;

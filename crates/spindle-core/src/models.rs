@@ -1,3 +1,4 @@
+pub use crate::serial::*;
 use crate::subject::SubjectTable;
 use crate::subject_snapshot::SubjectSnapshot;
 use crate::subject_snapshot::{
@@ -12,8 +13,22 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, JsonSchema, PartialEq, Eq)]
+/// Deserialize an explicit JSON `null` (or a missing field, combined with
+/// `#[serde(default)]`) into the type's default. Miners and permissive clients
+/// send `null` for "unknown" struct fields; rejecting that with
+/// "invalid type: null, expected struct …" makes optional-by-intent fields
+/// hard-required in practice.
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, JsonSchema, PartialEq, Eq, Default)]
 pub enum ContentRating {
+    #[default]
     General,
     Teen,
     Mature,
@@ -89,7 +104,7 @@ pub struct FlexRange {
     pub high: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterVoiceProfileData {
     #[serde(default)]
     pub tone: Option<String>,
@@ -109,7 +124,7 @@ pub struct CharacterVoiceProfileData {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterEmotionalProfileData {
     #[serde(default)]
     pub base_emotions: BTreeMap<String, serde_json::Value>,
@@ -149,6 +164,779 @@ pub struct StoryPlacement {
     pub chapter_number: i32,
     pub scene_order: Option<i32>,
     pub note: Option<String>,
+}
+
+/// One sampled point on a book's expected-intensity curve. `position` is a
+/// `0.0..=1.0` fraction of the book; `intensity` is the `0.0..=1.0` expected
+/// intensity there. Stored on `pacing_curve.intensity_points`; the realized-
+/// intensity trend directive interpolates against a curve's points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IntensityPoint {
+    pub position: f64,
+    pub intensity: f64,
+}
+
+/// In-world placement of a scene or event on the project's story clock. Every
+/// field is optional: a project that never declares story-time leaves them unset
+/// and behaves exactly as before. Distinct from [`StoryPlacement`], which is the
+/// structural (manuscript) position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct StoryClock {
+    /// In-world day index from the project epoch (monotonic, spans books).
+    /// Negative values are valid: the epoch is the story's opening, and
+    /// births, backstory, and timeline events routinely precede it.
+    pub day_index: Option<i64>,
+    /// Minutes from midnight, in `0..(hours_per_day * 60)`.
+    pub time_of_day: Option<i32>,
+    /// In-world span of the scene/event, in days.
+    pub duration_days: Option<f64>,
+    /// Display/tolerance granularity: `minute|hour|day|week|month|year`.
+    pub precision: Option<String>,
+}
+
+/// One month in an invented calendar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CalendarMonth {
+    pub name: String,
+    pub days: i32,
+}
+
+/// Per-project calendar definition mapping the abstract day index to/from a
+/// human-facing date. Supports non-24h days and fully invented month/week
+/// schemes, so an invented fantasy calendar is handled identically to Gregorian.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CalendarDef {
+    pub days_per_week: i32,
+    /// Hours in an in-world day (typically 24); governs the `time_of_day` range
+    /// and the total-order index so non-24h calendars still order correctly.
+    pub hours_per_day: i32,
+    #[serde(default)]
+    pub week_day_names: Vec<String>,
+    #[serde(default)]
+    pub months: Vec<CalendarMonth>,
+    pub days_per_year: i32,
+    #[serde(default)]
+    pub epoch_label: Option<String>,
+}
+
+impl CalendarDef {
+    /// Minutes in one in-world day. Folds `(day_index, time_of_day)` into a single
+    /// total-order index.
+    pub fn minutes_per_day(&self) -> i64 {
+        self.hours_per_day.max(0) as i64 * 60
+    }
+
+    /// Validate the calendar's internal consistency.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.days_per_week < 1 {
+            return Err(format!(
+                "days_per_week must be >= 1 (got {})",
+                self.days_per_week
+            ));
+        }
+        if self.hours_per_day < 1 {
+            return Err(format!(
+                "hours_per_day must be >= 1 (got {})",
+                self.hours_per_day
+            ));
+        }
+        if self.days_per_year < 1 {
+            return Err(format!(
+                "days_per_year must be >= 1 (got {})",
+                self.days_per_year
+            ));
+        }
+        if !self.months.is_empty() {
+            for month in &self.months {
+                if month.days < 1 {
+                    return Err(format!(
+                        "calendar month '{}' must have >= 1 day",
+                        month.name
+                    ));
+                }
+            }
+            let total: i32 = self.months.iter().map(|month| month.days).sum();
+            if total != self.days_per_year {
+                return Err(format!(
+                    "calendar months sum to {total} days but days_per_year is {}",
+                    self.days_per_year
+                ));
+            }
+        }
+        if !self.week_day_names.is_empty() && self.week_day_names.len() as i32 != self.days_per_week
+        {
+            return Err(format!(
+                "week_day_names has {} entries but days_per_week is {}",
+                self.week_day_names.len(),
+                self.days_per_week
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl StoryClock {
+    /// Fold this clock into a single total-order index (in-world minutes from the
+    /// epoch) under `calendar`. Returns None when no `day_index` is set.
+    pub fn total_index(&self, calendar: &CalendarDef) -> Option<i64> {
+        let day_index = self.day_index?;
+        Some(day_index * calendar.minutes_per_day() + self.time_of_day.unwrap_or(0) as i64)
+    }
+
+    /// Validate this clock against `calendar`.
+    ///
+    /// `day_index` is a SIGNED offset from the project epoch: births and
+    /// backstory precede the story's opening day, so negative values are
+    /// valid (and the total-order index keeps comparing correctly). Only
+    /// magnitudes — duration — and the intra-day clock are bounded.
+    pub fn validate(&self, calendar: &CalendarDef) -> Result<(), String> {
+        if let Some(duration) = self.duration_days
+            && duration < 0.0
+        {
+            return Err(format!("duration_days must be >= 0 (got {duration})"));
+        }
+        if let Some(time_of_day) = self.time_of_day {
+            let minutes_per_day = calendar.minutes_per_day();
+            if time_of_day < 0 || time_of_day as i64 >= minutes_per_day {
+                return Err(format!(
+                    "time_of_day must be in 0..{minutes_per_day} (got {time_of_day})"
+                ));
+            }
+        }
+        if let Some(precision) = self.precision.as_deref()
+            && !matches!(
+                precision,
+                "minute" | "hour" | "day" | "week" | "month" | "year"
+            )
+        {
+            return Err(format!("unknown precision '{precision}'"));
+        }
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Quantity-continuity layer (V0020): per-project quantity schemes + stamped
+// per-subject quantity state. Money is the first vertical; the primitive is
+// generic (LitRPG/cultivation stats, reputation reuse it). Additive and
+// optional — a project that declares no scheme behaves exactly as before.
+// =============================================================================
+
+/// A denomination within a measure's currency (e.g. a gold piece is worth 100
+/// of the base unit). Keeps multi-denomination currencies internally consistent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuantityDenomination {
+    pub name: String,
+    /// How many base (smallest) units one of this denomination is worth.
+    pub per_base: i64,
+}
+
+/// An ordered band/tier within a measure (destitute < comfortable < wealthy, or
+/// Bronze < Silver < Gold). Order is the band's position in
+/// [`QuantityScheme::bands`]; an optional `lower_bound` ties bands to amounts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuantityBand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower_bound: Option<i64>,
+}
+
+/// Per-project, per-measure quantity scheme: the denominations and ordered bands
+/// a measure's values validate against. Band-primary by design; amounts are an
+/// optional refinement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct QuantityScheme {
+    pub measure: String,
+    #[serde(default)]
+    pub denominations: Vec<QuantityDenomination>,
+    #[serde(default)]
+    pub bands: Vec<QuantityBand>,
+    /// How many ordered bands one stamp may cross without an explicit
+    /// `change_reason` (defaults to 1 when unset). Consumed by the future
+    /// `QuantityDrift` validator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_band_jump: Option<i32>,
+}
+
+impl QuantityScheme {
+    /// 0-based ordinal of `band` within this scheme's ordered bands, if declared.
+    pub fn band_ordinal(&self, band: &str) -> Option<usize> {
+        self.bands.iter().position(|b| b.name == band)
+    }
+
+    /// Number of ordered bands one stamp may cross without an explicit
+    /// `change_reason` (1 when unset).
+    pub fn max_band_jump_or_default(&self) -> i32 {
+        self.max_band_jump.unwrap_or(1)
+    }
+
+    /// Unsigned number of ordered tiers between two declared band names. `None`
+    /// when either band is not declared in this scheme.
+    pub fn band_jump(&self, from: &str, to: &str) -> Option<i32> {
+        let from = self.band_ordinal(from)? as i32;
+        let to = self.band_ordinal(to)? as i32;
+        Some((from - to).abs())
+    }
+
+    /// Convert `amount` of `denomination` into base (smallest-unit) value, if the
+    /// denomination is declared in this scheme. Enables cross-denomination price
+    /// consistency and affordability checks.
+    pub fn amount_in_base(&self, amount: f64, denomination: &str) -> Option<f64> {
+        self.denominations
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(denomination))
+            .map(|d| amount * d.per_base as f64)
+    }
+
+    /// Validate the scheme's internal consistency.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.measure.trim().is_empty() {
+            return Err("measure must not be empty".to_string());
+        }
+        for denom in &self.denominations {
+            if denom.name.trim().is_empty() {
+                return Err("denomination name must not be empty".to_string());
+            }
+            if denom.per_base < 1 {
+                return Err(format!(
+                    "denomination '{}' per_base must be >= 1 (got {})",
+                    denom.name, denom.per_base
+                ));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut last_bound: Option<i64> = None;
+        for band in &self.bands {
+            if band.name.trim().is_empty() {
+                return Err("band name must not be empty".to_string());
+            }
+            if !seen.insert(band.name.as_str()) {
+                return Err(format!("duplicate band name '{}'", band.name));
+            }
+            if let Some(bound) = band.lower_bound {
+                if let Some(prev) = last_bound
+                    && bound <= prev
+                {
+                    return Err(format!(
+                        "band '{}' lower_bound {bound} must exceed the previous band's {prev}",
+                        band.name
+                    ));
+                }
+                last_bound = Some(bound);
+            }
+        }
+        if let Some(jump) = self.max_band_jump
+            && jump < 1
+        {
+            return Err(format!("max_band_jump must be >= 1 (got {jump})"));
+        }
+        Ok(())
+    }
+}
+
+/// A stamped quantity reading for a subject's measure at a story position.
+/// Append-only; `band` is the primary signal and `amount`/`unit` an optional
+/// refinement. A `change_reason` marks a deliberate large jump as legitimate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct QuantityState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_reason: Option<String>,
+}
+
+impl QuantityState {
+    /// Validate this reading against its scheme when one is declared. A declared
+    /// band must be one the scheme lists; a negative amount is always rejected.
+    pub fn validate(&self, scheme: Option<&QuantityScheme>) -> Result<(), String> {
+        if let Some(amount) = self.amount
+            && amount < 0.0
+        {
+            return Err(format!("amount must be >= 0 (got {amount})"));
+        }
+        if let (Some(band), Some(scheme)) = (self.band.as_ref(), scheme)
+            && !scheme.bands.is_empty()
+            && scheme.band_ordinal(band).is_none()
+        {
+            return Err(format!(
+                "band '{band}' is not declared in the '{}' scheme",
+                scheme.measure
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectQuantitySchemeInput {
+    pub project_id: String,
+    pub scheme: QuantityScheme,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectQuantitySchemeOutput {
+    pub project_id: String,
+    pub measure: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitQuantityStateInput {
+    pub project_id: String,
+    /// Subject table the quantity belongs to (e.g. "character", "faction").
+    pub subject_table: String,
+    pub subject_id: String,
+    /// Measure name; validated against a declared scheme for the same measure.
+    pub measure: String,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    pub state: QuantityState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitQuantityStateOutput {
+    pub quantity_state_id: String,
+    /// Advisory warnings (e.g. an unexplained band jump). Empty on a clean
+    /// commit; band jumps are surfaced, not blocked (design §9.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeriveQuantitySchemeFromOverlayInput {
+    pub project_id: String,
+    pub system_overlay_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeriveQuantitySchemeFromOverlayOutput {
+    /// The scheme measure (the overlay's progression_currency, else its name).
+    pub measure: String,
+    pub band_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScanScenePricesInput {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ScanScenePricesOutput {
+    pub mentions: Vec<PriceMention>,
+}
+
+/// A detected price mention in prose: a number immediately followed by a known
+/// currency unit (e.g. "5 silver"). Review-gated extraction, not auto-registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PriceMention {
+    pub amount: f64,
+    pub unit: String,
+    /// The matched "<amount> <unit>" text.
+    pub matched: String,
+}
+
+/// Scan `text` for "<number> <unit>" price mentions, where `unit` is one of
+/// `units` (case-insensitive, a trailing plural 's' tolerated). Pure and
+/// dependency-free: a token-window scan, deliberately high-precision/low-recall.
+pub fn extract_price_mentions(text: &str, units: &[String]) -> Vec<PriceMention> {
+    let unit_set: std::collections::BTreeSet<String> =
+        units.iter().map(|u| u.to_ascii_lowercase()).collect();
+    if unit_set.is_empty() {
+        return Vec::new();
+    }
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    for window in tokens.windows(2) {
+        let raw_amount = window[0].trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+        let Ok(amount) = raw_amount.parse::<f64>() else {
+            continue;
+        };
+        let raw_unit = window[1]
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            .to_ascii_lowercase();
+        let singular = raw_unit.strip_suffix('s').unwrap_or(raw_unit.as_str());
+        let unit = if unit_set.contains(&raw_unit) {
+            Some(raw_unit.clone())
+        } else if unit_set.contains(singular) {
+            Some(singular.to_string())
+        } else {
+            None
+        };
+        if let Some(unit) = unit {
+            out.push(PriceMention {
+                amount,
+                unit,
+                matched: format!("{} {}", window[0], window[1]),
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod quantity_tests {
+    use super::*;
+
+    fn coin_scheme() -> QuantityScheme {
+        QuantityScheme {
+            measure: "wealth".into(),
+            denominations: vec![
+                QuantityDenomination {
+                    name: "gold".into(),
+                    per_base: 100,
+                },
+                QuantityDenomination {
+                    name: "silver".into(),
+                    per_base: 10,
+                },
+                QuantityDenomination {
+                    name: "copper".into(),
+                    per_base: 1,
+                },
+            ],
+            bands: vec![
+                QuantityBand {
+                    name: "destitute".into(),
+                    lower_bound: Some(0),
+                },
+                QuantityBand {
+                    name: "comfortable".into(),
+                    lower_bound: Some(100),
+                },
+                QuantityBand {
+                    name: "wealthy".into(),
+                    lower_bound: Some(10_000),
+                },
+            ],
+            max_band_jump: Some(1),
+        }
+    }
+
+    #[test]
+    fn valid_scheme_passes() {
+        assert!(coin_scheme().validate().is_ok());
+    }
+
+    #[test]
+    fn band_ordinal_reflects_order() {
+        let s = coin_scheme();
+        assert_eq!(s.band_ordinal("destitute"), Some(0));
+        assert_eq!(s.band_ordinal("wealthy"), Some(2));
+        assert_eq!(s.band_ordinal("mythic"), None);
+    }
+
+    #[test]
+    fn band_jump_counts_tiers() {
+        let s = coin_scheme();
+        assert_eq!(s.band_jump("destitute", "comfortable"), Some(1));
+        assert_eq!(s.band_jump("destitute", "wealthy"), Some(2));
+        assert_eq!(s.band_jump("wealthy", "destitute"), Some(2));
+        assert_eq!(s.band_jump("destitute", "mythic"), None);
+    }
+
+    #[test]
+    fn max_band_jump_defaults_to_one() {
+        let mut s = coin_scheme();
+        s.max_band_jump = None;
+        assert_eq!(s.max_band_jump_or_default(), 1);
+        s.max_band_jump = Some(2);
+        assert_eq!(s.max_band_jump_or_default(), 2);
+    }
+
+    #[test]
+    fn amount_in_base_uses_denomination_rate() {
+        let s = coin_scheme(); // gold=100, silver=10, copper=1
+        assert_eq!(s.amount_in_base(5.0, "silver"), Some(50.0));
+        assert_eq!(s.amount_in_base(2.0, "gold"), Some(200.0));
+        assert_eq!(s.amount_in_base(7.0, "copper"), Some(7.0));
+        assert_eq!(s.amount_in_base(1.0, "Silver"), Some(10.0)); // case-insensitive
+        assert_eq!(s.amount_in_base(1.0, "mithril"), None);
+    }
+
+    #[test]
+    fn extract_price_mentions_finds_amount_unit_pairs() {
+        let units = vec!["silver".to_string(), "gold".to_string()];
+        let m = extract_price_mentions("A loaf costs 5 silver and a sword 3 gold.", &units);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].amount, m[0].unit.as_str()), (5.0, "silver"));
+        assert_eq!((m[1].amount, m[1].unit.as_str()), (3.0, "gold"));
+        // trailing plural + punctuation tolerated
+        let plural = extract_price_mentions("He paid 12 silvers.", &units);
+        assert_eq!(plural.len(), 1);
+        assert_eq!(
+            (plural[0].amount, plural[0].unit.as_str()),
+            (12.0, "silver")
+        );
+        // unknown unit and empty vocabulary yield nothing
+        assert!(extract_price_mentions("10 apples", &units).is_empty());
+        assert!(extract_price_mentions("5 silver", &[]).is_empty());
+    }
+
+    #[test]
+    fn duplicate_band_rejected() {
+        let mut s = coin_scheme();
+        s.bands.push(QuantityBand {
+            name: "wealthy".into(),
+            lower_bound: Some(20_000),
+        });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn non_increasing_band_bounds_rejected() {
+        let mut s = coin_scheme();
+        s.bands[2].lower_bound = Some(50); // below comfortable's 100
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn zero_per_base_denomination_rejected() {
+        let mut s = coin_scheme();
+        s.denominations[0].per_base = 0;
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn empty_measure_rejected() {
+        let mut s = coin_scheme();
+        s.measure = "  ".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn negative_amount_rejected() {
+        let st = QuantityState {
+            amount: Some(-1.0),
+            ..Default::default()
+        };
+        assert!(st.validate(Some(&coin_scheme())).is_err());
+    }
+
+    #[test]
+    fn band_must_be_declared_in_scheme() {
+        let bad = QuantityState {
+            band: Some("mythic".into()),
+            ..Default::default()
+        };
+        assert!(bad.validate(Some(&coin_scheme())).is_err());
+        let good = QuantityState {
+            band: Some("wealthy".into()),
+            ..Default::default()
+        };
+        assert!(good.validate(Some(&coin_scheme())).is_ok());
+    }
+
+    #[test]
+    fn band_unchecked_without_scheme() {
+        let st = QuantityState {
+            band: Some("anything".into()),
+            ..Default::default()
+        };
+        assert!(st.validate(None).is_ok());
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectCalendarInput {
+    pub project_id: String,
+    pub calendar: CalendarDef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectCalendarOutput {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetSceneClockInput {
+    pub project_id: String,
+    pub scene_id: String,
+    #[serde(default)]
+    pub clock: StoryClock,
+    /// `linear | flashback | flashforward | concurrent` (default `linear`).
+    #[serde(default)]
+    pub temporal_mode: Option<String>,
+    /// Parallel-timeline key; scenes on different threads may overlap in time.
+    #[serde(default)]
+    pub thread_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetSceneClockOutput {
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetTimelineEventClockInput {
+    pub project_id: String,
+    pub timeline_event_id: String,
+    #[serde(default)]
+    pub clock: StoryClock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetTimelineEventClockOutput {
+    pub timeline_event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetCharacterBirthInput {
+    pub project_id: String,
+    pub character_id: String,
+    #[serde(default)]
+    pub clock: StoryClock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetCharacterBirthOutput {
+    pub character_id: String,
+}
+
+#[cfg(test)]
+mod story_clock_tests {
+    use super::*;
+
+    fn gregorian() -> CalendarDef {
+        CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: Vec::new(),
+            days_per_year: 365,
+            epoch_label: None,
+        }
+    }
+
+    #[test]
+    fn total_index_is_none_without_day_index() {
+        assert_eq!(StoryClock::default().total_index(&gregorian()), None);
+    }
+
+    #[test]
+    fn total_index_folds_day_and_time() {
+        let clock = StoryClock {
+            day_index: Some(3),
+            time_of_day: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(clock.total_index(&gregorian()), Some(3 * 1440 + 120));
+    }
+
+    #[test]
+    fn total_index_respects_non_24h_calendar() {
+        let mut cal = gregorian();
+        cal.hours_per_day = 10; // 600 minutes/day
+        let clock = StoryClock {
+            day_index: Some(2),
+            time_of_day: Some(30),
+            ..Default::default()
+        };
+        assert_eq!(clock.total_index(&cal), Some(2 * 600 + 30));
+    }
+
+    #[test]
+    fn invented_calendar_months_must_sum_to_year() {
+        let mut cal = gregorian();
+        cal.days_per_week = 5;
+        cal.months = vec![
+            CalendarMonth {
+                name: "Frost".into(),
+                days: 30,
+            },
+            CalendarMonth {
+                name: "Thaw".into(),
+                days: 40,
+            },
+        ];
+        assert!(cal.validate().is_err(), "70 != 365 must be rejected");
+        cal.days_per_year = 70;
+        assert!(cal.validate().is_ok());
+    }
+
+    #[test]
+    fn clock_rejects_out_of_range_time_of_day() {
+        let cal = gregorian();
+        assert!(
+            StoryClock {
+                day_index: Some(0),
+                time_of_day: Some(1440),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
+        );
+        assert!(
+            StoryClock {
+                day_index: Some(0),
+                time_of_day: Some(1439),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn clock_accepts_negative_day_index_and_rejects_unknown_precision() {
+        let cal = gregorian();
+        // Births and backstory precede the story's opening day (the epoch),
+        // so day_index is a signed offset — negative values must validate.
+        assert!(
+            StoryClock {
+                day_index: Some(-8913),
+                precision: Some("day".into()),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_ok()
+        );
+        // ...and order before the epoch in the total-order index.
+        let birth = StoryClock {
+            day_index: Some(-8913),
+            ..Default::default()
+        };
+        let opening = StoryClock {
+            day_index: Some(1),
+            ..Default::default()
+        };
+        assert!(birth.total_index(&cal).unwrap() < opening.total_index(&cal).unwrap());
+        assert!(
+            StoryClock {
+                precision: Some("fortnight".into()),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
+        );
+        assert!(
+            StoryClock {
+                precision: Some("day".into()),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn clock_still_rejects_negative_duration() {
+        let cal = gregorian();
+        assert!(
+            StoryClock {
+                duration_days: Some(-1.0),
+                ..Default::default()
+            }
+            .validate(&cal)
+            .is_err()
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -206,16 +994,22 @@ pub struct StatedConsequence {
     pub delivered: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterArcMilestone {
     pub label: String,
     pub placement: Option<StoryPlacement>,
     pub description: String,
     #[serde(default)]
     pub unlocks: Vec<String>,
+    /// Where the milestone was actually reached in the manuscript, once
+    /// demonstrated. `None` means the milestone is still pending. Additive and
+    /// serde-defaulted so pre-existing milestone JSON (which lacks the field)
+    /// keeps deserializing. Drives `arc_milestone_audit`.
+    #[serde(default)]
+    pub reached_at: Option<StoryPlacement>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct PlannedScene {
     pub scene_order: i32,
     pub summary: String,
@@ -223,7 +1017,17 @@ pub struct PlannedScene {
     pub beat_structure: Vec<String>,
     #[serde(default)]
     pub character_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_rating: Option<ContentRating>,
     pub purpose: String,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -309,6 +1113,8 @@ pub struct ProjectSummary {
     pub name: String,
     pub project_type: String,
     pub genre: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_style_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -319,7 +1125,18 @@ pub struct CreateCharacterInput {
     pub summary: String,
     pub role: String,
     pub realm: Option<String>,
+    /// Alternate names the character answers to (nicknames, titles, an
+    /// in-world name decided after the record exists). Searchable via
+    /// find_entity exactly like the primary name; rename preserves the old
+    /// name here automatically.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Optional (defect item 5): minor characters rarely arrive with a voice
+    /// profile. Missing AND explicit null both default to an empty profile.
+    #[serde(default, deserialize_with = "null_to_default")]
     pub voice_profile: CharacterVoiceProfileData,
+    /// Optional (defect item 5), same null/missing tolerance as voice_profile.
+    #[serde(default, deserialize_with = "null_to_default")]
     pub emotional_profile: CharacterEmotionalProfileData,
     pub initial_state: Option<CharacterStatePatch>,
 }
@@ -412,7 +1229,8 @@ pub struct GetSceneContextInput {
     /// Render format. Defaults to markdown when omitted.
     #[serde(default)]
     pub format: Option<ContextFormat>,
-    /// Preferred token budget for temporary inline trimming.
+    /// Preferred token budget for temporary inline trimming. Mandatory hard
+    /// constraints may expand the effective budget rather than being dropped.
     #[serde(default)]
     pub budget_tokens: Option<usize>,
     /// Legacy budget field retained for backwards compatibility.
@@ -423,7 +1241,8 @@ pub struct GetSceneContextInput {
     /// Supported novel sections: "reader_contract", "world_rules",
     /// "system_overlays", "timeline_briefing", "future_knowledge_briefing",
     /// "pacing_directives", "narrative_promises_due", "knowledge_briefing",
-    /// "semantic_references". Supported scene sections: "location",
+    /// "semantic_references", "previous_scene_tail". Supported scene sections:
+    /// "location",
     /// "world_state", "characters", "relationships", "agency_check".
     #[serde(default)]
     pub sections: Option<Vec<String>>,
@@ -472,6 +1291,8 @@ pub struct SceneContextNovelLayer {
     pub world_rules: Vec<WorldRuleSummary>,
     #[serde(default)]
     pub subjects: Vec<SubjectSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_style_profile_id: Option<String>,
     #[serde(default)]
     pub system_overlays: Vec<SystemOverlaySummary>,
     #[serde(default)]
@@ -480,12 +1301,85 @@ pub struct SceneContextNovelLayer {
     pub future_knowledge_briefing: Vec<FutureKnowledgeSummary>,
     #[serde(default)]
     pub pacing_directives: Vec<PacingDirectiveSummary>,
+    /// Realized-intensity trend fed forward from recent annotated chapters
+    /// (T-109): the mean intensity of the last up-to-3 annotated chapters
+    /// strictly before the current one, with its direction (rising / falling /
+    /// flat), so the drafting agent sees the pacing trend it is about to extend.
+    /// `None` when no prior chapter carries an intensity annotation. Rides the
+    /// `pacing_directives` render/budget/trim path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realized_intensity_trend: Option<String>,
     #[serde(default)]
     pub narrative_promises_due: Vec<NarrativePromiseDueSummary>,
     #[serde(default)]
     pub knowledge_briefing: Vec<KnowledgeBriefingItem>,
     #[serde(default)]
     pub semantic_references: Vec<SearchBibleResultItem>,
+    /// Economy entities in play (static worldbuilding lore: currency, scarce
+    /// resources, trade goods). Reference material so the drafting model knows
+    /// what trade system is in force; price *values* ride canonical facts.
+    #[serde(default)]
+    pub economy_briefing: Vec<EconomySummary>,
+    /// Themes, conflicts, plot lines, and theme-connected motifs the current
+    /// chapter plan explicitly targets. Hydrated so the drafting agent can
+    /// advance the threads the plan asked it to advance; empty when the chapter
+    /// has no plan or targets nothing.
+    #[serde(default)]
+    pub active_threads: Vec<ActiveThreadSummary>,
+    /// Closing excerpt of the immediately preceding scene, so the drafting
+    /// agent can hand off cleanly from its exit beat (emotional register,
+    /// physical continuity). `None` at the very start of a book or when the
+    /// preceding scene has no prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_scene_tail: Option<PreviousSceneTail>,
+}
+
+/// Closing excerpt of the scene immediately preceding the one being drafted,
+/// surfaced in scene context so the scene-to-scene prose hand-off (exit beat,
+/// emotional register, physical continuity) is visible to the drafting agent.
+///
+/// # Cross-rating elision
+///
+/// A mixed-rating chapter can place an Explicit scene next to a General one.
+/// Because this context is assembled into a draft prompt that is then dispatched
+/// to the route serving the *target* scene's rating, handing over an explicit
+/// neighbour's prose verbatim would transmit explicit material to an agent that
+/// is not cleared for it — the exact leak the rating-gated dispatch chokepoint
+/// exists to prevent. So when the neighbour is explicit and the target scene is
+/// not (or its rating cannot be established), `excerpt` carries the neighbour's
+/// stored summary instead of its prose and [`Self::elided_reason`] explains the
+/// substitution. See `docs/spindle-agent-config.md` ("Mixed-rating chapters").
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreviousSceneTail {
+    pub scene_id: String,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    /// The neighbour's closing prose — or, when `elided_reason` is set, its
+    /// non-explicit summary standing in for that prose.
+    pub excerpt: String,
+    /// Set when `excerpt` is a rating-elided substitute rather than the
+    /// neighbour's actual closing prose. `None` on an ordinary hand-off, so a
+    /// caller can tell an elided tail from a faithful one instead of silently
+    /// reading a summary as prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elided_reason: Option<String>,
+}
+
+/// A narrative thread (theme, conflict, plot line, or theme-connected motif)
+/// the current chapter plan explicitly targets, projected for briefing so the
+/// drafting agent can advance it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ActiveThreadSummary {
+    pub id: String,
+    /// "theme" | "conflict" | "plot_line" | "motif".
+    pub kind: String,
+    pub name: String,
+    /// One-line statement/stakes/summary, truncated.
+    pub statement: String,
+    /// Entity status or placement summary; "" when none applies.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_expectation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -511,6 +1405,23 @@ pub struct TimelineEventSummary {
     pub event_type: String,
     pub placement: StoryPlacement,
     pub summary: String,
+}
+
+/// An economy in play, projected for scene-context briefing. Static lore
+/// (currency, scarce resources, trade goods) — quantitative price *values*
+/// are carried separately as numeric canonical facts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EconomySummary {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scarce_resources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trade_goods: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -666,6 +1577,15 @@ pub struct SceneContextOutput {
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
     pub budget: SceneContextBudgetMeta,
+    /// Budget-capped fiction shelf digest for the active genre/style profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
+    /// Project-local on-voice excerpts from style-profile guidance (not a corpus dump).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<crate::style::antislop::VoiceSample>,
+    /// Compact do-not-repeat notes from style-profile avoid rules / shelf hooks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<crate::style::antislop::SceneNegative>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -676,6 +1596,12 @@ pub struct SceneContextEnvelope {
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
     pub budget: SceneContextBudgetMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<crate::style::antislop::VoiceSample>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<crate::style::antislop::SceneNegative>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_markdown: Option<String>,
 }
@@ -703,7 +1629,7 @@ pub struct GetChapterBriefingInput {
     /// Number of prior chapter summaries to include, newest first. Defaults to 3.
     pub recent_chapter_limit: Option<usize>,
     /// Token budget passed through to the bundled scene-context slice.
-    /// Defaults to 3500 for a leaner pre-write packet.
+    /// Defaults to the service's chapter-briefing budget when omitted.
     #[serde(default)]
     pub token_budget: Option<usize>,
 }
@@ -764,8 +1690,17 @@ pub struct GetChapterBriefingOutput {
     pub chapter_outline: Option<ChapterOutline>,
     pub book_outline: Option<BookOutline>,
     pub chapter_plan: Option<ChapterPlanBriefing>,
+    /// Themes, conflicts, plot lines, and theme-connected motifs the chapter
+    /// plan explicitly targets. Mirrors the scene-context novel layer's
+    /// `active_threads`; empty when the chapter has no plan or targets nothing.
+    #[serde(default)]
+    pub active_threads: Vec<ActiveThreadSummary>,
     pub scene_seed: ChapterBriefingSceneSeed,
     pub scene_context: Option<SceneContextOutput>,
+    /// Same digest as the bundled scene context, repeated so a briefing-only
+    /// caller does not have to unpack `scene_context` to see the shelves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1208,12 +2143,24 @@ pub struct GetSceneMoveImpactOutput {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MoveSceneInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
+    /// Optional id of the scene to move. When provided it identifies the
+    /// source row unambiguously (safe even if duplicates or orphans share a
+    /// position); the `from_*` fields become optional and are only validated
+    /// against the scene's actual placement when supplied.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Source book. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub from_book_number: i32,
+    /// Source chapter. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub from_chapter_number: i32,
+    /// Source scene order. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub from_scene_order: i32,
     pub to_book_number: i32,
     pub to_chapter_number: i32,
@@ -1234,12 +2181,28 @@ pub struct MoveSceneOutput {
     pub left_source_scene_order_gap: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteSceneInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
+    /// Optional id of the scene to delete. Preferred whenever the exact row
+    /// is known: it identifies the row unambiguously and can never act on a
+    /// different scene that happens to share a position. The scene must be
+    /// on the project's active branch. When provided, the position fields
+    /// are optional and only validated against the scene's actual placement
+    /// if supplied.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Book of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub book_number: i32,
+    /// Chapter of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub chapter_number: i32,
+    /// Scene order within the chapter. Required unless `scene_id` is
+    /// provided. Position addressing resolves a single active-branch row; it
+    /// cannot disambiguate rows sharing a position.
+    #[serde(default)]
     pub scene_order: i32,
 }
 
@@ -1251,12 +2214,22 @@ pub struct DeleteSceneOutput {
     pub left_scene_order_gap: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct OperatorDeleteSceneInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
+    /// Optional id of the scene to delete (see `DeleteSceneInput::scene_id`).
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Book of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub book_number: i32,
+    /// Chapter of the scene. Required unless `scene_id` is provided.
+    #[serde(default)]
     pub chapter_number: i32,
+    /// Scene order within the chapter. Required unless `scene_id` is
+    /// provided.
+    #[serde(default)]
     pub scene_order: i32,
 }
 
@@ -1274,7 +2247,16 @@ pub struct OperatorDeleteSceneOutput {
     pub invalidated_chapter_summary_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Declared authorship is independent of provider rating-clearance receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftAuthorship {
+    #[default]
+    Human,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct SaveSceneDraftInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
     pub project_id: String,
@@ -1291,19 +2273,48 @@ pub struct SaveSceneDraftInput {
     pub scene_order: i32,
     #[serde(alias = "content", alias = "text")]
     pub full_text: String,
+    /// Use assistant for prose composed or revised by the host AI. Human by
+    /// default. Enables opt-in learning from a later human edit, not AI edits.
+    #[serde(default)]
+    pub authorship: DraftAuthorship,
     pub summary: String,
     pub content_rating: ContentRating,
     pub tone: Option<String>,
     /// Optional server-side receipt id returned by `continue_generation`.
     /// Required when saving explicit sexual prose with `content_rating:
-    /// "explicit"`. When provided for an explicit-rated save, Spindle persists
-    /// the server-held generation output as `full_text`.
+    /// "explicit"`. The receipt is provenance only: it proves the save was
+    /// authorized by a cleared, explicit-capable draft-route generation and
+    /// stamps `draft_origin: agent:<id>`. The caller-supplied `full_text` is
+    /// authoritative and is what Spindle persists — the receipt output is never
+    /// substituted for the prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_id: Option<String>,
     /// Optional path to the local source file this scene was written from.
     /// When provided, Spindle tracks the file for divergence detection.
     #[serde(default)]
     pub source_path: Option<String>,
+    /// Optional location (record id returned by create_location) this scene is
+    /// set in. Persisted on the scene so the pre-draft temporal anchor can name
+    /// where the previous scene ended. Re-saving without it preserves the
+    /// existing value (it is never cleared by an omitted field).
+    #[serde(default)]
+    pub location_id: Option<String>,
+    #[serde(default)]
+    pub research_source_ids: Vec<String>,
+    #[serde(default)]
+    pub research_note_ids: Vec<String>,
+    #[serde(default)]
+    pub research_claim_ids: Vec<String>,
+    #[serde(default)]
+    pub research_query_pack_input: Option<String>,
+    #[serde(default)]
+    pub research_context_hash: Option<String>,
+    /// On-page knowledge acquisitions to record with this scene (design §2.3
+    /// path 2). Each entry becomes a knowledge_fact row stamped at this scene's
+    /// placement; a `secret_of_fact_id` link expands that secret's circle of
+    /// trust. Additive — an empty vector behaves exactly as before.
+    #[serde(default)]
+    pub knowledge_learned: Vec<KnowledgeLearnedEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1338,6 +2349,17 @@ pub struct SaveSceneDraftOutput {
     pub voice_drift: Vec<VoiceDriftFinding>,
     #[serde(default)]
     pub retcon_findings: Vec<RetconFinding>,
+    /// Intra-scene temporal-coherence advisories (deterministic prose scan):
+    /// unsignaled time-of-day teleports, internal time drift, and unrendered
+    /// declared spans. Advisory-only — every entry is `severity: "warning"` and
+    /// never blocks a save.
+    #[serde(default)]
+    pub temporal_findings: Vec<ConsistencyIssue>,
+    /// Fiction anti-slop scan of the saved prose. Soft and hard hits are
+    /// advisory on save — this field never fails the write. Hard over-limit
+    /// fail-closes only on the verify/revise path when that loop is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anti_slop: Option<crate::style::antislop::AntiSlopReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1398,6 +2420,21 @@ pub struct SceneSpineEntry {
     pub tone: Option<String>,
 }
 
+/// A scene stored on an `alternative`-type branch that is NOT the active
+/// branch, reported beside (never inside) the spine listing. These are the
+/// rows `generate_alternatives` produced; until one is promoted via
+/// `select_alternative` it is not part of the active-branch spine and is
+/// never rendered by `compile_manuscript` or addressable by position.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UnresolvedAlternativeEntry {
+    pub scene_id: String,
+    pub branch_id: String,
+    pub branch_name: String,
+    pub scene_order: i32,
+    pub word_count: usize,
+    pub summary_first_line: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListChapterScenesOutput {
     pub project_id: String,
@@ -1408,8 +2445,17 @@ pub struct ListChapterScenesOutput {
     pub chapter_number: i32,
     #[serde(default)]
     pub title: Option<String>,
+    /// The active-branch spine of this chapter, exactly what
+    /// `compile_manuscript` renders and the position resolver addresses.
+    /// Never contains rows from other branches and never contains duplicate
+    /// `scene_order` values.
     #[serde(default)]
     pub scenes: Vec<SceneSpineEntry>,
+    /// Alternative-branch scenes in this chapter that were never promoted to
+    /// the active branch. Deliberately separate from `scenes` so they can
+    /// never be mistaken for the spine or deleted by position.
+    #[serde(default)]
+    pub unresolved_alternatives: Vec<UnresolvedAlternativeEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1531,6 +2577,27 @@ pub struct CommitSceneChangesInput {
     pub relationship_updates: Vec<RelationshipUpdateEntry>,
     #[serde(default)]
     pub accept_world_rule_risks: bool,
+    /// When true, bypass the write-time continuity gate (canonical-fact
+    /// contradictions and prose retcons) even under `BlockErrors`.
+    #[serde(default)]
+    pub accept_continuity_risks: bool,
+    /// How the write-time continuity gate behaves. Defaults to `BlockErrors`
+    /// (block the commit on continuity errors unless `accept_continuity_risks`).
+    #[serde(default)]
+    pub continuity_gate: Option<CommitContinuityGate>,
+}
+
+/// Behavior of the write-time continuity gate on `commit_scene_changes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitContinuityGate {
+    /// Do not run the gate.
+    Off,
+    /// Run the gate and return findings, but never block the commit.
+    WarnOnly,
+    /// Block the commit when continuity errors are found (the default).
+    #[default]
+    BlockErrors,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1584,6 +2651,32 @@ pub struct RelationshipUpdateEntry {
     pub trust_delta: i32,
     pub tension_delta: i32,
     pub reason: String,
+}
+
+/// One on-page knowledge acquisition flagged in a scene's continuity package
+/// (design §2.3 path 2, the draft-time reveal). Each entry becomes a
+/// `knowledge_fact` row for `character_id`, learned_at = the saving scene's
+/// placement. When `secret_of_fact_id` names a secret canonical fact, the row
+/// links to it and expands that secret's circle of trust from this scene
+/// forward — the reveal mechanism. `None` there records ordinary knowledge.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct KnowledgeLearnedEntry {
+    /// The character who learns the fact (a create_character record id).
+    pub character_id: String,
+    /// The fact learned, as a short natural-language statement.
+    pub fact: String,
+    /// Optional note on how/where it was learned (rendered into the row).
+    #[serde(default)]
+    pub source_summary: Option<String>,
+    /// When set, links this knowledge to a secret canonical fact (its circle of
+    /// trust expands to include `character_id`). The id must reference an
+    /// existing canonical fact marked `secret = 1`, or the save is rejected.
+    #[serde(default)]
+    pub secret_of_fact_id: Option<String>,
+    /// Whether the reader is meant to know this (dramatic-irony control). When
+    /// omitted, defaults to visible.
+    #[serde(default)]
+    pub reader_visible: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for CharacterStatePatchEntry {
@@ -1791,6 +2884,20 @@ pub struct CommitSceneChangesOutput {
     pub world_rule_hits: Vec<WorldRuleHit>,
     #[serde(default)]
     pub findings_summary: CommitSceneFindingsSummary,
+    /// Continuity findings (canonical-fact contradictions + retcons) detected by
+    /// the write-time gate. Error-severity entries are what would block the
+    /// commit under `BlockErrors`.
+    #[serde(default)]
+    pub blocking_continuity_findings: Vec<ConsistencyIssue>,
+    /// Structured retcon findings surfaced by the write-time gate.
+    #[serde(default)]
+    pub retcon_findings: Vec<RetconFinding>,
+    /// Intra-scene temporal-coherence advisories (deterministic prose scan).
+    /// Always advisory: every entry is `severity: "warning"`, kept in its own
+    /// field (never in `blocking_continuity_findings`), so a temporal finding
+    /// cannot block a commit under any `continuity_gate`.
+    #[serde(default)]
+    pub temporal_findings: Vec<ConsistencyIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -1870,6 +2977,11 @@ pub struct CreateChapterOutput {
     pub chapter_id: String,
     pub book_number: i32,
     pub chapter_number: i32,
+    /// The chapter's effective title after the call: the supplied title when
+    /// it was applied, otherwise the title the chapter already had (the
+    /// ensure path can return a pre-existing row). `None` when untitled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1915,6 +3027,11 @@ pub struct SetNarratorVoiceOutput {
     pub narrator_voice: crate::style::NarratorVoice,
     /// True when the call cleared the directive (all fields empty).
     pub cleared: bool,
+    /// Non-blocking advisories, e.g. a chapter word-count target in the new
+    /// narrator voice that contradicts reader_contract.style_notes or a style
+    /// world rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2078,6 +3195,11 @@ pub struct ReviseSceneOutput {
     pub voice_drift: Vec<VoiceDriftFinding>,
     #[serde(default)]
     pub retcon_findings: Vec<RetconFinding>,
+    /// Intra-scene temporal-coherence advisories (deterministic prose scan),
+    /// recomputed on the revised prose. Advisory-only — every entry is
+    /// `severity: "warning"` and never blocks a revision.
+    #[serde(default)]
+    pub temporal_findings: Vec<ConsistencyIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -2098,6 +3220,14 @@ pub enum RetconFinding {
         character_id: String,
         character_name: String,
         status: String,
+        message: String,
+    },
+    /// A character references, in prose, a `knowledge_fact` they do not learn
+    /// until a later story position. High-precision/low-recall advisory.
+    PrematureKnowledge {
+        character_id: String,
+        fact: String,
+        learned_at: StoryPlacement,
         message: String,
     },
 }
@@ -2316,6 +3446,14 @@ pub struct UpdateEntityInput {
     pub entity_id: String,
     #[schemars(schema_with = "any_object_schema")]
     pub changes: serde_json::Value,
+    /// Renaming a character is a controlled operation, not a plain field
+    /// write: it must move the normalized-name uniqueness key, preserve the
+    /// old name as an alias, refresh the search index, and report records
+    /// still referencing the old name. Set this to true to opt in when
+    /// `changes` includes `"name"` on a character; without it the call is
+    /// rejected. Ignored for every other entity type.
+    #[serde(default)]
+    pub allow_rename: Option<bool>,
 }
 
 fn any_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -2330,6 +3468,47 @@ fn any_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 pub struct UpdateEntityOutput {
     pub entity_type: String,
     pub entity_id: String,
+    /// Present only when the call renamed a character (`changes` included
+    /// `"name"` with `allow_rename: true`). Lists the records that still
+    /// reference the old name so the author can fix them — prose mentions in
+    /// scenes are never rewritten automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_report: Option<RenameReport>,
+    /// Non-blocking advisories about the post-update state. Currently used to
+    /// surface reader-contract / style-surface contradictions (e.g. chapter
+    /// word-count targets that disagree between reader_contract.style_notes,
+    /// the narrator voice, and style world rules) so a stale figure is caught
+    /// at update time instead of after chapters are drafted against it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Outcome of a character rename: what changed and what still references the
+/// old name. The search index (FTS + embeddings) and the character's own FTS
+/// entry are refreshed as part of the rename; the records listed here are the
+/// ones the rename could NOT update safely.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RenameReport {
+    pub character_id: String,
+    pub old_name: String,
+    pub new_name: String,
+    /// True when the old name was appended to the character's aliases (it is
+    /// not re-added when already present, or when only the casing/spacing of
+    /// the name changed).
+    pub old_name_kept_as_alias: bool,
+    /// Scenes whose prose or summary mentions the old name (FTS match on the
+    /// active branch). Rename never edits scene text — the author decides
+    /// which mentions are historical and which must follow the rename.
+    pub scenes_referencing_old_name: Vec<String>,
+    /// Active (not superseded) canonical facts whose value text, JSON value,
+    /// or aliases mention the old name. Facts that reference the character by
+    /// id are unaffected and not listed.
+    pub canonical_facts_referencing_old_name: Vec<String>,
+    /// Knowledge facts whose text mentions the old name.
+    pub knowledge_facts_referencing_old_name: Vec<String>,
+    /// Character arcs (of this character) whose notes or milestones mention
+    /// the old name.
+    pub arcs_referencing_old_name: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2342,6 +3521,11 @@ pub struct UpdateWorldRuleInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateWorldRuleOutput {
     pub world_rule_id: String,
+    /// Non-blocking advisories, e.g. a style world rule whose chapter
+    /// word-count target contradicts reader_contract.style_notes or the
+    /// narrator voice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2404,6 +3588,10 @@ pub struct CreatePlotLineInput {
     pub status: Option<String>,
     #[serde(default)]
     pub convergence_points: Vec<StoryPlacement>,
+    #[serde(default)]
+    pub connected_conflict_ids: Vec<String>,
+    #[serde(default)]
+    pub connected_theme_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2523,13 +3711,32 @@ pub struct BatchCreateNarrativePromisesOutput {
     pub created: usize,
 }
 
+/// An actual story event, separate from an author's planned payoff.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PromiseStatusEvent {
+    pub id: String,
+    pub previous_status: String,
+    pub status: String,
+    pub at: Option<StoryPlacement>,
+    pub source_scene_id: Option<String>,
+    pub note: Option<String>,
+    pub replaces_event_id: Option<String>,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct UpdatePromiseStatusInput {
     #[serde(alias = "promise_id")]
     pub narrative_promise_id: String,
     #[serde(alias = "new_status")]
     pub status: String,
     pub note: Option<String>,
+    /// Actual placement. Omit when unknown; planned_payoff is never used here.
+    pub at: Option<StoryPlacement>,
+    /// Evidence scene; supplies the placement when `at` is omitted.
+    pub source_scene_id: Option<String>,
+    /// Correct an existing event without deleting its audit history.
+    pub replaces_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2559,6 +3766,30 @@ pub struct CreateCharacterArcOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateArcMilestoneInput {
+    /// Record id of the character arc (e.g. "character_arc:abc123").
+    pub arc_id: String,
+    /// Exact label of the milestone to update.
+    pub label: String,
+    /// New planned placement for the milestone. Omit to keep the current
+    /// placement. (Clearing a placement is not supported here; resend the
+    /// full milestones array via update_entity for that.)
+    #[serde(default)]
+    pub placement: Option<StoryPlacement>,
+    /// Manuscript position where the milestone was actually reached. Omit to
+    /// keep the current value.
+    #[serde(default)]
+    pub reached_at: Option<StoryPlacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateArcMilestoneOutput {
+    pub arc_id: String,
+    /// The milestone after the update.
+    pub milestone: CharacterArcMilestone,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreatePacingConfigInput {
     pub project_id: String,
     pub total_planned_books: i32,
@@ -2578,6 +3809,8 @@ pub struct CreatePacingCurveInput {
     pub book_number: i32,
     pub act_breakpoints: BTreeMap<String, f64>,
     pub scene_type_density: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub intensity_points: Vec<IntensityPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2601,7 +3834,7 @@ pub struct SetArcPacingConstraintsOutput {
     pub pacing_tracker_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct PlanChapterSceneInput {
     pub scene_order: i32,
     pub summary: String,
@@ -2609,7 +3842,21 @@ pub struct PlanChapterSceneInput {
     pub beat_structure: Vec<String>,
     #[serde(default)]
     pub character_ids: Vec<String>,
+    /// Record id returned by create_location (e.g. "location:xyz789").
+    /// Required by authoring_prepare_run / authoring_start_run for drafting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_id: Option<String>,
+    /// Planned content rating for this scene. Required by authoring_prepare_run
+    /// / authoring_start_run so draft/review routing can select safe backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_rating: Option<ContentRating>,
     pub purpose: String,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2658,6 +3905,10 @@ pub struct AnnotateSceneBeatsInput {
     pub theme_ids: Vec<String>,
     #[serde(default)]
     pub conflict_ids: Vec<String>,
+    /// Realized 0.0-1.0 scene intensity, for pacing-drift detection. When None
+    /// on a re-annotation, the previously recorded value is preserved.
+    #[serde(default)]
+    pub intensity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2749,6 +4000,14 @@ pub enum ConsistencyScope {
         end_book_number: i32,
         end_chapter_number: i32,
     },
+    /// A single scene inside one chapter (P2.1 scene-scoped verification).
+    /// Reachable only when the flat input pins a single chapter AND carries a
+    /// `scene_order`; the scoped scene set collapses to exactly this scene.
+    Scene {
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    },
 }
 
 /// Flat scope specification that survives JSON Schema sanitization.
@@ -2767,6 +4026,14 @@ pub struct ConsistencyScopeInput {
     pub end_book_number: Option<i32>,
     /// Required when scope_type is "chapter_range"
     pub end_chapter_number: Option<i32>,
+    /// Optional single-scene narrowing (P2.1). Meaningful only when the scope
+    /// already pins one chapter — a `chapter_range` whose start book+chapter
+    /// equal its end book+chapter. Any other shape (missing bounds, or
+    /// `start != end`) with a `scene_order` present is an input validation
+    /// error. Absent (the default) it deserializes as `None`, so scope
+    /// payloads authored before this field existed are unchanged.
+    #[serde(default)]
+    pub scene_order: Option<i32>,
 }
 
 impl ConsistencyScopeInput {
@@ -2778,6 +4045,7 @@ impl ConsistencyScopeInput {
             start_chapter_number: None,
             end_book_number: None,
             end_chapter_number: None,
+            scene_order: None,
         }
     }
 
@@ -2789,6 +4057,7 @@ impl ConsistencyScopeInput {
             start_chapter_number: None,
             end_book_number: None,
             end_chapter_number: None,
+            scene_order: None,
         }
     }
 
@@ -2805,13 +4074,18 @@ impl ConsistencyScopeInput {
             start_chapter_number: Some(start_chapter_number),
             end_book_number: Some(end_book_number),
             end_chapter_number: Some(end_chapter_number),
+            scene_order: None,
         }
     }
 
     pub fn to_scope(&self) -> Result<ConsistencyScope, String> {
         match self.scope_type.as_str() {
-            "full" => Ok(ConsistencyScope::Full),
+            "full" => {
+                self.reject_scene_order("full")?;
+                Ok(ConsistencyScope::Full)
+            }
             "book" => {
+                self.reject_scene_order("book")?;
                 let book_number = self
                     .book_number
                     .ok_or("book_number required for scope_type 'book'")?;
@@ -2830,6 +4104,23 @@ impl ConsistencyScopeInput {
                 let end_chapter_number = self
                     .end_chapter_number
                     .ok_or("end_chapter_number required for scope_type 'chapter_range'")?;
+                // Scene narrowing is meaningful only over a single pinned
+                // chapter: start book+chapter must equal end book+chapter.
+                if let Some(scene_order) = self.scene_order {
+                    if (start_book_number, start_chapter_number)
+                        != (end_book_number, end_chapter_number)
+                    {
+                        return Err("scene_order narrowing requires a single-chapter scope: \
+                             start_book_number/start_chapter_number must equal \
+                             end_book_number/end_chapter_number"
+                            .to_string());
+                    }
+                    return Ok(ConsistencyScope::Scene {
+                        book_number: start_book_number,
+                        chapter_number: start_chapter_number,
+                        scene_order,
+                    });
+                }
                 Ok(ConsistencyScope::ChapterRange {
                     start_book_number,
                     start_chapter_number,
@@ -2842,10 +4133,63 @@ impl ConsistencyScopeInput {
             )),
         }
     }
+
+    /// A `scene_order` is only ever meaningful with a single-chapter
+    /// `chapter_range`; pairing it with `full`/`book` is a caller mistake.
+    fn reject_scene_order(&self, scope_type: &str) -> Result<(), String> {
+        if self.scene_order.is_some() {
+            return Err(format!(
+                "scene_order narrowing requires a single-chapter 'chapter_range' scope, \
+                 not scope_type '{scope_type}'"
+            ));
+        }
+        Ok(())
+    }
 }
+
+/// The deterministic, fast, scene-relevant check subset that in-run
+/// scene-scoped verification runs immediately after a draft is saved
+/// (evolution design §3.2). Every entry is a check that (a) needs no model
+/// router when `deep_check = false`, and (b) attributes findings to a scene or
+/// runs cleanly over a single-chapter window. Deep-only and cross-chapter-trend
+/// checks are deliberately excluded — they stay checkpoint-scoped for cost.
+///
+/// The trailing four names are Phase-4 validator **request** names (identical to
+/// their finding `check_type` strings): they trigger the deterministic
+/// `run_phase_four_validator_checks_for_scenes` fan-out under the non-deep path.
+pub const SCENE_VERIFY_CHECKS: &[&str] = &[
+    // ── Deterministic, scene-attributed continuity checks ──
+    "knowledge_timing",            // premature-knowledge scan, per scene
+    "chronology",                  // story-time ordering, over the scoped window
+    "temporal_coherence",          // intra-scene time-jump lexical scan (Tier 1)
+    "quantity_drift",              // unexplained multi-band jumps (branch-wide feed)
+    "currency_consistency",        // price facts disagreeing once converted
+    "affordability",               // priced purchase vs a present character's wealth
+    "tone_consistency",            // scene tone vs declared reader-contract boundary
+    "content_boundary_compliance", // explicit-scene review flag, per scene
+    "secret_leak",                 // out-of-circle speaker leaks a secret (Tier 1)
+    "canonical_fact_consistency",  // conflicting active canonical-fact values
+    // ── Phase-4 validator request names (deterministic, prose-drift) ──
+    "canonical_fact_prose_drift", // prose contradicts a registered canonical fact
+    "world_rule_semantic_drift",  // prose trips a world-rule scan pattern
+    "voice_drift",                // dialogue drifts from a character's voice profile
+    "style_compliance",           // prose drifts from an applied style profile
+    "anti_slop",                  // fiction hard shelves over limit (Phase 3 verify)
+                                  // ── Deliberately EXCLUDED (deep-only or cross-chapter trend) ──
+                                  // "promise_payoff_detection"   — deep-only (model tier)
+                                  // "scene_purpose_fulfillment"  — deep-only (model tier)
+                                  // "pacing_drift"             — multi-chapter intensity trend
+                                  // "research_accuracy"        — corpus-wide provenance audit, not scene-local
+                                  // "scene_divergence"         — source-vs-draft, separate bridge
+                                  // "retcon_reachability"      — cross-scene retcon graph, checkpoint-scoped
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckConsistencyInput {
+    /// Page through capped deep audits in stable story/urgency order. Keep the
+    /// scope and manuscript unchanged between pages; defaults to zero.
+    #[serde(default)]
+    pub deep_scan_offset: Option<usize>,
     pub project_id: String,
     pub scope: ConsistencyScopeInput,
     #[serde(default)]
@@ -2912,6 +4256,9 @@ pub struct ConsistencySection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckConsistencyOutput {
+    /// Empty for shallow checks. A clean finding list does not imply complete coverage.
+    #[serde(default)]
+    pub audit_coverage: Vec<AuditCoverage>,
     pub issues: Vec<ConsistencyIssue>,
     pub summary: ConsistencySummary,
     /// Per-validator grouping of Phase 4 validator findings. Each section
@@ -4141,6 +5488,12 @@ pub struct RecordKnowledgeInput {
     #[serde(default)]
     pub tags: Vec<String>,
     pub reader_visible: bool,
+    /// Secret-knowledge gating (design §2.3.1, the reveal path): when set, this
+    /// knowledge row grants the character membership in the circle of trust for
+    /// the referenced secret canonical fact. The id must reference an existing
+    /// canonical fact with `secret = 1`. `None` for ordinary knowledge.
+    #[serde(default)]
+    pub secret_of_fact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4229,6 +5582,43 @@ pub struct InitGrokSkillsOutput {
     pub target_dir: String,
     pub files_written: Vec<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SkillSummary {
+    pub name: String,
+    /// "skill" or "reference".
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListSkillsOutput {
+    pub skills: Vec<SkillSummary>,
+    pub references: Vec<SkillSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetSkillInput {
+    /// Skill name as returned by `list_skills` (e.g. "scene-writer").
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetSkillOutput {
+    pub name: String,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetReferenceInput {
+    /// Craft reference name as returned by `list_skills` (e.g. "anti-slop").
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetReferenceOutput {
+    pub name: String,
+    pub markdown: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4331,6 +5721,11 @@ pub struct AgentRoutingConfigOutput {
 pub struct TestAgentInput {
     pub agent_id: String,
     pub test_prompt: Option<String>,
+    /// Optional logical route to force for this call. When omitted, Spindle
+    /// preserves the legacy behavior of choosing the first configured route
+    /// for the agent, preferring a matching rating when provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
     /// Optional content rating used when this test call is actually driving a
     /// draft route. Harness callers use this to select per-rating draft
     /// routes, especially explicit overrides.
@@ -4457,7 +5852,64 @@ pub struct ReviseGenerationOutput {
     pub generation_output_sha256: Option<String>,
 }
 
-// ── Research query (Gemini fact-checking) ───────────────────────────
+// ── Research query and routed research workflow ─────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub enum SourcePolicy {
+    #[default]
+    #[serde(rename = "require_sources")]
+    RequireSources,
+    #[serde(rename = "allow_unsourced_leads")]
+    AllowUnsourcedLeads,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchSourceOutputItem {
+    pub title: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published_date: Option<String>,
+    pub reliability: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchNoteOutputItem {
+    #[serde(default)]
+    pub source_index: Option<usize>,
+    pub note: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchClaimOutputItem {
+    #[serde(default)]
+    pub note_index: Option<usize>,
+    pub claim: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResearchQueryInput {
@@ -4468,24 +5920,312 @@ pub struct ResearchQueryInput {
     /// Optional hint to narrow the research context (e.g. "chapter 5 dive scene").
     #[serde(default)]
     pub context_hint: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub store: bool,
+    #[serde(default)]
+    pub source_policy: Option<SourcePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResearchQueryOutput {
-    /// The model that answered the query.
-    pub model: String,
-    /// The research response text.
-    pub response: String,
-    /// Summary of project context provided to the research model.
-    pub context_used: ResearchContextSummary,
+    pub summary: String,
+    pub sources: Vec<ResearchSourceOutputItem>,
+    pub notes: Vec<ResearchNoteOutputItem>,
+    pub claims: Vec<ResearchClaimOutputItem>,
+    pub tags: Vec<String>,
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub uncertainty_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ResearchContextSummary {
-    pub project_name: String,
-    pub genre: String,
-    pub world_rules_count: usize,
-    pub bible_hits_count: usize,
+pub struct ResearchIngestReportInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub report: String,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub source_policy: Option<SourcePolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchIngestReportOutput {
+    pub summary: String,
+    pub sources: Vec<ResearchSourceOutputItem>,
+    pub notes: Vec<ResearchNoteOutputItem>,
+    pub claims: Vec<ResearchClaimOutputItem>,
+    pub tags: Vec<String>,
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub uncertainty_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPlanForSceneInput {
+    pub project_id: String,
+    pub scene_id: String,
+    #[serde(default)]
+    pub planned_scene_summary: Option<String>,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPlanForSceneOutput {
+    pub suggested_queries: Vec<String>,
+    pub missing_tags: Vec<String>,
+    pub await_research: bool,
+}
+
+// ── Research Library Models & DTOs ──────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchSource {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published_date: Option<String>,
+    pub accessed_at: i64,
+    pub reliability: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchNote {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub note: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchClaim {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub note_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub claim: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchUsage {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub run_id: String,
+    #[serde(default)]
+    pub step_checkpoint_id: Option<String>,
+    pub scene_id: String,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    #[serde(default)]
+    pub note_ids: Vec<String>,
+    #[serde(default)]
+    pub claim_ids: Vec<String>,
+    pub query_pack_input: String,
+    pub context_hash: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddSourceInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published_date: Option<String>,
+    #[serde(default)]
+    pub accessed_at: Option<i64>,
+    pub reliability: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddSourceOutput {
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddNoteInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub note: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddNoteOutput {
+    pub note_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddClaimInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub note_id: Option<String>,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub claim: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchAddClaimOutput {
+    pub claim_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchSearchInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    pub query: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub time_period: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ResearchSearchResultItem {
+    pub item_type: String, // "source", "note", or "claim"
+    pub id: String,
+    pub title_or_summary: String,
+    pub preview: String,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub source_title: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub source_author: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
+    #[serde(default)]
+    pub confidence_or_reliability: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchSearchOutput {
+    pub results: Vec<ResearchSearchResultItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPackForSceneInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    #[serde(default)]
+    pub scene_summary: Option<String>,
+    #[serde(default)]
+    pub scene_location: Option<String>,
+    #[serde(default)]
+    pub character_ids: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchPackForSceneOutput {
+    pub sources: Vec<ResearchSource>,
+    pub notes: Vec<ResearchNote>,
+    pub claims: Vec<ResearchClaim>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4589,6 +6329,128 @@ pub struct ExportEpubOutput {
     pub divergence_warnings: Vec<DivergenceWarning>,
 }
 
+/// Input for `compile_manuscript`: assemble the committed prose of a book (or a
+/// chapter range within it) on the active branch into a single Markdown
+/// document. Read-only over scene/plan data; the workspace write is opt-in.
+/// Branch resolution is implicit — the service compiles the project's active
+/// branch, matching the other read tools (`preflight_book_export`,
+/// `list_book_chapters`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompileManuscriptInput {
+    pub project_id: String,
+    pub book_number: i32,
+    /// Optional inclusive start chapter. When omitted, compilation begins at the
+    /// book's first chapter.
+    #[serde(default)]
+    pub start_chapter: Option<i32>,
+    /// Optional inclusive end chapter. When omitted, compilation runs to the
+    /// book's last chapter.
+    #[serde(default)]
+    pub end_chapter: Option<i32>,
+    /// When true, the compiled Markdown is also written to the project's
+    /// workspace artifacts directory under a deterministic filename, and the
+    /// path is returned in `artifact_path`.
+    #[serde(default)]
+    pub write_to_workspace: bool,
+}
+
+/// Output of `compile_manuscript`: the assembled Markdown plus counts and the
+/// list of planned-but-undrafted scenes rendered as placeholders. A zero-chapter
+/// range yields a structured empty result, not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompileManuscriptOutput {
+    pub markdown: String,
+    pub scene_count: usize,
+    pub word_count: usize,
+    /// `chapter.scene` refs (e.g. "2.2") for scenes present in a chapter plan
+    /// spine but not yet drafted. Never silently omitted from the Markdown.
+    #[serde(default)]
+    pub missing_scenes: Vec<String>,
+    /// `chapter.scene` refs (e.g. "2.2") for drafted scenes that are stubs:
+    /// their body matches obvious placeholder text, or their word count is
+    /// below the project's minimum scene length
+    /// (`project.min_scene_word_count`, default 20). They render into the
+    /// Markdown but are not shippable prose.
+    #[serde(default)]
+    pub stub_scenes: Vec<String>,
+    /// Absolute path to the written artifact when `write_to_workspace` is set;
+    /// `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
+/// Input for `export_recap` (evolution §3.8): a spoiler-bounded, reader-facing
+/// "previously on" recap of a book up to (and including) `through_chapter`. Pure
+/// read model over chapter summaries and narrative promises on the active
+/// branch; the cursor is the end of `through_chapter` in `book_number`, and the
+/// reader-secret rule (see the resolver's doc comment) governs what a fact/thread
+/// may name. The workspace write is opt-in and mirrors `compile_manuscript`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportRecapInput {
+    pub project_id: String,
+    pub book_number: i32,
+    /// Inclusive last chapter the recap covers. Everything established after the
+    /// end of this chapter (in this book) is withheld as a spoiler.
+    pub through_chapter: i32,
+    /// When true, the recap Markdown is also written to the project's workspace
+    /// artifacts directory under a deterministic filename, and the path is
+    /// returned in `artifact_path`.
+    #[serde(default)]
+    pub write_to_workspace: bool,
+}
+
+/// Output of `export_recap`: the recap Markdown plus counts and the opt-in
+/// artifact path. A book with no summarized chapters at/under the cursor yields
+/// a structured empty recap, not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportRecapOutput {
+    pub markdown: String,
+    /// Number of chapter summaries at or under the cursor folded into the recap.
+    pub chapter_count: usize,
+    /// Word count of the rendered recap Markdown.
+    pub word_count: usize,
+    /// Absolute path to the written artifact when `write_to_workspace` is set;
+    /// `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
+/// Input for `export_series_bible` (evolution §3.8): a spoiler-bounded,
+/// reader-facing series bible (characters, locations, glossary, factions,
+/// religions) as of an optional cursor. Pure read model over branch entities and
+/// placement-stamped character state; the reader-secret rule governs what may be
+/// named. The workspace write is opt-in and mirrors `compile_manuscript`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportSeriesBibleInput {
+    pub project_id: String,
+    /// Optional spoiler cursor. When present, everything established after this
+    /// placement is withheld and character state is taken as-of it. When absent,
+    /// the whole project is covered (cursor = +infinity) — only secrets never
+    /// revealed to the reader are withheld.
+    #[serde(default)]
+    pub through: Option<StoryPlacement>,
+    /// When true, the bible Markdown is also written to the project's workspace
+    /// artifacts directory under a deterministic filename, and the path is
+    /// returned in `artifact_path`.
+    #[serde(default)]
+    pub write_to_workspace: bool,
+}
+
+/// Output of `export_series_bible`: the bible Markdown plus counts and the opt-in
+/// artifact path. An empty project yields a structured empty bible, not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportSeriesBibleOutput {
+    pub markdown: String,
+    /// Number of characters rendered (those established at or under the cursor).
+    pub chapter_count: usize,
+    /// Word count of the rendered bible Markdown.
+    pub word_count: usize,
+    /// Absolute path to the written artifact when `write_to_workspace` is set;
+    /// `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
 /// A warning that a Spindle scene has diverged from its local source file.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DivergenceWarning {
@@ -4613,10 +6475,31 @@ pub enum DivergenceKind {
 
 // ── Canonical fact registry ─────────────────────────────────────────
 
+/// Secret-knowledge gating (design §2.1): the audience boundary for a fact
+/// registered in confidence. `holder_ids` is the initial circle of trust —
+/// the characters who know the fact at declaration time. `concealment_note` is
+/// optional drafting guidance rendered into the `[SECRETS IN PLAY]` envelope
+/// (Part B), e.g. "she deflects questions about her past with dry humor".
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SecrecyScope {
+    /// Characters who know the fact at declaration time (the initial circle).
+    pub holder_ids: Vec<String>,
+    /// Optional guidance rendered into the envelope when the fact ships to the
+    /// model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concealment_note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RegisterCanonicalFactInput {
     pub project_id: String,
-    pub scene_id: String,
+    /// The scene that dramatises the fact. Optional: omit it to register a
+    /// fact decided during PLANNING but not yet dramatised (e.g. a name
+    /// locked by author decision before its scene exists). Such a fact is
+    /// planned-and-pending — placed by book_number/chapter_number only — and
+    /// can be attached to its scene later with bind_canonical_fact_to_scene.
+    #[serde(default)]
+    pub scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
     /// The kind of fact: "pull_result", "stat_change", "item_acquired",
@@ -4661,6 +6544,12 @@ pub struct RegisterCanonicalFactInput {
     /// If this fact supersedes a previous one, supply the old fact's id.
     #[serde(default)]
     pub supersedes_fact_id: Option<String>,
+    /// Secret-knowledge gating (design §2.1): when present, the fact is marked
+    /// `secret = 1`, its `concealment_note` is stored, and one knowledge_fact
+    /// row is written per `holder_id` linking that character into the fact's
+    /// circle of trust with `learned_at = None` (known from the start).
+    #[serde(default)]
+    pub secrecy: Option<SecrecyScope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4747,6 +6636,21 @@ pub struct MigrateCanonicalFactOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BindCanonicalFactToSceneInput {
+    /// Record id of the canonical fact (e.g. "canonical_fact:abc123").
+    pub canonical_fact_id: String,
+    /// The scene that dramatises the fact. Must belong to the same project
+    /// and branch as the fact.
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BindCanonicalFactToSceneOutput {
+    pub canonical_fact_id: String,
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CanonicalFactSummary {
     pub canonical_fact_id: String,
     pub fact_type: String,
@@ -4791,13 +6695,1373 @@ pub enum CanonicalValue {
     },
 }
 
+// =============================================================================
+// Authoring Supervisor DTOs
+// =============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStartRunInput {
+    pub project_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    #[serde(default)]
+    pub end_chapter: Option<i32>,
+    #[serde(default)]
+    pub chapter_count: Option<i32>,
+    pub checkpoint_interval: usize,
+    #[serde(default)]
+    pub editorial_directives: Option<Vec<String>>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Canon-mining policy for the run (evolution §3.1). Omitted or `None` =
+    /// disabled (behaves exactly as before). Validated against
+    /// {`"disabled"`, `"propose_all"`}; `"propose_all"` stages proposed canon
+    /// deltas per committed scene.
+    #[serde(default)]
+    pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise attempts per scene (evolution §3.2). Omitted,
+    /// `None`, or `0` = disabled: a saved draft goes straight to commit exactly
+    /// as before. `1` or `2` opts the run into scene-scoped verification after
+    /// each draft, feeding any warning-or-worse findings back as a bounded
+    /// revision. Validated `0..=2`; anything else is an input error.
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
+    /// Checkpoint policy for the run (evolution §3.3). Omitted, `None`, or
+    /// `"manual"` = the classic 4-step operator checkpoint flow, byte-identical
+    /// to today (I1). `"auto_advisory"` self-clears a checkpoint when no finding
+    /// is `warning`-or-worse; `"auto_strict"` self-clears only on zero findings
+    /// of any severity. Validated against
+    /// {`manual`, `auto_advisory`, `auto_strict`}; an auto policy additionally
+    /// requires review-route coverage across the run's ratings at start
+    /// (preflight). Anything else is an input error.
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
+    /// Living-outline replan policy for the run (ADR 0003, evolution §3.5).
+    /// Omitted, `None`, or `"disabled"` = the loop never replans (behaves exactly
+    /// as before). `"propose_all"` runs a replan pass after each chapter summary,
+    /// staging amendment proposals against the not-yet-drafted future chapters for
+    /// operator ratification (never auto-applied — ADR D5). Validated against
+    /// {`disabled`, `propose_all`}; anything else is an input error.
+    #[serde(default)]
+    pub replan_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStartRunOutput {
+    pub run_id: String,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusOutput {
+    pub run_id: String,
+    pub project_id: String,
+    pub status: String,
+    pub next_action: String,
+    pub blocked_reason: Option<String>,
+    pub checkpoint_state: Option<String>,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub completed_chapter_count: usize,
+    pub total_chapter_count: usize,
+    pub chapters: Vec<AuthoringStatusChapter>,
+    pub checkpoint_reports: Vec<AuthoringStatusCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusChapter {
+    pub chapter_number: i32,
+    pub status: String,
+    pub summary_saved: bool,
+    pub summary_artifact_path: Option<String>,
+    pub scenes: Vec<AuthoringStatusScene>,
+    /// Living-outline replan outcome for this chapter's post-summary pass (ADR
+    /// 0003, evolution §3.5). `None` = replan not attempted (disabled run, or the
+    /// chapter's summary not yet saved); otherwise `staged` | `skipped` |
+    /// `no_targets` | `no_summary` | `error`. Additive, serde-default so
+    /// pre-replan clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replan_status: Option<String>,
+    /// Human-readable detail for the replan outcome (staged amendment count or
+    /// the skip/no-targets reason). Never carries prose (evolution I8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replan_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusScene {
+    pub scene_order: i32,
+    pub phase: String,
+    pub scene_id: Option<String>,
+    pub scene_artifact_path: Option<String>,
+    pub blocked_reason: Option<String>,
+    /// Canon-mining outcome for this scene (evolution §3.1). `None` = mining
+    /// not attempted (disabled run or scene not yet past commit); otherwise
+    /// `staged` | `skipped` | `model_output_rejected` | `error`. Additive,
+    /// serde-default so pre-mining clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine_status: Option<String>,
+    /// Human-readable detail for the mining outcome (staged delta count or the
+    /// skip/error reason). Never carries prose (evolution I8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine_detail: Option<String>,
+    /// In-run verification outcome for this scene (evolution §3.2). `None` =
+    /// verify not attempted (disabled run, or scene not yet past draft);
+    /// otherwise `clean` | `findings` | `parked_findings` | `error`. Additive,
+    /// serde-default so pre-revise clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_status: Option<String>,
+    /// Human-readable detail for the verify outcome (finding counts, the parked
+    /// reason, or the error). Never carries prose (evolution I8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_detail: Option<String>,
+    /// How many bounded revision passes this scene has already consumed
+    /// (evolution §3.2). `0` for scenes that never entered the revise loop.
+    #[serde(default)]
+    pub revise_attempts: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringStatusCheckpoint {
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub save_point_id: String,
+    pub status: String,
+    pub report_artifact_path: Option<String>,
+    /// The run's checkpoint policy in force for this checkpoint (evolution
+    /// §3.3). `None` = manual (default). Otherwise `auto_advisory` |
+    /// `auto_strict`. Additive, serde-default so pre-policy clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_policy: Option<String>,
+    /// Outcome of the in-process auto-checkpoint automation (evolution §3.3).
+    /// `None` = manual policy or automation not yet run; otherwise `approved`
+    /// (self-cleared under policy), `blocked` (findings held it pending_review),
+    /// or `manual` (one or more sampled scenes fell back to manual dual-persona
+    /// review). Ids/enums only, never prose (I8). Additive, serde-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_outcome: Option<String>,
+    /// Scene ids whose sampled dual-persona review fell back to manual because
+    /// the `review` route was not rating-cleared for the scene (evolution §3.3
+    /// explicit-manual-fallback, I3). Empty when no scene fell back. Ids only —
+    /// the prose of those scenes was never dispatched anywhere. Additive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_manual_scene_ids: Vec<String>,
+    /// Per-chapter cumulative reader-simulation engagement summary for this
+    /// checkpoint (evolution §3.6), read from the checkpoint report's
+    /// `reader_sim` section. Each entry is `{chapter, engagement}` — engagement
+    /// is `high` | `steady` | `dipping` | `unparsed` | `skipped`. Empty when the
+    /// run's policy is manual (reader-sim runs only under an auto policy) or the
+    /// report has no reader-sim section yet. Enums/ids only, never prose (I8).
+    /// Additive, serde-default so pre-reader-sim clients ignore it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reader_sim_engagement: Vec<ReaderSimEngagementSummary>,
+}
+
+/// A compact per-chapter reader-sim engagement summary surfaced on
+/// `authoring_status` (evolution §3.6, R3). Enums/ids only — the reader's notes
+/// and concern text stay in the report artifact, never on the status surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ReaderSimEngagementSummary {
+    pub chapter: i32,
+    /// `high` | `steady` | `dipping` | `unparsed` | `skipped`.
+    pub engagement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringExecuteNextInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Optional execution mode for drafting steps.
+    ///
+    /// Default is "hybrid": the host assistant drafts non-explicit prose in
+    /// the active chat using Spindle context/tools, while explicit scenes may
+    /// still be routed through the configured explicit draft backend.
+    ///
+    /// Set to "agent" only for fully automated test/offload runs.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringExecuteNextOutput {
+    pub run_id: String,
+    pub next_action: String,
+    pub executed_action: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringSaveSceneDraftInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub book_number: i32,
+    #[serde(default)]
+    pub chapter_number: i32,
+    #[serde(default)]
+    pub chapter_id: Option<String>,
+    pub scene_order: i32,
+    #[serde(alias = "content", alias = "text")]
+    pub full_text: String,
+    /// Declare assistant for host-AI prose; omission preserves human authorship.
+    #[serde(default)]
+    pub authorship: DraftAuthorship,
+    pub summary: String,
+    pub content_rating: ContentRating,
+    #[serde(default)]
+    pub tone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    /// Optional location (create_location record id) this scene is set in.
+    /// Persisted so the next scene's pre-draft temporal anchor can name where
+    /// this scene ended.
+    #[serde(default)]
+    pub location_id: Option<String>,
+    #[serde(default)]
+    pub research_source_ids: Vec<String>,
+    #[serde(default)]
+    pub research_note_ids: Vec<String>,
+    #[serde(default)]
+    pub research_claim_ids: Vec<String>,
+    #[serde(default)]
+    pub research_query_pack_input: Option<String>,
+    #[serde(default)]
+    pub research_context_hash: Option<String>,
+    #[serde(default)]
+    pub character_states: Vec<CharacterStatePatchEntry>,
+    #[serde(default)]
+    pub canonical_facts: Vec<CanonicalFactEntry>,
+    #[serde(default)]
+    pub relationship_updates: Vec<RelationshipUpdateEntry>,
+    #[serde(default)]
+    pub beats: Vec<AnnotatedBeatInput>,
+    #[serde(default)]
+    pub continuity_notes: Vec<String>,
+    /// On-page knowledge acquisitions to record with this scene (design §2.3
+    /// path 2, the reveal mechanism). Passed through to the underlying save.
+    #[serde(default)]
+    pub knowledge_learned: Vec<KnowledgeLearnedEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringSaveSceneDraftOutput {
+    pub run_id: String,
+    pub scene_id: String,
+    pub scene_artifact_path: String,
+    pub status: String,
+    pub structured_update_count: usize,
+    pub save_output: SaveSceneDraftOutput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringReviewCheckpointInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub directives: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringRecordCheckpointAuditInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    /// The structured output returned by check_consistency with deep_check=true
+    /// for this checkpoint's chapter range.
+    pub deep_consistency: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringRecordCheckpointAuditOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringReviewCheckpointOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringResolveBlockInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub target_phase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringResolveBlockOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringCancelRunInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringCancelRunOutput {
+    pub run_id: String,
+    pub message: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringPrepareRunInput {
+    pub project_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    #[serde(default)]
+    pub end_chapter: Option<i32>,
+    #[serde(default)]
+    pub chapter_count: Option<i32>,
+    /// Optional canon-mining policy the run will use (evolution §3.1). Prepare
+    /// does not know the policy at prepare time in the normal flow, so this is
+    /// `None` by default and the extra mine-route preflight is skipped;
+    /// `Some("propose_all")` additionally verifies mine-or-review route
+    /// coverage for every planned rating.
+    #[serde(default)]
+    pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise attempts (evolution §3.2). Threaded from
+    /// `authoring_start_run` for validation, but prepare adds **no** route
+    /// preflight for it: scene-scoped verification is deterministic (zero model
+    /// calls) and any revision re-dispatches through the already-preflighted
+    /// `draft` route at the scene's rating. So a non-zero value here neither
+    /// adds a preflight nor changes prepare's `missing_requirements`.
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
+    /// Optional checkpoint policy the run will use (evolution §3.3). `None` by
+    /// default (prepare does not know the policy in the normal flow, so the
+    /// review-route preflight is skipped); `Some("auto_advisory")` /
+    /// `Some("auto_strict")` additionally verify the `review` route resolves
+    /// rating-cleared for every planned rating (§3.3 precondition (a); (b) — a
+    /// deep-check-capable review route — collapses into (a) today because the
+    /// same `review` route serves the checkpoint's deep dual-persona pass).
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
+    /// Optional living-outline replan policy the run will use (ADR 0003,
+    /// evolution §3.5). Threaded from `authoring_start_run` for validation, but
+    /// prepare adds **no** route preflight for it: the replan differ is
+    /// non-prose-bearing (summaries + metadata only, no scene prose — ADR D5), so
+    /// no rating clearance applies, and on a `NoRoute` the differ falls to
+    /// `review` and then skips honestly (never blocks). A non-`None` value here
+    /// therefore neither adds a preflight nor changes prepare's
+    /// `missing_requirements`.
+    #[serde(default)]
+    pub replan_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringPrepareRunOutput {
+    pub project_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub ready_to_draft: bool,
+    pub missing_requirements: Vec<String>,
+    pub details: Vec<AuthoringPrepareChapterDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuthoringPrepareChapterDetails {
+    pub chapter_number: i32,
+    pub ready: bool,
+    pub missing_items: Vec<String>,
+}
+
 pub fn normalize_name(input: &str) -> String {
     input.trim().to_lowercase()
+}
+
+/// The valid `mining_policy` values for an authoring run (evolution §3.1).
+/// `"disabled"` leaves the loop exactly as before; `"propose_all"` inserts the
+/// per-scene MineScene step. Kept as a small closed set — additive values ship
+/// with an explicit entry here.
+pub const AUTHORING_MINING_POLICIES: [&str; 2] = ["disabled", "propose_all"];
+
+/// Validate and canonicalize an optional `mining_policy` from run input.
+///
+/// - `None` → `Ok(None)` (disabled = default, byte-identical to pre-mining).
+/// - `Some(value)` where trimmed value ∈ {`disabled`, `propose_all`} →
+///   `Ok(Some(canonical))`. `"disabled"` canonicalizes to `None` so the run
+///   persists NULL, matching the pre-upgrade disabled state exactly.
+/// - anything else → `Err(rejected value)` for an input-error message.
+pub fn validate_mining_policy(policy: Option<&str>) -> Result<Option<String>, String> {
+    match policy {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "disabled" => Ok(None),
+                "propose_all" => Ok(Some("propose_all".to_string())),
+                _ => Err(raw.to_string()),
+            }
+        }
+    }
+}
+
+/// The valid `replan_policy` values for an authoring run (ADR 0003, evolution
+/// §3.5). `"disabled"` leaves the loop exactly as before (never replans);
+/// `"propose_all"` runs a replan pass after each chapter summary, staging
+/// amendment proposals against the not-yet-drafted future chapters. Kept as a
+/// small closed set — additive values ship with an explicit entry here. Mirrors
+/// [`AUTHORING_MINING_POLICIES`].
+pub const AUTHORING_REPLAN_POLICIES: [&str; 2] = ["disabled", "propose_all"];
+
+/// Validate and canonicalize an optional `replan_policy` from run input (ADR
+/// 0003, evolution §3.5). Mirrors [`validate_mining_policy`] exactly.
+///
+/// - `None` → `Ok(None)` (disabled = default, byte-identical to pre-replan).
+/// - `Some(value)` where trimmed value ∈ {`disabled`, `propose_all`} →
+///   `Ok(Some(canonical))`. `"disabled"` canonicalizes to `None` so the run
+///   persists NULL, matching the pre-upgrade disabled state exactly.
+/// - anything else → `Err(rejected value)` for an input-error message.
+pub fn validate_replan_policy(policy: Option<&str>) -> Result<Option<String>, String> {
+    match policy {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "disabled" => Ok(None),
+                "propose_all" => Ok(Some("propose_all".to_string())),
+                _ => Err(raw.to_string()),
+            }
+        }
+    }
+}
+
+/// The valid `checkpoint_policy` values for an authoring run (evolution §3.3).
+/// `"manual"` runs the classic 4-step operator checkpoint flow exactly as
+/// before; `"auto_advisory"` and `"auto_strict"` let the harness self-clear a
+/// checkpoint in-process (deep consistency + sampled dual-persona reviews),
+/// approving on a severity threshold. Kept as a small closed set — additive
+/// values ship with an explicit entry here. `manual` remains the default even
+/// after auto policies land (owner decision D-1: `manual` is the global
+/// default; a run opts into an auto policy explicitly).
+pub const AUTHORING_CHECKPOINT_POLICIES: [&str; 3] = ["manual", "auto_advisory", "auto_strict"];
+
+/// Validate and canonicalize an optional `checkpoint_policy` from run input
+/// (evolution §3.3).
+///
+/// - `None` → `Ok(None)` (manual = default, byte-identical to the pre-policy
+///   4-step checkpoint flow).
+/// - `Some("manual")` → `Ok(None)`. `"manual"` canonicalizes to `None` so the
+///   run persists NULL, matching a pre-upgrade row exactly (I1: manual/NULL is
+///   byte-identical to today).
+/// - `Some(value)` where trimmed value ∈ {`auto_advisory`, `auto_strict`} →
+///   `Ok(Some(canonical))`.
+/// - anything else → `Err(rejected value)` for an input-error message.
+pub fn validate_checkpoint_policy(policy: Option<&str>) -> Result<Option<String>, String> {
+    match policy {
+        None => Ok(None),
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "manual" => Ok(None),
+                "auto_advisory" => Ok(Some("auto_advisory".to_string())),
+                "auto_strict" => Ok(Some("auto_strict".to_string())),
+                _ => Err(raw.to_string()),
+            }
+        }
+    }
+}
+
+/// The inclusive upper bound on `max_revise_attempts` (evolution §3.2). The
+/// in-run revise loop is a bound, not a tunable knob — one or two attempts keep
+/// the loop convergent while capping model-call cost. `>2` or negative is an
+/// input error.
+pub const MAX_REVISE_ATTEMPTS_UPPER_BOUND: i32 = 2;
+
+/// Validate and canonicalize an optional `max_revise_attempts` from run input
+/// (evolution §3.2).
+///
+/// - `None` → `Ok(None)` (revise disabled = default, byte-identical to the
+///   pre-revise loop).
+/// - `Some(0)` → `Ok(None)`. Zero is the explicit "disabled" spelling; it
+///   canonicalizes to `None` so the run persists NULL, matching a pre-upgrade
+///   row exactly.
+/// - `Some(n)` for `1..=2` → `Ok(Some(n))`.
+/// - anything else (`n > 2`, negative) → `Err(rejected value)` for an
+///   input-error message.
+pub fn validate_max_revise_attempts(attempts: Option<i32>) -> Result<Option<i32>, i32> {
+    match attempts {
+        None | Some(0) => Ok(None),
+        Some(n) if (1..=MAX_REVISE_ATTEMPTS_UPPER_BOUND).contains(&n) => Ok(Some(n)),
+        Some(other) => Err(other),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchUsageForSceneInput {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResearchUsageForSceneOutput {
+    pub usages: Vec<ResearchUsage>,
+}
+
+// =============================================================================
+// Canon deltas (ADR 0001 — canon mining & ratification)
+// =============================================================================
+
+/// The v1 canon-delta class vocabulary (ADR 0001 D1). Order and spelling are a
+/// **one-way door**: staged rows persist in operator databases keyed on these
+/// strings, so a rename strands rows and breaks decided-audit replay.
+///
+/// Classes are validated strings, not an enum — additions are additive by
+/// construction (ADR reversal-cost note), but [`is_canon_delta_class`] rejects
+/// any class not in this table at the staging boundary.
+pub const CANON_DELTA_CLASSES: [&str; 14] = [
+    "canonical_fact",
+    "promise_planted",
+    "promise_payoff_candidate",
+    "promise_reinforced",
+    "relationship_shift",
+    "character_state",
+    "knowledge_learned",
+    "beat_annotation",
+    "try_fail_cycle",
+    "consequence_delivered",
+    "escalation_demonstrated",
+    "arc_milestone_reached",
+    "quantity_change",
+    "entity_candidate",
+];
+
+/// Whether `class` is one of the recognised [`CANON_DELTA_CLASSES`]. Exact
+/// (case-sensitive) match — the class vocabulary is a public contract, not a
+/// free-form label. Staging rejects anything this returns `false` for.
+pub fn is_canon_delta_class(class: &str) -> bool {
+    CANON_DELTA_CLASSES.contains(&class)
+}
+
+/// A proposed canon delta mined from a committed scene and awaiting operator
+/// ratification (ADR 0001 D2). Read model: timestamps are ISO-8601 strings,
+/// mapped from the stored microsecond representation at the adapter boundary
+/// (mirrors [`SessionActivity`] / [`ProgressionEvent`]). `payload` is the typed
+/// per-class JSON — validated by the write tool the class maps to on apply.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonDelta {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the scene this delta was mined from.
+    pub scene_id: String,
+    /// The authoring run that mined it, or `None` when mined outside a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_run_id: Option<String>,
+    /// One of [`CANON_DELTA_CLASSES`].
+    pub delta_class: String,
+    /// The existing entity this modifies; `None` proposes a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    /// Typed per-class payload (the class's write-tool input, minus the fields
+    /// injected at apply).
+    pub payload: serde_json::Value,
+    /// Sanitized prose excerpt (≤300 chars) grounding the proposal; mandatory.
+    pub evidence: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+    /// `staged` | `applied` | `rejected` | `superseded`.
+    pub status: String,
+    /// Ratification audit — when the decision was recorded (ISO-8601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// Ratification audit — who recorded the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for `mine_scene_canon` (evolution §3.1): mine one committed scene's
+/// prose into proposed canon deltas awaiting operator ratification. Branch
+/// resolution is implicit — the service mines the project's active branch,
+/// matching the other scene-scoped read passes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MineSceneCanonInput {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+/// Output of `mine_scene_canon`. `status` is one of `staged` (deltas persisted),
+/// `skipped` (no cleared route / empty prose — `skip_reason` names why), or
+/// `model_output_rejected` (the model's JSON was malformed; nothing staged). A
+/// skip or rejection never reads as a clean mine (evolution I8).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MineSceneCanonOutput {
+    /// The surviving deltas staged this pass, in prompt order.
+    #[serde(default)]
+    pub staged: Vec<CanonDelta>,
+    /// Deltas the model proposed but that failed validation (unknown class,
+    /// evidence not verbatim in prose, missing entity kind).
+    pub discarded_count: usize,
+    /// Prior `staged` deltas for this scene flipped to `superseded` on remine.
+    pub superseded_count: usize,
+    /// `staged` | `skipped` | `model_output_rejected`.
+    pub status: String,
+    /// Present only when `status == "skipped"`; names the route+rating that was
+    /// uncleared, or "empty scene". Never carries prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+// =============================================================================
+// Plan amendments (ADR 0003 — living-outline replanning & ratification)
+// =============================================================================
+
+/// The v1 plan-amendment class vocabulary (ADR 0003 D1). Order and spelling are
+/// a **one-way door**: staged rows persist in operator databases keyed on these
+/// strings, so a rename strands rows and breaks decided-audit replay (identical
+/// contract to [`CANON_DELTA_CLASSES`]).
+///
+/// Classes are validated strings, not an enum — additions are additive by
+/// construction (ADR reversal-cost note), but [`is_plan_amendment_class`]
+/// rejects any class not in this table at the staging boundary. Each applies
+/// through an existing plan write path only (`plan_chapter` /
+/// `create_narrative_promise`) — the replanner never gains a novel write path.
+pub const PLAN_AMENDMENT_CLASSES: [&str; 8] = [
+    "synopsis_update",
+    "scene_add",
+    "scene_drop",
+    "scene_replace",
+    "scene_reorder",
+    "thread_promote",
+    "thread_retire",
+    "promise_followup",
+];
+
+/// Whether `class` is one of the recognised [`PLAN_AMENDMENT_CLASSES`]. Exact
+/// (case-sensitive) match — the class vocabulary is a public contract, not a
+/// free-form label. Staging rejects anything this returns `false` for.
+pub fn is_plan_amendment_class(class: &str) -> bool {
+    PLAN_AMENDMENT_CLASSES.contains(&class)
+}
+
+/// A proposed plan amendment staged by the replan differ and awaiting operator
+/// ratification (ADR 0003 D2). Read model: timestamps are ISO-8601 strings,
+/// mapped from the stored microsecond representation at the adapter boundary
+/// (mirrors [`CanonDelta`]). `payload` is the typed per-class JSON — the minimal
+/// delta against the plan-write input the class applies through (Part B).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanAmendment {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the summarized chapter whose save triggered the replan pass.
+    pub source_chapter: i32,
+    /// The book the source/target chapter numbers belong to.
+    pub book_number: i32,
+    /// The authoring run that staged it, or `None` when replanned outside a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_run_id: Option<String>,
+    /// One of [`PLAN_AMENDMENT_CLASSES`].
+    pub amendment_class: String,
+    /// The future chapter this amends. `None` only for `promise_followup`
+    /// (which targets a future placement, not a chapter row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_chapter: Option<i32>,
+    /// Typed per-class payload (the minimal delta against the class's plan-write
+    /// input, replayed on apply by Part B).
+    pub payload: serde_json::Value,
+    /// The replanner's stated reasoning (ids/summaries only, no prose quotes);
+    /// mandatory, non-empty, ≤500 chars.
+    pub rationale: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+    /// `staged` | `applied` | `rejected` | `superseded`.
+    pub status: String,
+    /// Ratification audit — when the decision was recorded (ISO-8601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// Ratification audit — who recorded the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    /// ADR D4 history: the affected plan slice snapshotted at apply time, before
+    /// the write. `None` until an apply captures it (Part B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_state: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for the replan differ (`replan_chapter`, ADR 0003). The pass audits the
+/// realized reality of `source_chapter` against every not-yet-drafted chapter's
+/// plan strictly after it in the same book, staging amendment proposals the
+/// operator ratifies. Branch resolution is implicit — the differ reads the
+/// project's active branch, matching the other summary-scoped passes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReplanChapterInput {
+    pub project_id: String,
+    pub book_number: i32,
+    /// The just-summarized chapter whose realized reality drives the audit.
+    pub source_chapter: i32,
+}
+
+/// Output of `replan_chapter` (ADR 0003). `status` is one of `staged`
+/// (amendments persisted), `no_summary` (the source chapter has no saved
+/// summary — nothing to compare against), `no_targets` (no eligible undrafted
+/// future chapter), `skipped` (no cleared route / transport error —
+/// `skip_reason` names the error class, never prose), or `model_output_rejected`
+/// (the model's JSON was malformed; nothing staged). A skip, no-summary,
+/// no-targets, or rejection never reads as a clean pass (evolution I8).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReplanChapterOutput {
+    /// The surviving amendments staged this pass, in prompt order (cap 8).
+    #[serde(default)]
+    pub staged: Vec<PlanAmendment>,
+    /// Amendments the model proposed but that failed validation (unknown class,
+    /// empty rationale, missing/forbidden target chapter, bad payload, target
+    /// outside the eligible set) or that overflowed the per-pass cap.
+    pub discarded_count: usize,
+    /// Prior `staged` amendments for this source chapter flipped to `superseded`
+    /// on rerun.
+    pub superseded_count: usize,
+    /// `staged` | `no_summary` | `no_targets` | `skipped` | `model_output_rejected`.
+    pub status: String,
+    /// Present only when `status == "skipped"`; names the route+rating that was
+    /// uncleared or the transport failure. Never carries prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+/// Input for `list_plan_amendments` (ADR 0003): read the living-outline ratify
+/// queue on a project's active branch. Filters compose (AND): `status` narrows
+/// to `staged`/`applied`/`rejected`/`superseded`; `book_number` + `source_chapter`
+/// scope to one replan pass's provenance (both required together — a lone
+/// `book_number` or lone `source_chapter` is an input error). Mirrors
+/// [`ListCanonDeltasInput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListPlanAmendmentsInput {
+    pub project_id: String,
+    /// `staged` | `applied` | `rejected` | `superseded`; `None` returns all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Scope to the amendments a specific replan pass staged: the book the
+    /// `source_chapter` belongs to. Must be paired with `source_chapter`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_number: Option<i32>,
+    /// Scope to the amendments triggered by a specific summarized chapter. Must
+    /// be paired with `book_number`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_chapter: Option<i32>,
+}
+
+/// Output of `list_plan_amendments`: the matching amendments in the repository's
+/// deterministic `(created_at, id)` order.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListPlanAmendmentsOutput {
+    #[serde(default)]
+    pub amendments: Vec<PlanAmendment>,
+}
+
+/// One operator ratification decision on a staged plan amendment (ADR 0003 D5).
+/// `action` is `apply` or `reject`. `edit` optionally replaces the staged
+/// payload (ratify-with-correction) — the edited payload is what is applied AND
+/// recorded on the row. `note` is an operator annotation surfaced in the output
+/// (the `plan_amendment` row has no note column, so it is never persisted).
+/// Mirrors [`CanonDeltaDecisionInput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanAmendmentDecisionInput {
+    pub amendment_id: String,
+    /// `apply` | `reject`.
+    pub action: String,
+    /// Corrected payload replacing the staged one on apply. On reject it is
+    /// recorded but not applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "any_object_schema")]
+    pub edit: Option<serde_json::Value>,
+    /// Free-form operator note; echoed in the output, not persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Input for `decide_plan_amendments` (ADR 0003 D5): the apply dispatcher. All
+/// decisions are pre-flighted before any write; a single pre-flight failure
+/// aborts the whole call with zero writes (decisions on already-decided rows are
+/// input errors — finality). The ADR D3 immutability guard is checked at apply
+/// time for every chapter-targeting class. `decided_by` defaults to `operator`.
+/// Mirrors [`DecideCanonDeltasInput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecidePlanAmendmentsInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub decisions: Vec<PlanAmendmentDecisionInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+}
+
+/// The per-decision outcome in a `decide_plan_amendments` response.
+///
+/// * `applied` — the amendment replayed through its plan write path and the
+///   decision (with the ADR D4 prior-state snapshot) was recorded.
+/// * `rejected` — the amendment was marked rejected; no plan write.
+/// * `failed` — a real write error occurred after pre-flight; earlier applies in
+///   the batch stay applied (they are real outline changes), this row stays
+///   staged.
+/// * `not_reached` — a later decision the dispatcher never got to because an
+///   earlier one failed (this row stays staged).
+///
+/// Mirrors [`CanonDeltaDecisionResult`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanAmendmentDecisionResult {
+    pub amendment_id: String,
+    /// `applied` | `rejected` | `failed` | `not_reached`.
+    pub outcome: String,
+    /// Present on `failed`: the write error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Present on `applied` for `promise_followup` (the created narrative-promise
+    /// id). `None` for the chapter-plan classes, which rewrite a plan in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_record_id: Option<String>,
+    /// The operator note carried on the decision input, echoed back (the row has
+    /// no note column, so this is the only place it survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Output of `decide_plan_amendments`: one result per decision in input order,
+/// plus counts. Mirrors [`DecideCanonDeltasOutput`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecidePlanAmendmentsOutput {
+    #[serde(default)]
+    pub results: Vec<PlanAmendmentDecisionResult>,
+    pub applied_count: usize,
+    pub rejected_count: usize,
+    pub failed_count: usize,
+}
+
+/// A single reader-simulation concern (evolution §3.6 cumulative reader-sim).
+/// `severity` is `info` | `warning` — a craft signal only, never a hard gate:
+/// reader-sim concerns are report-only, matching the sampled-review outcomes
+/// which never fold into the auto-checkpoint verdict counts. `description` is
+/// the model's own concern text (a craft observation, not committed prose).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ReaderSimConcern {
+    /// `info` | `warning`. A `warning` is a stronger craft signal but does NOT
+    /// block the checkpoint (report-only, per the studied verdict semantics).
+    pub severity: String,
+    /// The model's concern text (a craft observation).
+    pub description: String,
+}
+
+/// Input to the per-chapter cumulative reader-simulation pass (evolution §3.6).
+/// The service resolves the ordered scenes by id, concatenates their prose in
+/// spine order, builds the persona + prior-notes prompt, dispatches through the
+/// `reader_sim` → `review` fallback ladder gated at `rating`, and parses strict
+/// JSON out. Prior notes flow in so the reader accumulates memory chapter to
+/// chapter across a checkpoint range.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderSimChapterInput {
+    pub project_id: String,
+    /// Active-branch scene ids for this chapter, already ordered by scene spine
+    /// (the caller resolves the order from run state). Empty ⇒ nothing to read.
+    #[serde(default)]
+    pub scene_ids: Vec<String>,
+    /// The batch content rating for this chapter (the strictest across its
+    /// scenes — `max_scene_rating`). Gates the prose-bearing dispatch. `None`
+    /// leaves the request unrated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
+    /// The reader's cumulative notes carried in from the prior chapter (already
+    /// char-capped by the caller). Empty on the first chapter of a range.
+    #[serde(default)]
+    pub prior_notes: String,
+}
+
+/// Outcome of one chapter's reader-simulation pass (evolution §3.6). `status` is
+/// one of `read` (the model returned parseable JSON — `engagement`/`notes`/
+/// `concerns` are populated), `unparsed` (the model output was malformed;
+/// `engagement` is `"unparsed"`, `notes` echoes the caller's prior notes so the
+/// reader loses no memory, and `concerns` is empty), or `skipped` (no cleared
+/// route / transport error / no prose — `skip_reason` names why, never prose).
+/// A skip or an unparsed read never reads as a clean pass (evolution I8).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderSimChapterOutcome {
+    /// Updated reader questions. Omitted by older models; an explicit empty
+    /// array means all previous questions were answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_questions: Option<Vec<String>>,
+    /// `read` | `unparsed` | `skipped`.
+    pub status: String,
+    /// The reader's engagement verdict: `high` | `steady` | `dipping` on a
+    /// parsed read; `"unparsed"` when the output was malformed; `"skipped"` when
+    /// the pass was skipped.
+    pub engagement: String,
+    /// The cumulative, self-contained replacement notes the reader emitted (on
+    /// `read`), or the preserved prior notes (on `unparsed`), or empty (on
+    /// `skipped`). This is the reader's own craft memory, not committed prose.
+    #[serde(default)]
+    pub notes: String,
+    /// Concerns the reader raised this chapter (empty unless `status == "read"`).
+    #[serde(default)]
+    pub concerns: Vec<ReaderSimConcern>,
+    /// Present only when `status == "skipped"`; names the route+rating that was
+    /// uncleared, the transport failure, or "no prose". Never carries prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+/// An inclusive chapter span within a single book, used to scope a
+/// `list_canon_deltas` read to the scenes of those chapters (mirrors the way
+/// `compile_manuscript` resolves a chapter range to active-branch scenes).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChapterRange {
+    /// The book the chapter numbers belong to.
+    pub book_number: i32,
+    /// Inclusive first chapter.
+    pub start: i32,
+    /// Inclusive last chapter.
+    pub end: i32,
+}
+
+/// Input for `list_canon_deltas` (ADR 0001): read the ratify queue on a
+/// project's active branch. Filters compose (AND): `status` narrows to
+/// `staged`/`applied`/`rejected`/`superseded`; `scene_id` narrows to one
+/// scene's provenance; `chapter_range` resolves to the set of active-branch
+/// scenes in those chapters. `scene_id` and `chapter_range` are mutually
+/// exclusive — supplying both is an input error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListCanonDeltasInput {
+    pub project_id: String,
+    /// `staged` | `applied` | `rejected` | `superseded`; `None` returns all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Restrict to deltas mined from this one scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    /// Restrict to deltas mined from any scene in this chapter span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_range: Option<ChapterRange>,
+}
+
+/// Output of `list_canon_deltas`: the matching deltas in the repository's
+/// deterministic `(created_at, id)` order.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListCanonDeltasOutput {
+    #[serde(default)]
+    pub deltas: Vec<CanonDelta>,
+}
+
+/// One operator ratification decision on a staged canon delta (ADR 0001 D3).
+/// `action` is `apply` or `reject`. `edit` optionally replaces the staged
+/// payload (ratify-with-correction) — the edited payload is what is applied AND
+/// recorded on the row. `note` is an operator annotation surfaced in the output
+/// (the `canon_delta` row has no note column, so it is never persisted).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonDeltaDecisionInput {
+    pub delta_id: String,
+    /// `apply` | `reject`.
+    pub action: String,
+    /// Corrected payload replacing the staged one on apply. On reject it is
+    /// recorded but not applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "any_object_schema")]
+    pub edit: Option<serde_json::Value>,
+    /// Free-form operator note; echoed in the output, not persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Input for `decide_canon_deltas` (ADR 0001 D3): the apply dispatcher. All
+/// decisions are pre-flighted before any write; a single pre-flight failure
+/// aborts the whole call with zero writes (decisions on already-decided rows are
+/// input errors — finality). `decided_by` defaults to `operator`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecideCanonDeltasInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub decisions: Vec<CanonDeltaDecisionInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+}
+
+/// The per-decision outcome in a `decide_canon_deltas` response.
+///
+/// * `applied` — the delta's write tool ran and the decision was recorded.
+/// * `rejected` — the delta was marked rejected; no canon write.
+/// * `failed` — a real write error occurred after pre-flight; earlier applies in
+///   the batch stay applied (they are recorded canon), this row stays staged.
+/// * `not_reached` — a later decision the dispatcher never got to because an
+///   earlier one failed (this row stays staged).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CanonDeltaDecisionResult {
+    pub delta_id: String,
+    /// `applied` | `rejected` | `failed` | `not_reached`.
+    pub outcome: String,
+    /// Present on `failed`: the write error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Present on `applied` when the write tool returns a fresh record id (e.g.
+    /// a created fact/promise/entity). `None` for updates that mutate in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_record_id: Option<String>,
+    /// The operator note carried on the decision input, echoed back (the row has
+    /// no note column, so this is the only place it survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Output of `decide_canon_deltas`: one result per decision in input order,
+/// plus counts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DecideCanonDeltasOutput {
+    #[serde(default)]
+    pub results: Vec<CanonDeltaDecisionResult>,
+    pub applied_count: usize,
+    pub rejected_count: usize,
+    pub failed_count: usize,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_character_accepts_null_and_missing_profiles() {
+        // Defect item 5: voice_profile and emotional_profile must be optional —
+        // explicit null (what the canon miner emits for a minor character) and
+        // omission both deserialize to empty defaults.
+        let with_nulls: CreateCharacterInput = serde_json::from_value(serde_json::json!({
+            "project_id": "project:p1",
+            "name": "The stranger",
+            "summary": "A stranger.",
+            "role": "minor",
+            "voice_profile": null,
+            "emotional_profile": null
+        }))
+        .expect("null profiles must deserialize");
+        assert!(with_nulls.voice_profile.tone.is_none());
+        assert!(with_nulls.emotional_profile.base_emotions.is_empty());
+
+        let with_missing: CreateCharacterInput = serde_json::from_value(serde_json::json!({
+            "project_id": "project:p1",
+            "name": "The stranger",
+            "summary": "A stranger.",
+            "role": "minor"
+        }))
+        .expect("missing profiles must deserialize");
+        assert!(with_missing.voice_profile.vocabulary.is_empty());
+        assert!(with_missing.emotional_profile.suppressed.is_empty());
+    }
+
+    #[test]
+    fn scene_verify_checks_is_deduped_and_excludes_deep_only_checks() {
+        // No duplicates.
+        let mut seen = std::collections::BTreeSet::new();
+        for check in SCENE_VERIFY_CHECKS {
+            assert!(seen.insert(*check), "duplicate scene-verify check: {check}");
+        }
+        assert!(!SCENE_VERIFY_CHECKS.is_empty());
+        // The deliberately-excluded deep-only / cross-chapter-trend checks must
+        // never leak into the fast scene-verify subset (design §3.2).
+        for excluded in [
+            "promise_payoff_detection",
+            "scene_purpose_fulfillment",
+            "pacing_drift",
+            "research_accuracy",
+            "scene_divergence",
+            "retcon_reachability",
+        ] {
+            assert!(
+                !SCENE_VERIFY_CHECKS.contains(&excluded),
+                "scene-verify subset must exclude {excluded}"
+            );
+        }
+        assert!(
+            SCENE_VERIFY_CHECKS.contains(&"anti_slop"),
+            "Phase 3: hard shelves join the scene-scoped verify set"
+        );
+    }
+
+    #[test]
+    fn scene_order_requires_single_chapter_chapter_range_scope() {
+        // Legacy shape: no scene_order → ChapterRange, unchanged.
+        let plain = ConsistencyScopeInput::chapter_range(1, 1, 1, 1);
+        assert!(matches!(
+            plain.to_scope(),
+            Ok(ConsistencyScope::ChapterRange { .. })
+        ));
+
+        // Single-chapter range + scene_order → Scene.
+        let scene = ConsistencyScopeInput {
+            scene_order: Some(2),
+            ..ConsistencyScopeInput::chapter_range(1, 1, 1, 1)
+        };
+        assert!(matches!(
+            scene.to_scope(),
+            Ok(ConsistencyScope::Scene {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 2
+            })
+        ));
+
+        // Multi-chapter range + scene_order → error naming the constraint.
+        let multi = ConsistencyScopeInput {
+            scene_order: Some(1),
+            ..ConsistencyScopeInput::chapter_range(1, 1, 1, 2)
+        };
+        let err = multi
+            .to_scope()
+            .expect_err("multi-chapter scene_order rejected");
+        assert!(err.contains("single-chapter"), "constraint named: {err}");
+
+        // scene_order paired with full/book is a caller mistake.
+        let full = ConsistencyScopeInput {
+            scene_order: Some(1),
+            ..ConsistencyScopeInput::full()
+        };
+        assert!(full.to_scope().is_err(), "scene_order + full is rejected");
+        let book = ConsistencyScopeInput {
+            scene_order: Some(1),
+            ..ConsistencyScopeInput::book(1)
+        };
+        assert!(book.to_scope().is_err(), "scene_order + book is rejected");
+    }
+
+    #[test]
+    fn validate_mining_policy_accepts_known_and_rejects_unknown() {
+        // None (default) and explicit "disabled" both canonicalize to None so
+        // the run persists NULL = byte-identical disabled state.
+        assert_eq!(validate_mining_policy(None), Ok(None));
+        assert_eq!(validate_mining_policy(Some("disabled")), Ok(None));
+        assert_eq!(validate_mining_policy(Some("  Disabled ")), Ok(None));
+        // propose_all is the one enabling value.
+        assert_eq!(
+            validate_mining_policy(Some("propose_all")),
+            Ok(Some("propose_all".to_string()))
+        );
+        assert_eq!(
+            validate_mining_policy(Some("PROPOSE_ALL")),
+            Ok(Some("propose_all".to_string()))
+        );
+        // Anything else is an input error carrying the rejected value verbatim.
+        assert_eq!(
+            validate_mining_policy(Some("auto_accept")),
+            Err("auto_accept".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_replan_policy_accepts_known_and_rejects_unknown() {
+        // None (default) and explicit "disabled" both canonicalize to None so
+        // the run persists NULL = byte-identical disabled state (ADR 0003 D5).
+        assert_eq!(validate_replan_policy(None), Ok(None));
+        assert_eq!(validate_replan_policy(Some("disabled")), Ok(None));
+        assert_eq!(validate_replan_policy(Some("  Disabled ")), Ok(None));
+        // propose_all is the one enabling value.
+        assert_eq!(
+            validate_replan_policy(Some("propose_all")),
+            Ok(Some("propose_all".to_string()))
+        );
+        assert_eq!(
+            validate_replan_policy(Some("PROPOSE_ALL")),
+            Ok(Some("propose_all".to_string()))
+        );
+        // Anything else is an input error carrying the rejected value verbatim.
+        assert_eq!(
+            validate_replan_policy(Some("auto_accept")),
+            Err("auto_accept".to_string())
+        );
+        assert_eq!(AUTHORING_REPLAN_POLICIES, ["disabled", "propose_all"]);
+    }
+
+    #[test]
+    fn validate_checkpoint_policy_accepts_known_and_rejects_unknown() {
+        // None (default) and explicit "manual" both canonicalize to None so the
+        // run persists NULL = manual = byte-identical to the pre-policy flow.
+        assert_eq!(validate_checkpoint_policy(None), Ok(None));
+        assert_eq!(validate_checkpoint_policy(Some("manual")), Ok(None));
+        assert_eq!(validate_checkpoint_policy(Some("  Manual ")), Ok(None));
+        // auto_advisory / auto_strict are the two enabling values.
+        assert_eq!(
+            validate_checkpoint_policy(Some("auto_advisory")),
+            Ok(Some("auto_advisory".to_string()))
+        );
+        assert_eq!(
+            validate_checkpoint_policy(Some("AUTO_STRICT")),
+            Ok(Some("auto_strict".to_string()))
+        );
+        // Anything else is an input error carrying the rejected value verbatim.
+        assert_eq!(
+            validate_checkpoint_policy(Some("auto")),
+            Err("auto".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_max_revise_attempts_bounds_zero_to_two() {
+        // None (default / disabled) and explicit 0 both canonicalize to None so
+        // the run persists NULL = byte-identical to the pre-revise loop.
+        assert_eq!(validate_max_revise_attempts(None), Ok(None));
+        assert_eq!(validate_max_revise_attempts(Some(0)), Ok(None));
+        // 1 and 2 are the only enabling bounds.
+        assert_eq!(validate_max_revise_attempts(Some(1)), Ok(Some(1)));
+        assert_eq!(validate_max_revise_attempts(Some(2)), Ok(Some(2)));
+        // Above the bound and negative are input errors carrying the rejected value.
+        assert_eq!(validate_max_revise_attempts(Some(3)), Err(3));
+        assert_eq!(validate_max_revise_attempts(Some(-1)), Err(-1));
+    }
+
+    #[test]
+    fn canon_delta_classes_match_adr_d1_exactly() {
+        // ADR 0001 D1 — the class vocabulary is a one-way door; this test pins
+        // the exact fourteen names and their order so a rename can never slip in
+        // unnoticed (orphaned staged rows, broken audit replay).
+        assert_eq!(CANON_DELTA_CLASSES.len(), 14);
+        assert_eq!(
+            CANON_DELTA_CLASSES,
+            [
+                "canonical_fact",
+                "promise_planted",
+                "promise_payoff_candidate",
+                "promise_reinforced",
+                "relationship_shift",
+                "character_state",
+                "knowledge_learned",
+                "beat_annotation",
+                "try_fail_cycle",
+                "consequence_delivered",
+                "escalation_demonstrated",
+                "arc_milestone_reached",
+                "quantity_change",
+                "entity_candidate",
+            ]
+        );
+    }
+
+    #[test]
+    fn canon_delta_class_validation_rejects_unknown_and_accepts_known() {
+        assert!(is_canon_delta_class("beat_annotation"));
+        assert!(is_canon_delta_class("entity_candidate"));
+        assert!(!is_canon_delta_class("made_up_class"));
+        assert!(!is_canon_delta_class(""));
+        // Classes are case-sensitive validated strings, not an enum.
+        assert!(!is_canon_delta_class("Canonical_Fact"));
+    }
+
+    #[test]
+    fn canon_delta_read_model_round_trips() {
+        let delta = CanonDelta {
+            id: "canon_delta:01J".to_string(),
+            project_id: "project:demo".to_string(),
+            branch_id: "bible_branch:main".to_string(),
+            scene_id: "scene:xyz".to_string(),
+            authoring_run_id: Some("authoring_run:run1".to_string()),
+            delta_class: "relationship_shift".to_string(),
+            target_id: Some("relationship:ab".to_string()),
+            payload: serde_json::json!({ "trust_delta": -2 }),
+            evidence: "She turned away without a word.".to_string(),
+            confidence: "high".to_string(),
+            status: "staged".to_string(),
+            decided_at: None,
+            decided_by: None,
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            updated_at: "2026-07-19T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&delta).expect("serialize canon delta");
+        let decoded: CanonDelta = serde_json::from_str(&json).expect("deserialize canon delta");
+        assert_eq!(decoded.id, delta.id);
+        assert_eq!(decoded.delta_class, "relationship_shift");
+        assert_eq!(decoded.status, "staged");
+        assert_eq!(decoded.payload["trust_delta"], -2);
+        assert!(decoded.decided_at.is_none());
+    }
+
+    #[test]
+    fn plan_amendment_classes_match_adr_d1_exactly() {
+        // ADR 0003 D1 — the class vocabulary is a one-way door; this test pins
+        // the exact eight names and their order so a rename can never slip in
+        // unnoticed (orphaned staged rows, broken outline history).
+        assert_eq!(PLAN_AMENDMENT_CLASSES.len(), 8);
+        assert_eq!(
+            PLAN_AMENDMENT_CLASSES,
+            [
+                "synopsis_update",
+                "scene_add",
+                "scene_drop",
+                "scene_replace",
+                "scene_reorder",
+                "thread_promote",
+                "thread_retire",
+                "promise_followup",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_amendment_class_validation_rejects_unknown_and_accepts_known() {
+        assert!(is_plan_amendment_class("synopsis_update"));
+        assert!(is_plan_amendment_class("promise_followup"));
+        assert!(!is_plan_amendment_class("made_up_class"));
+        assert!(!is_plan_amendment_class(""));
+        // Classes are case-sensitive validated strings, not an enum.
+        assert!(!is_plan_amendment_class("Synopsis_Update"));
+    }
+
+    #[test]
+    fn plan_amendment_read_model_round_trips() {
+        let amendment = PlanAmendment {
+            id: "plan_amendment:01J".to_string(),
+            project_id: "project:demo".to_string(),
+            branch_id: "bible_branch:main".to_string(),
+            source_chapter: 3,
+            book_number: 1,
+            authoring_run_id: Some("authoring_run:run1".to_string()),
+            amendment_class: "synopsis_update".to_string(),
+            target_chapter: Some(5),
+            payload: serde_json::json!({ "synopsis": "The gate falls." }),
+            rationale: "chapter 3 resolved the siege early".to_string(),
+            confidence: "high".to_string(),
+            status: "staged".to_string(),
+            decided_at: None,
+            decided_by: None,
+            prior_state: None,
+            created_at: "2026-07-20T00:00:00Z".to_string(),
+            updated_at: "2026-07-20T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&amendment).expect("serialize plan amendment");
+        let decoded: PlanAmendment =
+            serde_json::from_str(&json).expect("deserialize plan amendment");
+        assert_eq!(decoded.id, amendment.id);
+        assert_eq!(decoded.amendment_class, "synopsis_update");
+        assert_eq!(decoded.status, "staged");
+        assert_eq!(decoded.target_chapter, Some(5));
+        assert_eq!(decoded.payload["synopsis"], "The gate falls.");
+        assert!(decoded.decided_at.is_none());
+        assert!(decoded.prior_state.is_none());
+    }
 
     #[test]
     fn import_manuscript_contract_round_trips() {
@@ -4993,6 +8257,12 @@ mod tests {
             project_id: "project:demo".to_string(),
             query: "What does decompression sickness feel like?".to_string(),
             context_hint: Some("chapter 5 dive scene".to_string()),
+            branch_id: None,
+            rating: None,
+            tags: None,
+            scene_id: None,
+            store: true,
+            source_policy: None,
         };
         let json = serde_json::to_string(&input).expect("serialize research query input");
         let decoded: ResearchQueryInput =
@@ -5002,23 +8272,20 @@ mod tests {
         assert_eq!(decoded.context_hint, input.context_hint);
 
         let output = ResearchQueryOutput {
-            model: "gemini-3.1-pro-preview".to_string(),
-            response: "Decompression sickness causes joint pain and fatigue.".to_string(),
-            context_used: ResearchContextSummary {
-                project_name: "Deep Blue".to_string(),
-                genre: "thriller".to_string(),
-                world_rules_count: 3,
-                bible_hits_count: 5,
-            },
+            summary: "Decompression sickness causes joint pain and fatigue.".to_string(),
+            sources: vec![],
+            notes: vec![],
+            claims: vec![],
+            tags: vec!["diving".to_string()],
+            warnings: vec![],
+            uncertainty_level: Some("low".to_string()),
         };
         let json = serde_json::to_string(&output).expect("serialize research query output");
         let decoded: ResearchQueryOutput =
             serde_json::from_str(&json).expect("deserialize research query output");
-        assert_eq!(decoded.model, output.model);
-        assert_eq!(decoded.response, output.response);
-        assert_eq!(decoded.context_used.project_name, "Deep Blue");
-        assert_eq!(decoded.context_used.world_rules_count, 3);
-        assert_eq!(decoded.context_used.bible_hits_count, 5);
+        assert_eq!(decoded.summary, output.summary);
+        assert_eq!(decoded.tags, output.tags);
+        assert_eq!(decoded.uncertainty_level, output.uncertainty_level);
     }
 
     #[test]

@@ -516,6 +516,7 @@ fn build_arcs(
                         .first()
                         .map(|theme| vec![theme.theme_statement.clone()])
                         .unwrap_or_default(),
+                    reached_at: None,
                 })
                 .collect::<Vec<_>>();
             let starting_state = dossier

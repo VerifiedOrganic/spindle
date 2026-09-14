@@ -47,6 +47,7 @@ async fn scene_delete_impact_returns_structured_payload() {
         tone: None,
         generation_id: None,
         source_path: None,
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -96,6 +97,7 @@ async fn scene_move_impact_returns_structured_payload() {
         tone: None,
         generation_id: None,
         source_path: None,
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -146,6 +148,7 @@ async fn read_project_resource_dispatches_scene_impact_arms() {
         tone: None,
         generation_id: None,
         source_path: None,
+        ..Default::default()
     })
     .await
     .unwrap();

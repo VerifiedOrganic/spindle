@@ -11,7 +11,15 @@ Cargo.lock.bak
 
 # Environment / OS
 .env
+.env.*
 .DS_Store
+
+# Private local authoring and code-memory state
+.spindle/
+.ctxmesh/
+
+# Local browser captures and session review notes
+.impeccable/review/
 
 # Claude Code - machine-specific config
 .claude/mcp.json

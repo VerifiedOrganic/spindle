@@ -1,19 +1,12 @@
-mod artifacts;
-mod execution;
-mod mcp;
-mod operator;
-mod plan;
-mod state;
-
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use execution::execute_one;
-use mcp::{McpHarnessClient, TransportConfig};
-use operator::{render_status, resolve_scene_block, review_checkpoint};
-use plan::{FindingSeverity, NextAction, reconcile_state};
-use state::{HarnessState, ScenePhase, load_seed};
+use spindle_harness::execution::execute_one;
+use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+use spindle_harness::operator::{render_status, resolve_scene_block, review_checkpoint};
+use spindle_harness::plan::{Finding, FindingSeverity, NextAction, reconcile_state};
+use spindle_harness::state::{HarnessState, ScenePhase, load_seed};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -267,6 +260,11 @@ async fn resume(command: ResumeCommand) -> Result<()> {
 
     match outcome.next_action {
         NextAction::Blocked => anyhow::bail!("resume blocked"),
+        NextAction::AwaitResearch { .. } => {
+            anyhow::bail!(
+                "resume blocked: action requires research. Use research tools to satisfy requirements, then resume."
+            );
+        }
         _ => {
             println!("Execution is not implemented yet; this is a continuity-safe dry run.");
             Ok(())
@@ -289,18 +287,22 @@ fn review_checkpoint_command(command: ReviewCheckpointCommand) -> Result<()> {
 
 fn resolve_scene_block_command(command: ResolveSceneBlockCommand) -> Result<()> {
     let mut state = HarnessState::load(&command.state)?;
+    // The offline CLI cannot reconcile against Spindle to detect a run-level
+    // block, so only scene-level blocks are resolvable here; the MCP tool
+    // (authoring_resolve_block) covers the run-level case.
     let message = resolve_scene_block(
         &mut state,
         &command.state,
         command.chapter_number,
         command.scene_order,
         command.target_phase.to_state_phase(),
+        false,
     )?;
     println!("{message}");
     Ok(())
 }
 
-fn print_findings(findings: &[plan::Finding]) {
+fn print_findings(findings: &[Finding]) {
     if findings.is_empty() {
         println!("No findings.");
         return;

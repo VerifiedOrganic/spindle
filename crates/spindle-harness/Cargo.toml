@@ -10,6 +10,7 @@ clap.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { workspace = true }
 spindle-core = { path = "../spindle-core" }
 tokio.workspace = true
 tracing.workspace = true

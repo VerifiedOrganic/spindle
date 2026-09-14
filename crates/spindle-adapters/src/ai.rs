@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
+mod usage;
+
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use spindle_core::models::{
@@ -27,6 +29,70 @@ When the prompt requests sexual material, keep it on page rather than fading to 
 or euphemizing the adult beats. Write with direct, concrete physical language at the \
 requested explicit rating while preserving consent, adult age, continuity, character \
 voice, and story tone.";
+
+/// Prose-bearing routes: passes whose requests carry scene prose (as opposed to
+/// pure-metadata passes like `research`). The explicit-content rating gate and
+/// the explicit system-prompt appendixes apply uniformly to these routes
+/// (evolution §4 rule 1 — prose-bearing is a route property, not a name check).
+///
+/// # Import routes are deliberately EXEMPT
+///
+/// The manuscript-import routes (`import_extract`, `import_synthesize`) carry the
+/// operator's full manuscript prose yet are intentionally NOT listed here, so the
+/// rating-gated chokepoint never engages for them (their `.complete` sites also
+/// dispatch `rating: None`). This is a decided, documented boundary, not an
+/// oversight:
+///
+/// - **Ratings do not exist yet.** Content ratings are assigned by *analysis*,
+///   which runs during/after import. At import time there is no rating to gate
+///   on, so structural rating-gating is impossible — gating an unrated request
+///   would either block everything or nothing.
+/// - **Import is a direct operator action on their own manuscript.** The operator
+///   deliberately points Spindle at their own text and chooses which agents run
+///   the import; there is no third-party prose crossing a trust boundary.
+/// - **Trust context is the operator's own configuration.** The import chair the
+///   operator configures sees the full manuscript by construction. The obligation
+///   here is *informed configuration* (pick an agent you trust with the whole
+///   manuscript), not gating. See `docs/spindle-agent-config.md` ("Import routes
+///   and content") and `docs/spindle-evolution-design.md` §4. The config lint in
+///   [`configuration_warnings`] nudges the operator when their import agent is not
+///   cleared for explicit content while another configured agent is.
+/// - **Opt-in explicit offload.** Because a rating gate cannot engage here, an
+///   operator who offloads explicit work to a separate agent can set
+///   `route_import_to_explicit = true` so import resolves to that explicit-cleared
+///   agent (see [`resolve_route`] / [`explicit_offload_route`]) instead of the
+///   default chair — keeping un-rated manuscript prose off a stricter provider
+///   (e.g. Qwen) that would otherwise refuse it.
+pub const PROSE_BEARING_ROUTES: &[&str] = &["draft", "mine", "line_edit", "reader_sim", "review"];
+
+/// Manuscript-import routes. Prose-bearing (they carry the operator's full
+/// manuscript) but deliberately NOT in [`PROSE_BEARING_ROUTES`] — see that
+/// constant's docs for why rating-gating is structurally impossible at import
+/// time. The config lint in [`configuration_warnings`] uses this list to nudge
+/// the operator when their import chair is not cleared for explicit content that
+/// they clearly work with elsewhere.
+const IMPORT_ROUTES: &[&str] = &["import_extract", "import_synthesize"];
+
+/// System-prompt appendix for prose-bearing ANALYSIS passes (mine/review/…) on
+/// explicit-rated material — distinct from [`EXPLICIT_DRAFT_SYSTEM_APPENDIX`].
+///
+/// Design refinement over evolution §4.1: that section said "the explicit
+/// appendix" applies uniformly across prose-bearing routes, but the drafting
+/// appendix (which instructs the model to *write* on-page adult prose) is wrong
+/// for an auditor/miner. Gating uniformity — never dispatching explicit prose to
+/// an uncleared agent — is the invariant the owner approved; porn-prompting the
+/// analysts is not. So the appendix is split: draft keeps the drafting
+/// directive; every other prose-bearing route gets this analysis directive.
+const EXPLICIT_ANALYSIS_SYSTEM_APPENDIX: &str = "\
+Explicit-content analysis directive: the material below is authorized adult \
+fiction being ANALYZED/audited, not generated. Do not rewrite, censor, or \
+moralize about it. Perform the requested structured analysis over the prose as \
+given and return only the requested output format.";
+
+/// Linux `MAX_ARG_STRLEN` is 128 KiB. Stay under it so `provider = "cli"`
+/// still works when the host-embedded draft mega-prompt grows (later scenes
+/// carry previous-scene tail + mined canon + the writing-packet digest).
+const MAX_CLI_ARGV_PROMPT: usize = 96 * 1024;
 
 /// Default `--max-turns` for the grok-cli adapter. Long explicit scenes that
 /// pull bible context via MCP and span multiple output continuations can
@@ -158,7 +224,7 @@ pub struct ModelRequest {
     pub context: Option<RequestContext>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelResponse {
     pub adapter_kind: String,
     pub model_name: String,
@@ -166,6 +232,12 @@ pub struct ModelResponse {
     /// True when the model hit its token limit and the output is incomplete.
     #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
+    pub usage: Option<spindle_core::models::ModelUsage>,
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default)]
+    pub call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +250,20 @@ pub struct ModelRoute {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub stop: Vec<String>,
+    /// True only for the built-in `default_routes()` entries — i.e. a route that
+    /// no operator agent config has claimed. The local stub for production
+    /// routes (`style_analyze`, `style_revise`, `research`) refuses to fabricate
+    /// output for a built-in default, erroring with `NoModelConfiguredError`
+    /// (live-run bug 6a). An operator who intentionally binds a local-stub agent
+    /// to one of these routes gets `builtin_default = false` and the stub serves
+    /// — the documented opt-in for genuinely-local test/dev setups.
+    ///
+    /// `#[serde(skip)]` keeps the field internal: it never appears in the
+    /// `bible://system/model-routes` resource and defaults to `false` on any
+    /// deserialize (a deserialized route is, by construction, not a built-in
+    /// default).
+    #[serde(skip)]
+    pub builtin_default: bool,
 }
 
 /// A resolved route entry plus the rating it serves (if any). Returned by
@@ -188,6 +274,35 @@ pub struct ModelRoute {
 pub struct RouteBinding {
     pub route: ModelRoute,
     pub rating: Option<String>,
+}
+
+/// Why a `draft` route cannot serve a planned scene rating. Absent (`None` on
+/// [`DraftRoutePreflight::problem`]) means the route is serviceable for that
+/// rating with no unmet requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftRoutePreflightProblem {
+    /// No `draft` route resolves for the rating (neither a rating-specific
+    /// override nor a default rule is configured).
+    Unresolved,
+    /// The resolved agent declares an `api_key_env` whose environment variable
+    /// is unset. `env_var` is the variable NAME only — never any value.
+    MissingApiKey { env_var: String },
+    /// The resolved agent is configured but its declared `ratings` list does
+    /// not contain the scene rating (ASCII-lowercase comparison).
+    RatingNotCovered,
+}
+
+/// Result of verifying that the `draft` route can serve a specific content
+/// rating without network I/O. Config-level only: reachability stays the domain
+/// of `test_agent` / health checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftRoutePreflight {
+    /// The resolved external agent id, when the route maps to a configured
+    /// agent. `None` when the route falls back to a built-in local route (which
+    /// serves every rating and is never flagged).
+    pub agent_id: Option<String>,
+    /// The unmet requirement, if any. `None` means serviceable.
+    pub problem: Option<DraftRoutePreflightProblem>,
 }
 
 #[derive(Debug, Clone)]
@@ -210,13 +325,60 @@ struct RuntimeConfig {
     agents: BTreeMap<String, AgentRuntime>,
     health_checks_enabled: bool,
     health_check_timeout: Duration,
+    /// When true, import routes (`import_extract`, `import_synthesize`) resolve
+    /// to the operator's explicit-cleared offload agent instead of their default
+    /// binding — see [`resolve_route`]. Mirrors the opt-in config flag.
+    route_import_to_explicit: bool,
 }
+
+/// A single ATTEMPTED dispatch observed at the router's rating-gated chokepoint
+/// (evolution §4 rule 2 recording seam). Test-only: the offload contract test
+/// iterates these to prove no explicit prose was ever sent to an uncleared
+/// agent. Records are captured in `complete`/`complete_continuation` — a
+/// `Dispatch` is written *after* `resolve_cleared_route` clears the request
+/// (so a recorded dispatch to an uncleared agent would be a leak), and a
+/// `Rejection` is written when the clearance gate refuses.
+///
+/// Available in this crate's own tests and, for cross-crate integration tests
+/// (the offload contract test lives in `spindle-mcp`), under the `test-support`
+/// feature. Compiled out of normal builds — zero production cost.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchRecord {
+    /// A request that passed the clearance gate and was handed to an adapter.
+    /// `agent` is the resolved external agent id, or `"builtin:<model_name>"`
+    /// when the route falls back to a built-in local adapter (which serves
+    /// every rating). `prompt` is the full prompt as dispatched.
+    Dispatch {
+        route: String,
+        agent: String,
+        rating: Option<String>,
+        prompt: String,
+    },
+    /// A prose-bearing request the clearance gate refused (never dispatched).
+    Rejection {
+        route: String,
+        rating: Option<String>,
+        error: String,
+    },
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type DispatchLog = Arc<std::sync::Mutex<Vec<DispatchRecord>>>;
 
 #[derive(Debug, Clone)]
 pub struct ModelRouter {
     runtime: Arc<RwLock<RuntimeConfig>>,
     http_client: reqwest::Client,
     health_generation: Arc<AtomicU64>,
+    usage_pool: Option<crate::sqlite::SqlitePool>,
+    /// Test-only dispatch recorder (evolution §4 rule 2 recording seam). When
+    /// installed via [`ModelRouter::install_dispatch_recorder`], every attempted
+    /// dispatch past the clearance gate — and every clearance rejection — is
+    /// appended here. Gated behind test/`test-support` so it carries zero
+    /// production cost.
+    #[cfg(any(test, feature = "test-support"))]
+    dispatch_log: Arc<RwLock<Option<DispatchLog>>>,
 }
 
 impl Default for ModelRouter {
@@ -227,6 +389,8 @@ impl Default for ModelRouter {
                 agents: Vec::new(),
                 routing: Vec::new(),
                 health_check: crate::agent_config::default_health_check_config(),
+                route_import_to_explicit: false,
+                anti_slop: crate::agent_config::AntiSlopProjectConfig::default(),
             }),
         )
     }
@@ -239,7 +403,37 @@ impl ModelRouter {
             agents: Vec::new(),
             routing: Vec::new(),
             health_check: crate::agent_config::default_health_check_config(),
+            route_import_to_explicit: false,
+            anti_slop: crate::agent_config::AntiSlopProjectConfig::default(),
         })
+    }
+
+    /// Install a fresh dispatch recorder (evolution §4 rule 2 recording seam)
+    /// and return a handle to its log. Every subsequent `complete` /
+    /// `complete_continuation` appends a [`DispatchRecord`] to the returned log:
+    /// a `Dispatch` for each request that clears the rating gate, a `Rejection`
+    /// for each refused prose-bearing request. Test-only. Surviving a
+    /// `configure` swap is guaranteed because the recorder lives on the router
+    /// struct, not the runtime it replaces.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_dispatch_recorder(&self) -> DispatchLog {
+        let log: DispatchLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+        *self.dispatch_log.write().expect("dispatch log write lock") = Some(log.clone());
+        log
+    }
+
+    /// Append a record to the installed dispatch recorder, if any. No-op when
+    /// no recorder is installed (the common case). Test-only.
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_dispatch(&self, record: DispatchRecord) {
+        if let Some(log) = self
+            .dispatch_log
+            .read()
+            .expect("dispatch log read lock")
+            .as_ref()
+        {
+            log.lock().expect("dispatch log lock").push(record);
+        }
     }
 
     fn from_loaded_config(loaded: LoadedAgentConfig) -> Self {
@@ -249,6 +443,9 @@ impl ModelRouter {
             runtime: Arc::new(RwLock::new(runtime)),
             http_client,
             health_generation: Arc::new(AtomicU64::new(0)),
+            usage_pool: None,
+            #[cfg(any(test, feature = "test-support"))]
+            dispatch_log: Arc::new(RwLock::new(None)),
         };
         router.refresh_health_heartbeat();
         router
@@ -292,6 +489,9 @@ impl ModelRouter {
     pub fn configure(&self, explicit_path: Option<&str>) -> anyhow::Result<ConfigureAgentsOutput> {
         let loaded = load_agent_config(explicit_path)?;
         let warnings = configuration_warnings(&loaded);
+        for warning in &warnings {
+            tracing::warn!(source_path = ?loaded.source_path, "agent config lint: {warning}");
+        }
         let health_checks = health_checks_enabled(&loaded);
         let runtime = runtime_from_loaded_config(&self.http_client, loaded.clone());
         *self.runtime.write().expect("model router write lock") = runtime;
@@ -303,6 +503,99 @@ impl ModelRouter {
             health_checks_enabled: health_checks,
             warnings,
         })
+    }
+
+    /// Verify — without any network I/O — that the `draft` route can serve a
+    /// scene of the given content rating. Resolves the rating-aware route,
+    /// maps it back to its configured agent (if any), and reports the first
+    /// unmet requirement: no resolvable route, an unset `api_key_env`, or the
+    /// agent's declared `ratings` list not covering the rating (ASCII-lowercase
+    /// comparison). A route that falls back to a built-in local route has no
+    /// external agent, serves every rating, and is never flagged.
+    pub fn draft_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
+        let runtime = self.runtime.read().expect("model router read lock");
+        route_preflight(&runtime, "draft", rating)
+    }
+
+    /// Verify — without network I/O — that the `review` route can serve a scene
+    /// of the given content rating. Mirrors [`draft_route_preflight`] for the
+    /// checkpoint automation (evolution §3.3): an `auto_advisory` / `auto_strict`
+    /// run runs its sampled dual-persona reviews AND its deep dual-persona
+    /// consistency pass through the `review` route, so that route must be
+    /// rating-cleared for every rating in the run's range before the run starts
+    /// (§3.3 precondition (a); (b) — a deep-check-capable review route —
+    /// collapses into (a) today because the same `review` route serves the
+    /// deep pass). Config-level only; a built-in local review route serves every
+    /// rating and is never flagged.
+    pub fn review_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
+        let runtime = self.runtime.read().expect("model router read lock");
+        route_preflight(&runtime, "review", rating)
+    }
+
+    /// Verify — without network I/O — that canon mining can serve a scene of
+    /// the given content rating through its fallback ladder (evolution §2.3):
+    /// the `mine` route, or the `review` route as fallback. Returns `None` when
+    /// EITHER route resolves clear for the rating (a built-in local route on
+    /// either serves every rating), and `Some(problem)` only when the ladder is
+    /// exhausted — no cleared route for the rating on either `mine` or `review`.
+    /// The reported problem is the `mine`-route problem (the primary role),
+    /// mirroring `draft_route_preflight`'s shape for the caller's message.
+    pub fn mine_fallback_preflight(&self, rating: &str) -> Option<DraftRoutePreflight> {
+        let runtime = self.runtime.read().expect("model router read lock");
+        let mine = route_preflight(&runtime, "mine", rating);
+        // Cleared via mine, or (fallback) via review → the ladder is servable.
+        let review_clears = route_preflight(&runtime, "review", rating)
+            .problem
+            .is_none();
+        if mine.problem.is_none() || review_clears {
+            return None;
+        }
+        // Ladder exhausted: report the primary (mine) route's problem.
+        Some(mine)
+    }
+
+    /// Verify — without network I/O — whether a route's resolved agent declares
+    /// the given rating. Reuses the same config-level reachability as
+    /// [`draft_route_preflight`]: resolve the rating-aware route, map it to its
+    /// configured agent, and check the declared `ratings` list (ASCII-lowercase
+    /// compare). A route that falls back to a built-in local route has no agent,
+    /// serves every rating, and returns `true`.
+    ///
+    /// Used by the style-refresh source-side rating discipline (evolution §3.9 /
+    /// §4): explicit style-edit candidates are withheld from a refresh unless the
+    /// non-prose-bearing `style_analyze` route's agent declares explicit — the
+    /// filter protects at the SOURCE (an explicit example never reaches an
+    /// analyzer that never declared explicit coverage), mirroring the
+    /// prose-bearing dispatch gate.
+    /// Resolve `route_name` for `rating` and report the TYPED clearance error
+    /// without dispatching anything.
+    ///
+    /// Callers that hand their model work to a background task need this: a
+    /// clearance failure must still surface to the CALLER with its real type
+    /// (`RouteClearanceError`), because downstream code distinguishes an
+    /// uncleared route from a transient failure by `downcast_ref`. Flattening it
+    /// to a string inside a detached task turns an honest "skip, fall back to
+    /// manual" into an opaque "blocked".
+    pub fn check_route_clearance(
+        &self,
+        route_name: &str,
+        rating: Option<&str>,
+    ) -> Result<(), RouteClearanceError> {
+        let runtime = self.runtime.read().expect("model router read lock");
+        resolve_cleared_route(&runtime, route_name, rating).map(|_| ())
+    }
+
+    pub fn route_clears_rating(&self, route_name: &str, rating: &str) -> bool {
+        let runtime = self.runtime.read().expect("model router read lock");
+        // "Declares the rating" — a missing API key means the DECLARED agent is
+        // unreachable, not that it fails to declare the rating; only an
+        // unresolvable route or an agent that does not declare the rating counts
+        // as "not cleared" for the source-side discipline.
+        match route_preflight(&runtime, route_name, rating).problem {
+            None | Some(DraftRoutePreflightProblem::MissingApiKey { .. }) => true,
+            Some(DraftRoutePreflightProblem::Unresolved)
+            | Some(DraftRoutePreflightProblem::RatingNotCovered) => false,
+        }
     }
 
     pub fn list_agents(&self) -> ListAgentsOutput {
@@ -377,34 +670,11 @@ impl ModelRouter {
         &self,
         agent_id: &str,
         prompt: Option<&str>,
+        route: Option<&str>,
         rating: Option<&str>,
     ) -> anyhow::Result<TestAgentOutput> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
-        let route_name = runtime
-            .routing_rules
-            .iter()
-            .find(|rule| {
-                rule.agent == agent_id
-                    && rating.is_some()
-                    && rule.rating.as_deref().is_some_and(|rule_rating| {
-                        normalize_route_rating(rule_rating)
-                            == normalize_route_rating(rating.unwrap_or_default())
-                    })
-            })
-            .or_else(|| {
-                runtime
-                    .routing_rules
-                    .iter()
-                    .find(|rule| rule.agent == agent_id && rule.rating.is_none())
-            })
-            .or_else(|| {
-                runtime
-                    .routing_rules
-                    .iter()
-                    .find(|rule| rule.agent == agent_id)
-            })
-            .map(|rule| rule.route.clone())
-            .ok_or_else(|| anyhow::anyhow!("unknown agent id: {agent_id}"))?;
+        let route_name = select_test_agent_route(&runtime, agent_id, route, rating)?;
 
         let response = self
             .complete(&ModelRequest {
@@ -431,18 +701,62 @@ impl ModelRouter {
     }
 
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
+        let start = std::time::Instant::now();
+        let mut result = self.complete_inner(request).await;
+        self.record_usage(&request.route, request.context.as_ref(), start, &mut result)
+            .await;
+        result
+    }
+
+    async fn complete_inner(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
-        let route = resolve_route(&runtime, &request.route, request.rating.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("unknown model route: {}", request.route))?;
+        // Rating-gated dispatch chokepoint (evolution §4 rule 2): every prose-
+        // bearing completion resolves through `resolve_cleared_route`, so an
+        // explicit-rated request whose agent is not cleared errors here rather
+        // than reaching an uncleared model. The typed `RouteClearanceError` is
+        // preserved through anyhow so callers can `downcast_ref` to honest-skip
+        // with a rating-not-covered message (never any prose). Non-prose routes
+        // and rating-None requests pass straight through.
+        let route = match resolve_cleared_route(&runtime, &request.route, request.rating.as_deref())
+        {
+            Ok(route) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Dispatch {
+                    route: request.route.clone(),
+                    agent: dispatch_agent_label(&runtime, route),
+                    rating: request.rating.clone(),
+                    prompt: request.prompt.clone(),
+                });
+                route
+            }
+            Err(err) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Rejection {
+                    route: request.route.clone(),
+                    rating: request.rating.clone(),
+                    error: err.to_string(),
+                });
+                return Err(anyhow::Error::new(err));
+            }
+        };
 
         match route.adapter_kind.as_str() {
-            "local" => Ok(ModelResponse {
-                adapter_kind: route.adapter_kind.clone(),
-                model_name: route.model_name.clone(),
-                output: local_completion(route, &request.prompt),
-                truncated: false,
-            }),
-            "cli" => self.run_cli(route, &request.prompt).await,
+            "local" => {
+                // The local stub errors (rather than fabricating) for an
+                // unconfigured production route (bug 6a); the typed
+                // NoModelConfiguredError is preserved through anyhow so callers
+                // can downcast_ref to distinguish it from a transient failure.
+                let output =
+                    local_completion(route, &request.prompt).map_err(anyhow::Error::new)?;
+                Ok(ModelResponse {
+                    adapter_kind: route.adapter_kind.clone(),
+                    model_name: route.model_name.clone(),
+                    output,
+                    truncated: false,
+                    ..Default::default()
+                })
+            }
+            "cli" => self.run_cli(&runtime, route, &request.prompt).await,
             "http" => {
                 self.run_http(&runtime, route, request.rating.as_deref(), &request.prompt)
                     .await
@@ -509,9 +823,51 @@ impl ModelRouter {
         original_prompt: &str,
         prior_output: &str,
     ) -> anyhow::Result<ModelResponse> {
+        let start = std::time::Instant::now();
+        let mut result = self
+            .complete_continuation_inner(route_name, rating, context, original_prompt, prior_output)
+            .await;
+        self.record_usage(route_name, context, start, &mut result)
+            .await;
+        result
+    }
+
+    async fn complete_continuation_inner(
+        &self,
+        route_name: &str,
+        rating: Option<&str>,
+        context: Option<&RequestContext>,
+        original_prompt: &str,
+        prior_output: &str,
+    ) -> anyhow::Result<ModelResponse> {
         let runtime = self.runtime.read().expect("model router read lock").clone();
-        let route = resolve_route(&runtime, route_name, rating)
-            .ok_or_else(|| anyhow::anyhow!("unknown model route: {route_name}"))?;
+        // Same rating-gated chokepoint as `complete` — a continuation carries
+        // the same prose and rating as the original request (I3), so an
+        // uncleared prose-bearing continuation must fail here too.
+        let route = match resolve_cleared_route(&runtime, route_name, rating) {
+            Ok(route) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Dispatch {
+                    route: route_name.to_string(),
+                    agent: dispatch_agent_label(&runtime, route),
+                    rating: rating.map(ToString::to_string),
+                    // A continuation carries the same prose as the original
+                    // request; recording the original prompt keeps the seam's
+                    // no-leak sweep exact.
+                    prompt: original_prompt.to_string(),
+                });
+                route
+            }
+            Err(err) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.record_dispatch(DispatchRecord::Rejection {
+                    route: route_name.to_string(),
+                    rating: rating.map(ToString::to_string),
+                    error: err.to_string(),
+                });
+                return Err(anyhow::Error::new(err));
+            }
+        };
 
         match route.adapter_kind.as_str() {
             "http" => {
@@ -529,14 +885,49 @@ impl ModelRouter {
         }
     }
 
-    async fn run_cli(&self, route: &ModelRoute, prompt: &str) -> anyhow::Result<ModelResponse> {
-        let command = std::env::var("SPINDLE_MODEL_CLI_COMMAND")
-            .map_err(|_| anyhow::anyhow!("SPINDLE_MODEL_CLI_COMMAND is not configured"))?;
-        let output = tokio::process::Command::new(&command)
-            .arg(&route.route_name)
-            .arg(prompt)
-            .output()
-            .await?;
+    async fn run_cli(
+        &self,
+        runtime: &RuntimeConfig,
+        route: &ModelRoute,
+        prompt: &str,
+    ) -> anyhow::Result<ModelResponse> {
+        // Dispatch the endpoint of the agent that passed clearance, not a
+        // process-global command that could name a different agent.
+        let command = runtime
+            .agents
+            .get(&route.model_name)
+            .map(|agent| agent.config.endpoint.trim())
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(str::to_string)
+            .or_else(|| std::env::var("SPINDLE_MODEL_CLI_COMMAND").ok())
+            .context("CLI agent needs an endpoint or SPINDLE_MODEL_CLI_COMMAND")?;
+        // Linux `MAX_ARG_STRLEN` is 128 KiB for a single argv. Host-embedded
+        // draft prompts (scene context JSON + briefing + skill + shelf digest)
+        // overflow that on later scenes. Small prompts keep the documented
+        // `<endpoint> <route> <prompt>` contract; overflow mirrors grok-cli
+        // and uses `--prompt-file`.
+        let output = if prompt.len() > MAX_CLI_ARGV_PROMPT {
+            let prompt_file = tempfile::Builder::new()
+                .prefix("spindle-cli-")
+                .suffix(".txt")
+                .tempfile()
+                .context("create cli prompt tempfile")?;
+            std::fs::write(prompt_file.path(), prompt).context("write cli prompt tempfile")?;
+            let output = tokio::process::Command::new(&command)
+                .arg(&route.route_name)
+                .arg("--prompt-file")
+                .arg(prompt_file.path())
+                .output()
+                .await?;
+            drop(prompt_file);
+            output
+        } else {
+            tokio::process::Command::new(&command)
+                .arg(&route.route_name)
+                .arg(prompt)
+                .output()
+                .await?
+        };
         if !output.status.success() {
             anyhow::bail!("cli model adapter failed with status {}", output.status);
         }
@@ -545,6 +936,7 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output: String::from_utf8(output.stdout)?.trim().to_string(),
             truncated: false,
+            ..Default::default()
         })
     }
 
@@ -634,6 +1026,7 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output: text,
             truncated,
+            ..Default::default()
         })
     }
 
@@ -672,7 +1065,12 @@ impl ModelRouter {
         if !response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {status} from {endpoint}: {error_body}");
+            return Err(http_completion_error(
+                status,
+                &endpoint,
+                &route.route_name,
+                &error_body,
+            ));
         }
         let body: serde_json::Value = response.json().await?;
         let first_choice = body
@@ -695,6 +1093,8 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output,
             truncated,
+            usage: usage::parse_usage(&body),
+            ..Default::default()
         })
     }
 
@@ -739,7 +1139,12 @@ impl ModelRouter {
         if !response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {status} from {endpoint}: {error_body}");
+            return Err(http_completion_error(
+                status,
+                &endpoint,
+                &route.route_name,
+                &error_body,
+            ));
         }
         let resp_body: serde_json::Value = response.json().await?;
         let first_choice = resp_body
@@ -762,6 +1167,8 @@ impl ModelRouter {
             model_name: route.model_name.clone(),
             output,
             truncated,
+            usage: usage::parse_usage(&resp_body),
+            ..Default::default()
         })
     }
 }
@@ -820,12 +1227,66 @@ where
     unreachable!("retry loop always returns or retries");
 }
 
+/// Config-level preflight for a single prose-bearing route + rating (no network
+/// I/O). Shared by `draft_route_preflight` (route `"draft"`) and the mine
+/// fallback ladder (routes `"mine"` / `"review"`). Resolves the rating-aware
+/// route, maps it back to its configured agent, and reports the first unmet
+/// requirement: no resolvable route, an unset `api_key_env`, or the agent's
+/// declared `ratings` not covering the rating (ASCII-lowercase compare). A route
+/// that falls back to a built-in local route has no external agent, serves every
+/// rating, and is never flagged.
+fn route_preflight(runtime: &RuntimeConfig, route_name: &str, rating: &str) -> DraftRoutePreflight {
+    let Some(route) = resolve_route(runtime, route_name, Some(rating)) else {
+        return DraftRoutePreflight {
+            agent_id: None,
+            problem: Some(DraftRoutePreflightProblem::Unresolved),
+        };
+    };
+    let Some(agent) = runtime.agents.get(&route.model_name) else {
+        return DraftRoutePreflight {
+            agent_id: None,
+            problem: None,
+        };
+    };
+    let agent_id = Some(agent.config.id.clone());
+    if let Some(env_var) = agent.config.api_key_env.as_deref()
+        && agent.resolved_api_key.is_none()
+    {
+        return DraftRoutePreflight {
+            agent_id,
+            problem: Some(DraftRoutePreflightProblem::MissingApiKey {
+                env_var: env_var.to_string(),
+            }),
+        };
+    }
+    let rating_norm = rating.trim().to_ascii_lowercase();
+    let covered = agent
+        .config
+        .ratings
+        .iter()
+        .any(|declared| declared.trim().to_ascii_lowercase() == rating_norm);
+    if !covered {
+        return DraftRoutePreflight {
+            agent_id,
+            problem: Some(DraftRoutePreflightProblem::RatingNotCovered),
+        };
+    }
+    DraftRoutePreflight {
+        agent_id,
+        problem: None,
+    }
+}
+
 /// Resolve a logical route name + optional rating to a concrete `ModelRoute`.
 ///
 /// Resolution order:
 /// 1. If `rating` is `Some`, try `rating_routes[(route, normalized_rating)]`.
-/// 2. Fall back to `routes[route]` (the default rule for this route).
-/// 3. Return `None` if neither is configured.
+/// 2. For an import route with no rating, when `route_import_to_explicit` is
+///    enabled, prefer the operator's explicit-cleared offload agent (see
+///    [`explicit_offload_route`]) so un-rated manuscript prose honors the
+///    explicit offload instead of landing on the default chair.
+/// 3. Fall back to `routes[route]` (the default rule for this route).
+/// 4. Return `None` if nothing is configured.
 fn resolve_route<'r>(
     runtime: &'r RuntimeConfig,
     route_name: &str,
@@ -841,24 +1302,247 @@ fn resolve_route<'r>(
             return Some(route);
         }
     }
+    // Import routes dispatch with `rating: None` and are exempt from the rating
+    // gate, so a rating-based explicit offload never engages for them. When the
+    // operator opts in, route them through the explicit-cleared offload agent so
+    // a stricter provider (e.g. Qwen) is not handed un-offloaded manuscript prose.
+    if rating.is_none()
+        && runtime.route_import_to_explicit
+        && IMPORT_ROUTES.contains(&route_name)
+        && let Some(route) = explicit_offload_route(runtime, route_name)
+    {
+        return Some(route);
+    }
     runtime.routes.get(route_name)
+}
+
+/// The explicit-cleared offload target for an import route, when one is
+/// configured. Prefers an `import_*`-specific explicit override
+/// (`rating_routes[(route, "explicit")]`); otherwise falls back to the agent
+/// that serves `draft` at the `explicit` rating — the canonical "where explicit
+/// prose goes" binding the operator has already declared. Returns `None` when
+/// neither is configured, so the caller falls back to the default chair.
+fn explicit_offload_route<'r>(
+    runtime: &'r RuntimeConfig,
+    route_name: &str,
+) -> Option<&'r ModelRoute> {
+    runtime
+        .rating_routes
+        .get(&(route_name.to_string(), "explicit".to_string()))
+        .or_else(|| {
+            runtime
+                .rating_routes
+                .get(&("draft".to_string(), "explicit".to_string()))
+        })
+}
+
+/// Why a prose-bearing route could not be cleared for dispatch (evolution §4
+/// rule 2). Distinguishes "there is no route at all" from "the route resolved
+/// but its agent is not cleared for this rating" so callers can honest-skip with
+/// an accurate, prose-free message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RouteClearanceError {
+    /// No route resolves for `route` (neither a rating override nor a default).
+    #[error("no model route resolves for `{route}`")]
+    NoRoute { route: String },
+    /// The route resolved to `agent_id`, whose declared `ratings` do not cover
+    /// `rating`. Names ids only — never any prose.
+    #[error(
+        "route `{route}` resolved to agent `{agent_id}`, which is not cleared for rating `{rating}`"
+    )]
+    RatingNotCovered {
+        route: String,
+        rating: String,
+        agent_id: String,
+    },
+}
+
+/// A production route (`style_analyze`, `style_revise`, `research`) resolved to
+/// the built-in local stub because no operator agent is configured for it. The
+/// stub refuses to fabricate plausible-shaped output for these routes (live-run
+/// bug 6a — a stub `style-analyze-local` profile once merged mock narrator
+/// guidance over a project's real voice, and `research-local` echoed prompts
+/// back as research). Callers surface this through their existing error paths
+/// (style/research tools report it) instead of silently ingesting fabrications.
+///
+/// Preserved through `anyhow` so callers can `downcast_ref` to distinguish an
+/// unconfigured route from a transient model error (which may still degrade to
+/// `NeedsReview` rather than failing the whole operation).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("no model configured for route '{route}' - configure an agent in .spindle/config.toml")]
+pub struct NoModelConfiguredError {
+    pub route: String,
+}
+
+/// A provider safety classifier refused the completion on content-policy
+/// grounds (e.g. Qwen/DashScope data-inspection, OpenAI/Anthropic content
+/// policy). Distinct from a transient model error: a refusal is deterministic
+/// for this prompt+provider and retrying will not help, so callers honest-skip
+/// the affected item (a scene, an import segment) rather than aborting the whole
+/// operation or burning retries.
+///
+/// Preserved through `anyhow` so callers can `downcast_ref` to distinguish a
+/// content-policy refusal from a transient failure — the same convention as
+/// [`RouteClearanceError`] and [`NoModelConfiguredError`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("provider content-policy refusal on route '{route}' from {endpoint}")]
+pub struct ContentPolicyRefusal {
+    pub route: String,
+    pub endpoint: String,
+    /// The provider's error body, trimmed. Carried so an operator can see WHY,
+    /// but never includes the prompt/prose that triggered it.
+    pub detail: String,
+}
+
+/// Error-body substrings that identify a provider safety/content-policy refusal
+/// as opposed to an ordinary bad request. Lowercased before matching. Covers
+/// OpenAI-compatible (`content policy`, `content_policy`, `content filter`),
+/// Anthropic (`sensitive content`), and DashScope/Qwen (`datainspectionfailed`,
+/// `data inspection`) wordings.
+const CONTENT_POLICY_REFUSAL_MARKERS: &[&str] = &[
+    "content policy",
+    "content_policy",
+    "content filter",
+    "content_filter",
+    "content moderation",
+    "sensitive content",
+    "datainspectionfailed",
+    "data inspection",
+    "responsibleaipolicy",
+    "safety system",
+];
+
+/// True when an HTTP error body looks like a provider content-policy refusal
+/// rather than a generic 4xx. Used by the HTTP adapters to surface a typed
+/// [`ContentPolicyRefusal`] callers can honest-skip on.
+fn is_content_policy_refusal(error_body: &str) -> bool {
+    let lowered = error_body.to_ascii_lowercase();
+    CONTENT_POLICY_REFUSAL_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+}
+
+/// Map a non-success HTTP response from a chat completion into either a typed
+/// [`ContentPolicyRefusal`] (when the body looks like a safety refusal) or a
+/// generic anyhow error. Keeps the two HTTP adapters consistent.
+fn http_completion_error(
+    status: reqwest::StatusCode,
+    endpoint: &str,
+    route: &str,
+    error_body: &str,
+) -> anyhow::Error {
+    if is_content_policy_refusal(error_body) {
+        anyhow::Error::new(ContentPolicyRefusal {
+            route: route.to_string(),
+            endpoint: endpoint.to_string(),
+            detail: error_body.trim().chars().take(500).collect(),
+        })
+    } else {
+        anyhow::anyhow!("HTTP {status} from {endpoint}: {error_body}")
+    }
+}
+
+/// Rating-gated dispatch chokepoint (evolution §4 rule 2). Wraps
+/// [`resolve_route`] and, for a prose-bearing route with a rating supplied,
+/// additionally verifies the resolved agent's declared `ratings` list covers
+/// the rating (ASCII-lowercase compare — the same normalization as
+/// [`draft_route_preflight`](ModelRouter::draft_route_preflight)).
+///
+/// - Non-prose-bearing routes, or `rating == None`, are a passthrough to
+///   `resolve_route` (no clearance check).
+/// - A prose-bearing route that resolves to a *built-in local* route (its
+///   `model_name` is not a configured agent) serves every rating and is cleared
+///   — this is the local-only-deployment path and must never be gated.
+///
+/// The agent ratings are reachable from the resolved [`ModelRoute`] with no
+/// extra threading: `route.model_name` is the agent id, the key into
+/// `runtime.agents`, whose `config.ratings` carries the declared list (exactly
+/// as `draft_route_preflight` already relies on).
+fn resolve_cleared_route<'r>(
+    runtime: &'r RuntimeConfig,
+    route_name: &str,
+    rating: Option<&str>,
+) -> Result<&'r ModelRoute, RouteClearanceError> {
+    let route =
+        resolve_route(runtime, route_name, rating).ok_or_else(|| RouteClearanceError::NoRoute {
+            route: route_name.to_string(),
+        })?;
+
+    // Clearance check applies only to prose-bearing routes with a rating.
+    let Some(raw_rating) = rating else {
+        return Ok(route);
+    };
+    if !PROSE_BEARING_ROUTES.contains(&route_name) {
+        return Ok(route);
+    }
+    let rating_norm = raw_rating.trim().to_ascii_lowercase();
+    if rating_norm.is_empty() {
+        return Ok(route);
+    }
+
+    // A built-in local route (model_name not a configured agent) serves every
+    // rating — never gated.
+    let Some(agent) = runtime.agents.get(&route.model_name) else {
+        return Ok(route);
+    };
+    let covered = agent
+        .config
+        .ratings
+        .iter()
+        .any(|declared| declared.trim().to_ascii_lowercase() == rating_norm);
+    if covered {
+        Ok(route)
+    } else {
+        Err(RouteClearanceError::RatingNotCovered {
+            route: route_name.to_string(),
+            rating: rating_norm,
+            agent_id: agent.config.id.clone(),
+        })
+    }
 }
 
 fn normalize_route_rating(rating: &str) -> String {
     rating.trim().to_ascii_lowercase()
 }
 
+/// Label the agent a cleared route dispatches to, for the test recording seam
+/// (evolution §4 rule 2). A route whose `model_name` matches a configured agent
+/// returns that agent id; a built-in local route (no matching configured agent)
+/// returns `"builtin:<model_name>"`, so the contract test can distinguish an
+/// external cleared agent from the never-gated local adapter.
+#[cfg(any(test, feature = "test-support"))]
+fn dispatch_agent_label(runtime: &RuntimeConfig, route: &ModelRoute) -> String {
+    if runtime.agents.contains_key(&route.model_name) {
+        route.model_name.clone()
+    } else {
+        format!("builtin:{}", route.model_name)
+    }
+}
+
 fn system_prompt_for_request(route: &ModelRoute, rating: Option<&str>) -> String {
     let mut system_prompt = route.system_prompt.clone();
-    let is_explicit_draft = route.route_name == "draft"
-        && rating
-            .map(|value| value.trim().eq_ignore_ascii_case("explicit"))
-            .unwrap_or(false);
-    if is_explicit_draft && !system_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX) {
+    let is_explicit = rating
+        .map(|value| value.trim().eq_ignore_ascii_case("explicit"))
+        .unwrap_or(false);
+    // The drafting appendix stays draft-only — instructing a miner/auditor to
+    // write on-page adult prose would be wrong. Every other prose-bearing route
+    // gets the analysis appendix instead (evolution §4.1 design refinement).
+    let appendix = if !is_explicit {
+        None
+    } else if route.route_name == "draft" {
+        Some(EXPLICIT_DRAFT_SYSTEM_APPENDIX)
+    } else if PROSE_BEARING_ROUTES.contains(&route.route_name.as_str()) {
+        Some(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX)
+    } else {
+        None
+    };
+    if let Some(appendix) = appendix
+        && !system_prompt.contains(appendix)
+    {
         if !system_prompt.trim().is_empty() {
             system_prompt.push_str("\n\n");
         }
-        system_prompt.push_str(EXPLICIT_DRAFT_SYSTEM_APPENDIX);
+        system_prompt.push_str(appendix);
     }
     system_prompt
 }
@@ -1155,6 +1839,10 @@ fn runtime_from_loaded_config(
                 max_tokens: rule.max_tokens,
                 temperature: rule.temperature,
                 stop: rule.stop.clone(),
+                // Operator-configured route: NOT a built-in default, so a
+                // local-stub agent bound here is an intentional opt-in and the
+                // stub serves rather than erroring (live-run bug 6a escape hatch).
+                builtin_default: false,
             };
             match rule.rating.as_deref() {
                 Some(rating) => {
@@ -1176,6 +1864,48 @@ fn runtime_from_loaded_config(
         agents,
         health_checks_enabled,
         health_check_timeout: timeout,
+        route_import_to_explicit: config.route_import_to_explicit,
+    }
+}
+
+fn select_test_agent_route(
+    runtime: &RuntimeConfig,
+    agent_id: &str,
+    route: Option<&str>,
+    rating: Option<&str>,
+) -> anyhow::Result<String> {
+    let matches_rating = |rule: &&RoutingRule| {
+        rating.is_some()
+            && rule.rating.as_deref().is_some_and(|rule_rating| {
+                normalize_route_rating(rule_rating)
+                    == normalize_route_rating(rating.unwrap_or_default())
+            })
+    };
+    let matches_route = |rule: &&RoutingRule| route.is_none_or(|route| rule.route == route);
+
+    let selected = runtime
+        .routing_rules
+        .iter()
+        .find(|rule| rule.agent == agent_id && matches_route(rule) && matches_rating(rule))
+        .or_else(|| {
+            runtime
+                .routing_rules
+                .iter()
+                .find(|rule| rule.agent == agent_id && matches_route(rule) && rule.rating.is_none())
+        })
+        .or_else(|| {
+            runtime
+                .routing_rules
+                .iter()
+                .find(|rule| rule.agent == agent_id && matches_route(rule))
+        });
+
+    match (selected, route) {
+        (Some(rule), _) => Ok(rule.route.clone()),
+        (None, Some(route)) => Err(anyhow::anyhow!(
+            "agent {agent_id} is not configured for route {route}"
+        )),
+        (None, None) => Err(anyhow::anyhow!("unknown agent id: {agent_id}")),
     }
 }
 
@@ -1324,6 +2054,9 @@ fn adapter_kind_for_agent(agent: &ConfiguredAgent) -> String {
     if agent.provider == "grok-cli" {
         return "grok".to_string();
     }
+    if agent.provider == "cli" {
+        return "cli".to_string();
+    }
     if agent.endpoint.starts_with("http://") || agent.endpoint.starts_with("https://") {
         "http".to_string()
     } else {
@@ -1343,22 +2076,148 @@ pub fn adapter_pulls_canon_via_mcp(adapter_kind: &str) -> bool {
     matches!(adapter_kind, "grok")
 }
 
+/// The closed content-rating vocabulary agent/routing config may reference.
+/// Mirrors `spindle_core::models::ContentRating` and the routing-rule
+/// `allowed_ratings` set in `agent_config::validate_config`. Kept ASCII so
+/// comparisons are plain `to_ascii_lowercase` (closed vocabulary — no Unicode
+/// case folding).
+const KNOWN_RATINGS: &[&str] = &["general", "teen", "mature", "explicit"];
+
 fn configuration_warnings(config: &LoadedAgentConfig) -> Vec<String> {
-    let mut warnings = config
-        .agents
-        .iter()
-        .filter_map(|agent| {
-            agent.api_key_env.as_deref().and_then(|name| {
-                std::env::var(name)
-                    .err()
-                    .map(|_| format!("agent {} is missing API key env {}", agent.id, name))
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+
+    for agent in &config.agents {
+        // Missing API-key env var. NEVER include the value — only the name.
+        if let Some(name) = agent.api_key_env.as_deref()
+            && std::env::var(name).is_err()
+        {
+            warnings.push(format!(
+                "agent {} is missing API key env {}",
+                agent.id, name
+            ));
+        }
+
+        // Rating casing + vocabulary lint. Does not mutate the config.
+        for declared in &agent.ratings {
+            let normalized = declared.trim().to_ascii_lowercase();
+            if declared != &normalized {
+                warnings.push(format!(
+                    "agent {} rating '{}' is not ascii-lowercase; normalized form is '{}'",
+                    agent.id, declared, normalized
+                ));
+            }
+            if !KNOWN_RATINGS.contains(&normalized.as_str()) {
+                warnings.push(format!(
+                    "agent {} declares unknown rating '{}'; known ratings are {:?}",
+                    agent.id, declared, KNOWN_RATINGS
+                ));
+            }
+        }
+    }
+
+    // Exact-duplicate routing rules: same (route, agent, normalized rating incl.
+    // both-None) triple. A base rule (rating=None) plus a rated override for the
+    // same route+agent is valid rating-aware config and must NOT warn — only
+    // literal duplicate triples warn, one warning per redundant copy.
+    let mut seen_triples: BTreeMap<(String, String, Option<String>), ()> = BTreeMap::new();
+    for rule in &config.routing {
+        let triple = (
+            rule.route.clone(),
+            rule.agent.clone(),
+            rule.rating
+                .as_deref()
+                .map(|r| r.trim().to_ascii_lowercase()),
+        );
+        if seen_triples.insert(triple, ()).is_some() {
+            match rule.rating.as_deref() {
+                Some(rating) => warnings.push(format!(
+                    "duplicate routing rule: route '{}', agent '{}', rating '{}'",
+                    rule.route, rule.agent, rating
+                )),
+                None => warnings.push(format!(
+                    "duplicate routing rule: route '{}', agent '{}', no rating",
+                    rule.route, rule.agent
+                )),
+            }
+        }
+    }
+
     if health_checks_enabled(config) {
         warnings.push("endpoint health checks are enabled during configuration reload".to_string());
     }
+
+    warnings.extend(import_chair_clearance_advisories(config));
+
     warnings
+}
+
+/// Advisory nudge for the import chair (Item 2). Import routes are NOT rating-
+/// gated — content ratings do not exist until analysis runs, and import is a
+/// direct operator action on their own manuscript (see [`PROSE_BEARING_ROUTES`]
+/// and [`IMPORT_ROUTES`]). So there is nothing to gate; the guard is INFORMED
+/// CONFIGURATION.
+///
+/// Heuristic: when the operator clearly works with explicit content somewhere
+/// (ANY configured agent declares the "explicit" rating) but their configured
+/// import chair does NOT, warn — advisorily, never an error — that the import
+/// chair sees the full manuscript ungated and should be one the operator trusts
+/// with explicit content. One warning per distinct uncleared import agent,
+/// emitted deterministically. Suppressed entirely when `route_import_to_explicit`
+/// is enabled, since import then resolves to the explicit-cleared offload agent
+/// and the concern is already addressed.
+fn import_chair_clearance_advisories(config: &LoadedAgentConfig) -> Vec<String> {
+    use std::collections::BTreeSet;
+
+    // Opt-in offload enabled: import resolves to the explicit-cleared agent, so
+    // the tame-default-chair concern no longer applies.
+    if config.route_import_to_explicit {
+        return Vec::new();
+    }
+
+    let declares_explicit = |agent: &ConfiguredAgent| -> bool {
+        agent
+            .ratings
+            .iter()
+            .any(|r| r.trim().eq_ignore_ascii_case("explicit"))
+    };
+
+    // Is there explicit work anywhere in this config? If not, a tame import
+    // chair is fine — no nudge.
+    let any_explicit_agent = config.agents.iter().any(declares_explicit);
+    if !any_explicit_agent {
+        return Vec::new();
+    }
+
+    // Distinct agents wired to an import route, in a deterministic order.
+    let import_agent_ids: BTreeSet<&str> = config
+        .routing
+        .iter()
+        .filter(|rule| IMPORT_ROUTES.contains(&rule.route.as_str()))
+        .map(|rule| rule.agent.as_str())
+        .collect();
+
+    import_agent_ids
+        .into_iter()
+        .filter(|agent_id| {
+            // Warn only when the wired import agent exists and is NOT itself
+            // explicit-cleared. An unresolvable agent id is a separate config
+            // error, not this advisory's concern.
+            config
+                .agents
+                .iter()
+                .find(|a| a.id == *agent_id)
+                .is_some_and(|a| !declares_explicit(a))
+        })
+        .map(|agent_id| {
+            format!(
+                "agent '{agent_id}' serves an import route but is not cleared for explicit \
+                 content, while another configured agent is. import routes are not rating-gated \
+                 (ratings do not exist until analysis runs); ensure this agent may see your full \
+                 manuscript, or set `route_import_to_explicit = true` to route import through your \
+                 explicit-cleared offload agent"
+            )
+        })
+        .collect()
 }
 
 fn agent_statuses(runtime: &RuntimeConfig) -> Vec<AgentStatusSummary> {
@@ -1405,6 +2264,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "review".to_string(),
@@ -1415,6 +2275,18 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
+        },
+        ModelRoute {
+            route_name: "research".to_string(),
+            adapter_kind: "local".to_string(),
+            model_name: "research-local".to_string(),
+            purpose: "agent-routed research workflow".to_string(),
+            system_prompt: "agent-routed research workflow".to_string(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "embedding".to_string(),
@@ -1425,6 +2297,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "import_extract".to_string(),
@@ -1435,6 +2308,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "import_synthesize".to_string(),
@@ -1445,6 +2319,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
         },
         ModelRoute {
             route_name: "import_validate".to_string(),
@@ -1455,6 +2330,29 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: true,
+        },
+        ModelRoute {
+            route_name: "style_analyze".to_string(),
+            adapter_kind: "local".to_string(),
+            model_name: "style-analyze-local".to_string(),
+            purpose: "extract and synthesize prose style guidelines from local text".to_string(),
+            system_prompt: "You are an expert stylometry and literary analysis agent. Analyze prose style and return structured JSON guidance.".to_string(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+            builtin_default: true,
+        },
+        ModelRoute {
+            route_name: "style_revise".to_string(),
+            adapter_kind: "local".to_string(),
+            model_name: "style-revise-local".to_string(),
+            purpose: "suggest rewrite examples and revision plans matching style profile".to_string(),
+            system_prompt: "You are an expert editor and stylometrist. Provide style-aligned rewrite examples and suggestions.".to_string(),
+            max_tokens: None,
+            temperature: None,
+            stop: Vec::new(),
+            builtin_default: true,
         },
     ]
     .into_iter()
@@ -1462,22 +2360,415 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
     .collect()
 }
 
-fn local_completion(route: &ModelRoute, prompt: &str) -> String {
+/// Parse the leaking character id out of the behavioral secret-leak test
+/// sentinel `MOCK_SECRET_BEHAVIORAL_LEAK[character:<id>]` embedded in the prompt.
+/// The id may itself contain a colon (record ids like `character:abc`), so the
+/// scan takes everything between the first `[character:` and its closing `]`.
+/// Returns `None` when the plain sentinel or no sentinel is present, so the stub
+/// falls through to an empty findings array.
+fn extract_mock_behavioral_leak_character(prompt: &str) -> Option<String> {
+    const OPEN: &str = "MOCK_SECRET_BEHAVIORAL_LEAK[character:";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    let id = rest[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Parse the promise id out of the canon-mining test marker
+/// `MOCK_CANON_MINE_PROMISE[<id>]` embedded in the prompt. The id itself carries
+/// a colon (record ids like `narrative_promise:abc`), so the scan takes
+/// everything between the first `[` after the marker and its closing `]`.
+/// Returns `None` when the marker is absent or the id is empty, so the stub
+/// omits the payoff delta.
+fn extract_mock_canon_mine_promise(prompt: &str) -> Option<String> {
+    const OPEN: &str = "MOCK_CANON_MINE_PROMISE[";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    let id = rest[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Parse the target-chapter number out of the replan test marker
+/// `MOCK_REPLAN_SYNOPSIS[N]` embedded in a target chapter's synopsis (ADR 0003).
+/// The digit run between the brackets is the chapter number the stub emits a
+/// synopsis_update + thread_retire for. Returns `None` when the marker is absent
+/// or the payload is not a parseable positive integer, so the stub falls through
+/// to an empty amendments array.
+fn extract_mock_replan_synopsis_chapter(prompt: &str) -> Option<i32> {
+    const OPEN: &str = "MOCK_REPLAN_SYNOPSIS[";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    rest[..end].trim().parse::<i32>().ok()
+}
+
+/// Parse the target-chapter number out of the replan cap-test marker
+/// `MOCK_REPLAN_CAP[N]` embedded in a target chapter's synopsis (ADR 0003 D5
+/// per-pass cap). The stub emits ten valid synopsis_update amendments for
+/// chapter N so the differ can prove it stages only 8 and reports 2 dropped.
+/// Returns `None` when the marker is absent or the payload is not a positive
+/// integer.
+fn extract_mock_replan_cap_chapter(prompt: &str) -> Option<i32> {
+    const OPEN: &str = "MOCK_REPLAN_CAP[";
+    let start = prompt.find(OPEN)? + OPEN.len();
+    let rest = &prompt[start..];
+    let end = rest.find(']')?;
+    rest[..end].trim().parse::<i32>().ok()
+}
+
+/// Extract the first 40 characters of the prior-notes block from a reader-sim
+/// prompt (evolution §3.6), for the `MOCK_READER_NOTES_ECHO` memory-flow test
+/// sentinel. The service prompt frames the prior notes between the
+/// `YOUR PRIOR NOTES:\n` marker and the blank line before `NEXT CHAPTER`; the
+/// echo is the first 40 chars of that block (char-safe). Returns an empty string
+/// when the marker is absent, so the stub still emits valid JSON.
+fn extract_reader_sim_prior_echo(prompt: &str) -> String {
+    const MARKER: &str = "YOUR PRIOR NOTES:\n";
+    let Some(start) = prompt.find(MARKER) else {
+        return String::new();
+    };
+    let rest = &prompt[start + MARKER.len()..];
+    // The prior-notes block ends at the blank line before the next section.
+    let block = rest.split("\n\n").next().unwrap_or(rest);
+    block.chars().take(40).collect()
+}
+
+/// Deterministic, network-free stand-in for a real model.
+///
+/// Most arms are load-bearing TEST infrastructure: the `review` arm's sentinel
+/// branches (temporal/mine/replan/reader-sim/promise/secret/purpose) and the
+/// research `MOCK_VAL`/`MOCK_PROSE` fixtures drive the whole deep-check and
+/// research test fleet, and the empty-array `review` fallbacks are the honest
+/// local-only degradation (no findings, never fabricated prose).
+///
+/// The PRODUCTION routes `style_analyze`, `style_revise`, and `research`,
+/// however, used to emit plausible-shaped fabrications for un-sentineled calls
+/// (mock style guidance; a prompt echo). When such a route is the built-in
+/// default — i.e. no operator agent is configured (live-run bug 6a) — the stub
+/// now returns [`NoModelConfiguredError`] instead. Two escape hatches keep the
+/// test fleet green: research honors its `MOCK_` sentinels, and an operator can
+/// bind a local-stub agent (`builtin_default = false`) to intentionally serve
+/// the stub for a genuinely-local setup.
+fn local_completion(route: &ModelRoute, prompt: &str) -> Result<String, NoModelConfiguredError> {
     let compact_prompt = prompt
         .split_whitespace()
         .take(48)
         .collect::<Vec<_>>()
         .join(" ");
-    match route.route_name.as_str() {
-        "review" => format!("Literary critic and craft technician both reviewed: {compact_prompt}"),
+    let no_model = || NoModelConfiguredError {
+        route: route.route_name.clone(),
+    };
+    let out = match route.route_name.as_str() {
+        "review" => {
+            // The intra-scene temporal-coherence deep check (Tier 2) reuses the
+            // `review` route. Without a real review model configured, return
+            // deterministic structured JSON so the model-backed path is testable
+            // and a local-only deployment degrades to no extra findings rather
+            // than fabricating prose. A finding is emitted only when the scene
+            // carries the test sentinel; otherwise an empty findings array.
+            if prompt.contains("canon mining audit") {
+                // The canon miner (evolution §3.1) rides the `review` route in
+                // local-only deployments (no `mine` route in default_routes).
+                // Without a real mine model, return deterministic staged deltas
+                // only when the prose carries the test sentinel; otherwise an
+                // empty deltas array, so a local-only run degrades to no
+                // proposals rather than fabricating canon.
+                if prompt.contains("MOCK_CANON_MINE_DISCARD") {
+                    // Discard fixture: one valid canonical_fact (evidence in
+                    // prose), one unknown class, and one fabricated-evidence
+                    // delta whose quote is NOT in the prose. The miner stages the
+                    // first and discards the other two.
+                    r#"{"deltas":[
+                        {"delta_class":"canonical_fact","target_id":null,"confidence":"high","evidence":"MOCK_CANON_MINE_DISCARD","payload":{"subject_table":"character","predicate":"mood","value_text":"tense"}},
+                        {"delta_class":"totally_made_up_class","target_id":null,"confidence":"high","evidence":"MOCK_CANON_MINE_DISCARD","payload":{}},
+                        {"delta_class":"canonical_fact","target_id":null,"confidence":"high","evidence":"a quote that never appears in the prose at all","payload":{"subject_table":"character","predicate":"hidden","value_text":"x"}}
+                    ]}"#
+                        .to_string()
+                } else if prompt.contains("MOCK_CANON_MINE") {
+                    let fact_delta = r#"{"delta_class":"canonical_fact","target_id":null,"confidence":"high","evidence":"MOCK_CANON_MINE","payload":{"subject_table":"character","subject_id":null,"predicate":"eye_color","value_text":"grey"}}"#;
+                    match extract_mock_canon_mine_promise(prompt) {
+                        Some(promise_id) => format!(
+                            r#"{{"deltas":[{fact_delta},{{"delta_class":"promise_payoff_candidate","target_id":"{promise_id}","confidence":"medium","evidence":"MOCK_CANON_MINE","payload":{{"narrative_promise_id":"{promise_id}","proposed_status":"paid_off"}}}}]}}"#
+                        ),
+                        None => format!(r#"{{"deltas":[{fact_delta}]}}"#),
+                    }
+                } else {
+                    r#"{"deltas":[]}"#.to_string()
+                }
+            } else if prompt.contains("outline replanning audit") {
+                // The replan differ (evolution §3.5, ADR 0003) rides the `review`
+                // route in local-only deployments (no `replan` route in
+                // default_routes, so the ladder falls to this stub). Without a
+                // real replan model, return deterministic staged amendments only
+                // when a target synopsis carries a test sentinel; otherwise an
+                // empty amendments array, so a local-only run degrades to no
+                // proposals rather than fabricating outline edits.
+                //
+                // The route is non-prose-bearing (summaries + metadata only —
+                // ADR D5), so no rating gate applies here. Sentinels compose
+                // additively so a happy pass can carry discard-path fuel in the
+                // SAME response (the differ stages survivors, counts the rest).
+                if let Some(n) = extract_mock_replan_cap_chapter(prompt) {
+                    // Cap fixture: ten valid synopsis_update amendments for
+                    // chapter N. The differ stages the first 8 and reports 2
+                    // dropped (ADR D5 per-pass cap). Kept exclusive so the count
+                    // is exactly ten.
+                    let items: Vec<String> = (0..10)
+                        .map(|i| {
+                            format!(
+                                r#"{{"amendment_class":"synopsis_update","target_chapter":{n},"confidence":"medium","rationale":"cap item {i}","payload":{{"synopsis":"revised synopsis {i}"}}}}"#
+                            )
+                        })
+                        .collect();
+                    format!(r#"{{"amendments":[{}]}}"#, items.join(","))
+                } else {
+                    let mut items: Vec<String> = Vec::new();
+                    if let Some(n) = extract_mock_replan_synopsis_chapter(prompt) {
+                        // Happy fixture: one synopsis_update + one thread_retire
+                        // for chapter N, both with fabricated-but-valid payloads.
+                        items.push(format!(
+                            r#"{{"amendment_class":"synopsis_update","target_chapter":{n},"confidence":"high","rationale":"chapter {n} synopsis now trails the realized siege resolution","payload":{{"synopsis":"The gate has already fallen; the chapter opens on the aftermath."}}}}"#
+                        ));
+                        items.push(format!(
+                            r#"{{"amendment_class":"thread_retire","target_chapter":{n},"confidence":"medium","rationale":"the siege conflict resolved in the source chapter and no longer belongs to chapter {n}","payload":{{"kind":"conflict","id":"conflict:siege"}}}}"#
+                        ));
+                    }
+                    if prompt.contains("MOCK_REPLAN_BAD") {
+                        // Discard fixture: one unknown class + one with empty
+                        // rationale. Both are discarded by the differ's
+                        // validation, so they only ever grow discarded_count.
+                        items.push(
+                            r#"{"amendment_class":"totally_made_up_class","target_chapter":5,"confidence":"high","rationale":"reason","payload":{}}"#
+                                .to_string(),
+                        );
+                        items.push(
+                            r#"{"amendment_class":"synopsis_update","target_chapter":5,"confidence":"high","rationale":"   ","payload":{"synopsis":"x"}}"#
+                                .to_string(),
+                        );
+                    }
+                    format!(r#"{{"amendments":[{}]}}"#, items.join(","))
+                }
+            } else if prompt.contains("intra-scene temporal-coherence audit") {
+                if prompt.contains("MOCK_TEMPORAL_JUMP") {
+                    r#"{"findings":[{"severity":"warning","message":"the scene skips from afternoon over a long, unrendered span into deep night with no transition beat or scene break","evidence":"MOCK_TEMPORAL_JUMP"}]}"#
+                        .to_string()
+                } else {
+                    r#"{"findings":[]}"#.to_string()
+                }
+            } else if prompt.contains("narrative promise payoff audit") {
+                // The promise-payoff deep check (T-106) also rides the `review`
+                // route. Emit a single positive match only when the scoped prose
+                // carries the test sentinel; otherwise an empty findings array,
+                // so a local-only deployment degrades to no proposals.
+                if prompt.contains("MOCK_PROMISE_PAYOFF") {
+                    r#"{"matches":[{"paid_off":true,"scene_ref":"scene 1","evidence":"MOCK_PROMISE_PAYOFF"}]}"#
+                        .to_string()
+                } else {
+                    r#"{"matches":[]}"#.to_string()
+                }
+            } else if prompt.contains("secret knowledge leak audit") {
+                // The behavioral secret-leak deep check (design §2.4, Item 5)
+                // also rides the `review` route. Emit a single finding only when
+                // the prose carries the sentinel; the sentinel EMBEDS the leaking
+                // character id (MOCK_SECRET_BEHAVIORAL_LEAK[character:<id>]) so
+                // the stub echoes a real present id back — the caller then
+                // discards any id that is not a present out-of-circle character.
+                if let Some(id) = extract_mock_behavioral_leak_character(prompt) {
+                    format!(
+                        r#"{{"findings":[{{"character_id":"{id}","severity":"warning","description":"conspicuously avoids a place only a knower would avoid","evidence":"MOCK_SECRET_BEHAVIORAL_LEAK"}}]}}"#
+                    )
+                } else {
+                    r#"{"findings":[]}"#.to_string()
+                }
+            } else if prompt.contains("scene purpose fulfillment audit") {
+                // The scene-purpose fulfillment deep check (evolution §3.6) also
+                // rides the `review` route. Report the scene as NOT fulfilling
+                // its planned purpose only when the prose carries the sentinel;
+                // otherwise report it as fulfilled, so a local-only deployment
+                // degrades to no findings rather than fabricating drift.
+                if prompt.contains("MOCK_PURPOSE_UNFULFILLED") {
+                    r#"{"fulfilled":false,"assessment":"the scene establishes comfort where the plan demanded rupture","evidence":"MOCK_PURPOSE_UNFULFILLED"}"#
+                        .to_string()
+                } else {
+                    r#"{"fulfilled":true,"assessment":"the scene delivers its planned purpose","evidence":""}"#
+                        .to_string()
+                }
+            } else if prompt.contains("cumulative reader simulation") {
+                // The cumulative reader-sim pass (evolution §3.6) rides the
+                // `review` route in local-only deployments (`reader_sim` is not
+                // in default_routes, so the ladder falls to this stub). Two test
+                // sentinels drive deterministic outcomes; everything else reads
+                // as an engaged reader with no concerns.
+                if prompt.contains("MOCK_READER_DIP") {
+                    // Engagement dip + one warning concern about a retread — the
+                    // craft signal the reader-sim is designed to surface.
+                    r#"{"engagement":"dipping","notes":"The reader felt the second market scene retread the first.","concerns":[{"severity":"warning","description":"the second market scene retreads the first"}]}"#
+                        .to_string()
+                } else if prompt.contains("MOCK_READER_NOTES_ECHO") {
+                    // Prove memory flow: echo the first 40 chars of the prior-
+                    // notes block back inside the reader's new notes with a
+                    // `PRIOR:` marker. A test that finds PRIOR:<first 40 chars>
+                    // in the landed notes has proven the prior notes reached the
+                    // model.
+                    let echo = extract_reader_sim_prior_echo(prompt);
+                    format!(
+                        r#"{{"engagement":"steady","notes":"The reader stays with the story. PRIOR:{echo}","concerns":[]}}"#
+                    )
+                } else {
+                    r#"{"engagement":"high","notes":"The reader is fully engaged.","concerns":[]}"#
+                        .to_string()
+                }
+            } else {
+                format!("Literary critic and craft technician both reviewed: {compact_prompt}")
+            }
+        }
         "draft" => format!("Local drafting adapter synthesized: {compact_prompt}"),
+        "research" => {
+            if prompt.contains("MOCK_VAL") {
+                r#"{
+  "summary": "Mock research summary",
+  "sources": [
+    {
+      "title": "Mock Source",
+      "source_type": "book",
+      "reliability": "high",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "notes": [
+    {
+      "source_index": 0,
+      "note": "Mock note",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "claims": [
+    {
+      "note_index": 0,
+      "claim": "Mock claim",
+      "confidence": "verified",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "tags": ["mock-tag"],
+  "uncertainty_level": "low"
+}"#
+                .to_string()
+            } else if prompt.contains("MOCK_PROSE") {
+                r#"{
+  "summary": "Mock prose summary",
+  "sources": [],
+  "notes": [],
+  "claims": [
+    {
+      "claim": "\"Hello,\" she said to the researcher.",
+      "confidence": "verified",
+      "tags": ["mock-tag"]
+    }
+  ],
+  "tags": ["mock-tag"]
+}"#
+                .to_string()
+            } else {
+                // Bug 6a: the research stub used to echo the prompt back as
+                // plausible research output. With no recognized `MOCK_` fixture
+                // sentinel there is no real research model to serve, so error
+                // instead of fabricating — this fails research_query/ingest
+                // honestly rather than persisting an echo as a claim.
+                return Err(no_model());
+            }
+        }
         "import_extract" => format!("Local import extraction adapter harvested: {compact_prompt}"),
         "import_synthesize" => {
             format!("Local import synthesis adapter assembled: {compact_prompt}")
         }
         "import_validate" => format!("Local import validation adapter triaged: {compact_prompt}"),
+        // Bug 6a: an UNCONFIGURED style_analyze route (built-in default) must not
+        // fabricate a style profile — the stub's mock guidance once merged over
+        // a project's real narrator voice. Error instead; an operator who binds a
+        // local-stub agent (builtin_default = false) still gets the mock for
+        // genuinely-local test/dev setups.
+        "style_analyze" if route.builtin_default => return Err(no_model()),
+        // Test sentinel: a corpus carrying this marker makes the stub return
+        // unparseable guidance (echoing the marker so the one-shot repair
+        // prompt, which embeds the prior response, also fails). This exercises
+        // the create-from-markdown "guidance came back empty/unusable → fail
+        // loudly" path end to end without a real model.
+        "style_analyze" if prompt.contains("[SPINDLE_TEST:EMPTY_STYLE_GUIDANCE]") => {
+            "[SPINDLE_TEST:EMPTY_STYLE_GUIDANCE] this is not valid JSON".to_string()
+        }
+        "style_analyze" => r#"{
+  "summary": "Mock style profile guidance summary",
+  "pov": "third_person_close",
+  "tense": "past",
+  "narrator_distance": "close",
+  "narrator_voice": {
+    "comedy_density": "none",
+    "pacing_feel": "contemplative",
+    "interiority_ratio": "heavy interiority",
+    "emotional_register": "brooding-and-reflective",
+    "chapter_ending_style": "resolution",
+    "notes": ["Note 1", "Note 2"]
+  },
+  "pacing": ["Slow, reflective pacing"],
+  "paragraphing": ["Dense paragraphs"],
+  "sentence_rhythm": ["Varied sentence lengths"],
+  "diction": ["Formal, literary diction"],
+  "dialogue": ["Minimal, meaningful dialogue"],
+  "exposition": ["Heavy exposition"],
+  "interiority": ["Heavy focus on inner thoughts"],
+  "humor_or_tension": ["Low humor, subtle tension"],
+  "scene_structure": ["Traditional structure"],
+  "do_rules": ["Do use sensory details", "Do maintain close POV"],
+  "avoid_rules": ["Avoid modern slang", "Avoid abrupt perspective shifts"],
+  "prompt_snippet": "Write in a contemplative past-tense close-POV style."
+}"#
+        .to_string(),
+        // Bug 6a: an UNCONFIGURED style_revise route (built-in default) must not
+        // fabricate revision examples. Error; a configured local-stub agent still
+        // serves (builtin_default = false).
+        "style_revise" if route.builtin_default => return Err(no_model()),
+        "style_revise" => {
+            if prompt.contains("Return ONLY the revised text") {
+                if let Some(start) = prompt.find("Prose to Revise:\n") {
+                    let rest = &prompt[start + "Prose to Revise:\n".len()..];
+                    let end = rest.find("\n\nInstructions:").unwrap_or(rest.len());
+                    let original = rest[..end].trim();
+                    if original.contains("This is a remarkably long sentence that triggers drift.")
+                    {
+                        "This is a short sentence. It does not trigger drift.".to_string()
+                    } else if original.is_empty() {
+                        "Revised empty scene.".to_string()
+                    } else {
+                        format!("{} (revised)", original)
+                    }
+                } else {
+                    "Mock revised prose.".to_string()
+                }
+            } else {
+                r#"[
+  {
+    "original_prose": "She went to the store. She bought some milk. She was happy.",
+    "revised_prose": "Walking down the dusty aisle, she grabbed the cool glass bottle of milk, a small smile softening her face.",
+    "explanation": "Combined short, choppy sentences into a more fluid narrative with sensory details to match the contemplative, close-POV style."
+  }
+]"#
+                .to_string()
+            }
+        }
         _ => compact_prompt,
-    }
+    };
+    Ok(out)
 }
 
 fn token_counts(tokens: Vec<String>) -> BTreeMap<String, usize> {
@@ -1517,9 +2808,201 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn behavioral_leak_sentinel_extracts_record_id_with_colon() {
+        // Record ids carry a colon; the whole span before `]` is the id.
+        assert_eq!(
+            extract_mock_behavioral_leak_character(
+                "prose MOCK_SECRET_BEHAVIORAL_LEAK[character:character:bran99] more"
+            )
+            .as_deref(),
+            Some("character:bran99")
+        );
+        // Plain sentinel (no embedded id) and absent sentinel both yield None.
+        assert_eq!(
+            extract_mock_behavioral_leak_character("MOCK_SECRET_BEHAVIORAL_LEAK[character:]"),
+            None
+        );
+        assert_eq!(
+            extract_mock_behavioral_leak_character("no sentinel here"),
+            None
+        );
+    }
+
     fn health_env_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    #[test]
+    fn canon_mine_marker_parses_promise_id_with_colon() {
+        // The promise-id marker echoes a real record id (which carries a colon).
+        assert_eq!(
+            extract_mock_canon_mine_promise(
+                "prose MOCK_CANON_MINE MOCK_CANON_MINE_PROMISE[narrative_promise:abc] tail"
+            )
+            .as_deref(),
+            Some("narrative_promise:abc")
+        );
+        // Empty id and absent marker both yield None.
+        assert_eq!(
+            extract_mock_canon_mine_promise("MOCK_CANON_MINE_PROMISE[]"),
+            None
+        );
+        assert_eq!(extract_mock_canon_mine_promise("no marker"), None);
+    }
+
+    #[test]
+    fn replan_markers_parse_chapter_number_and_tolerate_absent_or_garbled() {
+        assert_eq!(
+            extract_mock_replan_synopsis_chapter(
+                "outline replanning audit MOCK_REPLAN_SYNOPSIS[5] tail"
+            ),
+            Some(5)
+        );
+        assert_eq!(
+            extract_mock_replan_cap_chapter("MOCK_REPLAN_CAP[12] tail"),
+            Some(12)
+        );
+        // Absent marker and non-integer payload both yield None.
+        assert_eq!(extract_mock_replan_synopsis_chapter("no marker"), None);
+        assert_eq!(
+            extract_mock_replan_synopsis_chapter("MOCK_REPLAN_SYNOPSIS[abc]"),
+            None
+        );
+        assert_eq!(extract_mock_replan_cap_chapter("no marker"), None);
+    }
+
+    #[tokio::test]
+    async fn canon_mine_stub_returns_deltas_only_with_sentinel() {
+        let router = ModelRouter::local_only();
+        // With the mining-audit header but no sentinel: empty deltas.
+        let empty = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "canon mining audit\nScene prose without sentinel.".to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        assert_eq!(empty.output, r#"{"deltas":[]}"#);
+
+        // With the sentinel AND a promise marker: canonical_fact + payoff delta.
+        let with_sentinel = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "canon mining audit\nMOCK_CANON_MINE \
+                         MOCK_CANON_MINE_PROMISE[narrative_promise:p1] appears here."
+                    .to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&with_sentinel.output).expect("stub emits valid JSON");
+        let deltas = parsed["deltas"].as_array().expect("deltas array");
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0]["delta_class"], "canonical_fact");
+        assert_eq!(deltas[0]["evidence"], "MOCK_CANON_MINE");
+        assert_eq!(deltas[1]["delta_class"], "promise_payoff_candidate");
+        assert_eq!(deltas[1]["target_id"], "narrative_promise:p1");
+
+        // Sentinel but NO promise marker: only the canonical_fact delta.
+        let no_promise = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "canon mining audit\nMOCK_CANON_MINE only.".to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&no_promise.output).expect("stub emits valid JSON");
+        assert_eq!(parsed["deltas"].as_array().expect("deltas").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reader_sim_local_stub_honors_sentinels_and_echoes_prior_notes() {
+        // R4: reader_sim falls back to the `review` route's local stub (it is not
+        // in default_routes). MOCK_READER_DIP → dipping + one warning concern;
+        // MOCK_READER_NOTES_ECHO → steady + notes echoing the first 40 chars of
+        // the prior-notes block (proving memory flow); neither → high, no
+        // concerns.
+        let router = ModelRouter::local_only();
+
+        // Neither sentinel: high engagement, no concerns.
+        let plain = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "cumulative reader simulation\nYOUR PRIOR NOTES:\n(none)\n\nNEXT CHAPTER:\nplain prose"
+                    .to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value = serde_json::from_str(&plain.output).unwrap();
+        assert_eq!(parsed["engagement"], "high");
+        assert_eq!(parsed["concerns"].as_array().unwrap().len(), 0);
+
+        // DIP sentinel: dipping + one warning concern about the retread.
+        let dip = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "cumulative reader simulation\nYOUR PRIOR NOTES:\n(none)\n\nNEXT CHAPTER:\nMOCK_READER_DIP the market again"
+                    .to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value = serde_json::from_str(&dip.output).unwrap();
+        assert_eq!(parsed["engagement"], "dipping");
+        let concerns = parsed["concerns"].as_array().unwrap();
+        assert_eq!(concerns.len(), 1);
+        assert_eq!(concerns[0]["severity"], "warning");
+        assert_eq!(
+            concerns[0]["description"],
+            "the second market scene retreads the first"
+        );
+
+        // NOTES_ECHO sentinel: steady + notes echo the first 40 chars of the
+        // prior-notes block with a PRIOR: marker.
+        let prior = "Chapter 1 landed; the reader trusts the narrator fully.";
+        let echo = router
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: format!(
+                    "cumulative reader simulation\nYOUR PRIOR NOTES:\n{prior}\n\nNEXT CHAPTER:\nMOCK_READER_NOTES_ECHO more prose"
+                ),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("local review route works");
+        let parsed: serde_json::Value = serde_json::from_str(&echo.output).unwrap();
+        assert_eq!(parsed["engagement"], "steady");
+        let notes = parsed["notes"].as_str().unwrap();
+        let expected: String = prior.chars().take(40).collect();
+        assert!(
+            notes.contains(&format!("PRIOR:{expected}")),
+            "notes must echo PRIOR:<first 40 chars of prior notes>: {notes}"
+        );
+    }
+
+    #[test]
+    fn reader_sim_prior_echo_extracts_first_40_chars_and_tolerates_missing_marker() {
+        // The echo is the first 40 chars of the prior-notes block; absence of the
+        // marker yields an empty string (the stub still emits valid JSON).
+        let prompt = "cumulative reader simulation\nYOUR PRIOR NOTES:\nabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH\n\nNEXT CHAPTER:\nx";
+        assert_eq!(
+            extract_reader_sim_prior_echo(prompt),
+            "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        );
+        assert_eq!(extract_reader_sim_prior_echo("no marker here"), "");
     }
 
     #[test]
@@ -1546,7 +3029,7 @@ mod tests {
 
         assert_eq!(output.adapter_kind, "local");
         assert!(output.output.contains("reviewed"));
-        assert_eq!(router.list_routes().len(), 6);
+        assert_eq!(router.list_routes().len(), 9);
     }
 
     #[tokio::test]
@@ -1671,6 +3154,57 @@ rating = "explicit"
         // No rating context also falls back to the default rule.
         let none_route = resolve_route(&runtime, "draft", None).expect("default route");
         assert_eq!(none_route.model_name, "default-draft");
+    }
+
+    #[test]
+    fn test_agent_route_selection_allows_shared_agents_when_route_is_explicit() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(
+            &config_path,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "grok-local"
+name = "Grok Local"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "grok-local"
+
+[[routing]]
+route = "research"
+agent = "grok-local"
+
+[[routing]]
+route = "draft"
+agent = "grok-local"
+"####,
+        )
+        .expect("write config");
+
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+
+        let runtime = router
+            .runtime
+            .read()
+            .expect("model router read lock")
+            .clone();
+
+        assert_eq!(
+            select_test_agent_route(&runtime, "grok-local", Some("draft"), None)
+                .expect("draft route"),
+            "draft"
+        );
+        assert_eq!(
+            select_test_agent_route(&runtime, "grok-local", Some("research"), None)
+                .expect("research route"),
+            "research"
+        );
     }
 
     #[test]
@@ -1818,6 +3352,7 @@ name = "Venice Explicit"
 provider = "venice"
 endpoint = "{endpoint}"
 model = "venice-explicit-model"
+ratings = ["explicit"]
 
 [[routing]]
 route = "draft"
@@ -1890,6 +3425,7 @@ name = "Venice Explicit"
 provider = "venice"
 endpoint = "{endpoint}"
 model = "venice-explicit-model"
+ratings = ["explicit"]
 
 [[routing]]
 route = "draft"
@@ -2148,6 +3684,57 @@ enabled = false
         assert_eq!(server.join().expect("server join"), 2);
     }
 
+    #[tokio::test]
+    async fn model_usage_records_provider_tokens_unknowns_and_continuations_without_prose() {
+        let (endpoint, server) = spawn_http_test_server(vec![
+            (200, serde_json::json!({"choices": [{"message": {"content": "PRIVATE PROSE"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 30, "prompt_tokens_details": {"cached_tokens": 80}}}).to_string()),
+            (200, serde_json::json!({"choices": [{"message": {"content": "continuation"}, "finish_reason": "stop"}]}).to_string()),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::sqlite::SqlitePool::open(&tmp.path().join("usage.db"))
+            .await
+            .unwrap();
+        let repo = crate::sqlite::Repository::with_model_router(
+            pool,
+            tmp.path().into(),
+            http_test_router(&endpoint),
+        );
+        let request = ModelRequest {
+            route: "review".into(),
+            prompt: "PRIVATE PROMPT".into(),
+            ..Default::default()
+        };
+        let response = repo.model_router().complete(&request).await.unwrap();
+        assert!(response.elapsed_ms.is_some() && response.call_id.is_some());
+        assert_eq!(response.usage.unwrap().cached_input_tokens, Some(80));
+        repo.model_router()
+            .complete_continuation("review", None, None, &request.prompt, &response.output)
+            .await
+            .unwrap();
+        assert_eq!(server.join().unwrap(), 2);
+        let reopened = crate::sqlite::SqlitePool::open(&tmp.path().join("usage.db"))
+            .await
+            .unwrap();
+        let svc =
+            crate::sqlite::SqliteSpindleService::new(crate::sqlite::Repository::with_model_router(
+                reopened,
+                tmp.path().into(),
+                ModelRouter::local_only(),
+            ));
+        let report = svc.get_model_usage(Default::default()).await.unwrap();
+        assert_eq!(
+            (report.total_calls, report.calls_with_unknown_tokens),
+            (2, 1)
+        );
+        assert_eq!(
+            (report.known_input_tokens, report.known_output_tokens),
+            (120, 30)
+        );
+        assert_eq!(report.unattributed_calls, 2);
+        assert!(!serde_json::to_string(&report).unwrap().contains("PRIVATE"));
+    }
+
     fn http_test_router(endpoint: &str) -> ModelRouter {
         let route = ModelRoute {
             route_name: "review".to_string(),
@@ -2158,6 +3745,7 @@ enabled = false
             max_tokens: Some(256),
             temperature: Some(0.2),
             stop: Vec::new(),
+            builtin_default: false,
         };
         let routing_rule = RoutingRule {
             route: "review".to_string(),
@@ -2210,12 +3798,15 @@ enabled = false
             )]),
             health_checks_enabled: false,
             health_check_timeout: Duration::from_millis(1500),
+            route_import_to_explicit: false,
         };
 
         ModelRouter {
             runtime: Arc::new(RwLock::new(runtime)),
             http_client: reqwest::Client::new(),
             health_generation: Arc::new(AtomicU64::new(0)),
+            usage_pool: None,
+            dispatch_log: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -2313,6 +3904,7 @@ enabled = false
             max_tokens: None,
             temperature: None,
             stop: Vec::new(),
+            builtin_default: false,
         }
     }
 
@@ -2374,6 +3966,46 @@ enabled = false
     fn parse_grok_envelope_rejects_invalid_json() {
         let err = parse_grok_envelope("not json at all", true).expect_err("invalid json");
         assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+    }
+
+    #[test]
+    fn grok_narrated_draft_text_recovers_the_trailing_json_payload() {
+        // BUG 2 fixture: grok-4.5 puts short narration + tool-call chatter into
+        // the envelope `.text` field, with the real JSON document at the tail.
+        // The adapter returns `.text` verbatim (prose routes need it whole); the
+        // downstream JSON seam (shared `extract_trailing_json_object`) recovers
+        // the payload. Feeding the whole `.text` to serde directly reproduces
+        // the live `expected value at line 1 column 1` failure first.
+        let payload = "{\"full_text\":\"Mara stood watch at the Ash Gate.\",\"summary\":\"Mara watch\",\"tone\":\"grim\"}";
+        let narrated_text = format!(
+            "I'll pull Spindle canon first, then draft.\\nCalling search_bible for the Ash Gate.\\nFound it — drafting now.\\n\\n{payload}"
+        );
+        let stdout = serde_json::json!({
+            "text": narrated_text,
+            "stopReason": "EndTurn",
+        })
+        .to_string();
+
+        let (text, truncated) = parse_grok_envelope(&stdout, true).expect("envelope parses");
+        assert!(!truncated);
+
+        // Direct serde parse of the narrated text fails the live way.
+        let direct: Result<serde_json::Value, _> = serde_json::from_str(&text);
+        let direct_err = direct.expect_err("narrated text must not parse directly");
+        assert!(
+            direct_err
+                .to_string()
+                .contains("expected value at line 1 column 1"),
+            "expected the live failure class, got: {direct_err}"
+        );
+
+        // The shared seam recovers the trailing object.
+        let recovered = spindle_core::model_output::extract_trailing_json_object(&text)
+            .expect("trailing JSON recovered from narration");
+        let value: serde_json::Value =
+            serde_json::from_str(recovered).expect("recovered object parses");
+        assert_eq!(value["full_text"], "Mara stood watch at the Ash Gate.");
+        assert_eq!(value["summary"], "Mara watch");
     }
 
     #[test]
@@ -2486,6 +4118,127 @@ enabled = false
         assert_eq!(adapter_kind_for_agent(&agent), "http");
         agent.endpoint = "/usr/local/bin/local-model".to_string();
         assert_eq!(adapter_kind_for_agent(&agent), "local");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_overflow_prompt_uses_prompt_file_instead_of_argv() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("echo-head.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if [ "$2" = "--prompt-file" ]; then
+  head -c 8 "$3"
+  printf ' FILE'
+else
+  printf 'ARGV'
+fi
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = tmp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                r#"
+[health_check]
+enabled = false
+[[agents]]
+id = "cli-agent"
+name = "CLI"
+provider = "cli"
+endpoint = "{}"
+model = "cli"
+ratings = ["general"]
+[[routing]]
+route = "draft"
+agent = "cli-agent"
+"#,
+                script.display()
+            ),
+        )
+        .unwrap();
+        let router = ModelRouter::local_only();
+        router.configure(config.to_str()).unwrap();
+        let mut prompt = String::from("OVERFLOW");
+        prompt.push_str(&"A".repeat(super::MAX_CLI_ARGV_PROMPT));
+        let response = router
+            .complete(&ModelRequest {
+                route: "draft".into(),
+                prompt,
+                rating: Some("general".into()),
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            response.output, "OVERFLOW FILE",
+            "overflow must use --prompt-file so the body is not lost to ARG_MAX"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_endpoints_stay_scoped_to_the_cleared_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["general", "explicit"] {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '{name} endpoint'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let config = tmp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                r#"
+[health_check]
+enabled = false
+[[agents]]
+id = "general-agent"
+name = "General"
+provider = "cli"
+endpoint = "{}/general"
+model = "general"
+ratings = ["general"]
+[[agents]]
+id = "explicit-agent"
+name = "Explicit"
+provider = "cli"
+endpoint = "{}/explicit"
+model = "explicit"
+ratings = ["explicit"]
+[[routing]]
+route = "draft"
+agent = "general-agent"
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+rating = "explicit"
+"#,
+                tmp.path().display(),
+                tmp.path().display()
+            ),
+        )
+        .unwrap();
+        let router = ModelRouter::local_only();
+        router.configure(config.to_str()).unwrap();
+        let general = ModelRequest {
+            route: "draft".into(),
+            prompt: "general fixture".into(),
+            rating: Some("general".into()),
+            context: None,
+        };
+        let explicit = ModelRequest {
+            rating: Some("explicit".into()),
+            ..general.clone()
+        };
+        let (a, b) = tokio::join!(router.complete(&general), router.complete(&explicit));
+        assert_eq!(a.unwrap().output, "general endpoint");
+        assert_eq!(b.unwrap().output, "explicit endpoint");
     }
 
     #[tokio::test]
@@ -2784,5 +4537,1005 @@ rating = "explicit"
             skill.contains("bible://config/routing"),
             "scene-writer skill must point callers at bible://config/routing"
         );
+    }
+
+    // ---- T-108: config lint + draft-route preflight ----
+
+    fn write_fixture(dir: &tempfile::TempDir, contents: &str) -> String {
+        let config_path = dir.path().join("spindle.toml");
+        std::fs::write(&config_path, contents).expect("write fixture");
+        config_path.display().to_string()
+    }
+
+    #[test]
+    fn configure_warns_and_normalizes_capitalized_agent_rating() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "explicit-agent"
+name = "Explicit Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "uncensored"
+ratings = ["Explicit"]
+
+[[routing]]
+route = "draft"
+agent = "explicit-agent"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert_eq!(output.source_path.as_deref(), Some(path.as_str()));
+        assert!(
+            output.warnings.iter().any(|w| {
+                w.contains("explicit-agent") && w.contains("Explicit") && w.contains("explicit")
+            }),
+            "expected rating-casing normalization warning, got {:?}",
+            output.warnings
+        );
+
+        // Case-insensitive coverage: scene needs `explicit`, agent declares
+        // `Explicit` — the preflight must treat that as covered.
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(
+            preflight.problem, None,
+            "expected covered, got {preflight:?}"
+        );
+    }
+
+    #[test]
+    fn configure_warns_on_unknown_agent_rating_token() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "spicy-agent"
+name = "Spicy Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["spicy"]
+
+[[routing]]
+route = "draft"
+agent = "spicy-agent"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            output.warnings.iter().any(|w| {
+                w.contains("unknown rating") && w.contains("spicy-agent") && w.contains("spicy")
+            }),
+            "expected unknown-rating warning naming agent + token, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn configure_warns_once_on_literal_duplicate_routing_triple() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "agent-a"
+name = "Agent A"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+rating = "explicit"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        let dup_warnings = output
+            .warnings
+            .iter()
+            .filter(|w| w.contains("duplicate routing rule"))
+            .count();
+        assert_eq!(
+            dup_warnings, 1,
+            "expected exactly one duplicate warning, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn configure_does_not_warn_on_base_plus_rated_override_for_same_route_agent() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "agent-a"
+name = "Agent A"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+
+[[routing]]
+route = "draft"
+agent = "agent-a"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("duplicate routing rule")),
+            "base rule + rated override must not warn, got {:?}",
+            output.warnings
+        );
+    }
+
+    // ── Item 2: import-chair clearance advisory ────────────────────────────
+    // Import routes are NOT rating-gated (ratings don't exist pre-import), so the
+    // guard is INFORMED CONFIGURATION, not gating. Heuristic nudge: the operator
+    // works with explicit content SOMEWHERE (another configured agent declares
+    // "explicit") but their import chair does NOT — warn (advisory, not error)
+    // that the import agent may need to see the full explicit manuscript.
+
+    #[test]
+    fn configure_warns_when_import_agent_not_explicit_but_another_agent_is() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        let import_advisories: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.contains("import routes are not rating-gated"))
+            .collect();
+        assert_eq!(
+            import_advisories.len(),
+            1,
+            "expected one import-chair advisory naming the boundary, got {:?}",
+            output.warnings
+        );
+        let msg = import_advisories[0];
+        assert!(
+            msg.contains("import-tame"),
+            "advisory must name the uncleared import agent: {msg}"
+        );
+        assert!(
+            msg.contains("full manuscript"),
+            "advisory must name the trust boundary (full manuscript): {msg}"
+        );
+    }
+
+    #[test]
+    fn configure_does_not_warn_when_import_agent_is_explicit_cleared() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-explicit"
+name = "Import Explicit"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_synthesize"
+agent = "import-explicit"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("import routes are not rating-gated")),
+            "an explicit-cleared import chair must not warn, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn configure_does_not_warn_when_no_agent_works_with_explicit() {
+        // No configured agent declares "explicit", so there is no explicit work
+        // anywhere — the import chair being tame is fine; no nudge.
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "mature-drafter"
+name = "Mature Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "draft"
+agent = "mature-drafter"
+"####,
+        );
+
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("import routes are not rating-gated")),
+            "no explicit work anywhere means no import advisory, got {:?}",
+            output.warnings
+        );
+    }
+
+    // ── Opt-in import → explicit offload (route_import_to_explicit) ────────
+    // Import routes dispatch rating: None and are exempt from the rating gate, so
+    // a rating-based explicit offload never engages for them. With the opt-in
+    // flag, import resolves to the explicit-cleared offload agent (the `draft`
+    // explicit chair) instead of the tame default — keeping un-rated manuscript
+    // prose off a stricter provider (e.g. Qwen).
+
+    fn import_offload_fixture(flag: bool) -> String {
+        format!(
+            r####"
+route_import_to_explicit = {flag}
+
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "tame-model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "explicit-model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####
+        )
+    }
+
+    #[test]
+    fn import_routes_to_explicit_offload_when_flag_enabled() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(true));
+        router.configure(Some(&path)).expect("configure");
+
+        let runtime = router.runtime.read().expect("read lock");
+        let route =
+            resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
+        assert_eq!(
+            route.model_name, "explicit-drafter",
+            "with the flag, import must follow the explicit offload chair"
+        );
+    }
+
+    #[test]
+    fn import_uses_default_chair_when_flag_disabled() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(false));
+        router.configure(Some(&path)).expect("configure");
+
+        let runtime = router.runtime.read().expect("read lock");
+        let route =
+            resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
+        assert_eq!(
+            route.model_name, "import-tame",
+            "without the flag, import keeps its configured default chair"
+        );
+    }
+
+    #[test]
+    fn import_prefers_route_specific_explicit_override_over_draft_chair() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+route_import_to_explicit = true
+
+[health_check]
+enabled = false
+
+[[agents]]
+id = "import-tame"
+name = "Import Tame"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "tame-model"
+ratings = ["general", "teen"]
+
+[[agents]]
+id = "import-explicit"
+name = "Import Explicit"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "import-explicit-model"
+ratings = ["explicit"]
+
+[[agents]]
+id = "explicit-drafter"
+name = "Explicit Drafter"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "explicit-model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "import_extract"
+agent = "import-tame"
+
+[[routing]]
+route = "import_extract"
+agent = "import-explicit"
+rating = "explicit"
+
+[[routing]]
+route = "draft"
+agent = "explicit-drafter"
+rating = "explicit"
+"####,
+        );
+        router.configure(Some(&path)).expect("configure");
+
+        let runtime = router.runtime.read().expect("read lock");
+        let route =
+            resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
+        assert_eq!(
+            route.model_name, "import-explicit",
+            "a route-specific explicit override wins over the draft chair"
+        );
+    }
+
+    #[test]
+    fn flag_suppresses_import_chair_advisory() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(true));
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.contains("import routes are not rating-gated")),
+            "flag enabled means the import-chair concern is handled, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn advisory_suggests_the_flag_when_disabled() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(&temp, &import_offload_fixture(false));
+        let output = router.configure(Some(&path)).expect("configure");
+        assert!(
+            output
+                .warnings
+                .iter()
+                .any(|w| w.contains("route_import_to_explicit")),
+            "advisory must point at the opt-in flag, got {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn draft_preflight_flags_missing_api_key_with_env_name_only() {
+        // A var name unique to this test that must not be set.
+        let env_var = "SPINDLE_T108_MISSING_KEY_ENV";
+        // Guard: ensure the environment really lacks it.
+        assert!(
+            std::env::var(env_var).is_err(),
+            "test precondition: {env_var} must be unset"
+        );
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            &format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "keyed-agent"
+name = "Keyed Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+api_key_env = "{env_var}"
+ratings = ["explicit"]
+
+[[routing]]
+route = "draft"
+agent = "keyed-agent"
+"####
+            ),
+        );
+
+        router.configure(Some(&path)).expect("configure");
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(preflight.agent_id.as_deref(), Some("keyed-agent"));
+        match &preflight.problem {
+            Some(DraftRoutePreflightProblem::MissingApiKey { env_var: reported }) => {
+                assert_eq!(reported, env_var);
+            }
+            other => panic!("expected MissingApiKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn draft_preflight_flags_rating_not_covered() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "tame-agent"
+name = "Tame Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "model"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "draft"
+agent = "tame-agent"
+"####,
+        );
+
+        router.configure(Some(&path)).expect("configure");
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(preflight.agent_id.as_deref(), Some("tame-agent"));
+        assert_eq!(
+            preflight.problem,
+            Some(DraftRoutePreflightProblem::RatingNotCovered)
+        );
+
+        // A rating the agent covers must pass.
+        let covered = router.draft_route_preflight("general");
+        assert_eq!(covered.problem, None, "general should be covered");
+    }
+
+    #[test]
+    fn draft_preflight_ignores_builtin_local_route() {
+        // local_only() has no external agents; the built-in draft route serves
+        // every rating and must never be flagged.
+        let router = ModelRouter::local_only();
+        let preflight = router.draft_route_preflight("explicit");
+        assert_eq!(preflight.agent_id, None);
+        assert_eq!(preflight.problem, None);
+    }
+
+    #[test]
+    fn mine_fallback_preflight_covered_when_review_covers_rating() {
+        // Mining's fallback ladder is mine → review (evolution §2.3). With NO
+        // `mine` route but a `review` route whose agent covers the rating, the
+        // fallback preflight is satisfied — the pass will resolve via review.
+        let router = cleared_route_router(&["general", "explicit"]);
+        assert!(router.mine_fallback_preflight("explicit").is_none());
+        assert!(router.mine_fallback_preflight("general").is_none());
+    }
+
+    #[test]
+    fn mine_fallback_preflight_flags_rating_no_route_covers() {
+        // A `review` route whose agent covers only general leaves `explicit`
+        // uncovered by both mine (absent) and review — the fallback ladder is
+        // exhausted, so the preflight reports a problem.
+        let router = cleared_route_router(&["general"]);
+        assert!(router.mine_fallback_preflight("general").is_none());
+        assert!(
+            router.mine_fallback_preflight("explicit").is_some(),
+            "explicit is covered by neither mine nor review"
+        );
+    }
+
+    #[test]
+    fn mine_fallback_preflight_ignores_builtin_local_route() {
+        // local_only() resolves both mine and review to the built-in local
+        // route, which serves every rating and is never flagged.
+        let router = ModelRouter::local_only();
+        assert!(router.mine_fallback_preflight("explicit").is_none());
+    }
+
+    // ── Style-refresh source-side rating discipline (evolution §3.9 / §4) ────
+
+    #[test]
+    fn route_clears_rating_true_for_builtin_local_route() {
+        // A built-in local style_analyze route serves every rating.
+        let router = ModelRouter::local_only();
+        assert!(router.route_clears_rating("style_analyze", "explicit"));
+    }
+
+    #[test]
+    fn route_clears_rating_false_when_style_agent_lacks_explicit() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "style-agent"
+name = "Style Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "styler"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "style_analyze"
+agent = "style-agent"
+"####,
+        );
+        router.configure(Some(&path)).expect("configure");
+        assert!(
+            !router.route_clears_rating("style_analyze", "explicit"),
+            "style route agent without explicit is NOT cleared"
+        );
+        assert!(
+            router.route_clears_rating("style_analyze", "general"),
+            "style route agent WITH general IS cleared"
+        );
+    }
+
+    #[test]
+    fn route_clears_rating_true_when_style_agent_declares_explicit() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = write_fixture(
+            &temp,
+            r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "style-agent"
+name = "Style Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "styler"
+ratings = ["general", "explicit"]
+
+[[routing]]
+route = "style_analyze"
+agent = "style-agent"
+"####,
+        );
+        router.configure(Some(&path)).expect("configure");
+        assert!(
+            router.route_clears_rating("style_analyze", "explicit"),
+            "style route agent declaring explicit IS cleared"
+        );
+    }
+
+    // ── Rating-gated dispatch chokepoint (evolution §4 rules 1-2) ────────────
+
+    /// Router whose `review` route resolves, for the given rating, to an agent
+    /// covering the ratings in `review_ratings`. A `draft` route is also present
+    /// so the constant's membership can be exercised.
+    fn cleared_route_router(review_ratings: &[&str]) -> ModelRouter {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        let ratings_toml = review_ratings
+            .iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "reviewer"
+name = "Reviewer"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "reviewer-model"
+ratings = [{ratings_toml}]
+
+[[routing]]
+route = "review"
+agent = "reviewer"
+
+[[routing]]
+route = "mine"
+agent = "reviewer"
+
+[[routing]]
+route = "draft"
+agent = "reviewer"
+"####
+            ),
+        )
+        .expect("write config");
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+        router
+    }
+
+    #[tokio::test]
+    async fn dispatch_recorder_captures_rejection_for_uncleared_explicit_prose() {
+        // The recording seam (evolution §4 rule 2): a `mine` request at an
+        // explicit rating whose agent covers only general must be REFUSED at the
+        // gate and recorded as a Rejection — never a Dispatch. Network-free: the
+        // gate rejects before any adapter call.
+        let router = cleared_route_router(&["general"]);
+        let log = router.install_dispatch_recorder();
+        let err = router
+            .complete(&ModelRequest {
+                route: "mine".to_string(),
+                prompt: "explicit prose that must not leave".to_string(),
+                rating: Some("explicit".to_string()),
+                context: None,
+            })
+            .await
+            .expect_err("uncleared explicit mine must be refused at the gate");
+        assert!(
+            err.downcast_ref::<RouteClearanceError>().is_some(),
+            "the typed clearance error must be preserved through anyhow"
+        );
+        let records = log.lock().expect("dispatch log lock").clone();
+        assert_eq!(records.len(), 1, "exactly one record: {records:?}");
+        match &records[0] {
+            DispatchRecord::Rejection {
+                route,
+                rating,
+                error,
+            } => {
+                assert_eq!(route, "mine");
+                assert_eq!(rating.as_deref(), Some("explicit"));
+                assert!(error.contains("not cleared"), "error text: {error}");
+            }
+            other => panic!("expected a Rejection, got {other:?}"),
+        }
+        // The seam observed no Dispatch — the prose never left for the agent.
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, DispatchRecord::Dispatch { .. })),
+            "no dispatch may be recorded for a refused request: {records:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_recorder_captures_dispatch_post_gate_for_cleared_prose() {
+        // A `mine` request whose agent covers the rating clears the gate and is
+        // recorded as a Dispatch BEFORE the adapter runs. The subsequent HTTP
+        // call has no server and errors, but the post-gate record is already
+        // written — proving the seam observes cleared dispatches (a leak would
+        // therefore surface as a Dispatch to an uncleared agent).
+        let router = cleared_route_router(&["general", "explicit"]);
+        let log = router.install_dispatch_recorder();
+        let _ = router
+            .complete(&ModelRequest {
+                route: "mine".to_string(),
+                prompt: "cleared explicit prose".to_string(),
+                rating: Some("explicit".to_string()),
+                context: None,
+            })
+            .await; // network error is fine; the record precedes dispatch.
+        let records = log.lock().expect("dispatch log lock").clone();
+        let dispatch = records
+            .iter()
+            .find_map(|r| match r {
+                DispatchRecord::Dispatch {
+                    route,
+                    agent,
+                    rating,
+                    prompt,
+                } => Some((route, agent, rating, prompt)),
+                _ => None,
+            })
+            .expect("a cleared request must record a Dispatch");
+        assert_eq!(dispatch.0, "mine");
+        assert_eq!(dispatch.1, "reviewer", "resolved external agent id");
+        assert_eq!(dispatch.2.as_deref(), Some("explicit"));
+        assert!(dispatch.3.contains("cleared explicit prose"));
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, DispatchRecord::Rejection { .. })),
+            "a cleared request must not record a Rejection: {records:?}"
+        );
+    }
+
+    #[test]
+    fn prose_bearing_routes_constant_lists_the_five_prose_passes() {
+        assert_eq!(
+            PROSE_BEARING_ROUTES,
+            &["draft", "mine", "line_edit", "reader_sim", "review"]
+        );
+    }
+
+    #[test]
+    fn resolve_cleared_route_passes_through_when_agent_covers_rating() {
+        let router = cleared_route_router(&["mature", "explicit"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        let route = resolve_cleared_route(&runtime, "review", Some("explicit"))
+            .expect("explicit review is cleared");
+        assert_eq!(route.model_name, "reviewer");
+    }
+
+    #[test]
+    fn resolve_cleared_route_errors_rating_not_covered_when_agent_lacks_rating() {
+        // Agent covers only general/teen; an explicit review must be rejected.
+        let router = cleared_route_router(&["general", "teen"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        let err = resolve_cleared_route(&runtime, "review", Some("explicit"))
+            .expect_err("explicit not covered");
+        match err {
+            RouteClearanceError::RatingNotCovered {
+                route,
+                rating,
+                agent_id,
+            } => {
+                assert_eq!(route, "review");
+                assert_eq!(rating, "explicit");
+                assert_eq!(agent_id, "reviewer");
+            }
+            other => panic!("expected RatingNotCovered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_cleared_route_errors_no_route_when_unresolvable() {
+        let router = cleared_route_router(&["explicit"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        let err = resolve_cleared_route(&runtime, "reader_sim", Some("explicit"))
+            .expect_err("no reader_sim route configured");
+        assert!(matches!(err, RouteClearanceError::NoRoute { .. }));
+    }
+
+    #[test]
+    fn resolve_cleared_route_passes_through_non_prose_route_without_rating_check() {
+        // `research` is not prose-bearing: even a rating the agent does not
+        // cover must pass through (no clearance check applies).
+        let router = cleared_route_router(&["general"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        // Add nothing; `research` falls back to the built-in local route which
+        // resolves for any rating. The point is no RatingNotCovered is raised.
+        let route = resolve_cleared_route(&runtime, "research", Some("explicit"))
+            .expect("non-prose route passes through");
+        assert_eq!(route.route_name, "research");
+    }
+
+    #[test]
+    fn resolve_cleared_route_none_rating_is_passthrough() {
+        let router = cleared_route_router(&["general"]);
+        let runtime = router.runtime.read().expect("read lock").clone();
+        // No rating supplied → no clearance check even for a prose route.
+        let route =
+            resolve_cleared_route(&runtime, "review", None).expect("None rating passes through");
+        assert_eq!(route.model_name, "reviewer");
+    }
+
+    // ── Provider content-policy refusal detection (Qwen et al.) ────────────
+    // A stricter provider safety classifier refusing a completion must surface
+    // as a typed `ContentPolicyRefusal` callers can honest-skip on, never as a
+    // generic error that aborts the whole mine/import operation.
+
+    #[test]
+    fn detects_provider_content_policy_refusal_wordings() {
+        assert!(is_content_policy_refusal(
+            r#"{"error":{"message":"Your request was rejected by content policy"}}"#
+        ));
+        assert!(is_content_policy_refusal(
+            r#"{"error":{"code":"content_policy_violation"}}"#
+        ));
+        // DashScope / Qwen data-inspection wording.
+        assert!(is_content_policy_refusal(
+            r#"{"code":"DataInspectionFailed","message":"Input data may contain inappropriate content."}"#
+        ));
+        assert!(is_content_policy_refusal(
+            "This request contains sensitive content."
+        ));
+    }
+
+    #[test]
+    fn ordinary_http_errors_are_not_content_policy_refusals() {
+        assert!(!is_content_policy_refusal(r#"{"error":"invalid api key"}"#));
+        assert!(!is_content_policy_refusal("model not found"));
+        assert!(!is_content_policy_refusal(""));
+    }
+
+    #[test]
+    fn http_completion_error_maps_refusal_to_typed_error() {
+        let err = http_completion_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "import_extract",
+            r#"{"code":"DataInspectionFailed"}"#,
+        );
+        let refusal = err
+            .downcast_ref::<ContentPolicyRefusal>()
+            .expect("typed refusal preserved through anyhow");
+        assert_eq!(refusal.route, "import_extract");
+        assert!(refusal.detail.contains("DataInspectionFailed"));
+    }
+
+    #[test]
+    fn http_completion_error_keeps_generic_error_for_other_4xx() {
+        let err = http_completion_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "https://example/v1/chat/completions",
+            "mine",
+            r#"{"error":"invalid api key"}"#,
+        );
+        assert!(
+            err.downcast_ref::<ContentPolicyRefusal>().is_none(),
+            "a non-policy 400 must stay a generic error"
+        );
+        assert!(err.to_string().contains("HTTP 400"));
+    }
+
+    #[test]
+    fn analysis_appendix_present_on_explicit_mine_and_review_absent_on_draft() {
+        let mut mine = grok_draft_route();
+        mine.route_name = "mine".to_string();
+        let mine_prompt = system_prompt_for_request(&mine, Some("explicit"));
+        assert!(
+            mine_prompt.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX),
+            "explicit mine gets the analysis appendix"
+        );
+        assert!(
+            !mine_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX),
+            "mine must NOT get the drafting appendix"
+        );
+
+        let mut review = grok_draft_route();
+        review.route_name = "review".to_string();
+        let review_prompt = system_prompt_for_request(&review, Some("explicit"));
+        assert!(review_prompt.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
+        assert!(!review_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX));
+
+        // Draft keeps ONLY the drafting appendix — never the analysis one.
+        let draft = grok_draft_route();
+        let draft_prompt = system_prompt_for_request(&draft, Some("explicit"));
+        assert!(draft_prompt.contains(EXPLICIT_DRAFT_SYSTEM_APPENDIX));
+        assert!(
+            !draft_prompt.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX),
+            "draft must NOT get the analysis appendix"
+        );
+    }
+
+    #[test]
+    fn analysis_appendix_absent_for_non_explicit_prose_routes() {
+        let mut review = grok_draft_route();
+        review.route_name = "review".to_string();
+        let mature = system_prompt_for_request(&review, Some("mature"));
+        assert!(!mature.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
+        let none = system_prompt_for_request(&review, None);
+        assert!(!none.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
     }
 }

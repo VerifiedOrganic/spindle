@@ -73,10 +73,10 @@ use super::records::{
     LOCATION_COLUMNS, Location, MOTIF_COLUMNS, Motif, NARRATIVE_PROMISE_COLUMNS, NarrativePromise,
     PLOT_LINE_COLUMNS, PROJECT_COLUMNS, PlotLine, Project, RELIGION_COLUMNS, Religion,
     SCENE_COLUMNS, SYSTEM_OVERLAY_COLUMNS, Scene, StoredCharacterArcMilestone, StoredEstablishedIn,
-    StoredFlexRange, StoredStatedConsequence, StoredStoryPlacement, StoredTryFailCycleStep,
-    SystemOverlay, TEMPORAL_INTERVENTION_COLUMNS, TERM_COLUMNS, THEME_COLUMNS,
-    TIMELINE_EVENT_COLUMNS, TemporalIntervention, Term, Theme, TimelineEvent, WORLD_RULE_COLUMNS,
-    WORLD_STATE_COLUMNS, WorldRule, WorldState,
+    StoredFlexRange, StoredIntensityPoint, StoredStatedConsequence, StoredStoryPlacement,
+    StoredTryFailCycleStep, SystemOverlay, TEMPORAL_INTERVENTION_COLUMNS, TERM_COLUMNS,
+    THEME_COLUMNS, TIMELINE_EVENT_COLUMNS, TemporalIntervention, Term, Theme, TimelineEvent,
+    WORLD_RULE_COLUMNS, WORLD_STATE_COLUMNS, WorldRule, WorldState,
 };
 use super::records::{
     BOOK_OUTLINE_COLUMNS, BookOutline, CANONICAL_FACT_COLUMNS, CHAPTER_OUTLINE_COLUMNS,
@@ -91,12 +91,14 @@ use super::records::{
     ImportWorldDossier, KNOWLEDGE_FACT_COLUMNS, KNOWS_COLUMNS, KnowledgeFact, Knows,
     PACING_CONFIG_COLUMNS, PACING_CURVE_COLUMNS, PACING_TRACKER_COLUMNS, PROGRESSION_EVENT_COLUMNS,
     PacingConfig, PacingCurve, PacingTracker, ProgressionEvent, RELATES_TO_COLUMNS,
-    RESEARCH_LOG_COLUMNS, REVISION_MARKER_COLUMNS, RelatesTo, ResearchLog, RevisionMarker,
-    SAVE_POINT_COLUMNS, SCENE_BEAT_ANNOTATION_COLUMNS, SCENE_SOURCE_LINK_COLUMNS,
-    SCENE_VERSION_COLUMNS, SEARCH_EMBEDDING_COLUMNS, SESSION_ACTIVITY_COLUMNS, SavePoint,
-    SceneBeatAnnotation, SceneSourceLink, SceneVersion, SearchEmbedding, SessionActivity,
-    StoredAnnotatedBeat, StoredChapterOutlineBeat, StoredDualPersonaReviewRound,
-    VALIDATOR_FINDING_COLUMNS, ValidatorFinding, WRITER_POSITION_COLUMNS, WriterPosition,
+    RESEARCH_CLAIM_COLUMNS, RESEARCH_LOG_COLUMNS, RESEARCH_NOTE_COLUMNS, RESEARCH_SOURCE_COLUMNS,
+    RESEARCH_USAGE_COLUMNS, REVISION_MARKER_COLUMNS, RelatesTo, ResearchClaim, ResearchLog,
+    ResearchNote, ResearchSource, ResearchUsage, RevisionMarker, SAVE_POINT_COLUMNS,
+    SCENE_BEAT_ANNOTATION_COLUMNS, SCENE_SOURCE_LINK_COLUMNS, SCENE_VERSION_COLUMNS,
+    SEARCH_EMBEDDING_COLUMNS, SESSION_ACTIVITY_COLUMNS, SavePoint, SceneBeatAnnotation,
+    SceneSourceLink, SceneVersion, SearchEmbedding, SessionActivity, StoredAnnotatedBeat,
+    StoredChapterOutlineBeat, StoredDualPersonaReviewRound, VALIDATOR_FINDING_COLUMNS,
+    ValidatorFinding, WRITER_POSITION_COLUMNS, WriterPosition,
 };
 use super::row::pack_embedding;
 use super::row::timestamp_to_micros;
@@ -395,7 +397,10 @@ pub struct AppendProgressionEventParams {
 pub struct CreateCanonicalFactParams {
     pub project_id: String,
     pub branch_id: String,
-    pub scene_id: String,
+    /// None registers a planned-and-pending fact (V0038): decided during
+    /// planning, placed by book/chapter only, bound to its scene later via
+    /// `bind_canonical_fact_to_scene`.
+    pub scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
     pub subject_table: String,
@@ -411,6 +416,11 @@ pub struct CreateCanonicalFactParams {
     pub valid_from: Option<StoryPlacement>,
     pub valid_until: Option<StoryPlacement>,
     pub legacy_untyped: bool,
+    /// Secret-knowledge gating (V0023): mark the new fact as secret. Defaults
+    /// to false for every public fact.
+    pub secret: bool,
+    /// Optional concealment guidance stored on the secret fact.
+    pub concealment_note: Option<String>,
 }
 
 /// Parameters for upserting a knowledge_fact.
@@ -427,6 +437,26 @@ pub struct UpsertKnowledgeFactParams {
     pub tags: Vec<String>,
     pub reader_visible: bool,
     pub source_import_session_id: Option<String>,
+    /// Secret-knowledge gating (V0023): link this knowledge row to the secret
+    /// canonical fact it grants circle membership in. `None` for ordinary
+    /// knowledge rows.
+    pub secret_of_fact_id: Option<String>,
+}
+
+/// Parameters for linking a single holder into a secret fact's circle of trust
+/// (design §2.1, declaration path). See [`Repository::link_secret_holder`].
+#[derive(Debug, Clone)]
+pub struct LinkSecretHolderParams {
+    pub project_id: String,
+    pub branch_id: String,
+    pub character_id: String,
+    /// The rendered fact text (reuses the canonical fact's value display).
+    pub fact_text: String,
+    /// `normalize_name(fact_text)` — the unique-index key.
+    pub normalized_fact: String,
+    pub source_summary: String,
+    /// The secret `canonical_fact.id` this holder is being linked to.
+    pub secret_of_fact_id: String,
 }
 
 /// Parameters for upserting a `knows` edge.
@@ -456,6 +486,122 @@ pub struct AppendCharacterStateParams {
     pub chapter_number: i32,
     pub scene_order: i32,
     pub patch: CharacterStatePatch,
+}
+
+/// Parameters for appending a stamped quantity-state row.
+#[derive(Debug, Clone)]
+pub struct AppendQuantityStateParams {
+    pub project_id: String,
+    pub branch_id: String,
+    pub subject_table: String,
+    pub subject_id: String,
+    pub measure: String,
+    pub state: spindle_core::models::QuantityState,
+    pub scene_id: Option<String>,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+}
+
+/// Parameters for capturing an operator style-edit candidate (V0031, evolution
+/// §3.9). The `agent_draft` is the prose the operator edited over; the
+/// `operator_edit` is the resulting positive example fed into style refresh.
+#[derive(Debug, Clone)]
+pub struct CaptureStyleEditParams {
+    pub project_id: String,
+    pub branch_id: String,
+    pub scene_id: String,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub agent_draft: String,
+    pub operator_edit: String,
+    /// The scene's content rating at capture, lowercased.
+    pub content_rating: String,
+}
+
+/// Parameters for staging a proposed canon delta (ADR 0001 D2).
+#[derive(Debug, Clone)]
+pub struct StageCanonDeltaParams {
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the scene this was mined from.
+    pub scene_id: String,
+    /// The authoring run that mined it, or `None` when mined outside a run.
+    pub authoring_run_id: Option<String>,
+    /// One of `spindle_core::models::CANON_DELTA_CLASSES`; unknown is rejected.
+    pub delta_class: String,
+    /// Existing entity this modifies; `None` proposes a new one.
+    pub target_id: Option<String>,
+    /// Typed per-class payload.
+    pub payload: serde_json::Value,
+    /// Sanitized prose excerpt (non-empty, ≤300 chars).
+    pub evidence: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+}
+
+/// The operator's ratification of a staged canon delta (ADR 0001 D3). The
+/// repository records the decision only; the apply-dispatch to write tools is
+/// the service layer's responsibility (keeps the decide/apply seam clean).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonDeltaDecision {
+    Applied,
+    Rejected,
+}
+
+impl CanonDeltaDecision {
+    /// The terminal `status` string this decision records.
+    fn status(self) -> &'static str {
+        match self {
+            CanonDeltaDecision::Applied => "applied",
+            CanonDeltaDecision::Rejected => "rejected",
+        }
+    }
+}
+
+/// Parameters for staging a proposed plan amendment (ADR 0003 D2).
+#[derive(Debug, Clone)]
+pub struct StagePlanAmendmentParams {
+    pub project_id: String,
+    pub branch_id: String,
+    /// Provenance: the summarized chapter that triggered the replan pass.
+    pub source_chapter: i32,
+    /// The book the source/target chapter numbers belong to.
+    pub book_number: i32,
+    /// The authoring run that staged it, or `None` when replanned outside a run.
+    pub authoring_run_id: Option<String>,
+    /// One of `spindle_core::models::PLAN_AMENDMENT_CLASSES`; unknown is rejected.
+    pub amendment_class: String,
+    /// The future chapter this amends. `None` only for `promise_followup`;
+    /// required for every other class (validated at staging).
+    pub target_chapter: Option<i32>,
+    /// Typed per-class payload.
+    pub payload: serde_json::Value,
+    /// The replanner's stated reasoning (non-empty, ≤500 chars).
+    pub rationale: String,
+    /// `high` | `medium` | `low`.
+    pub confidence: String,
+}
+
+/// The operator's ratification of a staged plan amendment (ADR 0003 D5). The
+/// repository records the decision + prior state only; the apply-dispatch to
+/// plan write paths is the service layer's responsibility (Part B) — keeps the
+/// decide/apply seam clean, mirroring [`CanonDeltaDecision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAmendmentDecision {
+    Applied,
+    Rejected,
+}
+
+impl PlanAmendmentDecision {
+    /// The terminal `status` string this decision records.
+    fn status(self) -> &'static str {
+        match self {
+            PlanAmendmentDecision::Applied => "applied",
+            PlanAmendmentDecision::Rejected => "rejected",
+        }
+    }
 }
 
 /// Parameters for appending a session-activity row.
@@ -492,6 +638,7 @@ impl Repository {
         data_dir: PathBuf,
         model_router: ModelRouter,
     ) -> Self {
+        let model_router = model_router.with_usage_pool(pool.clone());
         Self {
             inner: Arc::new(Inner {
                 pool,
@@ -1029,6 +1176,1659 @@ impl Repository {
         Ok(scene)
     }
 
+    // ── Story-time side tables (V0017) ──────────────────────────────
+
+    pub async fn upsert_project_calendar(
+        &self,
+        project_id: &str,
+        calendar: &spindle_core::models::CalendarDef,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let week_day_names = serde_json::to_string(&calendar.week_day_names)?;
+        let months = serde_json::to_string(&calendar.months)?;
+        let days_per_week = calendar.days_per_week;
+        let hours_per_day = calendar.hours_per_day;
+        let days_per_year = calendar.days_per_year;
+        let epoch_label = calendar.epoch_label.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO project_calendar \
+                     (project_id, days_per_week, hours_per_day, week_day_names, months, \
+                      days_per_year, epoch_label, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                     ON CONFLICT(project_id) DO UPDATE SET \
+                       days_per_week = excluded.days_per_week, \
+                       hours_per_day = excluded.hours_per_day, \
+                       week_day_names = excluded.week_day_names, \
+                       months = excluded.months, \
+                       days_per_year = excluded.days_per_year, \
+                       epoch_label = excluded.epoch_label, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &project_id,
+                        days_per_week,
+                        hours_per_day,
+                        &week_day_names,
+                        &months,
+                        days_per_year,
+                        &epoch_label,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_project_calendar(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredProjectCalendar>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM project_calendar WHERE project_id = ?1",
+                    crate::sqlite::records::PROJECT_CALENDAR_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&project_id], |r| {
+                    crate::sqlite::records::StoredProjectCalendar::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn upsert_scene_clock(
+        &self,
+        scene_id: &str,
+        project_id: &str,
+        branch_id: &str,
+        clock: &spindle_core::models::StoryClock,
+        temporal_mode: Option<&str>,
+        thread_key: Option<&str>,
+    ) -> Result<()> {
+        let scene_id = scene_id.to_string();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let day_index = clock.day_index;
+        let time_of_day = clock.time_of_day;
+        let duration_days = clock.duration_days;
+        let precision = clock.precision.clone();
+        let temporal_mode = temporal_mode.map(str::to_string);
+        let thread_key = thread_key.map(str::to_string);
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO scene_clock \
+                     (scene_id, project_id, branch_id, day_index, time_of_day, duration_days, \
+                      precision, temporal_mode, thread_key, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10) \
+                     ON CONFLICT(scene_id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       branch_id = excluded.branch_id, \
+                       day_index = excluded.day_index, \
+                       time_of_day = excluded.time_of_day, \
+                       duration_days = excluded.duration_days, \
+                       precision = excluded.precision, \
+                       temporal_mode = excluded.temporal_mode, \
+                       thread_key = excluded.thread_key, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &scene_id,
+                        &project_id,
+                        &branch_id,
+                        day_index,
+                        time_of_day,
+                        duration_days,
+                        &precision,
+                        &temporal_mode,
+                        &thread_key,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_scene_clock(
+        &self,
+        scene_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredSceneClock>> {
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM scene_clock WHERE scene_id = ?1",
+                    crate::sqlite::records::SCENE_CLOCK_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&scene_id], |r| {
+                    crate::sqlite::records::StoredSceneClock::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn list_scene_clocks_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredSceneClock>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM scene_clock WHERE project_id = ?1 AND branch_id = ?2",
+                    crate::sqlite::records::SCENE_CLOCK_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredSceneClock::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// The most recent dated scene clock at or before `cursor_index` (a packed
+    /// `format::story_index` value) on the branch. Used to surface the current
+    /// in-world time when assembling drafting context.
+    pub async fn latest_scene_clock_at_or_before(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        cursor_index: i64,
+    ) -> Result<Option<crate::sqlite::records::StoredSceneClock>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Same packing as `format::story_index` (book*1_000_000 + chapter*1_000 + scene_order).
+                let position =
+                    "(s.book_number * 1000000 + s.chapter_number * 1000 + s.scene_order)";
+                let sql = format!(
+                    "SELECT sc.scene_id, sc.project_id, sc.branch_id, sc.day_index, sc.time_of_day, \
+                            sc.duration_days, sc.precision, sc.temporal_mode, sc.thread_key, \
+                            sc.created_at, sc.updated_at \
+                     FROM scene_clock sc JOIN scene s ON s.id = sc.scene_id \
+                     WHERE sc.project_id = ?1 AND sc.branch_id = ?2 AND sc.day_index IS NOT NULL \
+                       AND {position} <= ?3 \
+                     ORDER BY {position} DESC LIMIT 1"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(
+                    rusqlite::params![&project_id, &branch_id, cursor_index],
+                    |r| crate::sqlite::records::StoredSceneClock::try_from(r),
+                )
+                .optional_inner()
+            })
+            .await
+    }
+
+    // -------------------------------------------------------------------------
+    // Quantity-continuity (V0020): schemes + stamped per-subject state.
+    // -------------------------------------------------------------------------
+
+    pub async fn upsert_project_quantity_scheme(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        scheme: &spindle_core::models::QuantityScheme,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let measure = scheme.measure.clone();
+        let denominations = serde_json::to_string(&scheme.denominations)?;
+        let bands = serde_json::to_string(&scheme.bands)?;
+        let max_band_jump = scheme.max_band_jump;
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO project_quantity_scheme \
+                     (project_id, branch_id, measure, denominations, bands, max_band_jump, \
+                      created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
+                     ON CONFLICT(project_id, branch_id, measure) DO UPDATE SET \
+                       denominations = excluded.denominations, \
+                       bands = excluded.bands, \
+                       max_band_jump = excluded.max_band_jump, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &project_id,
+                        &branch_id,
+                        &measure,
+                        &denominations,
+                        &bands,
+                        max_band_jump,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_project_quantity_scheme(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        measure: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredQuantityScheme>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let measure = measure.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM project_quantity_scheme \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND measure = ?3",
+                    crate::sqlite::records::PROJECT_QUANTITY_SCHEME_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(rusqlite::params![&project_id, &branch_id, &measure], |r| {
+                    crate::sqlite::records::StoredQuantityScheme::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn list_project_quantity_schemes(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredQuantityScheme>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM project_quantity_scheme \
+                     WHERE project_id = ?1 AND branch_id = ?2 ORDER BY measure",
+                    crate::sqlite::records::PROJECT_QUANTITY_SCHEME_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredQuantityScheme::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn append_quantity_state(
+        &self,
+        params: AppendQuantityStateParams,
+    ) -> Result<crate::sqlite::records::StoredQuantityState> {
+        let id = mint_id("quantity_state");
+        let id_lookup = id.clone();
+        let AppendQuantityStateParams {
+            project_id,
+            branch_id,
+            subject_table,
+            subject_id,
+            measure,
+            state,
+            scene_id,
+            book_number,
+            chapter_number,
+            scene_order,
+        } = params;
+        let amount = state.amount;
+        let unit = state.unit;
+        let band = state.band;
+        let change_reason = state.change_reason;
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO quantity_state \
+                     (id, project_id, branch_id, subject_table, subject_id, measure, amount, \
+                      unit, band, change_reason, scene_id, book_number, chapter_number, \
+                      scene_order, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        &subject_table,
+                        &subject_id,
+                        &measure,
+                        amount,
+                        &unit,
+                        &band,
+                        &change_reason,
+                        &scene_id,
+                        book_number,
+                        chapter_number,
+                        scene_order,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM quantity_state WHERE id = ?1",
+                    crate::sqlite::records::QUANTITY_STATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id_lookup], |r| {
+                    crate::sqlite::records::StoredQuantityState::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("quantity_state vanished after insert"))
+    }
+
+    /// Most recent quantity_state row for a subject's measure at or before the
+    /// packed cursor index. Drives the "current amount/band" read.
+    pub async fn latest_quantity_state_at_or_before(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        subject_table: &str,
+        subject_id: &str,
+        measure: &str,
+        cursor_index: i64,
+    ) -> Result<Option<crate::sqlite::records::StoredQuantityState>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let subject_table = subject_table.to_string();
+        let subject_id = subject_id.to_string();
+        let measure = measure.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Same packing as `format::story_index`.
+                let position = "(book_number * 1000000 + chapter_number * 1000 + scene_order)";
+                let sql = format!(
+                    "SELECT {} FROM quantity_state \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND subject_table = ?3 \
+                       AND subject_id = ?4 AND measure = ?5 AND {position} <= ?6 \
+                     ORDER BY {position} DESC, created_at DESC LIMIT 1",
+                    crate::sqlite::records::QUANTITY_STATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(
+                    rusqlite::params![
+                        &project_id,
+                        &branch_id,
+                        &subject_table,
+                        &subject_id,
+                        &measure,
+                        cursor_index,
+                    ],
+                    |r| crate::sqlite::records::StoredQuantityState::try_from(r),
+                )
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// All quantity-state rows on the branch, ordered by subject + measure then
+    /// story position, so consecutive stamps for one subject's measure are
+    /// adjacent (drives the band-monotonicity check).
+    pub async fn list_quantity_states_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredQuantityState>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM quantity_state WHERE project_id = ?1 AND branch_id = ?2 \
+                     ORDER BY subject_table, subject_id, measure, \
+                       (book_number * 1000000 + chapter_number * 1000 + scene_order), created_at",
+                    crate::sqlite::records::QUANTITY_STATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredQuantityState::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// The earliest quantity-state stamp for a subject's measure within
+    /// `book_number` at or before `cursor_index` — the book's starting reading,
+    /// for per-book trajectory display. Pure read; no digest table.
+    pub async fn earliest_quantity_state_in_book(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        subject_table: &str,
+        subject_id: &str,
+        measure: &str,
+        cursor_index: i64,
+    ) -> Result<Option<crate::sqlite::records::StoredQuantityState>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let subject_table = subject_table.to_string();
+        let subject_id = subject_id.to_string();
+        let measure = measure.to_string();
+        // The book is the high radix of the packed cursor (book*1_000_000 + ...).
+        let book_number = (cursor_index / 1_000_000) as i32;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let position = "(book_number * 1000000 + chapter_number * 1000 + scene_order)";
+                let sql = format!(
+                    "SELECT {} FROM quantity_state \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND subject_table = ?3 \
+                       AND subject_id = ?4 AND measure = ?5 AND book_number = ?6 \
+                       AND {position} <= ?7 \
+                     ORDER BY {position} ASC, created_at ASC LIMIT 1",
+                    crate::sqlite::records::QUANTITY_STATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(
+                    rusqlite::params![
+                        &project_id,
+                        &branch_id,
+                        &subject_table,
+                        &subject_id,
+                        &measure,
+                        book_number,
+                        cursor_index,
+                    ],
+                    |r| crate::sqlite::records::StoredQuantityState::try_from(r),
+                )
+                .optional_inner()
+            })
+            .await
+    }
+
+    // ── Canon deltas (ADR 0001 — canon mining & ratification) ────────────────
+
+    /// Stage a proposed canon delta (ADR 0001 D2). Validates:
+    ///   * `delta_class` ∈ `CANON_DELTA_CLASSES` (unknown classes are rejected —
+    ///     forward-compat additions ship via a new constant entry, never a
+    ///     free-form label);
+    ///   * `evidence` non-empty (trimmed) and ≤300 **chars** (char-safe, so a
+    ///     multibyte quote is measured correctly);
+    ///   * `confidence` ∈ {high, medium, low}.
+    ///
+    /// Records the decision seam nothing here — apply-dispatch to write tools is
+    /// the service layer's job (see [`Repository::decide_canon_delta`]).
+    pub async fn stage_canon_delta(
+        &self,
+        params: StageCanonDeltaParams,
+    ) -> Result<crate::sqlite::records::StoredCanonDelta> {
+        let StageCanonDeltaParams {
+            project_id,
+            branch_id,
+            scene_id,
+            authoring_run_id,
+            delta_class,
+            target_id,
+            payload,
+            evidence,
+            confidence,
+        } = params;
+
+        if !spindle_core::models::is_canon_delta_class(&delta_class) {
+            return Err(anyhow!(
+                "unknown canon delta class '{delta_class}' (not in CANON_DELTA_CLASSES)"
+            ));
+        }
+        if evidence.trim().is_empty() {
+            return Err(anyhow!(
+                "canon delta evidence is mandatory — a delta with no quotable evidence is not stageable"
+            ));
+        }
+        let evidence_chars = evidence.chars().count();
+        if evidence_chars > 300 {
+            return Err(anyhow!(
+                "canon delta evidence must be ≤300 chars (got {evidence_chars})"
+            ));
+        }
+        if !matches!(confidence.as_str(), "high" | "medium" | "low") {
+            return Err(anyhow!(
+                "canon delta confidence must be one of high|medium|low (got '{confidence}')"
+            ));
+        }
+
+        let payload_str =
+            serde_json::to_string(&payload).context("serializing canon delta payload")?;
+        let id = mint_id("canon_delta");
+        let id_lookup = id.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO canon_delta \
+                     (id, project_id, branch_id, scene_id, authoring_run_id, delta_class, \
+                      target_id, payload, evidence, confidence, status, decided_at, decided_by, \
+                      created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'staged', NULL, NULL, \
+                             ?11, ?12)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        &scene_id,
+                        &authoring_run_id,
+                        &delta_class,
+                        &target_id,
+                        &payload_str,
+                        &evidence,
+                        &confidence,
+                        now,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.read_canon_delta(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("canon_delta vanished after insert"))
+    }
+
+    /// Fetch one canon delta by id, or `None` if absent. Public read used by the
+    /// service-layer apply dispatcher to pre-flight each decision (row exists,
+    /// ownership, staged status) before any write.
+    pub async fn read_canon_delta_public(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredCanonDelta>> {
+        self.read_canon_delta(id).await
+    }
+
+    /// Fetch one canon delta by id, or `None` if absent.
+    async fn read_canon_delta(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredCanonDelta>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM canon_delta WHERE id = ?1",
+                    crate::sqlite::records::CANON_DELTA_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| {
+                    crate::sqlite::records::StoredCanonDelta::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// List canon deltas on a branch, optionally filtered by `status` and/or
+    /// provenance `scene_id`. Deterministic order: `(created_at, id)`.
+    pub async fn list_canon_deltas(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        status: Option<&str>,
+        scene_id: Option<&str>,
+    ) -> Result<Vec<crate::sqlite::records::StoredCanonDelta>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let status = status.map(str::to_string);
+        let scene_id = scene_id.map(str::to_string);
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Bind only the filters that are present. Params are pushed in
+                // the same order the placeholders are appended.
+                let mut clauses = String::from("project_id = ?1 AND branch_id = ?2");
+                let mut binds: Vec<&dyn rusqlite::ToSql> = vec![&project_id, &branch_id];
+                if let Some(status) = status.as_ref() {
+                    clauses.push_str(&format!(" AND status = ?{}", binds.len() + 1));
+                    binds.push(status);
+                }
+                if let Some(scene_id) = scene_id.as_ref() {
+                    clauses.push_str(&format!(" AND scene_id = ?{}", binds.len() + 1));
+                    binds.push(scene_id);
+                }
+                let sql = format!(
+                    "SELECT {} FROM canon_delta WHERE {clauses} ORDER BY created_at, id",
+                    crate::sqlite::records::CANON_DELTA_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        crate::sqlite::records::StoredCanonDelta::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Record the operator's ratification of a staged canon delta (ADR 0001
+    /// D3). Errors if the delta is not currently `staged` — decisions are final
+    /// history, never revised. When `edited_payload` is `Some`, it replaces the
+    /// stored payload (ratify-with-correction). Stamps `decided_at`/`decided_by`
+    /// and sets `status` to `applied`/`rejected`.
+    ///
+    /// This records the decision **only**. Apply-dispatch to the class's write
+    /// tool is the service layer's job — the repository decides, the service
+    /// applies.
+    pub async fn decide_canon_delta(
+        &self,
+        id: &str,
+        decision: CanonDeltaDecision,
+        decided_by: &str,
+        edited_payload: Option<serde_json::Value>,
+    ) -> Result<crate::sqlite::records::StoredCanonDelta> {
+        let id_owned = id.to_string();
+        let id_lookup = id_owned.clone();
+        let decided_by = decided_by.to_string();
+        let new_status = decision.status();
+        let edited_payload_str = match edited_payload {
+            Some(value) => Some(
+                serde_json::to_string(&value).context("serializing edited canon delta payload")?,
+            ),
+            None => None,
+        };
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Guard: only a `staged` row may be decided. The status
+                // predicate in the UPDATE makes the transition atomic; a zero
+                // rowcount means the row was absent or already terminal.
+                let affected = if let Some(payload_str) = edited_payload_str {
+                    conn.execute(
+                        "UPDATE canon_delta \
+                         SET status = ?1, payload = ?2, decided_at = ?3, decided_by = ?4, \
+                             updated_at = ?3 \
+                         WHERE id = ?5 AND status = 'staged'",
+                        rusqlite::params![new_status, payload_str, now, decided_by, id_owned],
+                    )?
+                } else {
+                    conn.execute(
+                        "UPDATE canon_delta \
+                         SET status = ?1, decided_at = ?2, decided_by = ?3, updated_at = ?2 \
+                         WHERE id = ?4 AND status = 'staged'",
+                        rusqlite::params![new_status, now, decided_by, id_owned],
+                    )?
+                };
+                Ok(affected)
+            })
+            .await
+            .and_then(|affected| {
+                if affected == 0 {
+                    Err(anyhow!(
+                        "canon delta '{id_lookup}' is not staged (already decided or absent — \
+                         decisions are final)"
+                    ))
+                } else {
+                    Ok(())
+                }
+            })?;
+        self.read_canon_delta(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("canon_delta '{id_lookup}' vanished after decide"))
+    }
+
+    /// Supersede-on-remine (ADR 0001 D3): flip only this scene's `staged` canon
+    /// deltas to `superseded`. `applied`/`rejected`/already-`superseded` rows are
+    /// untouched — decisions are history. Returns the number of rows flipped.
+    pub async fn supersede_scene_deltas(&self, scene_id: &str) -> Result<u64> {
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let affected = conn.execute(
+                    "UPDATE canon_delta SET status = 'superseded', updated_at = ?1 \
+                     WHERE scene_id = ?2 AND status = 'staged'",
+                    rusqlite::params![now, scene_id],
+                )?;
+                Ok(affected as u64)
+            })
+            .await
+    }
+
+    // ── Style learning from operator edits (evolution §3.9, V0031) ────────────
+
+    /// Read a project's `style_learning` opt-in. `true` only when the column is
+    /// a truthy integer; NULL (pre-upgrade + default) and 0 both read as
+    /// disabled. Errors if the project row is absent (a missing project is not a
+    /// silent enable). Public wrapper used by the capture path and tests.
+    pub async fn project_style_learning_enabled_public(&self, project_id: &str) -> Result<bool> {
+        let project = self.get_project(project_id).await?;
+        Ok(project.style_learning.unwrap_or(0) != 0)
+    }
+
+    /// Capture (or replace) the pending style-edit candidate for a scene
+    /// (evolution §3.9). Enforces one PENDING candidate per scene per agent
+    /// draft: if a pending candidate already exists for this scene, its
+    /// `operator_edit` is UPDATED in place (the latest edit is the signal) while
+    /// its original `agent_draft` (the contrast) is preserved; otherwise a fresh
+    /// row is inserted. `consumed`/`dismissed` rows are terminal history and are
+    /// never touched.
+    pub async fn capture_style_edit_candidate(
+        &self,
+        params: CaptureStyleEditParams,
+    ) -> Result<crate::sqlite::records::StoredStyleEditCandidate> {
+        let CaptureStyleEditParams {
+            project_id,
+            branch_id,
+            scene_id,
+            book_number,
+            chapter_number,
+            scene_order,
+            agent_draft,
+            operator_edit,
+            content_rating,
+        } = params;
+        let scene_id_lookup = scene_id.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Replace-in-place when a pending candidate already exists for
+                // this scene (dedupe: latest operator edit over the same agent
+                // draft). One statement, atomic; a zero rowcount means insert.
+                let updated = conn.execute(
+                    "UPDATE style_edit_candidate \
+                     SET operator_edit = ?1, content_rating = ?2, updated_at = ?3 \
+                     WHERE scene_id = ?4 AND status = 'pending'",
+                    rusqlite::params![operator_edit, content_rating, now, scene_id],
+                )?;
+                if updated == 0 {
+                    let id = mint_id_local("style_edit_candidate");
+                    conn.execute(
+                        "INSERT INTO style_edit_candidate \
+                         (id, project_id, branch_id, scene_id, book_number, chapter_number, \
+                          scene_order, agent_draft, operator_edit, content_rating, status, \
+                          created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?11)",
+                        rusqlite::params![
+                            &id,
+                            &project_id,
+                            &branch_id,
+                            &scene_id,
+                            book_number,
+                            chapter_number,
+                            scene_order,
+                            &agent_draft,
+                            &operator_edit,
+                            &content_rating,
+                            now,
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        self.read_pending_style_edit_candidate_for_scene(&scene_id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("style_edit_candidate vanished after capture"))
+    }
+
+    async fn read_pending_style_edit_candidate_for_scene(
+        &self,
+        scene_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredStyleEditCandidate>> {
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM style_edit_candidate \
+                     WHERE scene_id = ?1 AND status = 'pending' ORDER BY updated_at DESC LIMIT 1",
+                    crate::sqlite::records::STYLE_EDIT_CANDIDATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&scene_id], |r| {
+                    crate::sqlite::records::StoredStyleEditCandidate::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// List style-edit candidates on a branch, optionally filtered by `status`.
+    /// Deterministic order: `(created_at, id)`.
+    pub async fn list_style_edit_candidates(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<crate::sqlite::records::StoredStyleEditCandidate>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let status = status.map(str::to_string);
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut clauses = String::from("project_id = ?1 AND branch_id = ?2");
+                let mut binds: Vec<&dyn rusqlite::ToSql> = vec![&project_id, &branch_id];
+                if let Some(status) = status.as_ref() {
+                    clauses.push_str(&format!(" AND status = ?{}", binds.len() + 1));
+                    binds.push(status);
+                }
+                let sql = format!(
+                    "SELECT {} FROM style_edit_candidate WHERE {clauses} ORDER BY created_at, id",
+                    crate::sqlite::records::STYLE_EDIT_CANDIDATE_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        crate::sqlite::records::StoredStyleEditCandidate::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Flip a set of PENDING candidates to a terminal status
+    /// (`consumed` after a refresh feeds them; `dismissed` when dropped). Only
+    /// `pending` rows transition — a decision is final. Returns the number of
+    /// rows flipped.
+    pub async fn set_style_edit_candidate_status(
+        &self,
+        candidate_ids: &[String],
+        new_status: &str,
+    ) -> Result<u64> {
+        if candidate_ids.is_empty() {
+            return Ok(0);
+        }
+        if !matches!(new_status, "consumed" | "dismissed") {
+            return Err(anyhow!(
+                "style-edit candidate status must be consumed|dismissed (got '{new_status}')"
+            ));
+        }
+        let ids: Vec<String> = candidate_ids.to_vec();
+        let new_status = new_status.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let mut affected = 0u64;
+                for id in &ids {
+                    affected += conn.execute(
+                        "UPDATE style_edit_candidate SET status = ?1, updated_at = ?2 \
+                         WHERE id = ?3 AND status = 'pending'",
+                        rusqlite::params![new_status, now, id],
+                    )? as u64;
+                }
+                Ok(affected)
+            })
+            .await
+    }
+
+    // ── Fiction anti-slop suppressions (Phase 5 / V0045) ───────────────────────
+
+    /// Persist learned suppressions. Duplicate (project, branch, shelf,
+    /// excerpt) rows are ignored.
+    pub async fn upsert_anti_slop_suppressions(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        entries: &[spindle_core::style::antislop::FalsePositiveSuppression],
+        source: &str,
+    ) -> Result<u64> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let source = source.to_string();
+        let entries: Vec<(String, String)> = entries
+            .iter()
+            .map(|entry| (entry.shelf_id.clone(), entry.excerpt_normalized.clone()))
+            .collect();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let mut inserted = 0u64;
+                for (shelf_id, excerpt) in &entries {
+                    let id = mint_id_local("anti_slop_suppression");
+                    let changed = conn.execute(
+                        "INSERT OR IGNORE INTO anti_slop_suppression \
+                         (id, project_id, branch_id, shelf_id, excerpt_normalized, source, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        rusqlite::params![
+                            &id, &project_id, &branch_id, shelf_id, excerpt, &source, now
+                        ],
+                    )?;
+                    inserted += changed as u64;
+                }
+                Ok(inserted)
+            })
+            .await
+    }
+
+    pub async fn list_anti_slop_suppressions(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredAntiSlopSuppression>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM anti_slop_suppression \
+                     WHERE project_id = ?1 AND branch_id = ?2 \
+                     ORDER BY created_at, id",
+                    crate::sqlite::records::ANTI_SLOP_SUPPRESSION_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredAntiSlopSuppression::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    // ── Plan amendments (ADR 0003 — living-outline replanning) ────────────────
+
+    /// Stage a proposed plan amendment (ADR 0003 D2). Validates:
+    ///   * `amendment_class` ∈ `PLAN_AMENDMENT_CLASSES` (unknown classes are
+    ///     rejected — forward-compat additions ship via a new constant entry,
+    ///     never a free-form label);
+    ///   * `rationale` non-empty (trimmed) and ≤500 **chars** (char-safe, so a
+    ///     multibyte reasoning string is measured correctly — the miner's
+    ///     evidence discipline transplanted to rationale);
+    ///   * `confidence` ∈ {high, medium, low};
+    ///   * `target_chapter` present for every class EXCEPT `promise_followup`,
+    ///     and absent (forbidden-none) for `promise_followup` (which targets a
+    ///     future placement, not a chapter row — ADR D1/D2).
+    ///
+    /// Records nothing about the decision seam here — apply-dispatch to plan
+    /// write paths is the service layer's job (Part B).
+    pub async fn stage_plan_amendment(
+        &self,
+        params: StagePlanAmendmentParams,
+    ) -> Result<crate::sqlite::records::StoredPlanAmendment> {
+        let StagePlanAmendmentParams {
+            project_id,
+            branch_id,
+            source_chapter,
+            book_number,
+            authoring_run_id,
+            amendment_class,
+            target_chapter,
+            payload,
+            rationale,
+            confidence,
+        } = params;
+
+        if !spindle_core::models::is_plan_amendment_class(&amendment_class) {
+            return Err(anyhow!(
+                "unknown plan amendment class '{amendment_class}' (not in PLAN_AMENDMENT_CLASSES)"
+            ));
+        }
+        if rationale.trim().is_empty() {
+            return Err(anyhow!(
+                "plan amendment rationale is mandatory — an amendment with no stated reasoning is not stageable"
+            ));
+        }
+        let rationale_chars = rationale.chars().count();
+        if rationale_chars > 500 {
+            return Err(anyhow!(
+                "plan amendment rationale must be ≤500 chars (got {rationale_chars})"
+            ));
+        }
+        if !matches!(confidence.as_str(), "high" | "medium" | "low") {
+            return Err(anyhow!(
+                "plan amendment confidence must be one of high|medium|low (got '{confidence}')"
+            ));
+        }
+        // `promise_followup` targets a future placement, not a chapter row: its
+        // target_chapter must be absent. Every other class amends a specific
+        // future chapter and must name it (ADR D1/D2). The rule is
+        // class-conditional, so it lives here, not in a SQL CHECK.
+        if amendment_class == "promise_followup" {
+            if target_chapter.is_some() {
+                return Err(anyhow!(
+                    "plan amendment class 'promise_followup' must NOT carry a target_chapter (it targets a future placement)"
+                ));
+            }
+        } else if target_chapter.is_none() {
+            return Err(anyhow!(
+                "plan amendment class '{amendment_class}' requires a target_chapter"
+            ));
+        }
+
+        let payload_str =
+            serde_json::to_string(&payload).context("serializing plan amendment payload")?;
+        let id = mint_id("plan_amendment");
+        let id_lookup = id.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO plan_amendment \
+                     (id, project_id, branch_id, source_chapter, book_number, authoring_run_id, \
+                      amendment_class, target_chapter, payload, rationale, confidence, status, \
+                      decided_at, decided_by, prior_state, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'staged', NULL, NULL, \
+                             NULL, ?12, ?13)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        source_chapter,
+                        book_number,
+                        &authoring_run_id,
+                        &amendment_class,
+                        target_chapter,
+                        &payload_str,
+                        &rationale,
+                        &confidence,
+                        now,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.read_plan_amendment(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("plan_amendment vanished after insert"))
+    }
+
+    /// Fetch one plan amendment by id, or `None` if absent. Public read used by
+    /// the service-layer apply dispatcher (Part B) to pre-flight each decision.
+    pub async fn read_plan_amendment_public(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredPlanAmendment>> {
+        self.read_plan_amendment(id).await
+    }
+
+    /// Fetch one plan amendment by id, or `None` if absent.
+    async fn read_plan_amendment(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredPlanAmendment>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM plan_amendment WHERE id = ?1",
+                    crate::sqlite::records::PLAN_AMENDMENT_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| {
+                    crate::sqlite::records::StoredPlanAmendment::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    /// List plan amendments on a branch, optionally filtered by `status` and/or
+    /// provenance `(book_number, source_chapter)`. Deterministic order:
+    /// `(created_at, id)`. The book/source-chapter filter is all-or-nothing —
+    /// pass `Some((book, chapter))` to scope to one replan pass's provenance.
+    pub async fn list_plan_amendments(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        status: Option<&str>,
+        book_source_chapter: Option<(i32, i32)>,
+    ) -> Result<Vec<crate::sqlite::records::StoredPlanAmendment>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let status = status.map(str::to_string);
+        self.inner
+            .pool
+            .read(move |conn| {
+                // Bind only the filters that are present. Params are pushed in
+                // the same order the placeholders are appended.
+                let mut clauses = String::from("project_id = ?1 AND branch_id = ?2");
+                let mut binds: Vec<&dyn rusqlite::ToSql> = vec![&project_id, &branch_id];
+                if let Some(status) = status.as_ref() {
+                    clauses.push_str(&format!(" AND status = ?{}", binds.len() + 1));
+                    binds.push(status);
+                }
+                if let Some((book, source_chapter)) = book_source_chapter.as_ref() {
+                    clauses.push_str(&format!(
+                        " AND book_number = ?{} AND source_chapter = ?{}",
+                        binds.len() + 1,
+                        binds.len() + 2
+                    ));
+                    binds.push(book);
+                    binds.push(source_chapter);
+                }
+                let sql = format!(
+                    "SELECT {} FROM plan_amendment WHERE {clauses} ORDER BY created_at, id",
+                    crate::sqlite::records::PLAN_AMENDMENT_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(binds.as_slice(), |r| {
+                        crate::sqlite::records::StoredPlanAmendment::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Record the operator's ratification of a staged plan amendment (ADR 0003
+    /// D5). Errors if the amendment is not currently `staged` — decisions are
+    /// final history, never revised (a second decide errors; deciding a
+    /// superseded row errors). Stamps `decided_at`/`decided_by`, sets `status`
+    /// to `applied`/`rejected`, and persists the supplied `prior_state` snapshot
+    /// (ADR D4 — the affected plan slice captured before the apply write; `None`
+    /// on reject or for `promise_followup`).
+    ///
+    /// This records the decision + prior state **only**. Apply-dispatch to the
+    /// class's plan write path is the service layer's job (Part B) — the
+    /// repository decides, the service applies.
+    pub async fn decide_plan_amendment(
+        &self,
+        id: &str,
+        decision: PlanAmendmentDecision,
+        decided_by: &str,
+        prior_state: Option<String>,
+    ) -> Result<crate::sqlite::records::StoredPlanAmendment> {
+        let id_owned = id.to_string();
+        let id_lookup = id_owned.clone();
+        let decided_by = decided_by.to_string();
+        let new_status = decision.status();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Guard: only a `staged` row may be decided. The status
+                // predicate in the UPDATE makes the transition atomic; a zero
+                // rowcount means the row was absent or already terminal.
+                let affected = conn.execute(
+                    "UPDATE plan_amendment \
+                     SET status = ?1, decided_at = ?2, decided_by = ?3, prior_state = ?4, \
+                         updated_at = ?2 \
+                     WHERE id = ?5 AND status = 'staged'",
+                    rusqlite::params![new_status, now, decided_by, prior_state, id_owned],
+                )?;
+                Ok(affected)
+            })
+            .await
+            .and_then(|affected| {
+                if affected == 0 {
+                    Err(anyhow!(
+                        "plan amendment '{id_lookup}' is not staged (already decided or absent — \
+                         decisions are final)"
+                    ))
+                } else {
+                    Ok(())
+                }
+            })?;
+        self.read_plan_amendment(&id_lookup)
+            .await?
+            .ok_or_else(|| anyhow!("plan_amendment '{id_lookup}' vanished after decide"))
+    }
+
+    /// Supersede-on-replan (ADR 0003 D2): flip only this source chapter's
+    /// `staged` plan amendments to `superseded`. `applied`/`rejected`/already-
+    /// `superseded` rows are untouched — decisions are history. Scoped to one
+    /// branch + book + source chapter so a rerun for a different chapter never
+    /// touches these. Returns the number of rows flipped.
+    pub async fn supersede_source_chapter_amendments(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        source_chapter: i32,
+    ) -> Result<u64> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let affected = conn.execute(
+                    "UPDATE plan_amendment SET status = 'superseded', updated_at = ?1 \
+                     WHERE project_id = ?2 AND branch_id = ?3 AND book_number = ?4 \
+                       AND source_chapter = ?5 AND status = 'staged'",
+                    rusqlite::params![now, project_id, branch_id, book_number, source_chapter],
+                )?;
+                Ok(affected as u64)
+            })
+            .await
+    }
+
+    // === Authoring-run event journal (ADR 0002, migration V0027) ===========
+    //
+    // Append-only: `append_run_event` + `list_run_events` are the entire API.
+    // There is deliberately NO update or delete method — the journal is
+    // immutable history (ADR D1). Cascade delete rides the run's own lifecycle.
+
+    /// Append one event to a run's journal, assigning the next dense 1-based
+    /// `seq` for that run, and return it (the SSE resume token — ADR D3.4).
+    ///
+    /// **Seq density under the connection discipline.** All writes serialize
+    /// through the pool's single dedicated writer thread (see [`SqlitePool`]):
+    /// no two `write` closures ever run concurrently. So computing
+    /// `MAX(seq)+1` and inserting inside ONE closure is race-free — the read
+    /// and the insert are one atomic unit on the sole writer. Concurrent
+    /// `authoring_execute_next` calls for the same run are additionally
+    /// serialized a layer up by the MCP per-project tool lock, but even without
+    /// that lock the single-writer guarantee alone makes `seq` dense and
+    /// unique. Because there is no genuine race, no UNIQUE-violation retry is
+    /// warranted (the `UNIQUE(authoring_run_id, seq)` constraint remains as an
+    /// integrity guard, not a contention path).
+    pub async fn append_run_event(
+        &self,
+        run_id: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> Result<i64> {
+        let run_id = run_id.to_string();
+        let kind = kind.to_string();
+        let payload_str =
+            serde_json::to_string(&payload).context("serializing run-event payload")?;
+        let id = mint_id("authoring_run_event");
+        self.inner
+            .pool
+            .write(move |conn| {
+                // Single-writer discipline: this MAX + INSERT is one atomic unit
+                // on the sole writer thread, so the assigned seq is dense.
+                let next_seq: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM authoring_run_event \
+                     WHERE authoring_run_id = ?1",
+                    [&run_id],
+                    |row| row.get(0),
+                )?;
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO authoring_run_event \
+                     (id, authoring_run_id, seq, kind, payload, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![id, run_id, next_seq, kind, payload_str, now],
+                )?;
+                Ok(next_seq)
+            })
+            .await
+    }
+
+    /// List a run's journal events in ascending `seq` order. `after_seq`
+    /// replays only rows with `seq > after_seq` (the `Last-Event-ID`+1 resume
+    /// path — ADR D4); `limit` caps the returned window.
+    pub async fn list_run_events(
+        &self,
+        run_id: &str,
+        after_seq: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::sqlite::records::StoredRunEvent>> {
+        let run_id = run_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut clauses = String::from("authoring_run_id = ?1");
+                let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(run_id)];
+                if let Some(after) = after_seq {
+                    clauses.push_str(&format!(" AND seq > ?{}", binds.len() + 1));
+                    binds.push(Box::new(after));
+                }
+                let mut sql = format!(
+                    "SELECT {} FROM authoring_run_event WHERE {clauses} ORDER BY seq",
+                    crate::sqlite::records::AUTHORING_RUN_EVENT_COLUMNS
+                );
+                if let Some(limit) = limit {
+                    sql.push_str(&format!(" LIMIT {}", limit as i64));
+                }
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let bind_refs: Vec<&dyn rusqlite::ToSql> =
+                    binds.iter().map(|b| b.as_ref()).collect();
+                let rows = stmt
+                    .query_map(bind_refs.as_slice(), |r| {
+                        crate::sqlite::records::StoredRunEvent::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    // ── Generation receipts (migration V0032, live-run bug 4c) ───────────────
+    //
+    // Persisted so a `generation_id` issued in one process survives a primary
+    // restart. `insert_generation_receipt` writes the row; `get_generation_receipt`
+    // reads it back with expiry enforced ON READ and expired rows swept lazily
+    // (no background task). Timestamps are unix microseconds (house convention).
+
+    /// Persist one generation receipt. Idempotent on `id` via UPSERT so a
+    /// re-register of the same (deterministic) id is harmless.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_generation_receipt(
+        &self,
+        id: &str,
+        project_id: Option<&str>,
+        branch_id: Option<&str>,
+        route: &str,
+        agent_id: &str,
+        rating: Option<&str>,
+        explicit_capable: bool,
+        output_sha256: &str,
+        output_text: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let id = id.to_string();
+        let project_id = project_id.map(str::to_string);
+        let branch_id = branch_id.map(str::to_string);
+        let route = route.to_string();
+        let agent_id = agent_id.to_string();
+        let rating = rating.map(str::to_string);
+        let output_sha256 = output_sha256.to_string();
+        let output_text = output_text.to_string();
+        let created = timestamp_to_micros(created_at);
+        let expires = timestamp_to_micros(expires_at);
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO generation_receipt \
+                     (id, project_id, branch_id, route, agent_id, rating, \
+                      explicit_capable, output_sha256, output_text, created_at, expires_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       branch_id = excluded.branch_id, \
+                       route = excluded.route, \
+                       agent_id = excluded.agent_id, \
+                       rating = excluded.rating, \
+                       explicit_capable = excluded.explicit_capable, \
+                       output_sha256 = excluded.output_sha256, \
+                       output_text = excluded.output_text, \
+                       created_at = excluded.created_at, \
+                       expires_at = excluded.expires_at",
+                    rusqlite::params![
+                        id,
+                        project_id,
+                        branch_id,
+                        route,
+                        agent_id,
+                        rating,
+                        explicit_capable as i64,
+                        output_sha256,
+                        output_text,
+                        created,
+                        expires,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Fetch a generation receipt by id, enforcing expiry on read. Returns
+    /// `None` when the id is unknown OR expired; in the expired case the row
+    /// (and any other rows whose `expires_at` has passed) is deleted first, so
+    /// expiry doubles as the lazy GC. The write happens on the single writer
+    /// thread, so the delete-then-read is race-free.
+    pub async fn get_generation_receipt(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredGenerationReceipt>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                // Lazy cleanup: drop every receipt whose TTL has passed.
+                conn.execute(
+                    "DELETE FROM generation_receipt WHERE expires_at <= ?1",
+                    rusqlite::params![now],
+                )?;
+                let sql = format!(
+                    "SELECT {} FROM generation_receipt WHERE id = ?1",
+                    crate::sqlite::records::GENERATION_RECEIPT_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let mut rows = stmt.query(rusqlite::params![id])?;
+                match rows.next()? {
+                    Some(row) => Ok(Some(
+                        crate::sqlite::records::StoredGenerationReceipt::try_from(row)?,
+                    )),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
+    /// Cached raw model output for one deep-check tier over one prose version
+    /// (migration V0039). `None` means the tier has not analyzed this scene at
+    /// this revision — the caller must call the model.
+    pub async fn get_deep_check_cache(
+        &self,
+        scene_id: &str,
+        scene_revision_fingerprint: &str,
+        check_type: &str,
+    ) -> Result<Option<String>> {
+        let scene_id = scene_id.to_string();
+        let fingerprint = scene_revision_fingerprint.to_string();
+        let check_type = check_type.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT output_text FROM deep_check_cache \
+                     WHERE scene_id = ?1 AND scene_revision_fingerprint = ?2 AND check_type = ?3",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![scene_id, fingerprint, check_type])?;
+                match rows.next()? {
+                    Some(row) => Ok(Some(row.get::<_, String>(0)?)),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
+    /// Bank one deep tier's raw model output so a retry does not re-pay for it.
+    /// Also drops this scene's entries for OTHER fingerprints: once the prose
+    /// has moved on, the superseded analysis is unreachable by key and would
+    /// only accumulate.
+    pub async fn put_deep_check_cache(
+        &self,
+        scene_id: &str,
+        scene_revision_fingerprint: &str,
+        check_type: &str,
+        output_text: &str,
+    ) -> Result<()> {
+        let scene_id = scene_id.to_string();
+        let fingerprint = scene_revision_fingerprint.to_string();
+        let check_type = check_type.to_string();
+        let output_text = output_text.to_string();
+        let created = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO deep_check_cache \
+                     (scene_id, scene_revision_fingerprint, check_type, output_text, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(scene_id, scene_revision_fingerprint, check_type) DO UPDATE SET \
+                       output_text = excluded.output_text, \
+                       created_at = excluded.created_at",
+                    rusqlite::params![scene_id, fingerprint, check_type, output_text, created],
+                )?;
+                conn.execute(
+                    "DELETE FROM deep_check_cache \
+                     WHERE scene_id = ?1 AND scene_revision_fingerprint <> ?2",
+                    rusqlite::params![scene_id, fingerprint],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn upsert_timeline_event_clock(
+        &self,
+        timeline_event_id: &str,
+        project_id: &str,
+        branch_id: &str,
+        clock: &spindle_core::models::StoryClock,
+    ) -> Result<()> {
+        let timeline_event_id = timeline_event_id.to_string();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let day_index = clock.day_index;
+        let time_of_day = clock.time_of_day;
+        let duration_days = clock.duration_days;
+        let precision = clock.precision.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO timeline_event_clock \
+                     (timeline_event_id, project_id, branch_id, day_index, time_of_day, \
+                      duration_days, precision, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                     ON CONFLICT(timeline_event_id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       branch_id = excluded.branch_id, \
+                       day_index = excluded.day_index, \
+                       time_of_day = excluded.time_of_day, \
+                       duration_days = excluded.duration_days, \
+                       precision = excluded.precision, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &timeline_event_id,
+                        &project_id,
+                        &branch_id,
+                        day_index,
+                        time_of_day,
+                        duration_days,
+                        &precision,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_timeline_event_clock(
+        &self,
+        timeline_event_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredTimelineEventClock>> {
+        let timeline_event_id = timeline_event_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM timeline_event_clock WHERE timeline_event_id = ?1",
+                    crate::sqlite::records::TIMELINE_EVENT_CLOCK_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&timeline_event_id], |r| {
+                    crate::sqlite::records::StoredTimelineEventClock::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn upsert_character_birth(
+        &self,
+        character_id: &str,
+        project_id: &str,
+        clock: &spindle_core::models::StoryClock,
+    ) -> Result<()> {
+        let character_id = character_id.to_string();
+        let project_id = project_id.to_string();
+        let day_index = clock.day_index;
+        let time_of_day = clock.time_of_day;
+        let precision = clock.precision.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                conn.execute(
+                    "INSERT INTO character_birth \
+                     (character_id, project_id, birth_day_index, time_of_day, precision, \
+                      created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) \
+                     ON CONFLICT(character_id) DO UPDATE SET \
+                       project_id = excluded.project_id, \
+                       birth_day_index = excluded.birth_day_index, \
+                       time_of_day = excluded.time_of_day, \
+                       precision = excluded.precision, \
+                       updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        &character_id,
+                        &project_id,
+                        day_index,
+                        time_of_day,
+                        &precision,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_character_birth(
+        &self,
+        character_id: &str,
+    ) -> Result<Option<crate::sqlite::records::StoredCharacterBirth>> {
+        let character_id = character_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM character_birth WHERE character_id = ?1",
+                    crate::sqlite::records::CHARACTER_BIRTH_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&character_id], |r| {
+                    crate::sqlite::records::StoredCharacterBirth::try_from(r)
+                })
+                .optional_inner()
+            })
+            .await
+    }
+
     pub async fn list_scenes_by_project_and_branch(
         &self,
         project_id: &str,
@@ -1117,6 +2917,41 @@ impl Repository {
                 let mut stmt = conn.prepare_cached(&sql)?;
                 let rows = stmt
                     .query_map([&chapter_id], |r| Scene::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// The active-spine scenes of one chapter. This is the ONE chapter-scoped
+    /// spine predicate: `book`/`chapter` rows are branch-shared, so a
+    /// `chapter_id`-only filter leaks every branch's variant rows into the
+    /// listing (the live bug that showed three rows at one `scene_order`).
+    /// Every surface that reports or addresses the spine of a chapter —
+    /// `list_chapter_scenes`, `list_book_chapters`, `compile_manuscript` via
+    /// `list_scenes_by_project_and_branch`, and `find_scene_by_natural_key` —
+    /// filters on the same `branch_id`, so the listing, the compiled
+    /// manuscript, and the position resolver can never disagree about which
+    /// scenes are in the spine.
+    pub async fn list_scenes_by_chapter_and_branch(
+        &self,
+        chapter_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<Scene>> {
+        let chapter_id = chapter_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {SCENE_COLUMNS} FROM scene \
+                     WHERE chapter_id = ?1 AND branch_id = ?2 ORDER BY scene_order"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&chapter_id, &branch_id], |r| {
+                        Scene::try_from(r)
+                    })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             })
@@ -1343,7 +3178,28 @@ impl Repository {
         branch_id: &str,
         input: &SaveSceneDraftInput,
     ) -> Result<(Scene, bool)> {
-        self.persist_scene(project_id, branch_id, input, true).await
+        self.persist_scene(project_id, branch_id, input, true, None)
+            .await
+    }
+
+    /// Like `save_scene_draft`, but additionally binds an explicit generation
+    /// receipt to the saved scene (migration V0034) in the SAME transaction as
+    /// the scene write. The claim commits if and only if the save commits: a
+    /// save that fails at any point (bad placement, constraint violation,
+    /// claim conflict) rolls the claim back and the receipt stays unbound and
+    /// reusable. This closes the live-run hole where a FAILED save had
+    /// already burned the receipt on the bogus placement.
+    pub async fn save_scene_draft_with_receipt_claim(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        input: &SaveSceneDraftInput,
+        receipt_id: &str,
+        scene_key: &str,
+    ) -> Result<(Scene, bool)> {
+        let claim = (receipt_id.to_string(), scene_key.to_string());
+        self.persist_scene(project_id, branch_id, input, true, Some(claim))
+            .await
     }
 
     pub async fn update_scene_draft_origin(
@@ -1376,7 +3232,32 @@ impl Repository {
         branch_id: &str,
         input: &SaveSceneDraftInput,
         mark_reviews_stale_on_update: bool,
+        receipt_claim: Option<(String, String)>,
     ) -> Result<(Scene, bool)> {
+        // Bound the placement so it cannot collide in the packed story-position
+        // ordering (see `format::SCENE_RADIX` / `CHAPTER_RADIX`). Without this a
+        // chapter past the radix would silently transpose scenes across the next
+        // book boundary at exactly the hundreds-of-chapters scale we target.
+        if input.book_number < 0 {
+            anyhow::bail!(
+                "book_number must be non-negative (got {})",
+                input.book_number
+            );
+        }
+        if !(0..crate::format::CHAPTER_RADIX as i32).contains(&input.chapter_number) {
+            anyhow::bail!(
+                "chapter_number {} is out of range 0..{}; it would collide in story-position ordering",
+                input.chapter_number,
+                crate::format::CHAPTER_RADIX
+            );
+        }
+        if !(0..crate::format::SCENE_RADIX as i32).contains(&input.scene_order) {
+            anyhow::bail!(
+                "scene_order {} is out of range 0..{}; it would collide in story-position ordering",
+                input.scene_order,
+                crate::format::SCENE_RADIX
+            );
+        }
         let book = self
             .get_book_by_number(project_id, input.book_number)
             .await?;
@@ -1406,6 +3287,8 @@ impl Repository {
         let book_number = input.book_number;
         let chapter_number = input.chapter_number;
         let scene_order = input.scene_order;
+        let location_id = input.location_id.clone();
+        let receipt_claim_owned = receipt_claim;
 
         if let Some(existing) = existing {
             // UPDATE path: snapshot the previous prose into scene_version when
@@ -1434,6 +3317,12 @@ impl Repository {
                 .pool
                 .write(move |conn| {
                     let tx = conn.transaction()?;
+                    // The receipt claim commits with the scene write or not at
+                    // all (migration V0034 + the failed-save regression).
+                    if let Some((receipt_id, scene_key)) = receipt_claim_owned.as_ref() {
+                        claim_generation_receipt_in_tx(&tx, receipt_id, scene_key)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+                    }
                     if let Some(v) = next_version_number {
                         let version_id = mint_id_local("scene_version");
                         tx.execute(
@@ -1459,13 +3348,17 @@ impl Repository {
                         )?;
                     }
                     tx.execute(
+                        // COALESCE preserves the existing location when this
+                        // re-save omits one, so a prose-only edit never clears it.
                         "UPDATE scene SET full_text = ?1, summary = ?2, content_rating = ?3, \
-                         tone = ?4, updated_at = ?5 WHERE id = ?6",
+                         tone = ?4, location_id = COALESCE(?5, location_id), updated_at = ?6 \
+                         WHERE id = ?7",
                         rusqlite::params![
                             &new_full_text,
                             &new_summary,
                             &new_content_rating,
                             &new_tone,
+                            &location_id,
                             now,
                             &existing_id,
                         ],
@@ -1492,18 +3385,25 @@ impl Repository {
             let updated = self.get_scene(&existing.id).await?;
             Ok((updated, false))
         } else {
-            // INSERT path: brand-new scene at this natural key.
+            // INSERT path: brand-new scene at this natural key. Wrapped in a
+            // transaction so the optional receipt claim commits atomically
+            // with the scene row (or not at all).
             let scene_id = mint_id("scene");
             let scene_id_lookup = scene_id.clone();
             let rating_owned = content_rating.to_string();
             self.inner
                 .pool
                 .write(move |conn| {
-                    conn.execute(
+                    let tx = conn.transaction()?;
+                    if let Some((receipt_id, scene_key)) = receipt_claim_owned.as_ref() {
+                        claim_generation_receipt_in_tx(&tx, receipt_id, scene_key)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+                    }
+                    tx.execute(
                         "INSERT INTO scene (id, project_id, branch_id, book_id, chapter_id, \
                          book_number, chapter_number, scene_order, full_text, summary, \
-                         content_rating, tone, draft_origin, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, ?13)",
+                         content_rating, tone, draft_origin, location_id, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, ?14, ?14)",
                         rusqlite::params![
                             &scene_id,
                             &project_id_owned,
@@ -1517,9 +3417,11 @@ impl Repository {
                             &summary,
                             &rating_owned,
                             &tone,
+                            &location_id,
                             now,
                         ],
                     )?;
+                    tx.commit()?;
                     Ok(())
                 })
                 .await?;
@@ -1546,6 +3448,166 @@ impl Repository {
             .await?
             .ok_or_else(|| anyhow!("character not found"))?;
         Ok(character)
+    }
+
+    /// Rename a character in one transaction: moves the display name AND the
+    /// `normalized_name` uniqueness key, and preserves the old name as an
+    /// alias (unless only casing/spacing changed, or the old name is already
+    /// aliased). Returns the updated row plus whether the old name was added
+    /// as an alias.
+    ///
+    /// The unique index `idx_character_project_name(project_id,
+    /// normalized_name)` is project-wide (not branch-scoped), so the
+    /// collision check is too: a character on an alternative branch holds its
+    /// name against every branch.
+    pub async fn rename_character(
+        &self,
+        character_id: &str,
+        new_name: &str,
+    ) -> Result<(Character, bool)> {
+        let character_id = character_id.to_string();
+        let new_name = new_name.to_string();
+        let (character, old_name_kept_as_alias) = self
+            .inner
+            .pool
+            .write(move |conn| {
+                let tx = conn.transaction()?;
+                let outcome = rename_character_in_tx(&tx, &character_id, &new_name)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+                tx.commit()?;
+                Ok(outcome)
+            })
+            .await?;
+        Ok((character, old_name_kept_as_alias))
+    }
+
+    /// Scene ids on a branch whose prose or summary matches a phrase, via the
+    /// FTS5 scene index. Used by the character-rename report to surface prose
+    /// mentions of the old name (rename never rewrites scene text). The
+    /// phrase is tokenized through `fts_safe_query`, so arbitrary names
+    /// (hyphens, apostrophes, quotes) cannot break the MATCH syntax; a phrase
+    /// with no alphanumeric tokens matches nothing.
+    pub async fn list_scene_ids_mentioning_phrase(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        phrase: &str,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let Some(query) = fts_safe_query(phrase) else {
+            return Ok(Vec::new());
+        };
+        let hits = self
+            .fts_search_scenes(project_id, Some(branch_id), &query, limit)
+            .await?;
+        let mut ids: Vec<String> = Vec::new();
+        for (scene_id, _rank, _snippet) in hits {
+            if !ids.contains(&scene_id) {
+                ids.push(scene_id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Active (not superseded) canonical facts on a branch whose value text,
+    /// JSON value, or aliases mention `needle` (case-insensitive LIKE). Used
+    /// by the character-rename report; facts that reference a character by id
+    /// are unaffected by renames and deliberately not scanned.
+    pub async fn list_canonical_fact_ids_mentioning(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        needle: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let pattern = format!("%{needle}%");
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id FROM canonical_fact \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND superseded_by IS NULL \
+                       AND (COALESCE(value_text, '') LIKE ?3 \
+                            OR COALESCE(value_json, '') LIKE ?3 \
+                            OR aliases LIKE ?3) \
+                     ORDER BY book_number, chapter_number",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id, &pattern], |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Knowledge facts on a branch whose text mentions `needle`
+    /// (case-insensitive LIKE). Used by the character-rename report: secret
+    /// circles and recorded knowledge embed character names in rendered fact
+    /// prose that no index covers.
+    pub async fn list_knowledge_fact_ids_mentioning(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        needle: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let pattern = format!("%{needle}%");
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id FROM knowledge_fact \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND fact LIKE ?3 \
+                     ORDER BY created_at",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id, &pattern], |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// Non-archived arcs of one character on a branch whose notes or
+    /// milestones JSON mention `needle` (case-insensitive LIKE). Used by the
+    /// character-rename report; the arc's character_id link itself is
+    /// unaffected by renames.
+    pub async fn list_character_arc_ids_mentioning(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        character_id: &str,
+        needle: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let character_id = character_id.to_string();
+        let pattern = format!("%{needle}%");
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id FROM character_arc \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND character_id = ?3 \
+                       AND archived_at IS NULL \
+                       AND (COALESCE(notes, '') LIKE ?4 OR milestones LIKE ?4) \
+                     ORDER BY created_at",
+                )?;
+                let rows = stmt
+                    .query_map(
+                        rusqlite::params![&project_id, &branch_id, &character_id, &pattern],
+                        |r| r.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
     }
 
     pub async fn list_characters_by_project_and_branch(
@@ -1680,10 +3742,10 @@ impl Repository {
         use spindle_core::models::{ContentRating, SaveSceneDraftInput};
         let existing = self.get_scene(scene_id).await?;
         let content_rating = match scene_version.content_rating.as_str() {
-            "General" => ContentRating::General,
-            "Teen" => ContentRating::Teen,
-            "Mature" => ContentRating::Mature,
-            "Explicit" => ContentRating::Explicit,
+            "General" | "general" => ContentRating::General,
+            "Teen" | "teen" => ContentRating::Teen,
+            "Mature" | "mature" => ContentRating::Mature,
+            "Explicit" | "explicit" => ContentRating::Explicit,
             other => anyhow::bail!("unknown content_rating in scene_version: {other}"),
         };
         let input = SaveSceneDraftInput {
@@ -1698,6 +3760,7 @@ impl Repository {
             tone: scene_version.tone.clone(),
             generation_id: None,
             source_path: None,
+            ..Default::default()
         };
         let (scene, _created) = self
             .save_scene_draft(&existing.project_id, &existing.branch_id, &input)
@@ -2110,6 +4173,10 @@ impl Repository {
             .collect();
         let convergence_json =
             serde_json::to_string(&convergence_points).context("serializing convergence_points")?;
+        let connected_conflict_json = serde_json::to_string(&input.connected_conflict_ids)
+            .context("serializing connected_conflict_ids")?;
+        let connected_theme_json = serde_json::to_string(&input.connected_theme_ids)
+            .context("serializing connected_theme_ids")?;
         let now = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
@@ -2118,8 +4185,8 @@ impl Repository {
                 conn.execute(
                     "INSERT INTO plot_line (id, project_id, branch_id, name, normalized_name, \
                      plot_type, summary, status, convergence_points, notes, archived_at, \
-                     created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?10)",
+                     created_at, updated_at, connected_conflict_ids, connected_theme_ids) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?10, ?11, ?12)",
                     rusqlite::params![
                         &id,
                         &project_id,
@@ -2131,6 +4198,8 @@ impl Repository {
                         &status,
                         &convergence_json,
                         now,
+                        &connected_conflict_json,
+                        &connected_theme_json,
                     ],
                 )?;
                 Ok(())
@@ -2591,6 +4660,68 @@ impl Repository {
         self.get_world_rule(&id_out).await
     }
 
+    /// Re-home the given world rules onto `target_branch_id` so branch-local
+    /// world-rule canon is not lost on merge. The world_rule table has a
+    /// project-wide `(project_id, rule_type, rule_name)` unique index, so a rule
+    /// cannot be duplicated across branches — the existing row is moved instead.
+    pub async fn merge_world_rules_to_branch(
+        &self,
+        target_branch_id: &str,
+        rule_ids: &[String],
+    ) -> Result<usize> {
+        if rule_ids.is_empty() {
+            return Ok(0);
+        }
+        let target_branch_id = target_branch_id.to_string();
+        let ids: Vec<String> = rule_ids.to_vec();
+        let count = ids.len();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                for id in &ids {
+                    conn.execute(
+                        "UPDATE world_rule SET branch_id = ?1, updated_at = ?2 WHERE id = ?3",
+                        rusqlite::params![&target_branch_id, now, id],
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(count)
+    }
+
+    /// Re-home rows of a branch-scoped canon table onto `target_branch_id` by
+    /// id (used by branch merges). `table` is a fixed internal constant, never
+    /// user input. Re-homing keeps each row's other FKs (e.g. a fact's scene_id)
+    /// valid because the referenced rows still exist; it just moves the row's
+    /// branch attribution, which is correct for a merge and avoids any
+    /// project-wide unique-index collisions that copying would hit.
+    pub async fn rehome_rows_to_branch(
+        &self,
+        table: &'static str,
+        target_branch_id: &str,
+        ids: &[String],
+    ) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let sql = format!("UPDATE {table} SET branch_id = ?1 WHERE id = ?2");
+        let target_branch_id = target_branch_id.to_string();
+        let ids = ids.to_vec();
+        let count = ids.len();
+        self.inner
+            .pool
+            .write(move |conn| {
+                for id in &ids {
+                    conn.execute(&sql, rusqlite::params![&target_branch_id, id])?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(count)
+    }
+
     pub async fn get_world_rule(&self, id: &str) -> Result<WorldRule> {
         let id = id.to_string();
         self.inner
@@ -2721,6 +4852,7 @@ impl Repository {
         let summary = input.summary.clone();
         let role = input.role.clone();
         let realm = input.realm.clone();
+        let aliases_json = serde_json::to_string(&input.aliases)?;
 
         // Voice profile (with tone + established_in_scene_id from input).
         let voice = input.voice_profile.clone();
@@ -2769,8 +4901,8 @@ impl Repository {
                 let tx = conn.transaction()?;
                 tx.execute(
                     "INSERT INTO character (id, project_id, branch_id, name, normalized_name, \
-                     summary, role, realm, appearance, notes, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?9)",
+                     summary, role, realm, appearance, notes, created_at, updated_at, aliases) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?9, ?10)",
                     rusqlite::params![
                         &character_id,
                         &project_id,
@@ -2781,6 +4913,7 @@ impl Repository {
                         &role,
                         &realm,
                         now,
+                        &aliases_json,
                     ],
                 )?;
                 tx.execute(
@@ -3226,9 +5359,12 @@ impl Repository {
             unit,
             scope,
             legacy_untyped,
+            secret,
+            concealment_note,
             ..
         } = params;
         let _ = legacy_untyped; // column dropped after v029; kept in params for caller parity.
+        let secret_flag = if secret { 1 } else { 0 };
 
         self.inner
             .pool
@@ -3237,9 +5373,10 @@ impl Repository {
                     "INSERT INTO canonical_fact (id, project_id, branch_id, scene_id, \
                      source_scene_id, book_number, chapter_number, subject_table, subject_id, \
                      predicate, value_kind, value_number, value_text, value_json, unit, aliases, \
-                     scope, valid_from, valid_until, superseded_by, created_at, updated_at) \
+                     scope, valid_from, valid_until, superseded_by, created_at, updated_at, \
+                     secret, concealment_note) \
                      VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                             ?15, ?16, ?17, ?18, NULL, ?19, ?19)",
+                             ?15, ?16, ?17, ?18, NULL, ?19, ?19, ?20, ?21)",
                     rusqlite::params![
                         &id,
                         &project_id,
@@ -3260,6 +5397,8 @@ impl Repository {
                         &valid_from_json,
                         &valid_until_json,
                         now,
+                        secret_flag,
+                        &concealment_note,
                     ],
                 )?;
                 Ok(())
@@ -3281,6 +5420,55 @@ impl Repository {
             })
             .await?
             .ok_or_else(|| anyhow!("canonical_fact not found"))
+    }
+
+    /// Attach a canonical fact to the scene that dramatises it (V0038).
+    /// This is the "bind later" half of registering a planned-and-pending
+    /// fact without a scene. The row must already exist; validation that the
+    /// fact and scene share a project/branch and that the fact is live lives
+    /// in the service layer.
+    pub async fn bind_canonical_fact_to_scene(
+        &self,
+        canonical_fact_id: &str,
+        scene_id: &str,
+    ) -> Result<()> {
+        let canonical_fact_id = canonical_fact_id.to_string();
+        let scene_id = scene_id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                let n = conn.execute(
+                    "UPDATE canonical_fact SET scene_id = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&scene_id, now, &canonical_fact_id],
+                )?;
+                if n == 0 {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Test-only seam: clear the `secret` flag on a canonical fact row. Used by
+    /// the `decide_canon_deltas` mid-apply-failure test to make a
+    /// `knowledge_learned` reveal's write fail *after* pre-flight validated the
+    /// fact was secret — `record_knowledge` re-checks the flag at apply time and
+    /// rejects a reveal linking to a now-non-secret fact. This proves the
+    /// dispatcher stops honestly and does not silently roll back the earlier
+    /// applies. A plain delete is unusable here: the circle row's
+    /// `secret_of_fact_id` FK would block it. Not part of the production surface.
+    #[cfg(test)]
+    pub async fn clear_canonical_fact_secret_for_test(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute("UPDATE canonical_fact SET secret = 0 WHERE id = ?1", [&id])?;
+                Ok(())
+            })
+            .await
     }
 
     /// Canonical facts about a specific subject (table+id), ordered by
@@ -3680,6 +5868,7 @@ impl Repository {
             source_summary,
             confidence,
             source_import_session_id,
+            secret_of_fact_id,
             ..
         } = params;
 
@@ -3701,8 +5890,9 @@ impl Repository {
                     tx.execute(
                         "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
                          fact, normalized_fact, source_summary, learned_at, confidence, tags, \
-                         reader_visible, source_import_session_id, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+                         reader_visible, source_import_session_id, created_at, updated_at, \
+                         secret_of_fact_id) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)",
                         rusqlite::params![
                             &id,
                             &project_id,
@@ -3717,6 +5907,7 @@ impl Repository {
                             reader_visible,
                             &source_import_session_id,
                             now,
+                            &secret_of_fact_id,
                         ],
                     )?;
                     tx.commit()?;
@@ -3725,6 +5916,125 @@ impl Repository {
             })
             .await?;
         self.get_knowledge_fact(&id_out).await
+    }
+
+    /// Secret-knowledge gating (design §2.1, declaration path): link a single
+    /// holder into a secret fact's circle of trust.
+    ///
+    /// Upsert semantics chosen for the holder-row collision the design calls
+    /// out: the unique index on `(project, branch, character, normalized_fact)`
+    /// means a holder may already carry a knowledge row for the same rendered
+    /// fact text. Rather than DELETE+re-INSERT (which would clobber a
+    /// pre-existing `learned_at`, `tags`, or `reader_visible`), when a matching
+    /// row exists we *UPDATE only its `secret_of_fact_id`* (and touch
+    /// `updated_at`), preserving every other field. When no row exists we
+    /// INSERT a fresh one with `learned_at = None` (known from the start) and
+    /// `reader_visible = true` (dramatic-irony default per design §2.5).
+    ///
+    /// Returns the linked knowledge_fact.
+    pub async fn link_secret_holder(
+        &self,
+        params: LinkSecretHolderParams,
+    ) -> Result<KnowledgeFact> {
+        let LinkSecretHolderParams {
+            project_id,
+            branch_id,
+            character_id,
+            fact_text,
+            normalized_fact,
+            source_summary,
+            secret_of_fact_id,
+        } = params;
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let tags_json = serde_json::to_string::<Vec<String>>(&Vec::new())?;
+
+        let linked_id = self
+            .inner
+            .pool
+            .write(move |conn| {
+                let existing_id: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM knowledge_fact \
+                         WHERE project_id = ?1 AND branch_id = ?2 AND character_id = ?3 \
+                           AND normalized_fact = ?4",
+                        rusqlite::params![&project_id, &branch_id, &character_id, &normalized_fact],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional_inner()?;
+
+                match existing_id {
+                    Some(id) => {
+                        // Collision: link the existing row without disturbing
+                        // its learned_at / tags / reader_visible.
+                        conn.execute(
+                            "UPDATE knowledge_fact \
+                             SET secret_of_fact_id = ?1, updated_at = ?2 WHERE id = ?3",
+                            rusqlite::params![&secret_of_fact_id, now, &id],
+                        )?;
+                        Ok(id)
+                    }
+                    None => {
+                        let id = mint_id_local("knowledge_fact");
+                        conn.execute(
+                            "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+                             fact, normalized_fact, source_summary, learned_at, confidence, tags, \
+                             reader_visible, source_import_session_id, created_at, updated_at, \
+                             secret_of_fact_id) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, 1, NULL, ?9, ?9, \
+                                     ?10)",
+                            rusqlite::params![
+                                &id,
+                                &project_id,
+                                &branch_id,
+                                &character_id,
+                                &fact_text,
+                                &normalized_fact,
+                                &source_summary,
+                                &tags_json,
+                                now,
+                                &secret_of_fact_id,
+                            ],
+                        )?;
+                        Ok(id)
+                    }
+                }
+            })
+            .await?;
+        self.get_knowledge_fact(&linked_id).await
+    }
+
+    /// Secret-knowledge gating (design §2.1): the derived circle of trust for a
+    /// secret fact — every character with a knowledge_fact row linked to it,
+    /// paired with the story index at which they entered the circle
+    /// (`learned_at`; `None` = known from the start / always in the circle).
+    /// Feeds the pure `resolve_secret_visibility` resolver.
+    pub async fn secret_circle_members(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        fact_id: &str,
+    ) -> Result<Vec<(String, Option<StoredStoryPlacement>)>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let fact_id = fact_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT character_id, learned_at FROM knowledge_fact \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND secret_of_fact_id = ?3",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id, &fact_id], |r| {
+                        let character_id: String = r.get(0)?;
+                        let learned_at: Option<StoredStoryPlacement> =
+                            crate::sqlite::row::opt_json(r, 1)?;
+                        Ok((character_id, learned_at))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
     }
 
     pub async fn get_knowledge_fact(&self, id: &str) -> Result<KnowledgeFact> {
@@ -5097,23 +7407,954 @@ impl Repository {
             .await
     }
 
-    pub async fn update_promise_status(&self, promise_id: &str, status: &str) -> Result<()> {
-        let promise_id = promise_id.to_string();
-        let status = status.to_string();
+    pub async fn get_research_source(&self, id: &str) -> Result<Option<ResearchSource>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_SOURCE_COLUMNS} FROM research_source WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| ResearchSource::try_from(r))
+                    .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn get_research_note(&self, id: &str) -> Result<Option<ResearchNote>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_NOTE_COLUMNS} FROM research_note WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| ResearchNote::try_from(r))
+                    .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn get_research_claim(&self, id: &str) -> Result<Option<ResearchClaim>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_CLAIM_COLUMNS} FROM research_claim WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| ResearchClaim::try_from(r))
+                    .optional_inner()
+            })
+            .await
+    }
+
+    pub async fn get_research_usage(&self, id: &str) -> Result<Option<ResearchUsage>> {
+        let id = id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id], |r| ResearchUsage::try_from(r))
+                    .optional_inner()
+            })
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_research_source(
+        &self,
+        project_id: &str,
+        branch_id: Option<&str>,
+        title: &str,
+        source_type: &str,
+        url: Option<&str>,
+        file_path: Option<&str>,
+        author: Option<&str>,
+        publisher: Option<&str>,
+        published_date: Option<&str>,
+        accessed_at: chrono::DateTime<chrono::Utc>,
+        reliability: &str,
+        tags: &[String],
+        summary: Option<&str>,
+    ) -> Result<ResearchSource> {
+        let id = mint_id("research_source");
+        let id_out = id.clone();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.map(|s| s.to_string());
+        let title = title.to_string();
+        let source_type = source_type.to_string();
+        let url = url.map(|s| s.to_string());
+        let file_path = file_path.map(|s| s.to_string());
+        let author = author.map(|s| s.to_string());
+        let publisher = publisher.map(|s| s.to_string());
+        let published_date = published_date.map(|s| s.to_string());
+        let accessed_at_micros = timestamp_to_micros(accessed_at);
+        let reliability = reliability.to_string();
+        let tags_json = serde_json::to_string(tags)?;
+        let summary = summary.map(|s| s.to_string());
         let now = timestamp_to_micros(chrono::Utc::now());
+
         self.inner
             .pool
             .write(move |conn| {
-                let n = conn.execute(
-                    "UPDATE narrative_promise SET status = ?1, updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![&status, now, &promise_id],
+                conn.execute(
+                    "INSERT INTO research_source (id, project_id, branch_id, title, source_type, \
+                     url, file_path, author, publisher, published_date, accessed_at, reliability, tags, summary, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        &title,
+                        &source_type,
+                        &url,
+                        &file_path,
+                        &author,
+                        &publisher,
+                        &published_date,
+                        accessed_at_micros,
+                        &reliability,
+                        &tags_json,
+                        &summary,
+                        now,
+                        now,
+                    ],
                 )?;
-                if n == 0 {
-                    return Err(rusqlite::Error::QueryReturnedNoRows);
-                }
                 Ok(())
             })
             .await?;
+
+        let id_lookup = id_out;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_SOURCE_COLUMNS} FROM research_source WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id_lookup], |r| ResearchSource::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("research_source vanished after insert"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_research_note(
+        &self,
+        project_id: &str,
+        source_id: Option<&str>,
+        branch_id: Option<&str>,
+        note: &str,
+        quote: Option<&str>,
+        locator: Option<&str>,
+        tags: &[String],
+    ) -> Result<ResearchNote> {
+        let id = mint_id("research_note");
+        let id_out = id.clone();
+        let project_id = project_id.to_string();
+        let source_id = source_id.map(|s| s.to_string());
+        let branch_id = branch_id.map(|s| s.to_string());
+        let note = note.to_string();
+        let quote = quote.map(|s| s.to_string());
+        let locator = locator.map(|s| s.to_string());
+        let tags_json = serde_json::to_string(tags)?;
+        let now = timestamp_to_micros(chrono::Utc::now());
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO research_note (id, project_id, source_id, branch_id, note, \
+                     quote, locator, tags, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &source_id,
+                        &branch_id,
+                        &note,
+                        &quote,
+                        &locator,
+                        &tags_json,
+                        now,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+        let id_lookup = id_out;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_NOTE_COLUMNS} FROM research_note WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id_lookup], |r| ResearchNote::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("research_note vanished after insert"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_research_claim(
+        &self,
+        project_id: &str,
+        source_id: Option<&str>,
+        note_id: Option<&str>,
+        branch_id: Option<&str>,
+        claim: &str,
+        topic: Option<&str>,
+        time_period: Option<&str>,
+        location: Option<&str>,
+        confidence: &str,
+        tags: &[String],
+    ) -> Result<ResearchClaim> {
+        let id = mint_id("research_claim");
+        let id_out = id.clone();
+        let project_id = project_id.to_string();
+        let source_id = source_id.map(|s| s.to_string());
+        let note_id = note_id.map(|s| s.to_string());
+        let branch_id = branch_id.map(|s| s.to_string());
+        let claim = claim.to_string();
+        let topic = topic.map(|s| s.to_string());
+        let time_period = time_period.map(|s| s.to_string());
+        let location = location.map(|s| s.to_string());
+        let confidence = confidence.to_string();
+        let tags_json = serde_json::to_string(tags)?;
+        let now = timestamp_to_micros(chrono::Utc::now());
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO research_claim (id, project_id, source_id, note_id, branch_id, claim, \
+                     topic, time_period, location, confidence, tags, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &source_id,
+                        &note_id,
+                        &branch_id,
+                        &claim,
+                        &topic,
+                        &time_period,
+                        &location,
+                        &confidence,
+                        &tags_json,
+                        now,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+        let id_lookup = id_out;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_CLAIM_COLUMNS} FROM research_claim WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id_lookup], |r| ResearchClaim::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("research_claim vanished after insert"))
+    }
+
+    pub async fn list_research_sources_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResearchSource>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_SOURCE_COLUMNS} FROM research_source \
+                     WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id], |r| ResearchSource::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn list_research_notes_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResearchNote>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_NOTE_COLUMNS} FROM research_note \
+                     WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id], |r| ResearchNote::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn list_research_claims_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResearchClaim>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_CLAIM_COLUMNS} FROM research_claim \
+                     WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id], |r| ResearchClaim::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_research_usage(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        run_id: &str,
+        step_checkpoint_id: Option<&str>,
+        scene_id: &str,
+        source_ids: &[String],
+        note_ids: &[String],
+        claim_ids: &[String],
+        query_pack_input: &str,
+        context_hash: &str,
+    ) -> Result<ResearchUsage> {
+        let id = mint_id("research_usage");
+        let id_out = id.clone();
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let run_id = run_id.to_string();
+        let step_checkpoint_id = step_checkpoint_id.map(|s| s.to_string());
+        let scene_id = scene_id.to_string();
+        let source_ids_json = serde_json::to_string(source_ids)?;
+        let note_ids_json = serde_json::to_string(note_ids)?;
+        let claim_ids_json = serde_json::to_string(claim_ids)?;
+        let query_pack_input = query_pack_input.to_string();
+        let context_hash = context_hash.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO research_usage (id, project_id, branch_id, run_id, step_checkpoint_id, scene_id, \
+                     source_ids, note_ids, claim_ids, query_pack_input, context_hash, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    rusqlite::params![
+                        &id,
+                        &project_id,
+                        &branch_id,
+                        &run_id,
+                        &step_checkpoint_id,
+                        &scene_id,
+                        &source_ids_json,
+                        &note_ids_json,
+                        &claim_ids_json,
+                        &query_pack_input,
+                        &context_hash,
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+        let id_lookup = id_out;
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql =
+                    format!("SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage WHERE id = ?1");
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&id_lookup], |r| ResearchUsage::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("research_usage vanished after insert"))
+    }
+
+    pub async fn list_research_usages_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResearchUsage>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage \
+                     WHERE project_id = ?1 ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id], |r| ResearchUsage::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn list_research_usages_for_scene(
+        &self,
+        project_id: &str,
+        scene_id: &str,
+    ) -> Result<Vec<ResearchUsage>> {
+        let project_id = project_id.to_string();
+        let scene_id = scene_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {RESEARCH_USAGE_COLUMNS} FROM research_usage \
+                     WHERE project_id = ?1 AND scene_id = ?2 ORDER BY created_at DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &scene_id], |r| ResearchUsage::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn research_tags_by_project(&self, project_id: &str) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut tags_set = std::collections::BTreeSet::new();
+
+                let mut stmt1 = conn.prepare_cached(
+                    "SELECT tags FROM research_source WHERE project_id = ?1 AND archived_at IS NULL",
+                )?;
+                let mut rows1 = stmt1.query([&project_id])?;
+                while let Some(row) = rows1.next()? {
+                    let tags_json: String = row.get(0)?;
+                    if let Ok(tags) = serde_json::from_str::<Vec<String>>(&tags_json) {
+                        for t in tags {
+                            tags_set.insert(t);
+                        }
+                    }
+                }
+
+                let mut stmt2 = conn.prepare_cached(
+                    "SELECT tags FROM research_note WHERE project_id = ?1 AND archived_at IS NULL",
+                )?;
+                let mut rows2 = stmt2.query([&project_id])?;
+                while let Some(row) = rows2.next()? {
+                    let tags_json: String = row.get(0)?;
+                    if let Ok(tags) = serde_json::from_str::<Vec<String>>(&tags_json) {
+                        for t in tags {
+                            tags_set.insert(t);
+                        }
+                    }
+                }
+
+                let mut stmt3 = conn.prepare_cached(
+                    "SELECT tags FROM research_claim WHERE project_id = ?1 AND archived_at IS NULL",
+                )?;
+                let mut rows3 = stmt3.query([&project_id])?;
+                while let Some(row) = rows3.next()? {
+                    let tags_json: String = row.get(0)?;
+                    if let Ok(tags) = serde_json::from_str::<Vec<String>>(&tags_json) {
+                        for t in tags {
+                            tags_set.insert(t);
+                        }
+                    }
+                }
+
+                Ok(tags_set.into_iter().collect())
+            })
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_research(
+        &self,
+        project_id: &str,
+        branch_id: Option<&str>,
+        query: &str,
+        tags: &[String],
+        time_period: Option<&str>,
+        location: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<spindle_core::models::ResearchSearchResultItem>> {
+        let project_id = project_id.to_string();
+        let query = fts_safe_query(query);
+        let branch_id = branch_id.map(|s| s.to_string());
+        let tags = tags.to_vec();
+        let time_period = time_period.map(|s| s.trim().to_string());
+        let location = location.map(|s| s.trim().to_string());
+        let limit = limit.unwrap_or(20);
+
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut sources_map = std::collections::HashMap::new();
+
+                struct MinimalSource {
+                    id: String,
+                    title: String,
+                    url: Option<String>,
+                    author: Option<String>,
+                    reliability: String,
+                    tags: Vec<String>,
+                    summary: Option<String>,
+                }
+
+                let load_source = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MinimalSource> {
+                    let id: String = row.get(0)?;
+                    let title: String = row.get(1)?;
+                    let url: Option<String> = row.get(2)?;
+                    let author: Option<String> = row.get(3)?;
+                    let reliability: String = row.get(4)?;
+                    let tags_json: String = row.get(5)?;
+                    let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                    let summary: Option<String> = row.get(6)?;
+                    Ok(MinimalSource {
+                        id,
+                        title,
+                        url,
+                        author,
+                        reliability,
+                        tags: tags_parsed,
+                        summary,
+                    })
+                };
+
+                if let Some(branch_id) = &branch_id {
+                    let mut sources_stmt = conn.prepare_cached(
+                        "SELECT id, title, url, author, reliability, tags, summary \
+                         FROM research_source WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL"
+                    )?;
+                    let mut sources_rows = sources_stmt.query(rusqlite::params![&project_id, branch_id])?;
+                    while let Some(row) = sources_rows.next()? {
+                        let source = load_source(row)?;
+                        sources_map.insert(source.id.clone(), source);
+                    }
+                } else {
+                    let mut sources_stmt = conn.prepare_cached(
+                        "SELECT id, title, url, author, reliability, tags, summary FROM research_source WHERE project_id = ?1 AND archived_at IS NULL"
+                    )?;
+                    let mut sources_rows = sources_stmt.query([&project_id])?;
+                    while let Some(row) = sources_rows.next()? {
+                        let source = load_source(row)?;
+                        sources_map.insert(source.id.clone(), source);
+                    }
+                }
+
+                let mut matched_sources = Vec::new();
+                if let Some(query) = &query {
+                    if let Some(branch_id) = &branch_id {
+                        let mut stmt = conn.prepare_cached(
+                            "SELECT s.id FROM research_source s JOIN fts_research_source f ON s.id = f.source_id \
+                             WHERE fts_research_source MATCH ?1 AND s.project_id = ?2 AND (s.branch_id = ?3 OR s.branch_id IS NULL)"
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
+                        while let Some(row) = rows.next()? {
+                            let id: String = row.get(0)?;
+                            if let Some(src) = sources_map.get(&id) {
+                                matched_sources.push(src);
+                            }
+                        }
+                    } else {
+                        let mut stmt = conn.prepare_cached(
+                            "SELECT s.id FROM research_source s JOIN fts_research_source f ON s.id = f.source_id \
+                             WHERE fts_research_source MATCH ?1 AND s.project_id = ?2"
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
+                        while let Some(row) = rows.next()? {
+                            let id: String = row.get(0)?;
+                            if let Some(src) = sources_map.get(&id) {
+                                matched_sources.push(src);
+                            }
+                        }
+                    }
+                } else {
+                    for src in sources_map.values() {
+                        matched_sources.push(src);
+                    }
+                }
+
+                let mut matched_notes = Vec::new();
+                struct MinimalNote {
+                    id: String,
+                    source_id: Option<String>,
+                    note: String,
+                    quote: Option<String>,
+                    locator: Option<String>,
+                    tags: Vec<String>,
+                }
+                if let Some(query) = &query {
+                    if let Some(branch_id) = &branch_id {
+                        let mut stmt = conn.prepare_cached(
+                            "SELECT n.id, n.source_id, n.note, n.quote, n.locator, n.tags \
+                             FROM research_note n JOIN fts_research_note f ON n.id = f.note_id \
+                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND (n.branch_id = ?3 OR n.branch_id IS NULL) AND n.archived_at IS NULL"
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
+                        while let Some(row) = rows.next()? {
+                            let tags_json: String = row.get(5)?;
+                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                            matched_notes.push(MinimalNote {
+                                id: row.get(0)?,
+                                source_id: row.get(1)?,
+                                note: row.get(2)?,
+                                quote: row.get(3)?,
+                                locator: row.get(4)?,
+                                tags: tags_parsed,
+                            });
+                        }
+                    } else {
+                        let mut stmt = conn.prepare_cached(
+                            "SELECT n.id, n.source_id, n.note, n.quote, n.locator, n.tags \
+                             FROM research_note n JOIN fts_research_note f ON n.id = f.note_id \
+                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND n.archived_at IS NULL"
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
+                        while let Some(row) = rows.next()? {
+                            let tags_json: String = row.get(5)?;
+                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                            matched_notes.push(MinimalNote {
+                                id: row.get(0)?,
+                                source_id: row.get(1)?,
+                                note: row.get(2)?,
+                                quote: row.get(3)?,
+                                locator: row.get(4)?,
+                                tags: tags_parsed,
+                            });
+                        }
+                    }
+                } else {
+                    let (sql, has_branch) = if branch_id.is_some() {
+                        (
+                            "SELECT id, source_id, note, quote, locator, tags FROM research_note \
+                             WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL",
+                            true,
+                        )
+                    } else {
+                        (
+                            "SELECT id, source_id, note, quote, locator, tags FROM research_note WHERE project_id = ?1 AND archived_at IS NULL",
+                            false,
+                        )
+                    };
+                    let mut stmt = conn.prepare_cached(sql)?;
+                    let mut rows = if has_branch {
+                        stmt.query(rusqlite::params![&project_id, branch_id.as_ref().unwrap()])?
+                    } else {
+                        stmt.query(rusqlite::params![&project_id])?
+                    };
+                    while let Some(row) = rows.next()? {
+                        let tags_json: String = row.get(5)?;
+                        let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                        matched_notes.push(MinimalNote {
+                            id: row.get(0)?,
+                            source_id: row.get(1)?,
+                            note: row.get(2)?,
+                            quote: row.get(3)?,
+                            locator: row.get(4)?,
+                            tags: tags_parsed,
+                        });
+                    }
+                }
+
+                let mut matched_claims = Vec::new();
+                struct MinimalClaim {
+                    id: String,
+                    source_id: Option<String>,
+                    claim: String,
+                    topic: Option<String>,
+                    time_period: Option<String>,
+                    location: Option<String>,
+                    confidence: String,
+                    tags: Vec<String>,
+                }
+                if let Some(query) = &query {
+                    if let Some(branch_id) = &branch_id {
+                        let mut stmt = conn.prepare_cached(
+                            "SELECT c.id, c.source_id, c.claim, c.topic, c.time_period, c.location, c.confidence, c.tags \
+                             FROM research_claim c JOIN fts_research_claim f ON c.id = f.claim_id \
+                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND (c.branch_id = ?3 OR c.branch_id IS NULL) AND c.archived_at IS NULL"
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
+                        while let Some(row) = rows.next()? {
+                            let tags_json: String = row.get(7)?;
+                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                            matched_claims.push(MinimalClaim {
+                                id: row.get(0)?,
+                                source_id: row.get(1)?,
+                                claim: row.get(2)?,
+                                topic: row.get(3)?,
+                                time_period: row.get(4)?,
+                                location: row.get(5)?,
+                                confidence: row.get(6)?,
+                                tags: tags_parsed,
+                            });
+                        }
+                    } else {
+                        let mut stmt = conn.prepare_cached(
+                            "SELECT c.id, c.source_id, c.claim, c.topic, c.time_period, c.location, c.confidence, c.tags \
+                             FROM research_claim c JOIN fts_research_claim f ON c.id = f.claim_id \
+                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND c.archived_at IS NULL"
+                        )?;
+                        let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
+                        while let Some(row) = rows.next()? {
+                            let tags_json: String = row.get(7)?;
+                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                            matched_claims.push(MinimalClaim {
+                                id: row.get(0)?,
+                                source_id: row.get(1)?,
+                                claim: row.get(2)?,
+                                topic: row.get(3)?,
+                                time_period: row.get(4)?,
+                                location: row.get(5)?,
+                                confidence: row.get(6)?,
+                                tags: tags_parsed,
+                            });
+                        }
+                    }
+                } else {
+                    let (sql, has_branch) = if branch_id.is_some() {
+                        (
+                            "SELECT id, source_id, claim, topic, time_period, location, confidence, tags \
+                             FROM research_claim WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL",
+                            true,
+                        )
+                    } else {
+                        (
+                            "SELECT id, source_id, claim, topic, time_period, location, confidence, tags \
+                             FROM research_claim WHERE project_id = ?1 AND archived_at IS NULL",
+                            false,
+                        )
+                    };
+                    let mut stmt = conn.prepare_cached(sql)?;
+                    let mut rows = if has_branch {
+                        stmt.query(rusqlite::params![&project_id, branch_id.as_ref().unwrap()])?
+                    } else {
+                        stmt.query(rusqlite::params![&project_id])?
+                    };
+                    while let Some(row) = rows.next()? {
+                        let tags_json: String = row.get(7)?;
+                        let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+                        matched_claims.push(MinimalClaim {
+                            id: row.get(0)?,
+                            source_id: row.get(1)?,
+                            claim: row.get(2)?,
+                            topic: row.get(3)?,
+                            time_period: row.get(4)?,
+                            location: row.get(5)?,
+                            confidence: row.get(6)?,
+                            tags: tags_parsed,
+                        });
+                    }
+                }
+
+                let mut results = Vec::new();
+
+                let matches_tags = |item_tags: &[String]| -> bool {
+                    if tags.is_empty() {
+                        return true;
+                    }
+                    tags.iter().all(|t| item_tags.iter().any(|it| it.eq_ignore_ascii_case(t)))
+                };
+
+                for src in matched_sources {
+                    if !matches_tags(&src.tags) {
+                        continue;
+                    }
+                    results.push(spindle_core::models::ResearchSearchResultItem {
+                        item_type: "source".to_string(),
+                        id: src.id.clone(),
+                        title_or_summary: src.title.clone(),
+                        preview: src.summary.clone().unwrap_or_default(),
+                        tags: src.tags.clone(),
+                        source_title: Some(src.title.clone()),
+                        source_url: src.url.clone(),
+                        source_author: src.author.clone(),
+                        locator: None,
+                        confidence_or_reliability: Some(src.reliability.clone()),
+                    });
+                }
+
+                for note in matched_notes {
+                    if !matches_tags(&note.tags) {
+                        continue;
+                    }
+                    let (src_title, src_url, src_author) = if let Some(sid) = &note.source_id {
+                        if let Some(src) = sources_map.get(sid) {
+                            (Some(src.title.clone()), src.url.clone(), src.author.clone())
+                        } else {
+                            (None, None, None)
+                        }
+                    } else {
+                        (None, None, None)
+                    };
+
+                    let note_text = note.note.clone();
+                    let preview = if let Some(q) = &note.quote {
+                        format!("\"{}\"\n— {}", q, note_text)
+                    } else {
+                        note_text.clone()
+                    };
+
+                    results.push(spindle_core::models::ResearchSearchResultItem {
+                        item_type: "note".to_string(),
+                        id: note.id,
+                        title_or_summary: if note.note.len() > 60 { format!("{}...", &note.note[..57]) } else { note.note.clone() },
+                        preview,
+                        tags: note.tags,
+                        source_title: src_title,
+                        source_url: src_url,
+                        source_author: src_author,
+                        locator: note.locator,
+                        confidence_or_reliability: None,
+                    });
+                }
+
+                for claim in matched_claims {
+                    if !matches_tags(&claim.tags) {
+                        continue;
+                    }
+                    if let Some(tp) = &time_period {
+                        if let Some(ctp) = &claim.time_period {
+                            if !ctp.to_lowercase().contains(&tp.to_lowercase()) {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+                    if let Some(loc) = &location {
+                        if let Some(cloc) = &claim.location {
+                            if !cloc.to_lowercase().contains(&loc.to_lowercase()) {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    let (src_title, src_url, src_author) = if let Some(sid) = &claim.source_id {
+                        if let Some(src) = sources_map.get(sid) {
+                            (Some(src.title.clone()), src.url.clone(), src.author.clone())
+                        } else {
+                            (None, None, None)
+                        }
+                    } else {
+                        (None, None, None)
+                    };
+
+                    results.push(spindle_core::models::ResearchSearchResultItem {
+                        item_type: "claim".to_string(),
+                        id: claim.id,
+                        title_or_summary: claim.claim.clone(),
+                        preview: format!("Factual Claim: {}\nTopic: {}\nConfidence: {}",
+                            claim.claim,
+                            claim.topic.clone().unwrap_or_else(|| "N/A".to_string()),
+                            claim.confidence
+                        ),
+                        tags: claim.tags,
+                        source_title: src_title,
+                        source_url: src_url,
+                        source_author: src_author,
+                        locator: None,
+                        confidence_or_reliability: Some(claim.confidence),
+                    });
+                }
+
+                results.truncate(limit);
+                Ok(results)
+            })
+            .await
+    }
+
+    pub async fn update_promise_status(
+        &self,
+        input: &spindle_core::models::UpdatePromiseStatusInput,
+    ) -> Result<()> {
+        use crate::format::{CHAPTER_RADIX, SCENE_RADIX, story_index, story_index_from_placement};
+        use spindle_core::models::PromiseStatusEvent;
+        anyhow::ensure!(
+            !input.status.trim().is_empty(),
+            "promise status must not be empty"
+        );
+        let input = input.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                Ok((|| -> Result<()> {
+                    let tx = conn.transaction()?;
+                    let mut promise = tx.query_row(
+                        &format!("SELECT {NARRATIVE_PROMISE_COLUMNS} FROM narrative_promise WHERE id = ?1"),
+                        [&input.narrative_promise_id], |row| NarrativePromise::try_from(row))?;
+                    let mut at = input.at;
+                    if let Some(scene_id) = &input.source_scene_id {
+                        let scene = tx.query_row(&format!("SELECT {SCENE_COLUMNS} FROM scene WHERE id = ?1"),
+                            [scene_id], |row| Scene::try_from(row))?;
+                        anyhow::ensure!(scene.project_id == promise.project_id && scene.branch_id == promise.branch_id,
+                            "promise evidence must belong to the same project and branch");
+                        if let Some(at) = &at {
+                            anyhow::ensure!(at.book_number == scene.book_number && at.chapter_number == scene.chapter_number
+                                && at.scene_order.is_none_or(|order| order == scene.scene_order),
+                                "promise placement must match its evidence scene");
+                        }
+                        at = Some(StoryPlacement { book_number: scene.book_number, chapter_number: scene.chapter_number,
+                            scene_order: Some(scene.scene_order), note: at.and_then(|p| p.note) });
+                    }
+                    if let Some(at) = &at {
+                        anyhow::ensure!(at.book_number > 0 && (0..CHAPTER_RADIX as i32).contains(&at.chapter_number)
+                            && at.scene_order.is_none_or(|s| (0..SCENE_RADIX as i32).contains(&s)),
+                            "promise placement is out of range");
+                        anyhow::ensure!(story_index(at.book_number, at.chapter_number, at.scene_order.unwrap_or((SCENE_RADIX - 1) as i32))
+                            >= story_index_from_placement(&promise.planted_at), "promise event cannot precede its planting");
+                    }
+                    if let Some(id) = &input.replaces_event_id {
+                        anyhow::ensure!(promise.status_history.iter().any(|e| &e.id == id)
+                            && !promise.status_history.iter().any(|e| e.replaces_event_id.as_ref() == Some(id)),
+                            "replacement must name a current event of this promise");
+                    }
+                    let now = chrono::Utc::now();
+                    promise.status_history.push(PromiseStatusEvent {
+                        id: mint_id("promise_event"), previous_status: promise.status.clone(),
+                        status: input.status.clone(), at, source_scene_id: input.source_scene_id,
+                        note: input.note, replaces_event_id: input.replaces_event_id, recorded_at: now.to_rfc3339(),
+                    });
+                    let status = promise.status_at(i64::MAX).unwrap_or(&input.status);
+                    tx.execute("UPDATE narrative_promise SET status = ?1, status_history = ?2, updated_at = ?3 WHERE id = ?4",
+                        rusqlite::params![status, serde_json::to_string(&promise.status_history)?, timestamp_to_micros(now), &promise.id])?;
+                    tx.commit()?;
+                    Ok(())
+                })())
+            })
+            .await??;
         Ok(())
     }
 
@@ -5148,6 +8389,19 @@ impl Repository {
                 let scene_id = scene_id.clone();
                 move |conn| {
                     let tx = conn.transaction()?;
+                    let sql = format!("SELECT {SCENE_COLUMNS} FROM scene WHERE id = ?1");
+                    let scene = tx.query_row(&sql, rusqlite::params![&scene_id], |row| {
+                        crate::sqlite::records::Scene::try_from(row)
+                    })?;
+                    // Persist only while this job still matches live prose.
+                    // A different fingerprint on the row is not enough to
+                    // decide: a new job MUST replace an old one after an
+                    // edit, but a late finish from the old job must not
+                    // replace the new one. The live scene is the tie-break.
+                    if Repository::scene_revision_fingerprint(&scene) != fingerprint {
+                        tx.commit()?;
+                        return Ok(());
+                    }
                     tx.execute(
                         "DELETE FROM dual_persona_review WHERE branch_id = ?1 AND scene_id = ?2",
                         rusqlite::params![&branch_id, &scene_id],
@@ -5177,6 +8431,21 @@ impl Repository {
         self.get_dual_persona_review(&branch_id, &scene_id)
             .await?
             .ok_or_else(|| anyhow!("dual_persona_review vanished after upsert"))
+    }
+
+    /// Stable fingerprint over the scene fields that drive review staleness.
+    /// Must stay in lockstep with the service-layer copy used to key jobs.
+    pub(crate) fn scene_revision_fingerprint(scene: &Scene) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(scene.summary.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(scene.full_text.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(scene.content_rating.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(scene.tone.clone().unwrap_or_default().as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     pub async fn get_dual_persona_review(
@@ -5480,7 +8749,17 @@ impl Repository {
         theme_ids: Vec<String>,
         conflict_ids: Vec<String>,
         beats: Vec<AnnotatedBeat>,
+        intensity: Option<f64>,
     ) -> Result<SceneBeatAnnotation> {
+        // Preserve a previously recorded intensity when this re-annotation omits
+        // it (annotate is DELETE-then-INSERT, so a bare None would erase it).
+        let effective_intensity = match intensity {
+            Some(value) => Some(value),
+            None => self
+                .get_scene_beat_annotation(branch_id, scene_id)
+                .await?
+                .and_then(|annotation| annotation.intensity),
+        };
         let stored_beats: Vec<StoredAnnotatedBeat> = beats.into_iter().map(Into::into).collect();
         let beats_json = serde_json::to_string(&stored_beats)?;
         let motif_json = serde_json::to_string(&motif_ids)?;
@@ -5506,8 +8785,8 @@ impl Repository {
                     )?;
                     tx.execute(
                         "INSERT INTO scene_beat_annotation (id, project_id, branch_id, scene_id, \
-                         beats, motif_ids, theme_ids, conflict_ids, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                         beats, motif_ids, theme_ids, conflict_ids, created_at, updated_at, intensity) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
                         rusqlite::params![
                             &id,
                             &project_id_owned,
@@ -5518,6 +8797,7 @@ impl Repository {
                             &theme_json,
                             &conflict_json,
                             now,
+                            effective_intensity,
                         ],
                     )?;
                     tx.commit()?;
@@ -5563,8 +8843,8 @@ impl Repository {
     ) -> Result<PacingConfig> {
         let branch_id = self.active_branch_id(&input.project_id).await?;
         let id = mint_id("pacing_config");
-        let id_out = id.clone();
         let project_id = input.project_id.clone();
+        let branch_id_out = branch_id.clone();
         let total_planned_books = input.total_planned_books;
         let avg_chapters = input.avg_chapters_per_book;
         let avg_scenes = input.avg_scenes_per_chapter;
@@ -5592,7 +8872,10 @@ impl Repository {
                 Ok(())
             })
             .await?;
-        self.get_pacing_config(&id_out).await
+        // Read back by the upsert key, not the minted id: on the conflict path the
+        // pre-existing row keeps its original id, so the minted id may not exist.
+        self.get_pacing_config_for_branch(&input.project_id, &branch_id_out)
+            .await
     }
 
     pub async fn get_pacing_config(&self, id: &str) -> Result<PacingConfig> {
@@ -5610,14 +8893,44 @@ impl Repository {
             .ok_or_else(|| anyhow!("pacing_config not found"))
     }
 
+    async fn get_pacing_config_for_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<PacingConfig> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {PACING_CONFIG_COLUMNS} FROM pacing_config \
+                     WHERE project_id = ?1 AND branch_id = ?2"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&project_id, &branch_id], |r| PacingConfig::try_from(r))
+                    .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("pacing_config not found"))
+    }
+
     pub async fn create_pacing_curve(&self, input: &CreatePacingCurveInput) -> Result<PacingCurve> {
         let branch_id = self.active_branch_id(&input.project_id).await?;
         let id = mint_id("pacing_curve");
-        let id_out = id.clone();
         let project_id = input.project_id.clone();
+        let branch_id_out = branch_id.clone();
         let book_number = input.book_number;
         let act_breakpoints_json = serde_json::to_string(&input.act_breakpoints)?;
         let scene_density_json = serde_json::to_string(&input.scene_type_density)?;
+        let intensity_points: Vec<StoredIntensityPoint> = input
+            .intensity_points
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect();
+        let intensity_points_json =
+            serde_json::to_string(&intensity_points).context("serializing intensity_points")?;
         let now = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
@@ -5625,11 +8938,12 @@ impl Repository {
             .write(move |conn| {
                 conn.execute(
                     "INSERT INTO pacing_curve (id, project_id, branch_id, book_number, \
-                     act_breakpoints, scene_type_density, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
+                     act_breakpoints, scene_type_density, created_at, updated_at, intensity_points) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8) \
                      ON CONFLICT (project_id, branch_id, book_number) DO UPDATE SET \
                         act_breakpoints = excluded.act_breakpoints, \
                         scene_type_density = excluded.scene_type_density, \
+                        intensity_points = excluded.intensity_points, \
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         &id,
@@ -5639,12 +8953,16 @@ impl Repository {
                         &act_breakpoints_json,
                         &scene_density_json,
                         now,
+                        &intensity_points_json,
                     ],
                 )?;
                 Ok(())
             })
             .await?;
-        self.get_pacing_curve(&id_out).await
+        // Read back by the upsert key, not the minted id: on the conflict path the
+        // pre-existing row keeps its original id, so the minted id may not exist.
+        self.get_pacing_curve_for_branch(&input.project_id, &branch_id_out, book_number)
+            .await
     }
 
     pub async fn get_pacing_curve(&self, id: &str) -> Result<PacingCurve> {
@@ -5656,6 +8974,32 @@ impl Repository {
                 let mut stmt = conn.prepare_cached(&sql)?;
                 stmt.query_row([&id], |r| PacingCurve::try_from(r))
                     .optional_inner()
+            })
+            .await?
+            .ok_or_else(|| anyhow!("pacing_curve not found"))
+    }
+
+    async fn get_pacing_curve_for_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+    ) -> Result<PacingCurve> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {PACING_CURVE_COLUMNS} FROM pacing_curve \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row(
+                    rusqlite::params![&project_id, &branch_id, book_number],
+                    |r| PacingCurve::try_from(r),
+                )
+                .optional_inner()
             })
             .await?
             .ok_or_else(|| anyhow!("pacing_curve not found"))
@@ -5766,6 +9110,90 @@ impl Repository {
             })
             .await?;
         self.get_pacing_tracker(&id_out).await
+    }
+
+    pub async fn update_pacing_tracker_progress(
+        &self,
+        tracker_id: &str,
+        current_progress: f64,
+        budget_remaining: f64,
+        status: &str,
+    ) -> Result<()> {
+        let tracker_id = tracker_id.to_string();
+        let status = status.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE pacing_tracker SET current_progress = ?1, budget_remaining = ?2, \
+                     status = ?3, updated_at = ?4 WHERE id = ?5",
+                    rusqlite::params![
+                        current_progress,
+                        budget_remaining,
+                        &status,
+                        timestamp_to_micros(chrono::Utc::now()),
+                        &tracker_id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Recompute realized pacing for every arc tracker on the branch from the
+    /// number of chapter summaries in `book_number`. Each chapter advances the
+    /// arc by `max_progress_per_chapter`; when realized progress exceeds the
+    /// book's `per_book_budget` the tracker goes over budget (surfaced by
+    /// `pacing_budget_audit`). Deterministic and idempotent; trackers without a
+    /// budget for this book are left untouched.
+    pub async fn recompute_pacing_for_book(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+    ) -> Result<()> {
+        let chapter_count = {
+            let project_id = project_id.to_string();
+            let branch_id = branch_id.to_string();
+            self.inner
+                .pool
+                .read(move |conn| {
+                    let count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM chapter_summary \
+                         WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3",
+                        rusqlite::params![&project_id, &branch_id, book_number],
+                        |r| r.get(0),
+                    )?;
+                    Ok(count)
+                })
+                .await?
+        };
+        let trackers = self
+            .list_pacing_trackers_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let book_key = book_number.to_string();
+        for tracker in &trackers {
+            let Some(book_budget) = tracker.per_book_budget.get(&book_key).copied() else {
+                continue;
+            };
+            let rate = tracker.max_progress_per_chapter.unwrap_or(0.1);
+            let realized = chapter_count as f64 * rate;
+            let budget_remaining = book_budget - realized;
+            let current_progress = realized.min(1.5);
+            let status = if budget_remaining < 0.0 {
+                "ahead"
+            } else {
+                "on_track"
+            };
+            self.update_pacing_tracker_progress(
+                &tracker.id,
+                current_progress,
+                budget_remaining,
+                status,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn list_pacing_trackers_by_project_and_branch(
@@ -5940,6 +9368,7 @@ impl Repository {
         let arc_advances_json = serde_json::to_string(&input.arc_advances)?;
         let promise_events_json = serde_json::to_string(&input.promise_events)?;
         let id = mint_id("chapter_summary");
+        let digest_id = mint_id("book_digest");
         let now = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
@@ -5966,6 +9395,95 @@ impl Repository {
                             &arc_advances_json, &promise_events_json, now,
                         ],
                     )?;
+
+                    // Atomically re-derive this book's "story so far" digest from
+                    // all of its chapter summaries (idempotent; deterministic —
+                    // a model compaction pass can replace the cap later).
+                    const BOOK_DIGEST_CHAR_CAP: usize = 6000;
+                    let mut parts: Vec<(i32, String)> = Vec::new();
+                    {
+                        let mut stmt = tx.prepare(
+                            "SELECT chapter_number, summary FROM chapter_summary \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3 \
+                             ORDER BY chapter_number",
+                        )?;
+                        let mut rows = stmt
+                            .query(rusqlite::params![&project_id, &branch_id, book_number])?;
+                        while let Some(row) = rows.next()? {
+                            let chapter: i64 = row.get(0)?;
+                            let chapter_summary: String = row.get(1)?;
+                            parts.push((chapter as i32, chapter_summary));
+                        }
+                    }
+                    let last_chapter_covered =
+                        parts.iter().map(|(chapter, _)| *chapter).max().unwrap_or(0);
+                    let (synopsis, truncated) =
+                        crate::format::build_book_synopsis(&parts, BOOK_DIGEST_CHAR_CAP);
+                    let token_estimate = (synopsis.len() / 4) as i64;
+
+                    // Derive the still-open narrative threads (promises, conflicts,
+                    // plot lines) so distant thread state survives into later-book
+                    // drafting via [STORY SO FAR]. Deterministic ordering lives in
+                    // `build_open_threads`.
+                    let promises = {
+                        let mut stmt = tx.prepare(&format!(
+                            "SELECT {NARRATIVE_PROMISE_COLUMNS} FROM narrative_promise \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND archived_at IS NULL"
+                        ))?;
+                        stmt.query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                            NarrativePromise::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let conflicts = {
+                        let mut stmt = tx.prepare(&format!(
+                            "SELECT {CONFLICT_COLUMNS} FROM conflict \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND archived_at IS NULL"
+                        ))?;
+                        stmt.query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                            Conflict::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let plot_lines = {
+                        let mut stmt = tx.prepare(&format!(
+                            "SELECT {PLOT_LINE_COLUMNS} FROM plot_line \
+                             WHERE project_id = ?1 AND branch_id = ?2 AND archived_at IS NULL"
+                        ))?;
+                        stmt.query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                            PlotLine::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let current_index =
+                        crate::format::story_index(book_number, last_chapter_covered, 0);
+                    let open_threads = crate::format::build_open_threads(
+                        &promises,
+                        &conflicts,
+                        &plot_lines,
+                        current_index,
+                    );
+                    let open_threads_json = serde_json::to_string(&open_threads)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                    tx.execute(
+                        "INSERT INTO book_digest (id, project_id, branch_id, book_number, synopsis, \
+                         open_threads, last_chapter_covered, token_estimate, truncated, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10) \
+                         ON CONFLICT(project_id, branch_id, book_number) DO UPDATE SET \
+                           synopsis = excluded.synopsis, \
+                           open_threads = excluded.open_threads, \
+                           last_chapter_covered = excluded.last_chapter_covered, \
+                           token_estimate = excluded.token_estimate, \
+                           truncated = excluded.truncated, \
+                           updated_at = excluded.updated_at",
+                        rusqlite::params![
+                            &digest_id, &project_id, &branch_id, book_number, &synopsis,
+                            &open_threads_json, last_chapter_covered, token_estimate,
+                            truncated as i32, now,
+                        ],
+                    )?;
+
                     tx.commit()?;
                     Ok(())
                 }
@@ -5974,6 +9492,34 @@ impl Repository {
         self.get_chapter_summary(&project_id, &branch_id, book_number, chapter_number)
             .await?
             .ok_or_else(|| anyhow!("chapter_summary vanished after save"))
+    }
+
+    /// All per-book "story so far" digests on the branch, ordered by book.
+    pub async fn list_book_digests_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredBookDigest>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM book_digest \
+                     WHERE project_id = ?1 AND branch_id = ?2 \
+                     ORDER BY book_number",
+                    crate::sqlite::records::BOOK_DIGEST_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredBookDigest::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
     }
 
     pub async fn get_chapter_summary(
@@ -6031,7 +9577,6 @@ impl Repository {
         let target_conflict_ids_json = serde_json::to_string(&input.target_conflict_ids)?;
         let target_plot_line_ids_json = serde_json::to_string(&input.target_plot_line_ids)?;
 
-        // chapter_plan.scenes is a JSON array of PlannedScene shapes.
         let planned_scenes: Vec<PlannedScene> = input
             .scenes
             .iter()
@@ -6040,7 +9585,12 @@ impl Repository {
                 summary: s.summary.clone(),
                 beat_structure: s.beat_structure.clone(),
                 character_ids: s.character_ids.clone(),
+                location_id: s.location_id.clone(),
+                content_rating: s.content_rating.clone(),
                 purpose: s.purpose.clone(),
+                research_required: s.research_required,
+                research_tags: s.research_tags.clone(),
+                explicit_query: s.explicit_query.clone(),
             })
             .collect();
         let scenes_json = serde_json::to_string(&planned_scenes)?;
@@ -6115,6 +9665,45 @@ impl Repository {
             })
             .await?;
         self.get_chapter_plan(&plan_id_lookup).await
+    }
+
+    /// Set `chapter_plan.plan_revision` for one chapter on the active branch
+    /// (ADR 0003 D4). Used by the plan-amendment apply dispatcher: the
+    /// [`Self::plan_chapter`] replay path rewrites the row and resets the column
+    /// to NULL (it is not in the INSERT list), so the dispatcher writes the
+    /// incremented value here AFTER the replay to make the increment survive.
+    /// Idempotent absolute write (not a `+= 1`); the caller computes the target
+    /// value. Returns the affected row count.
+    pub async fn set_chapter_plan_revision(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        plan_revision: i64,
+    ) -> Result<u64> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let affected = conn.execute(
+                    "UPDATE chapter_plan SET plan_revision = ?1, updated_at = ?2 \
+                     WHERE project_id = ?3 AND branch_id = ?4 \
+                       AND book_number = ?5 AND chapter_number = ?6",
+                    rusqlite::params![
+                        plan_revision,
+                        now,
+                        project_id,
+                        branch_id,
+                        book_number,
+                        chapter_number
+                    ],
+                )?;
+                Ok(affected as u64)
+            })
+            .await
     }
 
     /// Active-branch list of every chapter_plan in a project, ordered by
@@ -7018,8 +10607,10 @@ impl Repository {
         self.get_relationship(branch_id, &in_id, &out_id).await
     }
 
-    /// Apply delta updates to an existing relationship's trust + tension,
-    /// set the reason and last_scene_id, and bump updated_at.
+    /// Apply delta updates to a relationship's trust + tension, set the reason
+    /// and last_scene_id, and bump updated_at. If the scene is the first time
+    /// this pair appears, create the relationship with the deltas as its
+    /// initial trust/tension instead of dropping the continuity update.
     pub async fn update_relationship(
         &self,
         branch_id: &str,
@@ -7043,33 +10634,61 @@ impl Repository {
                 let b = b.clone();
                 move |conn| {
                     let tx = conn.transaction()?;
-                    let (in_id, out_id): (String, String) = tx.query_row(
+                    let mut find = tx.prepare_cached(
                         "SELECT in_id, out_id FROM relates_to \
-                             WHERE branch_id = ?1 \
-                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
-                             LIMIT 1",
-                        rusqlite::params![&branch_id_owned, &a, &b],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                         LIMIT 1",
                     )?;
-                    tx.execute(
-                        "UPDATE relates_to SET \
-                            trust = trust + ?1, \
-                            tension = tension + ?2, \
-                            reason = ?3, \
-                            last_scene_id = ?4, \
-                            updated_at = ?5 \
-                         WHERE branch_id = ?6 AND in_id = ?7 AND out_id = ?8",
-                        rusqlite::params![
-                            trust_delta,
-                            tension_delta,
-                            &reason,
-                            &scene_id,
-                            now,
-                            &branch_id_owned,
-                            &in_id,
-                            &out_id,
-                        ],
-                    )?;
+                    let mut rows = find.query(rusqlite::params![&branch_id_owned, &a, &b])?;
+                    let existing: Option<(String, String)> = if let Some(row) = rows.next()? {
+                        Some((row.get(0)?, row.get(1)?))
+                    } else {
+                        None
+                    };
+                    drop(rows);
+                    drop(find);
+
+                    let (in_id, out_id) = if let Some((in_id, out_id)) = existing {
+                        tx.execute(
+                            "UPDATE relates_to SET \
+                                trust = trust + ?1, \
+                                tension = tension + ?2, \
+                                reason = ?3, \
+                                last_scene_id = ?4, \
+                                updated_at = ?5 \
+                             WHERE branch_id = ?6 AND in_id = ?7 AND out_id = ?8",
+                            rusqlite::params![
+                                trust_delta,
+                                tension_delta,
+                                &reason,
+                                &scene_id,
+                                now,
+                                &branch_id_owned,
+                                &in_id,
+                                &out_id,
+                            ],
+                        )?;
+                        (in_id, out_id)
+                    } else {
+                        tx.execute(
+                            "INSERT INTO relates_to (in_id, out_id, branch_id, \
+                             relationship_type, trust, tension, dynamics, reason, last_scene_id, \
+                             updated_at) \
+                             VALUES (?1, ?2, ?3, 'scene_dynamic', ?4, ?5, '[]', ?6, ?7, ?8)",
+                            rusqlite::params![
+                                &a,
+                                &b,
+                                &branch_id_owned,
+                                trust_delta,
+                                tension_delta,
+                                &reason,
+                                &scene_id,
+                                now,
+                            ],
+                        )?;
+                        (a.clone(), b.clone())
+                    };
                     tx.commit()?;
                     Ok((in_id, out_id))
                 }
@@ -7439,6 +11058,18 @@ impl Repository {
     ) -> Result<()> {
         if !column_is_updatable(table, field) {
             anyhow::bail!("column '{field}' on '{table}' is not in the update allowlist");
+        }
+        if table == "narrative_promise" && field == "status" {
+            return self
+                .update_promise_status(&spindle_core::models::UpdatePromiseStatusInput {
+                    narrative_promise_id: entity_id.to_owned(),
+                    status: value
+                        .as_str()
+                        .context("promise status must be a string")?
+                        .to_owned(),
+                    ..Default::default()
+                })
+                .await;
         }
         let table = table.to_string();
         let entity_id = entity_id.to_string();
@@ -8423,6 +12054,7 @@ impl Repository {
             summary: String,
             content_rating: String,
             tone: Option<String>,
+            location_id: Option<String>,
         }
         let scenes_owned: Vec<SceneRow> = source_scenes
             .iter()
@@ -8436,6 +12068,7 @@ impl Repository {
                 summary: s.summary.clone(),
                 content_rating: s.content_rating.clone(),
                 tone: s.tone.clone(),
+                location_id: s.location_id.clone(),
             })
             .collect();
 
@@ -8569,9 +12202,9 @@ impl Repository {
                             "INSERT INTO scene (id, project_id, branch_id, book_id, \
                              chapter_id, book_number, chapter_number, scene_order, \
                              full_text, summary, content_rating, tone, draft_origin, \
-                             created_at, updated_at) \
+                             location_id, created_at, updated_at) \
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
-                                     NULL, ?13, ?13)",
+                                     NULL, ?13, ?14, ?14)",
                             rusqlite::params![
                                 &new_id,
                                 &project_id,
@@ -8585,6 +12218,7 @@ impl Repository {
                                 &scene.summary,
                                 &scene.content_rating,
                                 &scene.tone,
+                                &scene.location_id,
                                 now,
                             ],
                         )?;
@@ -10306,6 +13940,37 @@ fn mint_id(table: &str) -> String {
     format!("{}:{}", table, Ulid::new())
 }
 
+fn fts_safe_query(query: &str) -> Option<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+
+    for c in query.chars() {
+        if c.is_alphanumeric() {
+            current.extend(c.to_lowercase());
+        } else if c == '\'' || c == '’' {
+            continue;
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(
+            tokens
+                .into_iter()
+                .map(|token| format!("\"{token}\""))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+}
+
 /// Shared body of the `fts_search_*` methods. The snippet column index is
 /// per-table: it's the position of the first indexed column in the table's
 /// column list (UNINDEXED scene_id/project_id/branch_id come first, then the
@@ -10365,8 +14030,10 @@ async fn fts_search_named(
     .await
 }
 
-/// Tables that carry an `archived_at` column. Driven by the V0001 schema —
-/// see `crates/spindle-adapters/migrations/V0001__initial_schema.sql`.
+/// Tables that carry an `archived_at` column. Driven by the V0001 schema
+/// (`V0001__initial_schema.sql`) plus V0033, which added `archived_at` to the
+/// three research library tables so junk research entities are archivable
+/// (live-run bug 5).
 fn table_has_archived_at(table: &str) -> bool {
     matches!(
         table,
@@ -10380,12 +14047,31 @@ fn table_has_archived_at(table: &str) -> bool {
             | "motif"
             | "narrative_promise"
             | "character_arc"
+            | "research_source"
+            | "research_note"
+            | "research_claim"
     )
 }
 
 /// Allowlist of (table, column) pairs that update_entity_field is permitted
 /// to mutate. Limits surface area to text/json fields where partial overwrites
 /// are safe; identity fields, FKs, and computed fields stay outside this list.
+///
+/// Audit policy (live-run bug round): authoring scaffolds a record first and
+/// deepens it as decisions land, so every PLANNING field — the prose and
+/// structure an author revises during planning — must be mutable after
+/// creation. What stays locked:
+///   * name-family identity columns (character/location/faction/… `name`,
+///     `normalized_name`, `term_text`): they back project-wide uniqueness
+///     indexes and the search index, so a rename is a controlled operation
+///     (see the service's allow_rename path for characters), not a bare
+///     column write;
+///   * FKs and cross-record links (character_id, source/target_event_id,
+///     subject refs);
+///   * computed fields (character_arc.progress);
+///   * columns with a dedicated typed write path (character voice profiles
+///     via set_character_voice_profile, scene text via save/commit,
+///     canonical facts via register/supersede).
 fn column_is_updatable(table: &str, column: &str) -> bool {
     matches!(
         (table, column),
@@ -10395,24 +14081,74 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("project", "name")
             | ("project", "genre")
             | ("project", "project_type")
+            // Style-learning opt-in (V0031): enable capturing operator edits as
+            // style-refresh candidates. 0/1 flag via update_entity_field's
+            // numeric path; NULL/absent = disabled (evolution §3.9).
+            | ("project", "style_learning")
+            // Stub-scene word floor (V0036): the minimum scene length the
+            // preflight/compile/consistency stub gates enforce. NULL/absent =
+            // the built-in default floor.
+            | ("project", "min_scene_word_count")
             | ("book", "title")
             | ("chapter", "title")
             | ("character", "summary")
             | ("character", "role")
             | ("character", "realm")
             | ("character", "appearance")
+            // Alternate names (V0037): nicknames, titles, an in-world name
+            // decided after the record exists. JSON array via the
+            // update_entity_field path (same encoding as conflict's array
+            // fields). The PRIMARY name is deliberately NOT here: renames go
+            // through the service's allow_rename path, which moves the
+            // normalized_name uniqueness key, preserves the old name as an
+            // alias, refreshes the search index, and reports stale
+            // references — none of which a bare column write can do.
+            | ("character", "aliases")
+            // Emotional profile (V0037 audit): create_character seeds it, but
+            // most supporting cast are created before their psychology is
+            // worked out — without these the profile is permanently frozen at
+            // its create-time (usually empty) values. JSON columns via the
+            // update_entity_field path; the service validates the shape of
+            // each key against the stored profile types before writing so a
+            // malformed value cannot poison the row readers.
+            | ("character_emotional_profile", "base_emotions")
+            | ("character_emotional_profile", "suppressed")
+            | ("character_emotional_profile", "triggers")
+            | ("character_emotional_profile", "defense_mechanisms")
+            | ("character_emotional_profile", "flex_range")
             | ("location", "summary")
             | ("location", "realm")
             | ("location", "kind")
             | ("faction", "summary")
+            // World-entity planning fields (audit): classification, realm,
+            // and the JSON tag list are all revised during worldbuilding.
+            // The `name` column stays locked (uniqueness index + search
+            // index; renames need controlled semantics like characters).
+            | ("faction", "faction_type")
+            | ("faction", "realm")
+            | ("faction", "tags")
             | ("religion", "summary")
             | ("religion", "deity_or_principle")
+            | ("religion", "tags")
             | ("economy", "summary")
             | ("economy", "currency")
+            | ("economy", "realm")
+            | ("economy", "scarce_resources")
+            | ("economy", "trade_goods")
             | ("term", "definition")
             | ("term", "pronunciation")
+            | ("term", "usage_context")
+            | ("term", "origin")
             | ("plot_line", "summary")
             | ("plot_line", "status")
+            | ("plot_line", "plot_type")
+            // Convergence audit inputs (V0022): the plot line's connected
+            // conflicts/themes can be declared at create time or retrofitted
+            // onto an existing row so plot_line_convergence_audit has something
+            // to check against. JSON arrays via the update_entity_field path.
+            | ("plot_line", "connected_conflict_ids")
+            | ("plot_line", "connected_theme_ids")
+            | ("plot_line", "convergence_points")
             | ("conflict", "stakes")
             | ("conflict", "resolution_summary")
             // Rich array fields. Settable at create_conflict time; without
@@ -10428,12 +14164,107 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
             | ("conflict", "stated_consequences")
             | ("conflict", "expected_total_cycles")
             | ("conflict", "conflict_type")
+            // Per-stage demonstration markers (V0022), index-aligned with
+            // escalation_stages. Settable after the row exists so the author
+            // can mark a stage demonstrated as they write; drives
+            // conflict_escalation_audit. JSON array via update_entity_field.
+            | ("conflict", "escalation_demonstrated")
+            // Milestone `reached_at` lives inside this JSON blob; the arc
+            // update path resends the whole milestones array with the marker
+            // set (no per-milestone merge). Drives arc_milestone_audit.
+            | ("character_arc", "milestones")
+            // Arc planning fields (audit): an arc's destination is among the
+            // likeliest things to change during planning — recording it early
+            // so it can be revised is the reason to write an arc down before
+            // drafting. `status` gates which arcs project into snapshots
+            // ("active"); the rest are plain planning prose/JSON. `progress`
+            // stays locked (computed), as do the id links.
+            | ("character_arc", "arc_type")
+            | ("character_arc", "starting_state")
+            | ("character_arc", "ending_state")
+            | ("character_arc", "thematic_purpose")
+            | ("character_arc", "connected_theme_ids")
+            | ("character_arc", "status")
             | ("theme", "theme_statement")
             | ("theme", "thesis_antithesis")
+            // Placement JSON objects (same encoding as
+            // narrative_promise.planned_payoff): where the theme lands.
+            | ("theme", "introduction_point")
+            | ("theme", "resolution_point")
             | ("motif", "description")
+            | ("motif", "max_uses_per_chapter")
+            | ("motif", "connected_theme_ids")
             | ("narrative_promise", "description")
             | ("narrative_promise", "status")
+            // Payoff retargeting after a chapter renumber/restructure: the
+            // placement is a JSON object via update_entity_field's JSON path
+            // (same encoding the row reader uses via row::opt_json), so a
+            // promise can be re-aimed at its new payoff chapter. Without this,
+            // narrative_promise_tracking's "past planned payoff" warnings are
+            // unactionable — update_promise_status takes only status/note.
+            | ("narrative_promise", "planned_payoff")
+            // Planting placement retargeting — symmetric with planned_payoff:
+            // a renumber can move where the promise was PLANTED just as easily
+            // as where it pays off, and the tracking advice reads both.
+            | ("narrative_promise", "planted_at")
+            // Scene summaries are drafted at save_scene_draft time but go
+            // stale after renumbers/re-cuts (they carry cross-references like
+            // "the knife from Chapter 3"). They feed get_chapter_briefing, so
+            // the drift propagates into drafting context unless the author
+            // can correct them in place.
+            | ("scene", "summary")
             | ("world_rule", "description")
+            // World-rule planning fields (audit): update_world_rule routes
+            // through this same allowlist and its cache invalidation already
+            // anticipates rule_type edits, but only `description` was
+            // actually writable. scan_pattern feeds the drift scanner (the
+            // cache target resolves WorldRuleSemanticDrift on any update);
+            // established_in/relevance_tags are JSON via the same path.
+            // rule_name stays locked (uniqueness index + search index).
+            | ("world_rule", "rule_type")
+            | ("world_rule", "scan_pattern")
+            | ("world_rule", "established_in")
+            | ("world_rule", "relevance_tags")
+            // Timeline events (audit): entirely locked before — a renumber
+            // stranded their placement and there was no path to fix title or
+            // summary drift. related_entity_ids is the JSON id list;
+            // event_type classifies. RetconReachability cache invalidation
+            // already covers timeline_event/temporal_intervention updates.
+            | ("timeline_event", "title")
+            | ("timeline_event", "event_type")
+            | ("timeline_event", "placement")
+            | ("timeline_event", "summary")
+            | ("timeline_event", "related_entity_ids")
+            | ("temporal_intervention", "intervention_type")
+            | ("temporal_intervention", "summary")
+            | ("temporal_intervention", "consequences")
+            | ("temporal_intervention", "status")
+            // System overlays (audit): every field was locked after create,
+            // so progression-system tuning (tiers, stats, visibility) had no
+            // write path. system_name stays locked (uniqueness index + search
+            // index); the FK-free planning columns are all fair game.
+            | ("system_overlay", "system_type")
+            | ("system_overlay", "rules")
+            | ("system_overlay", "visibility")
+            | ("system_overlay", "progression_currency")
+            | ("system_overlay", "stats")
+            | ("system_overlay", "advancement_tiers")
+            // Future knowledge (audit): time-displaced facts get revised as
+            // the timeline logic firms up; learned_at/expires_at are the JSON
+            // placements that drive the invalidation checks. character_id
+            // (the holder FK) stays locked.
+            | ("future_knowledge", "knowledge_summary")
+            | ("future_knowledge", "source")
+            | ("future_knowledge", "learned_at")
+            | ("future_knowledge", "expires_at")
+            // Secret-knowledge gating (V0023): retrofit an existing fact into a
+            // secret (or clear it) without a data migration. `secret` is a
+            // 0/1 flag via update_entity_field's numeric/bool path;
+            // `concealment_note` is free-form guidance. Pairs with
+            // `record_knowledge`'s secret_of_fact_id link to build the circle
+            // (design §2.1: "existing secrets ... retrofit ... without migration").
+            | ("canonical_fact", "secret")
+            | ("canonical_fact", "concealment_note")
     )
 }
 
@@ -10442,6 +14273,146 @@ fn column_is_updatable(table: &str, column: &str) -> bool {
 /// behavior — separate name avoids the captured-symbol headache.
 fn mint_id_local(table: &str) -> String {
     mint_id(table)
+}
+
+/// Rename a character INSIDE the caller's transaction so the name move, the
+/// normalized-name uniqueness key, and the old-name-as-alias preservation all
+/// commit together (or not at all). Returns the updated row plus whether the
+/// old name was added as an alias. Collision handling mirrors the project-wide
+/// unique index `idx_character_project_name(project_id, normalized_name)`.
+fn rename_character_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    character_id: &str,
+    new_name: &str,
+) -> anyhow::Result<(Character, bool)> {
+    let sql = format!("SELECT {CHARACTER_COLUMNS} FROM character WHERE id = ?1");
+    let current = {
+        let mut stmt = tx.prepare_cached(&sql)?;
+        stmt.query_row([character_id], |r| Character::try_from(r))
+            .optional_inner()
+    }?
+    .ok_or_else(|| anyhow::anyhow!("character not found"))?;
+
+    let normalized = normalize_name(new_name);
+    if normalized != current.normalized_name {
+        let clash: Option<String> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT id FROM character \
+                 WHERE project_id = ?1 AND normalized_name = ?2 AND id != ?3",
+            )?;
+            stmt.query_row(
+                rusqlite::params![&current.project_id, &normalized, character_id],
+                |r| r.get(0),
+            )
+            .optional_inner()
+        }?;
+        if let Some(other_id) = clash {
+            anyhow::bail!(
+                "a character named '{new_name}' already exists in this project ({other_id}); \
+                 pick a distinct name or rename/archive the other character first"
+            );
+        }
+    }
+
+    // Preserve the old name as an alias so existing prose and knowledge stay
+    // resolvable — but only when the rename is a real name change and the old
+    // name isn't aliased already.
+    let old_name_kept_as_alias = normalize_name(&current.name) != normalized
+        && !current
+            .aliases
+            .iter()
+            .any(|alias| normalize_name(alias) == normalize_name(&current.name));
+    let mut aliases = current.aliases.clone();
+    if old_name_kept_as_alias {
+        aliases.push(current.name.clone());
+    }
+    let aliases_json = serde_json::to_string(&aliases)?;
+    let now = timestamp_to_micros(chrono::Utc::now());
+    tx.execute(
+        "UPDATE character SET name = ?1, normalized_name = ?2, aliases = ?3, \
+         updated_at = ?4 WHERE id = ?5",
+        rusqlite::params![new_name, &normalized, &aliases_json, now, character_id],
+    )?;
+    let updated = {
+        let mut stmt = tx.prepare_cached(&sql)?;
+        stmt.query_row([character_id], |r| Character::try_from(r))?
+    };
+    Ok((updated, old_name_kept_as_alias))
+}
+
+/// Bind a generation receipt to the one scene it authorizes (migration
+/// V0034), INSIDE the caller's transaction so the claim commits if and only
+/// if the scene write commits. A save that fails after this point rolls the
+/// claim back and the receipt stays unbound and reusable — the live-run bug
+/// was a standalone claim that survived a failed save and burned the receipt
+/// on the bogus placement.
+///
+/// An idempotent re-save of the same scene matches the
+/// `claimed_scene_key = ?2` arm and passes. A receipt already spent on a
+/// DIFFERENT scene matches zero rows; the conflicting key is read back and
+/// the save is rejected with the operator-facing message. Two concurrent
+/// saves racing for one receipt cannot both win: SQLite serializes the write
+/// transactions, so the loser sees the winner's claim and bails.
+fn claim_generation_receipt_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    receipt_id: &str,
+    scene_key: &str,
+) -> anyhow::Result<()> {
+    let claimed = tx.execute(
+        "UPDATE generation_receipt SET claimed_scene_key = ?2 \
+         WHERE id = ?1 \
+           AND (claimed_scene_key IS NULL OR claimed_scene_key = ?2)",
+        rusqlite::params![receipt_id, scene_key],
+    )?;
+    if claimed > 0 {
+        return Ok(());
+    }
+    // Zero rows updated: either the receipt is claimed elsewhere, or it no
+    // longer exists (expired and swept between the verify and this claim).
+    let mut stmt =
+        tx.prepare_cached("SELECT claimed_scene_key FROM generation_receipt WHERE id = ?1")?;
+    let mut rows = stmt.query(rusqlite::params![receipt_id])?;
+    match rows.next()? {
+        Some(row) => {
+            let claimed_key = row.get::<_, Option<String>>(0)?;
+            match claimed_key {
+                Some(key) if key != scene_key => anyhow::bail!(
+                    "generation_id {:?} already authorized a different scene ({}); \
+                     each explicit save needs its own receipt — call continue_generation \
+                     with route \"draft\" and rating \"explicit\" for this scene",
+                    receipt_id,
+                    describe_receipt_scene_key(&key)
+                ),
+                // Claimed by this very scene: idempotent re-save (matched
+                // above normally; reached only on a racing writer).
+                Some(_) => Ok(()),
+                // Unclaimed but the UPDATE matched nothing: the receipt row
+                // vanished between verification and claim (expiry sweep).
+                None => anyhow::bail!(
+                    "generation_id {:?} was not found or has expired",
+                    receipt_id
+                ),
+            }
+        }
+        None => anyhow::bail!(
+            "generation_id {:?} was not found or has expired",
+            receipt_id
+        ),
+    }
+}
+
+/// Render a stored claim key back into something an operator can act on.
+/// Falls back to the raw key if it is not the expected 4-part shape, so a
+/// future key format change degrades to "unhelpful but honest" rather than a
+/// panic.
+pub(crate) fn describe_receipt_scene_key(key: &str) -> String {
+    let parts: Vec<&str> = key.split('|').collect();
+    match parts.as_slice() {
+        [_project, book, chapter, scene] => {
+            format!("book {book}, chapter {chapter}, scene {scene}")
+        }
+        _ => key.to_string(),
+    }
 }
 
 /// Shared body for `list_X_by_project_and_branch` methods. Captures the
@@ -10615,6 +14586,7 @@ fn batch_subject_kind(
                     role: character.role.clone(),
                     summary: character.summary.clone(),
                     realm: character.realm.clone(),
+                    aliases: character.aliases.clone(),
                 }),
                 Provenance::asserted_by_author(character.updated_at),
             ))
@@ -10784,6 +14756,12 @@ fn batch_subject_kind(
                     },
                     target_state: arc.ending_state.clone(),
                     thematic_purpose: arc.thematic_purpose.clone(),
+                    milestones: arc
+                        .milestones
+                        .iter()
+                        .cloned()
+                        .map(StoredCharacterArcMilestone::into_core)
+                        .collect(),
                 }),
                 Provenance::asserted_by_author(arc.updated_at),
             ))
@@ -10925,7 +14903,18 @@ fn batch_canonical_fact_summaries(
                 canonical_fact_value_text(fact).unwrap_or_else(|| "<unset>".to_string())
             ),
             source_label: None,
-            provenance: scene_provenance(&fact.scene_id),
+            // Planned-and-pending facts (V0038) have no scene yet; cite their
+            // book/chapter placement instead so the summary still carries a
+            // source.
+            provenance: match fact.scene_id.as_deref() {
+                Some(scene_id) => scene_provenance(scene_id),
+                None => placement_provenance(&StoryPlacement {
+                    book_number: fact.book_number,
+                    chapter_number: fact.chapter_number,
+                    scene_order: None,
+                    note: None,
+                }),
+            },
         })
         .collect())
 }
@@ -11072,6 +15061,12 @@ fn batch_active_arc_summaries(
                 })
                 .map(|milestone| milestone.label.clone()),
             provenance: Provenance::asserted_by_author(arc.updated_at),
+            milestones: arc
+                .milestones
+                .iter()
+                .cloned()
+                .map(StoredCharacterArcMilestone::into_core)
+                .collect(),
         })
         .collect())
 }
@@ -11439,6 +15434,922 @@ fn placement_key(placement: &StoryPlacement) -> (i32, i32, i32) {
     )
 }
 
+impl Repository {
+    pub async fn save_authoring_run(
+        &self,
+        run: super::records::AuthoringRun,
+        chapters: Vec<super::records::AuthoringRunChapter>,
+        scenes: Vec<super::records::AuthoringRunScene>,
+        checkpoints: Vec<super::records::AuthoringCheckpoint>,
+    ) -> Result<()> {
+        let directives_json = serde_json::to_string(&run.editorial_directives)
+            .context("serializing editorial directives")?;
+        let created_at_micros = super::row::timestamp_to_micros(run.created_at);
+        let updated_at_micros = super::row::timestamp_to_micros(run.updated_at);
+
+        let mut scene_data = Vec::new();
+        for sc in scenes {
+            let char_ids_json =
+                serde_json::to_string(&sc.character_ids).context("serializing character_ids")?;
+            let research_tags_json =
+                serde_json::to_string(&sc.research_tags).context("serializing research_tags")?;
+            let diagnostics_json = sc
+                .draft_diagnostics
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .context("serializing draft diagnostics")?;
+            scene_data.push((sc, char_ids_json, research_tags_json, diagnostics_json));
+        }
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                let tx = conn.transaction()?;
+
+                // Upsert IN PLACE (ON CONFLICT DO UPDATE), NOT `INSERT OR
+                // REPLACE`. `INSERT OR REPLACE` is a DELETE+INSERT of the run
+                // row, which fires the `authoring_run_event` ON DELETE CASCADE
+                // and would wipe the run's event journal (V0027) on every state
+                // save. An in-place update leaves child rows untouched.
+                // `created_at` is preserved from the existing row on conflict.
+                tx.execute(
+                    "INSERT INTO authoring_run (
+                    id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
+                    checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
+                    editorial_directives, status, created_at, updated_at, mining_policy,
+                    max_revise_attempts, checkpoint_policy, replan_policy
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                ON CONFLICT(id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    active_branch_id = excluded.active_branch_id,
+                    book_number = excluded.book_number,
+                    start_chapter = excluded.start_chapter,
+                    end_chapter = excluded.end_chapter,
+                    checkpoint_interval = excluded.checkpoint_interval,
+                    last_checkpoint_end_chapter = excluded.last_checkpoint_end_chapter,
+                    artifacts_dir = excluded.artifacts_dir,
+                    editorial_directives = excluded.editorial_directives,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at,
+                    mining_policy = excluded.mining_policy,
+                    max_revise_attempts = excluded.max_revise_attempts,
+                    checkpoint_policy = excluded.checkpoint_policy,
+                    replan_policy = excluded.replan_policy",
+                    rusqlite::params![
+                        run.id,
+                        run.project_id,
+                        run.active_branch_id,
+                        run.book_number,
+                        run.start_chapter,
+                        run.end_chapter,
+                        run.checkpoint_interval,
+                        run.last_checkpoint_end_chapter,
+                        run.artifacts_dir,
+                        directives_json,
+                        run.status,
+                        created_at_micros,
+                        updated_at_micros,
+                        run.mining_policy,
+                        run.max_revise_attempts,
+                        run.checkpoint_policy,
+                        run.replan_policy,
+                    ],
+                )?;
+
+                tx.execute(
+                    "DELETE FROM authoring_checkpoint WHERE authoring_run_id = ?1",
+                    [&run.id],
+                )?;
+                tx.execute(
+                    "DELETE FROM authoring_run_chapter WHERE authoring_run_id = ?1",
+                    [&run.id],
+                )?;
+
+                for ch in chapters {
+                    tx.execute(
+                        "INSERT INTO authoring_run_chapter (
+                        authoring_run_id, chapter_number, planned, synopsis, pov_character_id,
+                        status, summary_saved, summary_artifact_path, replan_status, replan_detail
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        rusqlite::params![
+                            ch.authoring_run_id,
+                            ch.chapter_number,
+                            ch.planned as i32,
+                            ch.synopsis,
+                            ch.pov_character_id,
+                            ch.status,
+                            ch.summary_saved as i32,
+                            ch.summary_artifact_path,
+                            ch.replan_status,
+                            ch.replan_detail,
+                        ],
+                    )?;
+                }
+
+                for (sc, char_ids_json, research_tags_json, diagnostics_json) in scene_data {
+                    tx.execute(
+                        "INSERT INTO authoring_run_scene (
+                        authoring_run_id, chapter_number, scene_order, character_ids, location_id,
+                        content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
+                        draft_diagnostics, blocked_reason, research_required, research_tags,
+                        explicit_query, mine_status, mine_detail, verify_status, verify_detail,
+                        revise_attempts, last_finding_fingerprint
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                        rusqlite::params![
+                            sc.authoring_run_id,
+                            sc.chapter_number,
+                            sc.scene_order,
+                            char_ids_json,
+                            sc.location_id,
+                            sc.content_rating,
+                            sc.tone,
+                            sc.source_path,
+                            sc.phase,
+                            sc.scene_id,
+                            sc.scene_artifact_path,
+                            diagnostics_json,
+                            sc.blocked_reason,
+                            sc.research_required.map(|required| required as i32),
+                            research_tags_json,
+                            sc.explicit_query,
+                            sc.mine_status,
+                            sc.mine_detail,
+                            sc.verify_status,
+                            sc.verify_detail,
+                            sc.revise_attempts,
+                            sc.last_finding_fingerprint,
+                        ],
+                    )?;
+                }
+
+                for cp in checkpoints {
+                    // Persist the pending-manual scene ids as a JSON array, or
+                    // NULL when there are none (NULL reads back as the empty
+                    // list — the no-fallback / pre-upgrade case). Ids only.
+                    let pending_manual_json = if cp.pending_manual_scene_ids.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            serde_json::to_string(&cp.pending_manual_scene_ids)
+                                .expect("serializing pending_manual_scene_ids"),
+                        )
+                    };
+                    tx.execute(
+                        "INSERT INTO authoring_checkpoint (
+                        authoring_run_id, start_chapter, end_chapter, save_point_id, status,
+                        report_artifact_path, auto_outcome, pending_manual_scene_ids
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            cp.authoring_run_id,
+                            cp.start_chapter,
+                            cp.end_chapter,
+                            cp.save_point_id,
+                            cp.status,
+                            cp.report_artifact_path,
+                            cp.auto_outcome,
+                            pending_manual_json,
+                        ],
+                    )?;
+                }
+
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn get_authoring_run(
+        &self,
+        run_id: &str,
+    ) -> Result<
+        Option<(
+            super::records::AuthoringRun,
+            Vec<super::records::AuthoringRunChapter>,
+            Vec<super::records::AuthoringRunScene>,
+            Vec<super::records::AuthoringCheckpoint>,
+        )>,
+    > {
+        let run_id = run_id.to_string();
+        let run_id_clone = run_id.clone();
+
+        let run_opt: Option<super::records::AuthoringRun> = self
+            .inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM authoring_run WHERE id = ?1",
+                    super::records::AUTHORING_RUN_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                stmt.query_row([&run_id], |r| super::records::AuthoringRun::try_from(r))
+                    .optional_inner()
+            })
+            .await?;
+
+        let Some(run) = run_opt else {
+            return Ok(None);
+        };
+
+        let run_id_ch = run_id_clone.clone();
+        let chapters = self.inner.pool.read(move |conn| {
+            let sql = format!("SELECT {} FROM authoring_run_chapter WHERE authoring_run_id = ?1 ORDER BY chapter_number", super::records::AUTHORING_RUN_CHAPTER_COLUMNS);
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map([&run_id_ch], |r| super::records::AuthoringRunChapter::try_from(r))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await?;
+
+        let run_id_sc = run_id_clone.clone();
+        let scenes = self.inner.pool.read(move |conn| {
+            let sql = format!("SELECT {} FROM authoring_run_scene WHERE authoring_run_id = ?1 ORDER BY chapter_number, scene_order", super::records::AUTHORING_RUN_SCENE_COLUMNS);
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map([&run_id_sc], |r| super::records::AuthoringRunScene::try_from(r))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await?;
+
+        let run_id_cp = run_id_clone.clone();
+        let checkpoints = self.inner.pool.read(move |conn| {
+            let sql = format!("SELECT {} FROM authoring_checkpoint WHERE authoring_run_id = ?1 ORDER BY start_chapter", super::records::AUTHORING_CHECKPOINT_COLUMNS);
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map([&run_id_cp], |r| super::records::AuthoringCheckpoint::try_from(r))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await?;
+
+        Ok(Some((run, chapters, scenes, checkpoints)))
+    }
+
+    pub async fn find_latest_authoring_run_id(&self, project_id: &str) -> Result<Option<String>> {
+        let project_id = project_id.to_string();
+        let run_id_opt = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare_cached("SELECT id FROM authoring_run WHERE project_id = ?1 ORDER BY updated_at DESC LIMIT 1")?;
+            stmt.query_row([&project_id], |r| r.get::<_, String>(0)).optional_inner()
+        }).await?;
+        Ok(run_id_opt)
+    }
+
+    pub async fn update_project_reader_contract(
+        &self,
+        project_id: &str,
+        reader_contract: &spindle_core::models::ReaderContract,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let stored: super::records::StoredReaderContract = reader_contract.clone().into();
+        let serialized = serde_json::to_string(&stored)?;
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE project SET reader_contract = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&serialized, now, &project_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_style_profile(
+        &self,
+        profile: &spindle_core::style::StyleProfileCard,
+    ) -> Result<()> {
+        let profile = profile.clone();
+        self.inner.pool.write(move |conn| {
+            let tx = conn.transaction()?;
+            let card_json = serde_json::to_string(&profile)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let metrics_json = serde_json::to_string(&profile.metrics)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let guidance_json = serde_json::to_string(&profile.guidance)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let source_policy_json = serde_json::to_string(&profile.source_policy)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let model_receipt_json = profile.model_receipt.as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let status_str = match profile.status {
+                spindle_core::style::StyleProfileStatus::Ready => "ready",
+                spindle_core::style::StyleProfileStatus::NeedsReview => "needs_review",
+                spindle_core::style::StyleProfileStatus::Failed => "failed",
+            };
+
+            tx.execute(
+                "INSERT OR REPLACE INTO style_profile (id, project_id, name, status, card_json, \
+                 metrics_json, guidance_json, source_policy_json, model_receipt_json, created_at, updated_at, archived_at, \
+                 parent_profile_id, refreshed_from_profile_id, version_number, refreshed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                rusqlite::params![
+                    &profile.profile_id,
+                    &profile.project_id,
+                    &profile.name,
+                    status_str,
+                    &card_json,
+                    &metrics_json,
+                    &guidance_json,
+                    &source_policy_json,
+                    &model_receipt_json,
+                    &profile.created_at,
+                    &profile.updated_at,
+                    &profile.archived_at,
+                    &profile.parent_profile_id,
+                    &profile.refreshed_from_profile_id,
+                    &profile.version_number,
+                    &profile.refreshed_at,
+                ],
+            )?;
+
+            // Delete old sources for this profile if replacing
+            tx.execute("DELETE FROM style_profile_source WHERE profile_id = ?1", rusqlite::params![&profile.profile_id])?;
+
+            for (i, source_ref) in profile.corpus.source_refs.iter().enumerate() {
+                let source_id = format!("{}:source:{}", profile.profile_id, i);
+                tx.execute(
+                    "INSERT INTO style_profile_source (id, profile_id, display_name, canonical_path, \
+                     sha256, word_count, included, skip_reason, source_order, created_at, \
+                     file_size, modified_at, glob_policy_metadata) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    rusqlite::params![
+                        &source_id,
+                        &profile.profile_id,
+                        &source_ref.display_name,
+                        &source_ref.canonical_path,
+                        &source_ref.sha256,
+                        &(source_ref.word_count as i64),
+                        if source_ref.included { 1i64 } else { 0i64 },
+                        &source_ref.skip_reason,
+                        &(i as i64),
+                        &profile.created_at,
+                        &source_ref.file_size.map(|s| s as i64),
+                        &source_ref.modified_at,
+                        &source_ref.glob_policy_metadata,
+                    ],
+                )?;
+            }
+
+            tx.commit()?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn list_style_profiles(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::style::StyleProfileCard>> {
+        let project_id = project_id.to_string();
+        let profiles = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare("SELECT card_json FROM style_profile WHERE project_id = ?1 AND (archived_at IS NULL) ORDER BY created_at DESC")?;
+            let rows = stmt.query_map([&project_id], |r| {
+                let card_json: String = r.get(0)?;
+                Ok(card_json)
+            })?;
+            let mut res = Vec::new();
+            for card_json_res in rows {
+                let card_json = card_json_res?;
+                let profile: spindle_core::style::StyleProfileCard = serde_json::from_str(&card_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                res.push(profile);
+            }
+            Ok(res)
+        }).await?;
+        Ok(profiles)
+    }
+
+    pub async fn set_active_style_profile_id(
+        &self,
+        project_id: &str,
+        active_style_profile_id: Option<String>,
+    ) -> Result<Project> {
+        let project_id_owned = project_id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE project SET active_style_profile_id = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&active_style_profile_id, now, &project_id_owned],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.get_project(project_id).await
+    }
+
+    pub async fn archive_style_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<String> {
+        let project_id = project_id.to_string();
+        let profile_id = profile_id.to_string();
+        let archived_at = chrono::Utc::now().to_rfc3339();
+        let archived_at_clone = archived_at.clone();
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT card_json FROM style_profile WHERE project_id = ?1 AND id = ?2",
+                )?;
+                let card_json: String = stmt.query_row([&project_id, &profile_id], |r| r.get(0))?;
+                let mut profile: spindle_core::style::StyleProfileCard = serde_json::from_str(&card_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                profile.archived_at = Some(archived_at_clone.clone());
+                let new_card_json = serde_json::to_string(&profile)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                conn.execute(
+                    "UPDATE style_profile SET archived_at = ?1, card_json = ?2, updated_at = ?3 WHERE project_id = ?4 AND id = ?5",
+                    rusqlite::params![&archived_at_clone, &new_card_json, &archived_at_clone, &project_id, &profile_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(archived_at)
+    }
+
+    pub async fn get_style_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<Option<spindle_core::style::StyleProfileCard>> {
+        let project_id = project_id.to_string();
+        let profile_id = profile_id.to_string();
+        let profile_opt = self
+            .inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT card_json FROM style_profile WHERE project_id = ?1 AND id = ?2",
+                )?;
+                stmt.query_row([&project_id, &profile_id], |r| {
+                    let card_json: String = r.get(0)?;
+                    let profile: spindle_core::style::StyleProfileCard =
+                        serde_json::from_str(&card_json)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Ok(profile)
+                })
+                .optional_inner()
+            })
+            .await?;
+        Ok(profile_opt)
+    }
+
+    pub async fn insert_style_profile_application(
+        &self,
+        app: &spindle_core::style::StyleProfileApplicationRecord,
+    ) -> Result<()> {
+        let app = app.clone();
+        self.inner.pool.write(move |conn| {
+            let before_voice = serde_json::to_string(&app.before_narrator_voice)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let after_voice = serde_json::to_string(&app.after_narrator_voice)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let before_notes = serde_json::to_string(&app.before_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let after_notes = serde_json::to_string(&app.after_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let added_notes = serde_json::to_string(&app.added_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let removed_notes = serde_json::to_string(&app.removed_style_notes)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let mode_str = match app.apply_mode {
+                spindle_core::style::StyleProfileApplyMode::Merge => "merge",
+                spindle_core::style::StyleProfileApplyMode::ReplaceGeneratedStyleNotes => "replace_generated_style_notes",
+            };
+            let action_str = app.style_rule_action.clone();
+
+            conn.execute(
+                "INSERT INTO style_profile_application (id, project_id, profile_id, applied_at, apply_mode, \
+                 before_narrator_voice_json, after_narrator_voice_json, before_style_notes_json, after_style_notes_json, \
+                 added_style_notes_json, removed_style_notes_json, style_rule_id, style_rule_action, \
+                 style_rule_previous_description, invalidated_validator_count, rolled_back_at, rollback_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                rusqlite::params![
+                    &app.id,
+                    &app.project_id,
+                    &app.profile_id,
+                    &app.applied_at,
+                    mode_str,
+                    &before_voice,
+                    &after_voice,
+                    &before_notes,
+                    &after_notes,
+                    &added_notes,
+                    &removed_notes,
+                    &app.style_rule_id,
+                    &action_str,
+                    &app.style_rule_previous_description,
+                    &(app.invalidated_validator_count as i64),
+                    &app.rolled_back_at,
+                    &app.rollback_status,
+                ],
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn insert_style_revision_patch_audit(
+        &self,
+        audit: &spindle_core::style::StyleRevisionPatchAuditRecord,
+    ) -> Result<()> {
+        let audit = audit.clone();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let target_ids = serde_json::to_string(&audit.target_ids)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_hashes = serde_json::to_string(&audit.before_hashes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_hashes = serde_json::to_string(&audit.after_hashes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let receipt_json = audit
+                    .model_receipt
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                conn.execute(
+                "INSERT INTO style_revision_patch_audit (id, project_id, profile_id, applied_at, \
+                 target_ids_json, before_hashes_json, after_hashes_json, model_receipt_json, \
+                 rolled_back_at, rollback_status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &audit.id,
+                    &audit.project_id,
+                    &audit.profile_id,
+                    &audit.applied_at,
+                    &target_ids,
+                    &before_hashes,
+                    &after_hashes,
+                    &receipt_json,
+                    &audit.rolled_back_at,
+                    &audit.rollback_status,
+                ],
+            )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_style_revision_patch_audits(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::style::StyleRevisionPatchAuditRecord>> {
+        let project_id = project_id.to_string();
+        let audits = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, target_ids_json, before_hashes_json, \
+                 after_hashes_json, model_receipt_json, rolled_back_at, rollback_status \
+                 FROM style_revision_patch_audit WHERE project_id = ?1 ORDER BY applied_at DESC",
+            )?;
+            let rows = stmt.query_map([&project_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let target_ids_json: String = r.get(4)?;
+                let before_hashes_json: String = r.get(5)?;
+                let after_hashes_json: String = r.get(6)?;
+                let receipt_json: Option<String> = r.get(7)?;
+                let rolled_back_at: Option<String> = r.get(8)?;
+                let rollback_status: String = r.get(9)?;
+
+                let target_ids: Vec<String> = serde_json::from_str(&target_ids_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_hashes: Vec<String> = serde_json::from_str(&before_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_hashes: Vec<String> = serde_json::from_str(&after_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let model_receipt = receipt_json
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleRevisionPatchAuditRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    target_ids,
+                    before_hashes,
+                    after_hashes,
+                    model_receipt,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            })?;
+
+            let mut list = Vec::new();
+            for row in rows {
+                list.push(row?);
+            }
+            Ok(list)
+        }).await?;
+        Ok(audits)
+    }
+
+    pub async fn get_style_revision_patch_audit(
+        &self,
+        project_id: &str,
+        audit_id: &str,
+    ) -> Result<Option<spindle_core::style::StyleRevisionPatchAuditRecord>> {
+        let project_id = project_id.to_string();
+        let audit_id = audit_id.to_string();
+        let audit = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, target_ids_json, before_hashes_json, \
+                 after_hashes_json, model_receipt_json, rolled_back_at, rollback_status \
+                 FROM style_revision_patch_audit WHERE project_id = ?1 AND id = ?2",
+            )?;
+            let mut rows = stmt.query_map([&project_id, &audit_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let target_ids_json: String = r.get(4)?;
+                let before_hashes_json: String = r.get(5)?;
+                let after_hashes_json: String = r.get(6)?;
+                let receipt_json: Option<String> = r.get(7)?;
+                let rolled_back_at: Option<String> = r.get(8)?;
+                let rollback_status: String = r.get(9)?;
+
+                let target_ids: Vec<String> = serde_json::from_str(&target_ids_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_hashes: Vec<String> = serde_json::from_str(&before_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_hashes: Vec<String> = serde_json::from_str(&after_hashes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let model_receipt = receipt_json
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleRevisionPatchAuditRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    target_ids,
+                    before_hashes,
+                    after_hashes,
+                    model_receipt,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            })?;
+
+            if let Some(row) = rows.next() {
+                Ok(Some(row?))
+            } else {
+                Ok(None)
+            }
+        }).await?;
+        Ok(audit)
+    }
+
+    pub async fn update_style_revision_patch_audit_rollback(
+        &self,
+        audit_id: &str,
+        rolled_back_at: Option<String>,
+        rollback_status: &str,
+    ) -> Result<()> {
+        let audit_id = audit_id.to_string();
+        let rollback_status = rollback_status.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE style_revision_patch_audit SET rolled_back_at = ?1, rollback_status = ?2 WHERE id = ?3",
+                    rusqlite::params![&rolled_back_at, &rollback_status, &audit_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_style_profile_applications(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<spindle_core::style::StyleProfileApplicationRecord>> {
+        let project_id = project_id.to_string();
+        let apps = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, apply_mode, before_narrator_voice_json, \
+                 after_narrator_voice_json, before_style_notes_json, after_style_notes_json, added_style_notes_json, \
+                 removed_style_notes_json, style_rule_id, style_rule_action, style_rule_previous_description, \
+                 invalidated_validator_count, rolled_back_at, rollback_status \
+                 FROM style_profile_application WHERE project_id = ?1 ORDER BY applied_at DESC",
+            )?;
+            let rows = stmt.query_map([&project_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let apply_mode_str: String = r.get(4)?;
+                let before_voice_json: String = r.get(5)?;
+                let after_voice_json: String = r.get(6)?;
+                let before_notes_json: String = r.get(7)?;
+                let after_notes_json: String = r.get(8)?;
+                let added_notes_json: String = r.get(9)?;
+                let removed_notes_json: String = r.get(10)?;
+                let style_rule_id: Option<String> = r.get(11)?;
+                let style_rule_action: String = r.get(12)?;
+                let style_rule_prev_desc: Option<String> = r.get(13)?;
+                let invalidated_count: i64 = r.get(14)?;
+                let rolled_back_at: Option<String> = r.get(15)?;
+                let rollback_status: String = r.get(16)?;
+
+                let apply_mode = match apply_mode_str.as_str() {
+                    "replace_generated_style_notes" => spindle_core::style::StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
+                    _ => spindle_core::style::StyleProfileApplyMode::Merge,
+                };
+                let before_narrator_voice = serde_json::from_str(&before_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_narrator_voice = serde_json::from_str(&after_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_style_notes = serde_json::from_str(&before_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_style_notes = serde_json::from_str(&after_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let added_style_notes = serde_json::from_str(&added_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let removed_style_notes = serde_json::from_str(&removed_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleProfileApplicationRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    apply_mode,
+                    before_narrator_voice,
+                    after_narrator_voice,
+                    before_style_notes,
+                    after_style_notes,
+                    added_style_notes,
+                    removed_style_notes,
+                    style_rule_id,
+                    style_rule_action,
+                    style_rule_previous_description: style_rule_prev_desc,
+                    invalidated_validator_count: invalidated_count as usize,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            })?;
+
+            let mut res = Vec::new();
+            for app_res in rows {
+                res.push(app_res?);
+            }
+            Ok(res)
+        }).await?;
+        Ok(apps)
+    }
+
+    pub async fn get_style_profile_application(
+        &self,
+        project_id: &str,
+        application_id: &str,
+    ) -> Result<Option<spindle_core::style::StyleProfileApplicationRecord>> {
+        let project_id = project_id.to_string();
+        let application_id = application_id.to_string();
+        let app_opt = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, project_id, profile_id, applied_at, apply_mode, before_narrator_voice_json, \
+                 after_narrator_voice_json, before_style_notes_json, after_style_notes_json, added_style_notes_json, \
+                 removed_style_notes_json, style_rule_id, style_rule_action, style_rule_previous_description, \
+                 invalidated_validator_count, rolled_back_at, rollback_status \
+                 FROM style_profile_application WHERE project_id = ?1 AND id = ?2",
+            )?;
+            stmt.query_row([&project_id, &application_id], |r| {
+                let id: String = r.get(0)?;
+                let project_id: String = r.get(1)?;
+                let profile_id: String = r.get(2)?;
+                let applied_at: String = r.get(3)?;
+                let apply_mode_str: String = r.get(4)?;
+                let before_voice_json: String = r.get(5)?;
+                let after_voice_json: String = r.get(6)?;
+                let before_notes_json: String = r.get(7)?;
+                let after_notes_json: String = r.get(8)?;
+                let added_notes_json: String = r.get(9)?;
+                let removed_notes_json: String = r.get(10)?;
+                let style_rule_id: Option<String> = r.get(11)?;
+                let style_rule_action: String = r.get(12)?;
+                let style_rule_prev_desc: Option<String> = r.get(13)?;
+                let invalidated_count: i64 = r.get(14)?;
+                let rolled_back_at: Option<String> = r.get(15)?;
+                let rollback_status: String = r.get(16)?;
+
+                let apply_mode = match apply_mode_str.as_str() {
+                    "replace_generated_style_notes" => spindle_core::style::StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
+                    _ => spindle_core::style::StyleProfileApplyMode::Merge,
+                };
+                let before_narrator_voice = serde_json::from_str(&before_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_narrator_voice = serde_json::from_str(&after_voice_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let before_style_notes = serde_json::from_str(&before_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let after_style_notes = serde_json::from_str(&after_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let added_style_notes = serde_json::from_str(&added_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let removed_style_notes = serde_json::from_str(&removed_notes_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(spindle_core::style::StyleProfileApplicationRecord {
+                    id,
+                    project_id,
+                    profile_id,
+                    applied_at,
+                    apply_mode,
+                    before_narrator_voice,
+                    after_narrator_voice,
+                    before_style_notes,
+                    after_style_notes,
+                    added_style_notes,
+                    removed_style_notes,
+                    style_rule_id,
+                    style_rule_action,
+                    style_rule_previous_description: style_rule_prev_desc,
+                    invalidated_validator_count: invalidated_count as usize,
+                    rolled_back_at,
+                    rollback_status,
+                })
+            }).optional_inner()
+        }).await?;
+        Ok(app_opt)
+    }
+
+    pub async fn update_style_profile_application_rollback(
+        &self,
+        application_id: &str,
+        rolled_back_at: &str,
+        rollback_status: &str,
+    ) -> Result<()> {
+        let application_id = application_id.to_string();
+        let rolled_back_at = rolled_back_at.to_string();
+        let rollback_status = rollback_status.to_string();
+        self.inner.pool.write(move |conn| {
+            conn.execute(
+                "UPDATE style_profile_application SET rolled_back_at = ?1, rollback_status = ?2 WHERE id = ?3",
+                rusqlite::params![&rolled_back_at, &rollback_status, &application_id],
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn delete_world_rule(&self, project_id: &str, rule_id: &str) -> Result<bool> {
+        let project_id = project_id.to_string();
+        let project_id_for_delete = project_id.clone();
+        let id = rule_id.to_string();
+        let deleted = self
+            .inner
+            .pool
+            .write(move |conn| {
+                let affected = conn.execute(
+                    "DELETE FROM world_rule WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![&id, &project_id_for_delete],
+                )?;
+                Ok(affected > 0)
+            })
+            .await?;
+        if deleted {
+            let _ = self
+                .delete_search_embedding_for_entity(project_id.as_str(), rule_id)
+                .await;
+        }
+        Ok(deleted)
+    }
+
+    pub async fn get_most_recently_applied_profile_id(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<String>> {
+        let project_id = project_id.to_string();
+        let id_opt = self.inner.pool.read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT profile_id FROM style_profile_application \
+                 WHERE project_id = ?1 AND (rollback_status IS NULL OR rollback_status != 'rolled_back') \
+                 ORDER BY applied_at DESC LIMIT 1",
+            )?;
+            stmt.query_row([&project_id], |r| r.get(0)).optional_inner()
+        }).await?;
+        Ok(id_opt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11452,6 +16363,1212 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         let repo = Repository::new(pool, data_dir);
         (tmp, repo)
+    }
+
+    /// Project + branch + one persisted scene, for FK-valid canon_delta rows.
+    async fn repo_with_scene() -> (TempDir, Repository, Project, BibleBranch, String) {
+        use spindle_core::models::{ContentRating, SaveSceneDraftInput};
+        let (tmp, repo) = fresh_repo().await;
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let (scene, _) = repo
+            .save_scene_draft(
+                &project.id,
+                &branch.id,
+                &SaveSceneDraftInput {
+                    project_id: project.id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    chapter_id: None,
+                    scene_order: 1,
+                    full_text: "She turned away without a word.".into(),
+                    summary: "turn".into(),
+                    content_rating: ContentRating::General,
+                    tone: None,
+                    generation_id: None,
+                    source_path: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let scene_id = scene.id.clone();
+        (tmp, repo, project, branch, scene_id)
+    }
+
+    fn stage_params(
+        project: &Project,
+        branch: &BibleBranch,
+        scene_id: &str,
+        class: &str,
+        evidence: &str,
+    ) -> StageCanonDeltaParams {
+        StageCanonDeltaParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_id.to_string(),
+            authoring_run_id: None,
+            delta_class: class.to_string(),
+            target_id: None,
+            payload: serde_json::json!({ "note": "x" }),
+            evidence: evidence.to_string(),
+            confidence: "high".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_round_trips() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "relationship_shift",
+                "She turned away without a word.",
+            ))
+            .await
+            .unwrap();
+        assert!(staged.id.starts_with("canon_delta:"));
+        assert_eq!(staged.delta_class, "relationship_shift");
+        assert_eq!(staged.status, "staged");
+        assert!(staged.decided_at.is_none());
+        assert!(staged.decided_by.is_none());
+
+        let listed = repo
+            .list_canon_deltas(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, staged.id);
+        assert_eq!(listed[0].evidence, "She turned away without a word.");
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_rejects_unknown_class() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let err = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "not_a_real_class",
+                "evidence quote",
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not_a_real_class"),
+            "error names the bad class: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_rejects_empty_and_oversized_evidence() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+
+        // Empty evidence rejected (ADR D2: not stageable without a quote).
+        let err = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "   ",
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("evidence"));
+
+        // Exactly 300 chars is allowed; 301 is not — using a multibyte char so
+        // the boundary is measured in chars, not bytes.
+        let ok_300 = "é".repeat(300);
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                &ok_300,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(staged.evidence.chars().count(), 300);
+
+        let too_long = "é".repeat(301);
+        let err = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                &too_long,
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("evidence"));
+    }
+
+    #[tokio::test]
+    async fn stage_canon_delta_rejects_bad_confidence() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let mut params = stage_params(&project, &branch, &scene_id, "beat_annotation", "quote");
+        params.confidence = "certain".to_string();
+        let err = repo.stage_canon_delta(params).await.unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("confidence"));
+    }
+
+    #[tokio::test]
+    async fn list_canon_deltas_filters_and_orders_deterministically() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        // Stage three deltas; created_at then id is the deterministic order.
+        for class in ["beat_annotation", "quantity_change", "character_state"] {
+            repo.stage_canon_delta(stage_params(&project, &branch, &scene_id, class, "quote"))
+                .await
+                .unwrap();
+        }
+        let all = repo
+            .list_canon_deltas(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        // Deterministic order: sort a clone by (created_at, id) and compare ids.
+        let mut expected = all.clone();
+        expected.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let got_ids: Vec<_> = all.iter().map(|d| &d.id).collect();
+        let want_ids: Vec<_> = expected.iter().map(|d| &d.id).collect();
+        assert_eq!(got_ids, want_ids);
+
+        // Status filter: decide one, then filter by status.
+        let first = all[0].id.clone();
+        repo.decide_canon_delta(&first, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        let staged_only = repo
+            .list_canon_deltas(&project.id, &branch.id, Some("staged"), None)
+            .await
+            .unwrap();
+        assert_eq!(staged_only.len(), 2);
+        let applied_only = repo
+            .list_canon_deltas(&project.id, &branch.id, Some("applied"), None)
+            .await
+            .unwrap();
+        assert_eq!(applied_only.len(), 1);
+        assert_eq!(applied_only[0].id, first);
+
+        // scene_id filter narrows to the provenance scene.
+        let by_scene = repo
+            .list_canon_deltas(&project.id, &branch.id, None, Some(&scene_id))
+            .await
+            .unwrap();
+        assert_eq!(by_scene.len(), 3);
+        let other_scene = repo
+            .list_canon_deltas(&project.id, &branch.id, None, Some("scene:none"))
+            .await
+            .unwrap();
+        assert!(other_scene.is_empty());
+    }
+
+    #[tokio::test]
+    async fn decide_canon_delta_records_decision_and_is_final() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "quote",
+            ))
+            .await
+            .unwrap();
+
+        let decided = repo
+            .decide_canon_delta(&staged.id, CanonDeltaDecision::Applied, "operator-1", None)
+            .await
+            .unwrap();
+        assert_eq!(decided.status, "applied");
+        assert!(decided.decided_at.is_some());
+        assert_eq!(decided.decided_by.as_deref(), Some("operator-1"));
+        // Payload unchanged when no edit supplied.
+        assert_eq!(decided.payload, serde_json::json!({ "note": "x" }));
+
+        // Deciding a second time errors — decisions are final (ADR D3).
+        let err = repo
+            .decide_canon_delta(&staged.id, CanonDeltaDecision::Rejected, "op2", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("staged"));
+    }
+
+    #[tokio::test]
+    async fn decide_canon_delta_stores_edited_payload() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "canonical_fact",
+                "quote",
+            ))
+            .await
+            .unwrap();
+        let edited = serde_json::json!({ "note": "operator corrected" });
+        let decided = repo
+            .decide_canon_delta(
+                &staged.id,
+                CanonDeltaDecision::Applied,
+                "op",
+                Some(edited.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decided.payload, edited);
+    }
+
+    #[tokio::test]
+    async fn decide_canon_delta_on_superseded_errors() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "quote",
+            ))
+            .await
+            .unwrap();
+        repo.supersede_scene_deltas(&scene_id).await.unwrap();
+        let err = repo
+            .decide_canon_delta(&staged.id, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("staged"));
+    }
+
+    #[tokio::test]
+    async fn supersede_scene_deltas_only_flips_staged_rows() {
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        // Three deltas: one applied, one rejected, one staged.
+        let applied = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "beat_annotation",
+                "a",
+            ))
+            .await
+            .unwrap();
+        let rejected = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "quantity_change",
+                "b",
+            ))
+            .await
+            .unwrap();
+        let staged = repo
+            .stage_canon_delta(stage_params(
+                &project,
+                &branch,
+                &scene_id,
+                "character_state",
+                "c",
+            ))
+            .await
+            .unwrap();
+        repo.decide_canon_delta(&applied.id, CanonDeltaDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        repo.decide_canon_delta(&rejected.id, CanonDeltaDecision::Rejected, "op", None)
+            .await
+            .unwrap();
+
+        let flipped = repo.supersede_scene_deltas(&scene_id).await.unwrap();
+        assert_eq!(flipped, 1, "only the staged row is superseded");
+
+        let by_id = |deltas: &[crate::sqlite::records::StoredCanonDelta], id: &str| {
+            deltas.iter().find(|d| d.id == id).unwrap().status.clone()
+        };
+        let all = repo
+            .list_canon_deltas(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(by_id(&all, &applied.id), "applied");
+        assert_eq!(by_id(&all, &rejected.id), "rejected");
+        assert_eq!(by_id(&all, &staged.id), "superseded");
+    }
+
+    #[tokio::test]
+    async fn pre_v0024_database_upgrades_additively() {
+        // A DB migrated only through V0023 (no canon_delta table) must upgrade
+        // to V0024 cleanly with its existing rows intact — the migration is a
+        // pure addition (ADR reversal-cost: additions are additive).
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("legacy.db");
+
+        // Open a throwaway pool first so sqlite-vec's `vec0` module is
+        // registered process-globally (via sqlite3_auto_extension) before we
+        // run the raw-connection migration — V0002 declares a vec0 table.
+        let _warm = SqlitePool::open(&tmp.path().join("warm.db")).await.unwrap();
+
+        // Stage 1: run migrations up to V0023 only, on a raw rusqlite conn.
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            crate::sqlite::migrations::runner()
+                .set_target(refinery::Target::Version(23))
+                .run(&mut conn)
+                .unwrap();
+            // canon_delta does not exist yet at V0023.
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='canon_delta'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "canon_delta must not exist before V0024");
+            // Seed a project row so we can prove it survives the upgrade.
+            let now = timestamp_to_micros(chrono::Utc::now());
+            conn.execute(
+                "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "project:legacy",
+                    "Legacy",
+                    "novel",
+                    "fantasy",
+                    r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                    now,
+                    now
+                ],
+            )
+            .unwrap();
+        }
+
+        // Stage 2: open through the pool, which runs the full runner (incl.
+        // V0024). Must succeed and the legacy row must still be there.
+        let pool = SqlitePool::open(&db_path).await.unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = Repository::new(pool, data_dir);
+
+        let again = repo.get_project("project:legacy").await.unwrap();
+        assert_eq!(again.name, "Legacy");
+
+        // And canon_delta now exists and is queryable (empty).
+        let listed = repo
+            .list_canon_deltas("project:legacy", "bible_branch:missing", None, None)
+            .await
+            .unwrap();
+        assert!(listed.is_empty());
+    }
+
+    // ── Plan amendments (ADR 0003 — living-outline replanning) ───────────────
+
+    /// Project + main branch, for FK-valid plan_amendment rows (no scene needed
+    /// — amendments have no scene FK).
+    async fn repo_with_project_branch() -> (TempDir, Repository, Project, BibleBranch) {
+        let (tmp, repo) = fresh_repo().await;
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        (tmp, repo, project, branch)
+    }
+
+    fn plan_stage_params(
+        project: &Project,
+        branch: &BibleBranch,
+        class: &str,
+        target_chapter: Option<i32>,
+        rationale: &str,
+    ) -> StagePlanAmendmentParams {
+        StagePlanAmendmentParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            source_chapter: 3,
+            book_number: 1,
+            authoring_run_id: None,
+            amendment_class: class.to_string(),
+            target_chapter,
+            payload: serde_json::json!({ "synopsis": "revised" }),
+            rationale: rationale.to_string(),
+            confidence: "high".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_round_trips() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "chapter 3 resolved the siege early",
+            ))
+            .await
+            .unwrap();
+        assert!(staged.id.starts_with("plan_amendment:"));
+        assert_eq!(staged.status, "staged");
+        assert_eq!(staged.source_chapter, 3);
+        assert_eq!(staged.target_chapter, Some(5));
+        assert!(staged.decided_at.is_none());
+        assert!(staged.prior_state.is_none());
+
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, staged.id);
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_rejects_unknown_class() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let err = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "totally_made_up",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown plan amendment class"));
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_rejects_empty_and_oversized_rationale() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        // Empty (whitespace-only) rationale is rejected.
+        let empty = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "   ",
+            ))
+            .await
+            .unwrap_err();
+        assert!(empty.to_string().contains("rationale is mandatory"));
+
+        // Exactly 500 multibyte chars is accepted; 501 is rejected — the check
+        // must count chars, not bytes (each `é` is 2 bytes).
+        let ok_rationale: String = "é".repeat(500);
+        let ok = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                &ok_rationale,
+            ))
+            .await;
+        assert!(ok.is_ok(), "500 chars is the boundary and must pass");
+
+        let over_rationale: String = "é".repeat(501);
+        let over = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                &over_rationale,
+            ))
+            .await
+            .unwrap_err();
+        assert!(over.to_string().contains("≤500 chars"));
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_rejects_bad_confidence() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let mut params = plan_stage_params(&project, &branch, "synopsis_update", Some(5), "reason");
+        params.confidence = "certain".to_string();
+        let err = repo.stage_plan_amendment(params).await.unwrap_err();
+        assert!(err.to_string().contains("confidence must be one of"));
+    }
+
+    #[tokio::test]
+    async fn stage_plan_amendment_enforces_target_chapter_rules_per_class() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+
+        // Every chapter-targeting class requires a target_chapter.
+        for class in [
+            "synopsis_update",
+            "scene_add",
+            "scene_drop",
+            "scene_replace",
+            "scene_reorder",
+            "thread_promote",
+            "thread_retire",
+        ] {
+            let err = repo
+                .stage_plan_amendment(plan_stage_params(&project, &branch, class, None, "reason"))
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("requires a target_chapter"),
+                "{class} without target must be rejected"
+            );
+            // And with a target it stages.
+            let ok = repo
+                .stage_plan_amendment(plan_stage_params(
+                    &project,
+                    &branch,
+                    class,
+                    Some(5),
+                    "reason",
+                ))
+                .await;
+            assert!(ok.is_ok(), "{class} with target must stage");
+        }
+
+        // promise_followup must NOT carry a target_chapter.
+        let followup_bad = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "promise_followup",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            followup_bad
+                .to_string()
+                .contains("must NOT carry a target_chapter")
+        );
+
+        // promise_followup with no target stages.
+        let followup_ok = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "promise_followup",
+                None,
+                "reason",
+            ))
+            .await;
+        assert!(
+            followup_ok.is_ok(),
+            "promise_followup without target must stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_plan_amendments_filters_and_orders_deterministically() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        // Stage three (order by created_at, id — insertion order stable).
+        for class in ["synopsis_update", "scene_drop", "thread_retire"] {
+            repo.stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                class,
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap();
+        }
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        // Deterministic (created_at, id): non-decreasing created_at.
+        for w in all.windows(2) {
+            assert!(w[0].created_at <= w[1].created_at);
+        }
+
+        // Decide one → status filter narrows.
+        let first = all[0].id.clone();
+        repo.decide_plan_amendment(&first, PlanAmendmentDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        let staged = repo
+            .list_plan_amendments(&project.id, &branch.id, Some("staged"), None)
+            .await
+            .unwrap();
+        assert_eq!(staged.len(), 2);
+        let applied = repo
+            .list_plan_amendments(&project.id, &branch.id, Some("applied"), None)
+            .await
+            .unwrap();
+        assert_eq!(applied.len(), 1);
+
+        // Book+source-chapter filter: matching pair returns all three, a
+        // different chapter returns none.
+        let scoped = repo
+            .list_plan_amendments(&project.id, &branch.id, None, Some((1, 3)))
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 3);
+        let other = repo
+            .list_plan_amendments(&project.id, &branch.id, None, Some((1, 9)))
+            .await
+            .unwrap();
+        assert!(other.is_empty());
+    }
+
+    #[tokio::test]
+    async fn decide_plan_amendment_records_decision_prior_state_and_is_final() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap();
+        let prior = r#"{"synopsis":"old"}"#.to_string();
+        let applied = repo
+            .decide_plan_amendment(
+                &staged.id,
+                PlanAmendmentDecision::Applied,
+                "operator-1",
+                Some(prior.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(applied.status, "applied");
+        assert_eq!(applied.decided_by.as_deref(), Some("operator-1"));
+        assert!(applied.decided_at.is_some());
+        assert_eq!(applied.prior_state.as_deref(), Some(prior.as_str()));
+
+        // A second decision on the same (now-applied) row errors — decisions are
+        // final history.
+        let again = repo
+            .decide_plan_amendment(&staged.id, PlanAmendmentDecision::Rejected, "op2", None)
+            .await
+            .unwrap_err();
+        assert!(again.to_string().contains("not staged"));
+    }
+
+    #[tokio::test]
+    async fn decide_plan_amendment_on_superseded_errors() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "reason",
+            ))
+            .await
+            .unwrap();
+        repo.supersede_source_chapter_amendments(&project.id, &branch.id, 1, 3)
+            .await
+            .unwrap();
+        let err = repo
+            .decide_plan_amendment(&staged.id, PlanAmendmentDecision::Applied, "op", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not staged"));
+    }
+
+    #[tokio::test]
+    async fn supersede_source_chapter_amendments_only_flips_staged_rows() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        let staged = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "synopsis_update",
+                Some(5),
+                "will be superseded",
+            ))
+            .await
+            .unwrap();
+        let applied = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "scene_drop",
+                Some(5),
+                "already applied",
+            ))
+            .await
+            .unwrap();
+        let rejected = repo
+            .stage_plan_amendment(plan_stage_params(
+                &project,
+                &branch,
+                "thread_retire",
+                Some(5),
+                "already rejected",
+            ))
+            .await
+            .unwrap();
+        repo.decide_plan_amendment(&applied.id, PlanAmendmentDecision::Applied, "op", None)
+            .await
+            .unwrap();
+        repo.decide_plan_amendment(&rejected.id, PlanAmendmentDecision::Rejected, "op", None)
+            .await
+            .unwrap();
+
+        let flipped = repo
+            .supersede_source_chapter_amendments(&project.id, &branch.id, 1, 3)
+            .await
+            .unwrap();
+        assert_eq!(flipped, 1, "only the one staged row is superseded");
+
+        let by_id = |rows: &[crate::sqlite::records::StoredPlanAmendment], id: &str| {
+            rows.iter().find(|r| r.id == id).unwrap().status.clone()
+        };
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(by_id(&all, &staged.id), "superseded");
+        assert_eq!(by_id(&all, &applied.id), "applied");
+        assert_eq!(by_id(&all, &rejected.id), "rejected");
+    }
+
+    #[tokio::test]
+    async fn supersede_source_chapter_amendments_spares_other_source_chapters() {
+        let (_tmp, repo, project, branch) = repo_with_project_branch().await;
+        // Two staged amendments from different source chapters.
+        let mut p3 = plan_stage_params(&project, &branch, "synopsis_update", Some(6), "from ch3");
+        p3.source_chapter = 3;
+        let a3 = repo.stage_plan_amendment(p3).await.unwrap();
+        let mut p4 = plan_stage_params(&project, &branch, "synopsis_update", Some(6), "from ch4");
+        p4.source_chapter = 4;
+        let a4 = repo.stage_plan_amendment(p4).await.unwrap();
+
+        let flipped = repo
+            .supersede_source_chapter_amendments(&project.id, &branch.id, 1, 3)
+            .await
+            .unwrap();
+        assert_eq!(flipped, 1);
+
+        let all = repo
+            .list_plan_amendments(&project.id, &branch.id, None, None)
+            .await
+            .unwrap();
+        let status = |id: &str| all.iter().find(|r| r.id == id).unwrap().status.clone();
+        assert_eq!(status(&a3.id), "superseded");
+        assert_eq!(
+            status(&a4.id),
+            "staged",
+            "chapter 4's amendment is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_v0029_database_upgrades_additively() {
+        // A DB migrated only through V0028 (no plan_amendment table, no
+        // chapter_plan.plan_revision column) must upgrade to V0029 cleanly with
+        // its existing rows intact — the migration is a pure addition (ADR
+        // reversal-cost: additions are additive).
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("legacy29.db");
+
+        // Warm sqlite-vec's vec0 module process-globally before the raw-conn run.
+        let _warm = SqlitePool::open(&tmp.path().join("warm29.db"))
+            .await
+            .unwrap();
+
+        // Stage 1: run migrations up to V0028 only, on a raw rusqlite conn.
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            crate::sqlite::migrations::runner()
+                .set_target(refinery::Target::Version(28))
+                .run(&mut conn)
+                .unwrap();
+            // plan_amendment does not exist yet at V0028.
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='plan_amendment'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "plan_amendment must not exist before V0029");
+            // Seed a project row so we can prove it survives the upgrade.
+            let now = timestamp_to_micros(chrono::Utc::now());
+            conn.execute(
+                "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "project:legacy29",
+                    "Legacy29",
+                    "novel",
+                    "fantasy",
+                    r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                    now,
+                    now
+                ],
+            )
+            .unwrap();
+        }
+
+        // Stage 2: open through the pool, which runs the full runner (incl.
+        // V0029). Must succeed and the legacy row must still be there.
+        let pool = SqlitePool::open(&db_path).await.unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = Repository::new(pool, data_dir);
+
+        let again = repo.get_project("project:legacy29").await.unwrap();
+        assert_eq!(again.name, "Legacy29");
+
+        // And plan_amendment now exists and is queryable (empty).
+        let listed = repo
+            .list_plan_amendments("project:legacy29", "bible_branch:missing", None, None)
+            .await
+            .unwrap();
+        assert!(listed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pre_v0037_database_applies_later_migrations_with_secret_facts() {
+        // HEAD already shipped V0036. This batch adds V0037 (aliases), V0038
+        // (nullable canonical_fact.scene_id), and V0039 (deep_check_cache).
+        // Refinery abort_missing would refuse a V0035 inserted below 36; this
+        // test is the live upgrade: a V0036-era DB with a secret-linked
+        // knowledge_fact must open, keep the link, and gain the new table.
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("legacy36.db");
+        let _warm = SqlitePool::open(&tmp.path().join("warm36.db"))
+            .await
+            .unwrap();
+
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            crate::sqlite::migrations::runner()
+                .set_target(refinery::Target::Version(36))
+                .run(&mut conn)
+                .unwrap();
+            conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+            let cache_exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='deep_check_cache'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(cache_exists, 0, "deep_check_cache must not exist at V0036");
+
+            let now = timestamp_to_micros(chrono::Utc::now());
+            conn.execute(
+                "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "project:legacy36",
+                    "Legacy36",
+                    "novel",
+                    "fantasy",
+                    r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                    now,
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO bible_branch (id, project_id, name, status, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    "bible_branch:legacy36",
+                    "project:legacy36",
+                    "main",
+                    "active",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE project SET active_branch_id = ?1 WHERE id = ?2",
+                rusqlite::params!["bible_branch:legacy36", "project:legacy36"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO book (id, project_id, book_number, created_at) \
+                 VALUES (?1, ?2, 1, ?3)",
+                rusqlite::params!["book:legacy36", "project:legacy36", now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chapter (id, project_id, book_id, book_number, chapter_number, created_at) \
+                 VALUES (?1, ?2, ?3, 1, 1, ?4)",
+                rusqlite::params!["chapter:legacy36", "project:legacy36", "book:legacy36", now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scene (id, project_id, branch_id, book_id, chapter_id, \
+                 book_number, chapter_number, scene_order, full_text, summary, \
+                 content_rating, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, 1, 'prose', 'sum', 'General', ?6, ?6)",
+                rusqlite::params![
+                    "scene:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "book:legacy36",
+                    "chapter:legacy36",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO character (id, project_id, branch_id, name, normalized_name, \
+                 summary, role, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                rusqlite::params![
+                    "character:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "Nate",
+                    "nate",
+                    "lead",
+                    "protagonist",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO canonical_fact (id, project_id, branch_id, scene_id, \
+                 book_number, chapter_number, subject_table, predicate, value_kind, \
+                 value_text, aliases, scope, created_at, updated_at, secret) \
+                 VALUES (?1, ?2, ?3, ?4, 1, 1, 'character', 'true_name', 'string', \
+                         'Nathaniel', '[]', 'invariant', ?5, ?5, 1)",
+                rusqlite::params![
+                    "canonical_fact:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "scene:legacy36",
+                    now
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+                 fact, normalized_fact, source_summary, tags, reader_visible, \
+                 created_at, updated_at, secret_of_fact_id) \
+                 VALUES (?1, ?2, ?3, ?4, 'knows the name', 'knows the name', 'reveal', \
+                         '[]', 1, ?5, ?5, ?6)",
+                rusqlite::params![
+                    "knowledge_fact:legacy36",
+                    "project:legacy36",
+                    "bible_branch:legacy36",
+                    "character:legacy36",
+                    now,
+                    "canonical_fact:legacy36"
+                ],
+            )
+            .unwrap();
+        }
+
+        let pool = SqlitePool::open(&db_path).await.expect(
+            "a V0036-era database with secret-linked knowledge_facts must migrate through V0038/V0039",
+        );
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repo = Repository::new(pool, data_dir);
+
+        let again = repo.get_project("project:legacy36").await.unwrap();
+        assert_eq!(again.name, "Legacy36");
+
+        let knowledge = repo
+            .get_knowledge_fact("knowledge_fact:legacy36")
+            .await
+            .unwrap();
+        assert_eq!(
+            knowledge.secret_of_fact_id.as_deref(),
+            Some("canonical_fact:legacy36"),
+            "V0038 rebuild must restore secret_of_fact_id links"
+        );
+
+        let scene_id_notnull: i64 = repo
+            .pool()
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT \"notnull\" FROM pragma_table_info('canonical_fact') \
+                     WHERE name = 'scene_id'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(scene_id_notnull, 0, "V0038 must make scene_id nullable");
+
+        let cache_exists: i64 = repo
+            .pool()
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='deep_check_cache'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(cache_exists, 1, "V0039 must create deep_check_cache");
+    }
+
+    #[tokio::test]
+    async fn deep_check_cache_hits_current_fingerprint_and_sweeps_stale() {
+        let (_tmp, repo, _project, _branch, scene_id) = repo_with_scene().await;
+        repo.put_deep_check_cache(&scene_id, "fp-a", "temporal_coherence", "output-a")
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_deep_check_cache(&scene_id, "fp-a", "temporal_coherence")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("output-a")
+        );
+
+        repo.put_deep_check_cache(&scene_id, "fp-b", "temporal_coherence", "output-b")
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_deep_check_cache(&scene_id, "fp-a", "temporal_coherence")
+                .await
+                .unwrap(),
+            None,
+            "an edit must miss the previous fingerprint"
+        );
+        assert_eq!(
+            repo.get_deep_check_cache(&scene_id, "fp-b", "temporal_coherence")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("output-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn dual_persona_upsert_does_not_clobber_a_newer_fingerprint() {
+        use spindle_core::models::{
+            ContentRating, DualPersonaReviewRound, PersonaReviewNotes, SaveSceneDraftInput,
+        };
+
+        let round = |n: usize| DualPersonaReviewRound {
+            round: n,
+            literary_critic: PersonaReviewNotes {
+                persona: "literary".into(),
+                strengths: vec!["s".into()],
+                concerns: Vec::new(),
+            },
+            craft_technician: PersonaReviewNotes {
+                persona: "craft".into(),
+                strengths: Vec::new(),
+                concerns: Vec::new(),
+            },
+            genre_reader: PersonaReviewNotes::default(),
+            priority_actions: Vec::new(),
+        };
+
+        let (_tmp, repo, project, branch, scene_id) = repo_with_scene().await;
+        let scene_a = repo.get_scene(&scene_id).await.unwrap();
+        let fp_a = Repository::scene_revision_fingerprint(&scene_a);
+        repo.upsert_dual_persona_review(UpsertDualPersonaReviewParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_id.clone(),
+            rounds_completed: 1,
+            review_rounds: vec![round(1)],
+            scene_revision_fingerprint: fp_a.clone(),
+            status: "in_progress".into(),
+        })
+        .await
+        .unwrap();
+
+        repo.save_scene_draft(
+            &project.id,
+            &branch.id,
+            &SaveSceneDraftInput {
+                project_id: project.id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "She turned back and said the line differently.".into(),
+                summary: "turn".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let scene_b = repo.get_scene(&scene_id).await.unwrap();
+        let fp_b = Repository::scene_revision_fingerprint(&scene_b);
+        assert_ne!(fp_a, fp_b, "an edit must change the review fingerprint");
+
+        repo.upsert_dual_persona_review(UpsertDualPersonaReviewParams {
+            project_id: project.id.clone(),
+            branch_id: branch.id.clone(),
+            scene_id: scene_id.clone(),
+            rounds_completed: 1,
+            review_rounds: vec![round(1)],
+            scene_revision_fingerprint: fp_b.clone(),
+            status: "in_progress".into(),
+        })
+        .await
+        .unwrap();
+
+        let after_stale = repo
+            .upsert_dual_persona_review(UpsertDualPersonaReviewParams {
+                project_id: project.id.clone(),
+                branch_id: branch.id.clone(),
+                scene_id: scene_id.clone(),
+                rounds_completed: 2,
+                review_rounds: vec![round(1), round(2)],
+                scene_revision_fingerprint: fp_a,
+                status: "current".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_stale.scene_revision_fingerprint, fp_b);
+        assert_eq!(after_stale.rounds_completed, 1);
     }
 
     #[tokio::test]
@@ -11595,6 +17712,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_entity_supports_research_tables_and_sets_archived_at() {
+        // Live-run bug 5: `archive_entity` failed on research rows with
+        // "entity table 'research_claim' has no archived_at column", leaving
+        // junk research entities unremovable. After V0033 the three research
+        // tables carry an `archived_at` column and are in the archival
+        // allowlist, so archival succeeds and stamps the column.
+        let (_tmp, repo) = fresh_repo().await;
+        let (project, branch, _book, _chapter) = repo
+            .create_project(&CreateProjectInput {
+                name: "P".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let source = repo
+            .create_research_source(
+                &project.id,
+                Some(&branch.id),
+                "Junk Source",
+                "web",
+                None,
+                None,
+                None,
+                None,
+                None,
+                chrono::Utc::now(),
+                "uncertain",
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        let note = repo
+            .create_research_note(
+                &project.id,
+                Some(&source.id),
+                Some(&branch.id),
+                "Junk note",
+                None,
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        let claim = repo
+            .create_research_claim(
+                &project.id,
+                Some(&source.id),
+                Some(&note.id),
+                Some(&branch.id),
+                "Junk claim",
+                None,
+                None,
+                None,
+                "uncertain",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        for (table, id) in [
+            ("research_source", &source.id),
+            ("research_note", &note.id),
+            ("research_claim", &claim.id),
+        ] {
+            repo.archive_entity(table, id)
+                .await
+                .unwrap_or_else(|e| panic!("archiving {table} must succeed, got: {e}"));
+        }
+
+        assert!(
+            repo.get_research_source(&source.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "research_source archived_at must be set"
+        );
+        assert!(
+            repo.get_research_note(&note.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "research_note archived_at must be set"
+        );
+        assert!(
+            repo.get_research_claim(&claim.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "research_claim archived_at must be set"
+        );
+    }
+
+    #[tokio::test]
     async fn fts_search_characters_finds_by_name_and_appearance() {
         use spindle_core::models::{
             CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
@@ -11617,6 +17841,7 @@ mod tests {
 
         let _mara = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara Oathkeeper".into(),
                 summary: "Warden of the Ash Gate.".into(),
@@ -11696,6 +17921,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             },
         )
         .await
@@ -11715,6 +17941,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             },
         )
         .await
@@ -11921,6 +18148,7 @@ mod tests {
                     tone: Some("grim".into()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -11948,6 +18176,7 @@ mod tests {
                     tone: Some("grim".into()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -11992,6 +18221,7 @@ mod tests {
                     tone: Some("grim".into()),
                     generation_id: None,
                     source_path: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -12038,6 +18268,7 @@ mod tests {
 
         let (character, voice, emotional, state) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara".into(),
                 summary: "An oathbound warden.".into(),
@@ -12272,6 +18503,8 @@ mod tests {
                     scene_order: Some(2),
                     note: None,
                 }],
+                connected_conflict_ids: Vec::new(),
+                connected_theme_ids: Vec::new(),
             })
             .await
             .unwrap();
@@ -12368,6 +18601,7 @@ mod tests {
 
         let (character, voice, _emotional, _state) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara".into(),
                 summary: "An oathbound warden.".into(),
@@ -12509,6 +18743,7 @@ mod tests {
         };
         let (mara, _, _, _) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Mara".into(),
                 role: "protagonist".into(),
@@ -12522,6 +18757,7 @@ mod tests {
             .unwrap();
         let (aldric, _, _, _) = repo
             .create_character(&CreateCharacterInput {
+                aliases: Vec::new(),
                 project_id: project.id.clone(),
                 name: "Aldric".into(),
                 role: "scribe".into(),
@@ -12550,6 +18786,7 @@ mod tests {
                 tone: None,
                 generation_id: None,
                 source_path: None,
+                ..Default::default()
             },
         )
         .await
@@ -12869,6 +19106,7 @@ mod tests {
 
         // Live state we'll wipe: one character on the active branch.
         repo.create_character(&CreateCharacterInput {
+            aliases: Vec::new(),
             project_id: project.id.clone(),
             name: "DoomedDeniz".into(),
             summary: "Will be wiped.".into(),
@@ -12971,6 +19209,7 @@ mod tests {
         async fn make_char(repo: &Repository, project_id: &str, name: &str) -> Character {
             let (character, _, _, _) = repo
                 .create_character(&CreateCharacterInput {
+                    aliases: Vec::new(),
                     project_id: project_id.to_string(),
                     name: name.to_string(),
                     summary: "x".into(),
@@ -13050,5 +19289,193 @@ mod tests {
             .unwrap();
         assert_eq!(updated_reversed.trust, 50);
         assert_eq!(updated_reversed.tension, 50);
+    }
+
+    // === Authoring-run event journal (ADR 0002, V0027) ======================
+
+    /// Persist a minimal `active` authoring run so events have a valid FK
+    /// target. Returns the run id.
+    async fn seed_authoring_run(
+        repo: &Repository,
+        project: &Project,
+        branch: &BibleBranch,
+    ) -> String {
+        let run_id = format!("authoring_run:{}", Ulid::new().to_string().to_lowercase());
+        let now = chrono::Utc::now();
+        let run = crate::sqlite::records::AuthoringRun {
+            id: run_id.clone(),
+            project_id: project.id.clone(),
+            active_branch_id: branch.id.clone(),
+            book_number: 1,
+            start_chapter: 1,
+            end_chapter: 1,
+            checkpoint_interval: 1,
+            last_checkpoint_end_chapter: 0,
+            artifacts_dir: "../artifacts".into(),
+            editorial_directives: Vec::new(),
+            status: "active".into(),
+            created_at: now,
+            updated_at: now,
+            mining_policy: None,
+            max_revise_attempts: None,
+            checkpoint_policy: None,
+            replan_policy: None,
+        };
+        repo.save_authoring_run(run, Vec::new(), Vec::new(), Vec::new())
+            .await
+            .unwrap();
+        run_id
+    }
+
+    #[tokio::test]
+    async fn append_run_event_assigns_dense_sequence_and_round_trips() {
+        let (_tmp, repo, project, branch, _scene_id) = repo_with_scene().await;
+        let run_id = seed_authoring_run(&repo, &project, &branch).await;
+
+        let seq1 = repo
+            .append_run_event(
+                &run_id,
+                "run_started",
+                serde_json::json!({ "book_number": 1 }),
+            )
+            .await
+            .unwrap();
+        let seq2 = repo
+            .append_run_event(
+                &run_id,
+                "scene_drafted",
+                serde_json::json!({ "chapter": 1, "scene_order": 1, "origin": "agent" }),
+            )
+            .await
+            .unwrap();
+        let seq3 = repo
+            .append_run_event(&run_id, "run_completed", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(seq1, 1, "first event on a run is seq 1");
+        assert_eq!(seq2, 2, "seq is dense and monotonic");
+        assert_eq!(seq3, 3);
+
+        let events = repo.list_run_events(&run_id, None, None).await.unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].seq, 1);
+        assert_eq!(events[0].kind, "run_started");
+        assert_eq!(events[0].payload["book_number"], serde_json::json!(1));
+        assert_eq!(events[1].kind, "scene_drafted");
+        assert_eq!(events[1].payload["origin"], serde_json::json!("agent"));
+        assert_eq!(events[2].kind, "run_completed");
+        assert!(events[0].id.starts_with("authoring_run_event:"));
+    }
+
+    #[tokio::test]
+    async fn list_run_events_honors_after_seq_and_limit() {
+        let (_tmp, repo, project, branch, _scene_id) = repo_with_scene().await;
+        let run_id = seed_authoring_run(&repo, &project, &branch).await;
+        for i in 0..5 {
+            repo.append_run_event(&run_id, "scene_committed", serde_json::json!({ "n": i }))
+                .await
+                .unwrap();
+        }
+
+        // after_seq = 2 → only seq 3,4,5 (the resume-from-Last-Event-ID path).
+        let after = repo.list_run_events(&run_id, Some(2), None).await.unwrap();
+        assert_eq!(
+            after.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+
+        // limit caps the window, still in ascending seq order.
+        let limited = repo.list_run_events(&run_id, None, Some(2)).await.unwrap();
+        assert_eq!(
+            limited.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_events_survive_a_subsequent_run_state_save() {
+        // Regression: the journal FK cascades on run delete. `save_authoring_run`
+        // must upsert the run row in place (not DELETE+INSERT), or every state
+        // persist would wipe the run's journal via ON DELETE CASCADE. This pins
+        // that appended events survive re-saving the run.
+        let (_tmp, repo, project, branch, _scene_id) = repo_with_scene().await;
+        let run_id = seed_authoring_run(&repo, &project, &branch).await;
+
+        repo.append_run_event(&run_id, "run_started", serde_json::json!({}))
+            .await
+            .unwrap();
+        repo.append_run_event(&run_id, "scene_drafted", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        // Re-save the run (as every execute_next step does) — must not touch the
+        // journal.
+        let now = chrono::Utc::now();
+        let run = crate::sqlite::records::AuthoringRun {
+            id: run_id.clone(),
+            project_id: project.id.clone(),
+            active_branch_id: branch.id.clone(),
+            book_number: 1,
+            start_chapter: 1,
+            end_chapter: 1,
+            checkpoint_interval: 1,
+            last_checkpoint_end_chapter: 0,
+            artifacts_dir: "../artifacts".into(),
+            editorial_directives: Vec::new(),
+            status: "blocked".into(), // a status change
+            created_at: now,
+            updated_at: now,
+            mining_policy: None,
+            max_revise_attempts: None,
+            checkpoint_policy: None,
+            replan_policy: None,
+        };
+        repo.save_authoring_run(run, Vec::new(), Vec::new(), Vec::new())
+            .await
+            .unwrap();
+
+        let events = repo.list_run_events(&run_id, None, None).await.unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "journal must survive a run re-save (no cascade wipe)"
+        );
+        // The next seq continues densely from where it left off.
+        let seq = repo
+            .append_run_event(&run_id, "run_blocked", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(seq, 3, "seq continues densely after a run re-save");
+    }
+
+    #[tokio::test]
+    async fn run_events_sequences_are_independent_per_run() {
+        let (_tmp, repo, project, branch, _scene_id) = repo_with_scene().await;
+        let run_a = seed_authoring_run(&repo, &project, &branch).await;
+        let run_b = seed_authoring_run(&repo, &project, &branch).await;
+
+        let a1 = repo
+            .append_run_event(&run_a, "run_started", serde_json::json!({}))
+            .await
+            .unwrap();
+        let b1 = repo
+            .append_run_event(&run_b, "run_started", serde_json::json!({}))
+            .await
+            .unwrap();
+        let a2 = repo
+            .append_run_event(&run_a, "scene_drafted", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        // Each run owns its own dense 1-based sequence; runs never share numbers.
+        assert_eq!(a1, 1);
+        assert_eq!(b1, 1);
+        assert_eq!(a2, 2);
+
+        let a_events = repo.list_run_events(&run_a, None, None).await.unwrap();
+        let b_events = repo.list_run_events(&run_b, None, None).await.unwrap();
+        assert_eq!(a_events.len(), 2);
+        assert_eq!(b_events.len(), 1);
     }
 }

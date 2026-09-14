@@ -1,5 +1,11 @@
 # Spindle
 
+For focused serial-fiction work, run the MCP server with `SPINDLE_TOOL_PROFILE=authoring`
+and load the `authoring-supervisor` skill. This smaller tool set covers planning,
+drafting, continuity, checkpoint review, recovery, and manuscript export. Leave
+the variable unset for the complete toolbox. Host AI prose should declare
+`authorship: "assistant"`; optional style learning uses subsequent human edits.
+
 **A story bible that keeps your novel consistent across hundreds of pages.**
 
 Spindle is a local-first writing companion for long-form fiction. It gives your
@@ -8,8 +14,9 @@ threads, and prose — so the scene you draft in chapter 32 still knows what
 happened in chapter 3, who's holding the cursed sword, and which promises to
 the reader haven't paid off yet.
 
-It runs entirely on your machine. Your manuscript, canon, and revisions never
-leave your laptop.
+The database and console run on your machine. Manuscript, canon and revisions
+are stored locally; configured model providers receive the context needed for
+the calls you make.
 
 ## The problem Spindle solves
 
@@ -44,6 +51,26 @@ revise without losing earlier work.
   off.
 - **EPUB export.** Ship the finished book.
 
+## Long-running series
+
+The local `/console` brings together episodes, editorial work, thread history,
+manuscript reading and canon/plan decisions. Use `SPINDLE_HTTP_ADDR=127.0.0.1:8937`
+to serve it, then open `http://127.0.0.1:8937/console`.
+
+- `get_series_status` shows the contiguous release cursor and draft backlog.
+- `prepare_episode_release` → `release_episode` records a local immutable
+  chapter snapshot. Corrections append revisions; nothing is posted externally.
+- `read_episode` retains reader memory across runs and books, invalidating
+  outdated readings after manuscript, contract or model changes.
+- `get_editorial_queue` → `decide_editorial_item` turns reader concerns into
+  reviewed revision requests. Accepted work enters drafting guidance.
+- `get_model_usage` reports provider tokens, elapsed time and unknown usage.
+  Deep consistency checks expose explicit `audit_coverage` and paging.
+
+See [the implementation ledger](docs/serial-fiction-implementation.md) and
+[the comparison kit](evals/README.md). The **plot-architect** skill describes
+planning at series, arc and episode horizons.
+
 ## Who it's for
 
 Fiction writers — especially novelists and serial authors — who use AI
@@ -58,31 +85,40 @@ the most, but Spindle is genre-agnostic.
 
 You'll need [Rust](https://rustup.rs/) installed.
 
-```bash
-git clone https://github.com/VerifiedOrganic/spindle
-cd spindle
-cargo build --release -p spindle-mcp
-```
+1. **Clone and build Spindle:**
+   ```bash
+   git clone https://github.com/VerifiedOrganic/spindle
+   cd spindle
+   cargo build --release -p spindle-mcp
+   ```
 
-Then point your MCP client at the binary. For **Claude Code**, add this to
-your MCP config:
+2. **Initialize a local book workspace:**
+   Create a new folder for your book project, initialize a git repository, and run Spindle workspace initialization:
+   ```bash
+   mkdir my-book && cd my-book
+   git init
+   /path/to/spindle/target/release/spindle-mcp init
+   ```
+   This creates a project-local `.spindle/` folder containing your `config.toml`, SQLite database, and `artifacts/` subdirectory.
 
-```json
-{
-  "mcpServers": {
-    "spindle": {
-      "command": "cargo",
-      "args": ["run", "-p", "spindle-mcp"],
-      "cwd": "/absolute/path/to/spindle"
-    }
-  }
-}
-```
+3. **Configure your MCP Client:**
+   Point your MCP-capable AI client at the built binary. For **Claude Code**, you can configure it to start from your book directory:
+   ```json
+   {
+     "mcpServers": {
+       "spindle": {
+         "command": "/path/to/spindle/target/release/spindle-mcp",
+         "cwd": "/path/to/my-book"
+       }
+     }
+   }
+   ```
 
-Spindle stores your projects under your platform's local data directory, in
-a `spindle/` folder. Set `SPINDLE_DATA_DIR` to override.
+4. **Start writing:**
+   Connect/use Spindle MCP from that folder and start designing or writing using the `authoring-supervisor` skill!
 
-That's it. Open your MCP client and start a session.
+By default, Spindle resolves to the project-local `.spindle/` directory (climbing up parents to find it). A platform-global data directory is used as a fallback only when no `.spindle/` workspace exists. You can still set `SPINDLE_DATA_DIR` and `SPINDLE_CONFIG` to override this behavior.
+
 
 ## A first session
 
@@ -113,16 +149,58 @@ underlying tool calls for you.
 Drive that loop across chapters and Spindle keeps the story bible
 consistent.
 
+## The authoring supervisor
+
+Once you've planned a stretch of chapters, the `authoring-supervisor` skill can
+run the whole editorial loop for you — one bounded step at a time, with the run
+state persisted in SQLite so it resumes cleanly after any interruption. The full
+spine is **draft → verify → revise → commit → mine → annotate → summarize →
+replan → checkpoint**, and everything past the classic draft/commit loop is
+opt-in per run, off by default:
+
+- **Canon mining** (`mining_policy`) turns each committed scene's prose into
+  *proposed* canon deltas — evidence-quoted, per-class change proposals you
+  ratify as a reviewed diff instead of hand-authoring bookkeeping. The
+  `canon-steward` skill runs that ratify queue.
+- **In-run verify/revise** (`max_revise_attempts`) runs deterministic
+  scene-scoped continuity checks right after a draft and bounces warnings back to
+  the drafter while the context is hot, instead of letting them pile up as
+  checkpoint debt.
+- **Self-clearing checkpoints** (`checkpoint_policy`) let the supervisor run the
+  deep consistency check, sampled dual-persona reviews, and a cumulative reader
+  simulation, then clear a clean checkpoint unattended — or block with the full
+  report otherwise. `manual` stays the default.
+- **A living outline** (`replan_policy`) compares what actually got drafted
+  against the not-yet-drafted chapters' plans and stages plan amendments you
+  ratify — the outline chases the story, never the reverse.
+
+Every model pass that touches your prose is dispatched through a single
+rating-clearance gate: a scene's prose is never sent to a model whose configured
+agent hasn't declared that scene's content rating — it skips honestly instead.
+Nothing machine-derived reaches your bible without an explicit ratification step.
+
+**Operator console.** In HTTP mode (`SPINDLE_HTTP_ADDR`), Spindle serves a
+single embedded page at `/console` for series releases, editorial work, thread
+history, run status, the compiled manuscript, and staged ratify queues. It follows
+a run's event journal live. Author decisions use the same guarded MCP tools as
+other clients; the `GET /console/api/*` endpoints remain read-only.
+
+See [`docs/authoring-supervisor.md`](docs/authoring-supervisor.md) for the full
+flow.
+
 ## Embedded skills
 
 Spindle ships writing skills your AI client can load directly:
 
 - `bible-librarian` — search and lookup across the story bible
+- `authoring-supervisor` — coordinate interactive drafting and checkpoint runs
 - `scene-writer` — draft prose with the right context
+- `researcher` — gather, summarize, and tag factual research ([docs/research-subsystem.md](docs/research-subsystem.md))
 - `character-creator` — build out a character
 - `worldbuilder` — develop locations, factions, rules, lore
 - `plot-architect` — structure, pacing, conflicts, narrative promises
 - `continuity-editor` — catch contradictions
+- `canon-steward` — ratify the canon deltas and plan amendments mined from drafted scenes
 - `revision-manager` — branch, compare, and revise
 - `editor` — developmental and line edits
 - `manuscript-importer` — ingest an existing draft
@@ -147,6 +225,9 @@ Spindle's MCP surface gives your AI client tools for:
   alternatives, diffs, merges
 - **Analysis** — consistency checks, bible search, dual-persona editorial
   review, canonical fact extraction
+- **Authoring supervisor** — resumable multi-chapter drafting runs with opt-in
+  canon mining, in-run verify/revise, self-clearing checkpoints, and a living
+  outline, plus a staged canon-delta / plan-amendment ratification flow
 - **Import** — full manuscript ingestion with entity extraction and bible
   hydration
 - **Export** — EPUB output, bible export, preflight checks
@@ -171,6 +252,7 @@ Both render as styled XHTML `div` elements in exported EPUB files.
 
 ## Going further
 
+- **Interactive Drafting Loop.** The `authoring-supervisor` skill drives an interactive, chat-native drafting run using SQLite-persisted states, automated checkpoints, and user feedback reviews. See [`docs/authoring-supervisor.md`](docs/authoring-supervisor.md).
 - **Batch drafting.** `spindle-harness` is an operator-driven tool for
   unattended batch drafting with checkpointed editorial review and resumable
   artifacts. See [`docs/spindle-harness-usage.md`](docs/spindle-harness-usage.md).
@@ -180,7 +262,8 @@ Both render as styled XHTML `div` elements in exported EPUB files.
   Bible search. See [`docs/spindle-agent-config.md`](docs/spindle-agent-config.md).
 - **HTTP mode.** For multi-client or networked setups, run with
   `SPINDLE_HTTP_ADDR=127.0.0.1:8787` to expose the streamable HTTP MCP
-  transport at `/mcp`. Currently experimental.
+  transport at `/mcp`, a run event stream at `/events`, and the read-only
+  operator console at `/console`. Currently experimental.
 
 ## Under the hood
 

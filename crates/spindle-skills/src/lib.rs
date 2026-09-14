@@ -27,6 +27,7 @@ mod tests {
         let names: Vec<_> = skills.iter().map(|skill| skill.name).collect();
 
         assert!(names.contains(&"bible-librarian"));
+        assert!(names.contains(&"canon-steward"));
         assert!(names.contains(&"character-creator"));
         assert!(names.contains(&"continuity-editor"));
         assert!(names.contains(&"manuscript-importer"));
@@ -35,6 +36,8 @@ mod tests {
         assert!(names.contains(&"scene-writer"));
         assert!(names.contains(&"worldbuilder"));
         assert!(names.contains(&"editor"));
-        assert_eq!(skills.len(), 9);
+        assert!(names.contains(&"authoring-supervisor"));
+        assert!(names.contains(&"researcher"));
+        assert_eq!(skills.len(), 12);
     }
 }

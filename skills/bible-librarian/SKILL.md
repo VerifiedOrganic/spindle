@@ -144,6 +144,8 @@ bible://projects/{project_id}/timeline-graph/mermaid  → Branch/timeline graph
 bible://projects/{project_id}/temporal-interventions  → Temporal interventions
 bible://projects/{project_id}/system-overlays         → System overlays
 bible://projects/{project_id}/continuity/health       → Continuity health summary
+bible://projects/{project_id}/research                 → Concise list of all research sources, notes, and claims
+bible://projects/{project_id}/research/tags            → All unique tags used in the research library
 bible://references/anti-slop                          → Craft reference
 bible://system/model-routes                           → Model routing metadata
 ```
@@ -299,6 +301,42 @@ you don't have an id, pass explicit `book_number` + `chapter_number`.
 `save_summary` — call it when you want a structured per-chapter view (POV,
 beats, knowledge state) rather than just the prose summary.
 
+## Reader Artifacts (spoiler-bounded)
+
+Two read-only tools assemble **reader-facing** Markdown that is safe to hand to
+someone who has only read up to a point. Both are pure read models — no model
+calls — and both take an opt-in `write_to_workspace` that mirrors
+`compile_manuscript` (the file lands in the project's workspace `artifacts/`
+directory under a deterministic name).
+
+- `export_recap { project_id, book_number, through_chapter, write_to_workspace }`
+  — a "previously on" recap of one book up to (and including) `through_chapter`:
+  a story-so-far section from the chapter summaries, a "Paid off" section of
+  resolved promises, and a "Questions still hanging" section of open promises.
+  Use it to catch a reader up before the next book or chapter.
+- `export_series_bible { project_id, through?, write_to_workspace }` — a series
+  bible as of an optional `through` placement (absent = whole project):
+  character pages (role, summary, status/mood as-of the cursor, banded
+  relationships), locations, a sorted glossary of terms, and factions/religions
+  when present.
+
+**The spoiler rule (both tools).** Everything is bounded at a cursor = the end
+of `through_chapter` / `through` (whole book/project when absent). A fact,
+thread, summary line, character page, or glossary entry is only included if it
+is established at or before that cursor.
+
+Secrets are handled more strictly than in scene context. A secret canonical
+fact (registered with a `secrecy` scope) — and any line that names its value —
+is **withheld from the reader** until the author has placed a *reader-visible
+reveal*: a `record_knowledge` call carrying `secret_of_fact_id` (the linked
+fact), `reader_visible: true`, and a `learned_at` placement at or before the
+cursor. `reader_visible` is the **authorial dial** and the reveal's placement is
+the **reveal date**. A secret merely held by a character (declared via
+`register_canonical_fact { secrecy }`) is dramatic irony, not a reader reveal,
+so it stays hidden in these artifacts until you record that dated, reader-visible
+reveal. This differs from scene-context gating, which protects *characters* from
+knowing; reader artifacts protect the *reader* from spoilers.
+
 ## Pacing Dashboard
 
 When the user asks about pacing:
@@ -331,11 +369,27 @@ PROMISES
   ✅ Harbor secret (planted ch 5, paid off ch 14)
 ```
 
+## Research Library
+
+Use the Research Library tools to store and query external research, factual claims, and historical details that ground the narrative:
+
+- Call `research_add_source` to document a new research source (books, articles, interviews, files, etc.).
+- Call `research_add_note` to attach specific quotes, page numbers, or general notes to an existing source.
+- Call `research_add_claim` to record a distilled factual claim (with topic, location, time period, confidence, and tags) linked to a source or note.
+- Call `research_search` to search the research library using full-text search matching claim text, note text, and source titles, optionally filtering by tags, time period, or location.
+- Call `research_pack_for_scene` to retrieve a compact, budget-aware packet of relevant research matching a scene's summary, location, character IDs, or tags. The scene-writer or authoring supervisor should call this tool before writing a scene draft to ground the prose without bloating the prompt context.
+
+The research library can be browsed using these resources:
+- `bible://projects/{project_id}/research` returns a concise listing of all sources, notes, and claims.
+- `bible://projects/{project_id}/research/tags` returns all unique tags used in the research library.
+
 ## Export
 
 When the user wants to export:
+- Reader recap → `export_recap` (spoiler-bounded "previously on"; see Reader Artifacts)
+- Reader-facing series bible → `export_series_bible` (spoiler-bounded; see Reader Artifacts)
 - Bible summary → Generate a comprehensive document using all entity summaries
-- Manuscript → Compile all scene full_text in order
+- Manuscript → `compile_manuscript` (assemble scene prose in order)
 - Character sheets → Detailed profiles for all characters
 - World guide → All world entities, rules, and maps
 
@@ -363,3 +417,17 @@ and `bible://skills/*`. The reference resources currently shipped are:
 
 The skill catalog includes every SKILL.md in the repo, readable via
 `bible://skills/<name>` (e.g. `bible://skills/scene-writer`).
+
+## Shared convention: subagent orchestration
+
+Several skills (authoring-supervisor, editor, continuity-editor,
+revision-manager, scene-writer) carry a `## Subagent orchestration (Claude Code
+/ grok)` section teaching the same pattern coding harnesses use: fan out
+INDEPENDENT read-only research/verification to parallel subagents when the
+harness supports them (Claude Code's Task/Agent tool, grok's subagents), and run
+the same steps sequentially inline when it does not. The rule is uniform and
+non-negotiable: subagents research and report; every state-mutating spindle tool
+call stays in the main context, where the host decides and writes. Consult the
+individual skill for its specific fan-out (per-scene review, per-dimension
+editorial passes with adversarial verification, per-chapter continuity sweeps,
+per-alternative revision assessments, pre-draft canon recon).

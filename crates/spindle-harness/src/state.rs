@@ -39,7 +39,7 @@ pub struct ChapterSeed {
     pub scenes: Vec<SceneSeed>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SceneSeed {
     pub scene_order: i32,
     #[serde(default)]
@@ -50,6 +50,12 @@ pub struct SceneSeed {
     pub tone: Option<String>,
     #[serde(default)]
     pub source_path: Option<String>,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +70,34 @@ pub struct HarnessState {
     pub artifacts_dir: String,
     #[serde(default)]
     pub editorial_directives: Vec<String>,
+    /// Canon-mining policy for this run (evolution §3.1). `None` (pre-upgrade
+    /// and default) or `Some("disabled")` runs the loop exactly as before;
+    /// `Some("propose_all")` inserts a `MineScene` step after each scene's
+    /// commit. Additive with a serde default so state fixtures written before
+    /// this field existed still deserialize.
+    #[serde(default)]
+    pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise budget (evolution §3.2). `None` (pre-upgrade
+    /// and default) or `Some(0)` runs the loop exactly as before; `Some(1..=2)`
+    /// inserts a `VerifyScene` step after each draft and lets warning-or-worse
+    /// findings drive up to N bounded `ReviseScene` passes. Additive with a
+    /// serde default so pre-P2.2 state fixtures still deserialize.
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
+    /// Checkpoint policy for this run (evolution §3.3). `None` (pre-upgrade and
+    /// default) or `Some("manual")` runs the classic 4-step operator checkpoint
+    /// flow exactly as before; `Some("auto_advisory")` / `Some("auto_strict")`
+    /// let the harness self-clear a checkpoint in-process. Additive with a serde
+    /// default so pre-P3 state fixtures still deserialize.
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
+    /// Living-outline replan policy for this run (ADR 0003, evolution §3.5).
+    /// `None` (pre-upgrade and default) or `Some("disabled")` runs the loop
+    /// exactly as before (never replans); `Some("propose_all")` inserts a
+    /// `ReplanChapter` step after each chapter summary. Additive with a serde
+    /// default so pre-P4 state fixtures still deserialize.
+    #[serde(default)]
+    pub replan_policy: Option<String>,
     #[serde(default)]
     pub chapters: Vec<ChapterState>,
     #[serde(default)]
@@ -81,6 +115,10 @@ impl HarnessState {
             last_checkpoint_end_chapter: seed.range.start_chapter - 1,
             artifacts_dir: default_artifacts_dir(),
             editorial_directives: seed.editorial_directives,
+            mining_policy: None,
+            max_revise_attempts: None,
+            checkpoint_policy: None,
+            replan_policy: None,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -105,10 +143,24 @@ impl HarnessState {
                             scene_artifact_path: None,
                             draft_diagnostics: None,
                             blocked_reason: None,
+                            research_required: scene.research_required,
+                            research_tags: scene.research_tags,
+                            explicit_query: scene.explicit_query,
+                            research_pack_empty: false,
+                            research_tags_matched: true,
+                            mine_status: None,
+                            mine_detail: None,
+                            verify_status: None,
+                            verify_detail: None,
+                            revise_attempts: 0,
+                            last_finding_fingerprint: None,
+                            revision_directives: None,
                         })
                         .collect(),
                     summary_saved: false,
                     summary_artifact_path: None,
+                    replan_status: None,
+                    replan_detail: None,
                 })
                 .collect(),
             checkpoint_history: Vec::new(),
@@ -191,6 +243,18 @@ pub struct ChapterState {
     pub summary_saved: bool,
     #[serde(default)]
     pub summary_artifact_path: Option<String>,
+    /// Living-outline replan outcome for this chapter's post-summary pass (ADR
+    /// 0003, evolution §3.5). `None` = not attempted (disabled run, or summary
+    /// not yet saved); otherwise `staged` | `skipped` | `no_targets` |
+    /// `no_summary` | `error`. A `Some(_)` value is what the scheduler treats as
+    /// "replan done" so the pass runs at most once per chapter. Additive,
+    /// serde-default.
+    #[serde(default)]
+    pub replan_status: Option<String>,
+    /// Human-readable detail for the replan outcome (staged amendment count or
+    /// the skip/no-targets reason). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub replan_detail: Option<String>,
 }
 
 impl ChapterState {
@@ -217,7 +281,7 @@ pub enum ChapterStatus {
     Complete,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SceneState {
     pub scene_order: i32,
     #[serde(default)]
@@ -237,11 +301,59 @@ pub struct SceneState {
     pub draft_diagnostics: Option<SceneDraftDiagnostics>,
     #[serde(default)]
     pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub research_required: Option<bool>,
+    #[serde(default)]
+    pub research_tags: Vec<String>,
+    #[serde(default)]
+    pub explicit_query: Option<String>,
+    #[serde(default)]
+    pub research_pack_empty: bool,
+    #[serde(default)]
+    pub research_tags_matched: bool,
+    /// Outcome of this scene's canon-mining pass (evolution §3.1). `None` = not
+    /// attempted; otherwise `"staged"` | `"skipped"` | `"model_output_rejected"`
+    /// | `"error"`. A `Some(_)` value is what the scheduler treats as "mining
+    /// done" so the pass runs at most once per scene. Additive, serde-default.
+    #[serde(default)]
+    pub mine_status: Option<String>,
+    /// Human-readable detail for the mining outcome (staged delta count or the
+    /// skip/error reason). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub mine_detail: Option<String>,
+    /// In-run verification outcome (evolution §3.2). `None` = verify not
+    /// attempted; otherwise `"clean"` | `"findings"` | `"parked_findings"` |
+    /// `"error"`. The scheduler reads this at `DraftSaved` to decide verify vs
+    /// revise vs commit. Additive, serde-default.
+    #[serde(default)]
+    pub verify_status: Option<String>,
+    /// Human-readable detail for the verify outcome (finding counts, the parked
+    /// reason, or the error). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub verify_detail: Option<String>,
+    /// Bounded revision passes this scene has consumed (evolution §3.2). `0`
+    /// until the scene enters the revise loop. Additive, serde-default.
+    #[serde(default)]
+    pub revise_attempts: i32,
+    /// Deterministic digest of the last verify's warning-or-worse finding set
+    /// (evolution §3.2 convergence guard). `None` until the first `findings`
+    /// verify; a re-verify producing an identical fingerprint parks the scene
+    /// instead of re-revising, so the loop never oscillates. Additive.
+    #[serde(default)]
+    pub last_finding_fingerprint: Option<String>,
+    /// Transient revision directives block appended to the next draft prompt
+    /// when this scene is re-dispatched by the in-run revise step (evolution
+    /// §3.2). Set by `revise_scene` before the re-draft and cleared on a
+    /// successful re-save; never persisted to the run tables (harness-state
+    /// only). Ids-not-prose. Additive, serde-default.
+    #[serde(default)]
+    pub revision_directives: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenePhase {
+    #[default]
     Pending,
     DraftSaved,
     ChangesCommitted,
@@ -256,6 +368,18 @@ pub struct CheckpointRecord {
     pub status: CheckpointStatus,
     #[serde(default)]
     pub report_artifact_path: Option<String>,
+    /// Outcome of the in-process auto-checkpoint automation (evolution §3.3).
+    /// `None` = manual policy or automation not yet run; otherwise `"approved"`
+    /// (self-cleared under policy), `"blocked"` (findings held it
+    /// pending_review), or `"manual"` (one or more sampled scenes fell back to
+    /// manual review). Ids/enums only, never prose (I8). Additive, serde-default.
+    #[serde(default)]
+    pub auto_outcome: Option<String>,
+    /// Scene ids whose sampled dual-persona review fell back to manual because
+    /// the `review` route was not rating-cleared (evolution §3.3 I3). Empty when
+    /// none. Ids only — the prose of those scenes was never dispatched. Additive.
+    #[serde(default)]
+    pub pending_manual_scene_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -287,6 +411,13 @@ pub fn load_seed(path: &Path) -> Result<HarnessSeed> {
 }
 
 fn default_artifacts_dir() -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            if ancestor.join(".spindle").is_dir() {
+                return "artifacts".to_string();
+            }
+        }
+    }
     "spindle-harness-artifacts".to_string()
 }
 

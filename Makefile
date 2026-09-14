@@ -58,7 +58,13 @@ install: release ## Build release and install to ~/bin
 		pkill -xf "$(INSTALL_DIR)/$(BINARY)" 2>/dev/null || true; \
 		sleep 1; \
 	fi
-	cp $(RELEASE_BIN) $(INSTALL_DIR)/$(BINARY)
+	@# Install via copy-then-rename: mv replaces the path with a NEW inode
+	@# atomically. cp'ing over a binary that is being executed poisons the
+	@# kernel's cached code-signature state for that vnode on macOS - every
+	@# subsequent exec dies with SIGKILL (CODESIGNING: Taskgated Invalid
+	@# Signature) while codesign still reports the file valid on disk.
+	cp $(RELEASE_BIN) $(INSTALL_DIR)/$(BINARY).tmp
+	mv -f $(INSTALL_DIR)/$(BINARY).tmp $(INSTALL_DIR)/$(BINARY)
 	@echo "\033[32m✓\033[0m Installed $(BINARY) to $(INSTALL_DIR)/$(BINARY)"
 	@echo "  Binary size: $$(du -h $(INSTALL_DIR)/$(BINARY) | cut -f1)"
 

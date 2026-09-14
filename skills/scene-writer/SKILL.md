@@ -53,14 +53,21 @@ Follow this loop for every drafting pass on an active branch:
 3. Call `get_scene_context` for the target scene scope. Use
    `find_scenes_referencing` when you need to locate every scene that mentions
    a character, location, faction, or other entity before drafting or revising.
-4. Draft with `save_scene_draft`.
+4. Draft with `save_scene_draft`, declaring `authorship: "assistant"` for prose
+   you compose or revise. Reserve `"human"` for the author's own writing.
+   Pass `location_id` for the scene's setting:
+   it is persisted on the scene so the NEXT scene's pre-draft `[IN-WORLD TIME]`
+   constraint can tell the writer where (and when) the previous scene ended.
 5. Review `save_scene_draft` output and iterate until it is acceptable:
    `pacing_warnings`, optional `agency_warning`, `tone_deviation`,
    `style_warnings` (genre-voice mismatches against the style contract),
    `content_rating_valid` / `content_rating_warnings`, text diff metadata
    (`diff`, `byte_offsets_changed`, `chars_added`, `chars_deleted`), and the
    immediate validator findings already returned on the draft response:
-   `world_rule_hits`, `voice_drift`, and `retcon_findings`. Then run the
+   `world_rule_hits`, `voice_drift`, `retcon_findings`, and `temporal_findings`
+   (intra-scene time jumps — an unsignaled morning→night skip, prose that
+   contradicts its own time of day, or a declared multi-day span rendered
+   unbroken; advisory `warning`s that never block the save). Then run the
    Step 5a genre/style self-check. For canonical-fact prose drift and broader
    cross-scene validation, run `check_consistency` before finalizing.
 6. Run the post-draft validator loop with `check_consistency` and explicitly
@@ -80,7 +87,15 @@ Follow this loop for every drafting pass on an active branch:
    where a specific character appears), `format: "markdown"|"json"`, and
    `budget_tokens` for trimming the rendered report. The output also includes
    `report_sections` grouped by validator, and `markdown` when format is
-   markdown.
+   markdown. Pass `deep_check: true` to add the model-backed semantic passes
+   (one model call per scene) on top of the deterministic checks — including
+   the Tier 2 `temporal_coherence` pass that catches idiomatic time jumps the
+   fixed lexicon misses. Use it for a thorough sweep, not every draft.
+   Inspect `audit_coverage` before calling a deep review complete. Each check
+   identifies eligible, evaluated, heuristic-only and not-evaluated records.
+   Follow `next_offset` with the same scope and unchanged manuscript to examine
+   another capped page; combine the evaluated IDs across pages. Unknown coverage
+   or an unavailable route is not a clean verdict.
    Example triage:
    - If prose says "Cole is 19" but canon has `cole.age = 20`, fix the prose
      or supersede canon through the canonical-fact workflow.
@@ -88,12 +103,48 @@ Follow this loop for every drafting pass on an active branch:
      match his persisted voice profile.
    - If a scene implies knowledge not yet learned, revise the scene to remove
      the leak or add an earlier discovery scene.
+
+   `check_consistency` also runs deterministic timing checks:
+   `temporal_coherence` (intra-scene — an unsignaled time-of-day jump
+   inside one scene, prose that contradicts its own time of day, or a declared
+   multi-day span rendered as one unbroken block; runs on prose alone, no
+   calendar required), and, when the project declares a calendar or tracks
+   `knowledge_fact` learning positions, `chronology` (between-scene — a scene
+   set earlier in story time than its predecessor on the same thread without a
+   flashback marker) and `knowledge_timing` (a character referencing, in prose,
+   a fact they do not learn until later). All are advisory warnings; act on them
+   the same way you act on a validator finding. `temporal_coherence` is the
+   within-scene, forward-looking complement to the between-scene `chronology`
+   check.
 7. Call `commit_scene_changes` to persist structured canon updates from the
-   accepted prose.
-8. Call `commit_character_state` only for targeted state corrections not
+   accepted prose. This runs a **write-time continuity gate**: by default
+   (`continuity_gate: "block_errors"`) it blocks the commit when it finds
+   continuity errors and returns `blocking_continuity_findings` and
+   `retcon_findings`. Read those, fix the prose or canon, then re-commit. Pass
+   `continuity_gate: "warn_only"` to record findings without blocking, or
+   `accept_continuity_risks: true` to consciously commit over a flagged risk
+   (an author override — record why with `record_note`). `"off"` skips the gate
+   entirely. The commit also returns `temporal_findings` (the intra-scene
+   time-jump advisories) in their own field — these are always advisory and
+   **never** block the commit under any gate, but address them like any warning.
+8. When the project declares a calendar, stamp the scene on the in-world clock
+   with `set_scene_clock` ({ `day_index`, `time_of_day` (minutes from
+   midnight), `duration_days`, `precision` }). Mark `temporal_mode:
+   "flashback" | "flashforward" | "concurrent"` for any scene deliberately out
+   of linear order, and a `thread_key` for parallel timelines — this is exactly
+   what keeps the `chronology` check from flagging an intentional flashback as
+   drift. Set `duration_days` to the scene's in-world span: a value >= 1 tells
+   the `temporal_coherence` check to expect the prose to render that passage
+   with transition beats or scene breaks. If a scene moves through the day
+   (morning into evening), either render each block with an explicit transition
+   beat or split it into separately clocked scenes — an unsignaled jump is
+   flagged as teleporting time. Stamping `temporal_mode: "flashback"` also
+   suppresses the intra-scene `temporal_coherence` finding for a deliberate
+   rewind.
+9. Call `commit_character_state` only for targeted state corrections not
    covered by the batch commit.
-9. Call `update_writer_position` whenever you need cursor state persisted for
-   handoff or pause/resume workflows.
+10. Call `update_writer_position` whenever you need cursor state persisted for
+    handoff or pause/resume workflows.
 
 ## Before You Write Anything
 
@@ -215,14 +266,64 @@ Each item is a briefing fact available to the current scene assembly. Check:
   foreknowledge creates interesting uncertainty — the character isn't sure if their knowledge
   still applies.
 
+### `[SECRETS IN PLAY]` — the circle-of-trust envelope (hard constraint)
+Some facts are held **in confidence** by a circle of trust — a reincarnated
+character who has told no one, an affair, a hidden identity. When at least one
+member of a secret's circle is present in the scene, the fact ships to you as a
+**non-truncatable hard constraint** headed `[SECRETS IN PLAY]`, NOT as an ordinary
+canonical fact. The block names, exactly:
+
+- **`Known ONLY to:`** the characters inside the circle at this scene's story
+  position (cursor-aware — a reveal that happens in a later chapter is *not* yet
+  in the circle here).
+- **`Present and NOT in the know:`** the characters in the room who do **not**
+  know it.
+- The rule: *"These characters must not reference, imply, or react to this — they
+  do not know it."*
+- A `Concealment:` line when the author gave concealment guidance (e.g. "she
+  deflects questions about her past with dry humor").
+
+**Write discipline.** The unaware characters must not act on the secret — no
+dialogue that references it, no behavior that implies it, no reaction that only
+makes sense if they knew. Only the circle may carry it, and only in the ways real
+people carry a secret (guardedness, deflection, private interiority). When the
+block is a **POV-only** variant, it adds: *"Narration may carry the POV
+character's private awareness; dialogue and other characters' behavior must not."*
+— the POV's inner life may hold the secret, but nothing on the page may let it
+escape to the others.
+
+**When a secret is NOT in play**, you will not see it at all — the assembler
+withholds it from every carrier (hard constraints, snapshots, the knowledge
+briefing, semantic recall) whenever no circle member is present. What you cannot
+see, you cannot leak. Do not invent it.
+
+**Flagging an on-page reveal (package-first).** If this scene is where the secret
+is finally told — the circle expands from this point on — flag the reveal in the
+save's continuity package: add a `knowledge_learned` entry naming the
+`character_id` who learns it, the `fact`, and `secret_of_fact_id` set to the
+secret's canonical-fact id. On save, Spindle writes the linked `knowledge_fact`
+row stamped with THIS scene's placement, so from this scene forward the new holder
+is inside the circle and may act on the secret (an earlier-cursor context still
+withholds — the reveal never leaks backward). A `secret_of_fact_id` that does not
+point at a secret fact fails the save. An unflagged on-page reveal will trip the
+`secret_leak` continuity check (deterministic dialogue scan, plus a model-backed
+behavioral pass under `deep_check`).
+Manual fallback: an author or the mining pass may instead call `record_knowledge`
+with `secret_of_fact_id` and `learned_at` set directly.
+
 ### Narrative Promises Due (from `novel.narrative_promises_due`)
 If any Chekhov's guns, foreshadowing, or setups are overdue for payoff, weave the payoff
 into this scene if narratively appropriate. Don't force it, but don't ignore it either.
 Unfired guns accumulate as narrative debt that erodes reader trust.
 
 ### Semantic References (from `novel.semantic_references`)
-These are optional recall hits from the Bible search index. Use them as supporting canon,
-not as the primary source of truth. If the token budget is tight, this list may be empty.
+Canon that is topically related to this scene's present cast and location but may be
+structurally distant — established in a different chapter or book — surfaced by embedding
+the present characters + location and ranking the Bible's embedding index by relevance.
+The scene's own characters and location are excluded, so this is recall, not an echo of
+what you already see. Use them as supporting canon to stay consistent with distant
+material, not as the primary source of truth. The list is empty when nothing in the index
+is relevant (or nothing has been embedded yet).
 
 ---
 
@@ -595,28 +696,48 @@ After the initial save and validation, run a quality gate before committing any
 state changes. This prevents bad prose from polluting the Bible with incorrect
 state updates.
 
-**Anti-Slop Check**: Scan your prose for AI writing tells. These are words and
-patterns that signal machine-generated text. If you find them, rewrite:
+**Anti-slop check (fiction shelves, not an AI detector):** Scan the draft
+against the **12 named shelves** in `bible://references/anti-slop`. There is
+no 100+ pattern dump. A hit is a craft problem, not proof of authorship. Do
+not synonym-swap the flagged line — go back to the scene beat and rewrite the
+moment (at most one or two from-beats passes).
 
-| Slop Pattern | Why It's Bad | Fix |
-|-------------|-------------|-----|
-| "a testament to" | Generic filler | Cut entirely or be specific |
-| "the weight of [emotion]" | Cliché abstraction | Show the physical sensation |
-| "couldn't help but" | Removes agency | Character chooses to do it |
-| "a dance of [abstract]" | Purple prose tell | Describe the actual movement |
-| "sent shivers down [body part]" | Dead metaphor | Find a fresh sensation |
-| "eyes that held [emotion]" | Eyes don't hold things | Describe what the eyes DO |
-| "the air crackled with [tension/energy]" | Atmosphere cliché | Use a specific sensory detail |
-| "in that moment" | Temporal padding | Cut. The moment is implicit. |
-| "something shifted" | Vague non-event | Name what shifted and how |
-| "a mix of [emotion] and [emotion]" | Telling, not showing | Show both emotions via behavior |
-| "let out a breath [they] didn't know [they] were holding" | Most overused AI line in existence | Just describe the exhale |
-| "[they] found [themselves]" | Passive self-discovery | Character actively does/realizes |
-| "the [noun] seemed to [verb]" | Hedging weakens the image | Commit: the noun verbed. |
-| "with a sense of [noun]" | Abstract padding | Show the sense through action |
-| "it was as if" | Simile crutch when overused | Use sparingly; prefer direct imagery |
+The writing packet (`get_scene_context` / `get_chapter_briefing`) already
+carries `compact_shelf_digest` — id, severity, limit, limit_scope, and any
+style-profile overlay (disabled / softened / promoted). Use that digest
+instead of restating the full catalog. When the packet includes
+`voice_samples`, treat them as the on-voice rewrite-from-beats target. When
+it includes `scene_negatives`, do not regenerate those rejected moves.
 
-**See `bible://references/anti-slop` for the full 100+ pattern list.**
+Hard shelves fail this gate when over the default limit **and**
+verify/revise is on. Soft shelves are advisory on save (do not block the
+save). `said_bookism` stays **soft-only** unless the project's style profile
+promotes it. Genre/style notes may disable or soften any shelf.
+
+When verify/revise is on and a hard shelf remains, rewrite from the beat
+(at most 1–2 passes), then re-save so the scanner re-lints. Do not
+paraphrase-humanize the flagged sentence. Leftover hard IDs stay visible
+as residuals. Dual-persona review will inject the same report: Craft
+Technician cites shelf IDs; Literary Critic judges structure (opening /
+turn / close / lived-in space) without BLUF or tech gates.
+
+| Shelf ID | Default | If it hits |
+| --- | --- | --- |
+| `contrast_not_x_but_y` | **hard** ≤1/chapter | Dramatize the true state; do not stack "not X but Y" |
+| `emotion_cocktail` | **hard** 0 | Play one feeling through action; no "mix of X and Y" |
+| `fishing_ending` | **hard** 0 | End on a choice, cost, or new fact — not an outlook slogan |
+| `said_bookism` | **soft** ≤2 non-`said`/chapter | Prefer `said` / action beats; do not fail a save |
+| `body_reactions` | soft | Specific body/task, not jaw/stomach/held-breath stock |
+| `eye_department` | soft | What the look *does*, not eyes that "hold" a noun |
+| `gesture_rack` | soft | One character-owned beat, not shrug/nod/sigh rotation |
+| `atmosphere_prefabs` | soft | One noticed sensory fact, not crackling air |
+| `naming_watchlist` | soft | Cut hedges (`suddenly`, `somehow`, `couldn't help but`) |
+| `rhythm_cadence` | soft | Vary for pressure; no metronome fragments |
+| `triadic_listing` | soft | Keep the one detail that changes the next action |
+| `solitary_fade` | soft | When alone, root place + body + mundane life — no empty fade |
+
+**See `bible://references/anti-slop` for examples, rewrite-from-beats
+directions, StoryScope editorial questions, and the non-port list.**
 
 Also check:
 - **Voice consistency**: Re-read each character's dialogue. Does it match the
@@ -656,6 +777,15 @@ separate:
 
 After the quality gate passes, update the Bible to reflect what happened. This is
 CRITICAL — skipping this step means future scenes will have stale context.
+
+The manual tools below (`commit_character_state`, `update_relationship`,
+`update_promise_status`, `annotate_scene_beats`, `record_knowledge`, …) are the
+direct path and always valid. Inside an authoring run with `mining_policy`
+enabled, the post-commit `mine canon` step stages these same changes as proposed
+canon deltas the operator ratifies instead of hand-authoring them — hand off to
+the **canon-steward** skill for that reviewed-diff flow. Whether you write canon
+by hand here or ratify mined deltas, the applied changes go through these same
+tools; nothing about them is removed.
 
 If you have several post-scene updates to apply at once, prefer
 `commit_scene_changes`. It batches character state commits, canonical fact
@@ -725,7 +855,10 @@ For each change, call the appropriate tool:
 ## Step 7: Beat Annotation
 
 Call `annotate_scene_beats` to decompose the written scene into its structural beats.
-This feeds the pacing system and future context assembly.
+This feeds the pacing system and future context assembly. The per-beat `intensity`
+is what the `pacing_drift` check reads to detect a sagging middle (realized intensity
+falling across several consecutive chapters in a book with a planned pacing curve), so
+annotate it honestly rather than flattening every scene to the same level.
 
 For each beat, identify:
 - Beat type (goal, conflict, disaster, reaction, dilemma, decision, etc.)
@@ -767,6 +900,11 @@ but weren't captured in the explicit state updates. For each:
 
 - **New minor character** → propose `create_character` with minimal profile
 - **Physical description update** → propose `update_entity` on the character
+- **Character named or renamed** → `update_entity` with `changes: {"name": ...}`
+  and `allow_rename: true`: it keeps the old name as an alias, refreshes the
+  search index, and returns a `rename_report` of scenes/facts/knowledge/arcs
+  still using the old name. If the character simply gains an additional name
+  (nickname, title) without losing the old one, add `aliases` instead — no rename
 - **Location detail** → propose `update_entity` on the location
 - **Demonstrated world rule** → propose `update_entity` or `create_world_rule`
   Use `description` when updating an existing `world_rule`; do not send `summary`
@@ -780,11 +918,46 @@ each one. This prevents the Bible from slowly drifting out of sync with the pros
 
 ---
 
+## Subagent orchestration (Claude Code / grok)
+
+Drafting is a single focused act of authorship and this skill **never delegates
+it** — who drafts is decided by routing/mode (see Step 4), not by fanning prose
+out to a subagent. The one thing that *is* delegable is the pre-draft canon
+recon: verifying facts and knowledge-timing for the scene's present cast while
+the writer stays on the prose. If your harness supports subagents (Claude Code's
+Task/Agent tool, grok's subagents) and the recon is heavy, hand it off; a
+lighter scene just does the lookups inline — same recon, only the concurrency
+changes.
+
+**Write discipline (non-negotiable):** a recon subagent is read-only. It calls
+`get_character_snapshot`, `find_scenes_referencing`, `search_bible`,
+`get_scene_context`, and `research_pack_for_scene`, and returns a compact fact
+sheet (voice reminders, current state, what each character does/doesn't know at
+this point, overdue promises, distant canon to stay consistent with). It **never**
+drafts prose and never calls `save_scene_draft`, `commit_scene_changes`,
+`set_scene_clock`, `commit_character_state`, `register_canonical_fact`,
+`annotate_scene_beats`, or any other write — every state mutation in this loop
+stays in the writer's main context. Without a subagent, gather the same recon
+inline before Step 3.
+
 ## Common Failure Modes (and how to avoid them)
 
 ### "White Room Syndrome"
 Characters talk in a void with no grounding. Fix: open every scene with a grounding beat —
 one sensory detail that places the reader in the physical space.
+
+### "Teleporting Time"
+The narration jumps through the day with no signal — a character wakes and eats breakfast, and a
+sentence later it is night, with no transition and no scene break. This is the temporal twin of
+White Room Syndrome: just as you ground every scene in *where* it is, ground it in *when* it is.
+Fix: open each scene by anchoring when it takes place relative to the last — the `[IN-WORLD TIME]`
+hard constraint in your scene context gives you the previous scene's end clock as the expected
+start — and give every in-scene time jump beyond a few minutes an explicit transition beat ("Hours
+later,", "By nightfall,", "The next morning,") or a scene break. A scene that declares it spans real
+time (`duration_days` >= 1) must *render* that span with transitions, not read as one unbroken
+block. The related failure, **drifting time**, is prose that contradicts its own established
+time of day (it is night, then a paragraph later the morning sun). The `temporal_coherence` check
+in `check_consistency` flags both; mark a deliberate rewind with `temporal_mode: "flashback"`.
 
 ### "Talking Heads"
 Long stretches of dialogue with no action beats, physical business, or environmental
@@ -832,5 +1005,5 @@ For deeper craft knowledge, read these reference resources:
   before/after examples.
 - `bible://references/voice-differentiation` — How to create and maintain
   distinct character voices.
-- `bible://references/anti-slop` — The full anti-slop pattern catalog used by
-  Step 5b.
+- `bible://references/anti-slop` — Fiction shelf catalog (12 shelves, hard vs
+  soft) used by Step 5b. Not an AI detector; not a 100+ pattern list.

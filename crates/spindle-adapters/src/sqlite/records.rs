@@ -20,16 +20,16 @@ use super::row::{self, Timestamp};
 // Re-export the JSON-only stored sub-structs from the SQLite-native module.
 pub use super::json_records::{
     StoredAnnotatedBeat, StoredChapterOutlineBeat, StoredCharacterArcMilestone,
-    StoredDualPersonaReviewRound, StoredEstablishedIn, StoredFlexRange, StoredNarratorVoice,
-    StoredPersonaReviewNotes, StoredPlannedScene, StoredReaderContract, StoredStatedConsequence,
-    StoredStoryPlacement, StoredTryFailCycleStep,
+    StoredDualPersonaReviewRound, StoredEstablishedIn, StoredFlexRange, StoredIntensityPoint,
+    StoredNarratorVoice, StoredPersonaReviewNotes, StoredPlannedScene, StoredReaderContract,
+    StoredStatedConsequence, StoredStoryPlacement, StoredTryFailCycleStep,
 };
 
 // =============================================================================
 // Project
 // =============================================================================
 
-pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice";
+pub const PROJECT_COLUMNS: &str = "id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at, narrator_voice, active_style_profile_id, style_learning, min_scene_word_count";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -45,6 +45,20 @@ pub struct Project {
     /// Prose-level narration directive (migration V0005). `None` when unset.
     #[serde(default)]
     pub narrator_voice: Option<StoredNarratorVoice>,
+    #[serde(default)]
+    pub active_style_profile_id: Option<String>,
+    /// Style-learning opt-in (migration V0031). `None` (pre-upgrade + default)
+    /// = disabled: no operator edit is ever captured as a style candidate. A
+    /// truthy integer (1) enables capture. Set via the `update_entity` column
+    /// path (`("project", "style_learning")` in the update allowlist).
+    #[serde(default)]
+    pub style_learning: Option<i64>,
+    /// Minimum scene word count for the stub-scene gates (migration V0036).
+    /// `None` (pre-upgrade + default) = the built-in floor of
+    /// `DEFAULT_MIN_SCENE_WORD_COUNT`. Set via the `update_entity` column
+    /// path (`("project", "min_scene_word_count")` in the update allowlist).
+    #[serde(default)]
+    pub min_scene_word_count: Option<i64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Project {
@@ -62,6 +76,9 @@ impl<'a> TryFrom<&Row<'a>> for Project {
             created_at: row::time(r, 7)?,
             updated_at: row::time(r, 8)?,
             narrator_voice: row::opt_json(r, 9)?,
+            active_style_profile_id: row::opt_text(r, 10)?,
+            style_learning: row::opt_int(r, 11)?,
+            min_scene_word_count: row::opt_int(r, 12)?,
         })
     }
 }
@@ -179,7 +196,7 @@ impl<'a> TryFrom<&Row<'a>> for Chapter {
 // =============================================================================
 
 pub const SCENE_COLUMNS: &str = "id, project_id, branch_id, book_id, chapter_id, book_number, chapter_number, \
-     scene_order, full_text, summary, content_rating, tone, draft_origin, created_at, updated_at";
+     scene_order, full_text, summary, content_rating, tone, draft_origin, created_at, updated_at, location_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -195,9 +212,16 @@ pub struct Scene {
     pub summary: String,
     pub content_rating: String,
     pub tone: Option<String>,
+    /// Provenance of the persisted prose. `agent:<id>` identifies a routed
+    /// generation; `assistant:host` identifies explicit host-AI authorship.
+    /// Both can supply the before-text for opt-in human-edit learning.
+    /// `operator` identifies human-authored changes. Legacy `host` and NULL
+    /// remain unknown/human for capture purposes, never retroactive AI evidence.
     pub draft_origin: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Location (record id) this scene is set in, when declared. See V0021.
+    pub location_id: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Scene {
@@ -220,6 +244,7 @@ impl<'a> TryFrom<&Row<'a>> for Scene {
             draft_origin: row::opt_text(r, 12)?,
             created_at: row::time(r, 13)?,
             updated_at: row::time(r, 14)?,
+            location_id: row::opt_text(r, 15)?,
         })
     }
 }
@@ -229,7 +254,7 @@ impl<'a> TryFrom<&Row<'a>> for Scene {
 // =============================================================================
 
 pub const CHARACTER_COLUMNS: &str = "id, project_id, branch_id, name, normalized_name, summary, role, realm, \
-     appearance, notes, created_at, updated_at";
+     appearance, notes, created_at, updated_at, aliases";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Character {
@@ -245,6 +270,9 @@ pub struct Character {
     pub notes: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Alternate names (V0037): nicknames, titles, an in-world name decided
+    /// after the record exists. Rename preserves the old name here.
+    pub aliases: Vec<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Character {
@@ -264,6 +292,7 @@ impl<'a> TryFrom<&Row<'a>> for Character {
             notes: row::opt_text(r, 9)?,
             created_at: row::time(r, 10)?,
             updated_at: row::time(r, 11)?,
+            aliases: row::json(r, 12)?,
         })
     }
 }
@@ -772,7 +801,8 @@ impl<'a> TryFrom<&Row<'a>> for Term {
 // =============================================================================
 
 pub const PLOT_LINE_COLUMNS: &str = "id, project_id, branch_id, name, normalized_name, plot_type, summary, status, \
-     convergence_points, notes, archived_at, created_at, updated_at";
+     convergence_points, notes, archived_at, created_at, updated_at, \
+     connected_conflict_ids, connected_theme_ids";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlotLine {
@@ -789,6 +819,15 @@ pub struct PlotLine {
     pub archived_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Conflicts this plot line expects a beat annotation to link at its
+    /// convergence chapter. JSON id array (V0022), mirrors motif's
+    /// connected_theme_ids. Drives `plot_line_convergence_audit`.
+    #[serde(default)]
+    pub connected_conflict_ids: Vec<String>,
+    /// Themes this plot line expects a beat annotation to link at its
+    /// convergence chapter. JSON id array (V0022).
+    #[serde(default)]
+    pub connected_theme_ids: Vec<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for PlotLine {
@@ -809,6 +848,8 @@ impl<'a> TryFrom<&Row<'a>> for PlotLine {
             archived_at: row::opt_time(r, 10)?,
             created_at: row::time(r, 11)?,
             updated_at: row::time(r, 12)?,
+            connected_conflict_ids: row::json(r, 13)?,
+            connected_theme_ids: row::json(r, 14)?,
         })
     }
 }
@@ -819,7 +860,7 @@ impl<'a> TryFrom<&Row<'a>> for PlotLine {
 
 pub const CONFLICT_COLUMNS: &str = "id, project_id, branch_id, name, normalized_name, conflict_type, stakes, \
      escalation_stages, expected_total_cycles, try_fail_cycles, stated_consequences, \
-     resolution_summary, notes, archived_at, created_at, updated_at";
+     resolution_summary, notes, archived_at, created_at, updated_at, escalation_demonstrated";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conflict {
@@ -839,6 +880,13 @@ pub struct Conflict {
     pub archived_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Per-stage demonstration markers, index-aligned with `escalation_stages`.
+    /// Entry `Some(placement)` = that stage was demonstrated at that manuscript
+    /// position; `None`/absent = not demonstrated. A shorter-than-stages vector
+    /// (including the default empty vec on pre-V0022 rows) reads as all-None
+    /// beyond its length. Drives `conflict_escalation_audit`.
+    #[serde(default)]
+    pub escalation_demonstrated: Vec<Option<StoredStoryPlacement>>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for Conflict {
@@ -862,6 +910,7 @@ impl<'a> TryFrom<&Row<'a>> for Conflict {
             archived_at: row::opt_time(r, 13)?,
             created_at: row::time(r, 14)?,
             updated_at: row::time(r, 15)?,
+            escalation_demonstrated: row::json(r, 16)?,
         })
     }
 }
@@ -957,7 +1006,7 @@ impl<'a> TryFrom<&Row<'a>> for Motif {
 // =============================================================================
 
 pub const NARRATIVE_PROMISE_COLUMNS: &str = "id, project_id, branch_id, promise_type, description, status, planted_at, \
-     planned_payoff, notes, archived_at, created_at, updated_at";
+     planned_payoff, notes, archived_at, created_at, updated_at, status_history";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NarrativePromise {
@@ -967,6 +1016,8 @@ pub struct NarrativePromise {
     pub promise_type: String,
     pub description: String,
     pub status: String,
+    #[serde(default)]
+    pub status_history: Vec<spindle_core::models::PromiseStatusEvent>,
     pub planted_at: StoredStoryPlacement,
     pub planned_payoff: Option<StoredStoryPlacement>,
     pub notes: Vec<String>,
@@ -986,6 +1037,7 @@ impl<'a> TryFrom<&Row<'a>> for NarrativePromise {
             promise_type: row::text(r, 3)?,
             description: row::text(r, 4)?,
             status: row::text(r, 5)?,
+            status_history: row::json(r, 12)?,
             planted_at: row::json(r, 6)?,
             planned_payoff: row::opt_json(r, 7)?,
             notes: row::json(r, 8)?,
@@ -993,6 +1045,52 @@ impl<'a> TryFrom<&Row<'a>> for NarrativePromise {
             created_at: row::time(r, 10)?,
             updated_at: row::time(r, 11)?,
         })
+    }
+}
+
+impl NarrativePromise {
+    /// Reader-visible state at a story cursor. An undated transition cannot
+    /// establish historical state; a later dated event can establish it again.
+    pub fn status_at(&self, cursor: i64) -> Option<&str> {
+        use crate::format::{SCENE_RADIX, story_index, story_index_from_placement};
+        if story_index_from_placement(&self.planted_at) > cursor {
+            return None;
+        }
+        let superseded: std::collections::HashSet<&str> = self
+            .status_history
+            .iter()
+            .filter_map(|event| event.replaces_event_id.as_deref())
+            .collect();
+        let mut selected = None;
+        let mut latest_unknown = None;
+        for (index, event) in self.status_history.iter().enumerate() {
+            if superseded.contains(event.id.as_str()) {
+                continue;
+            }
+            let Some(at) = &event.at else {
+                latest_unknown = Some(index);
+                continue;
+            };
+            let position = story_index(
+                at.book_number,
+                at.chapter_number,
+                at.scene_order.unwrap_or((SCENE_RADIX - 1) as i32),
+            );
+            if position <= cursor && selected.is_none_or(|(pos, _, _)| position >= pos) {
+                selected = Some((position, index, event.status.as_str()));
+            }
+        }
+        if let Some((_, index, status)) = selected {
+            return latest_unknown
+                .filter(|unknown| *unknown > index)
+                .is_none()
+                .then_some(status);
+        }
+        let initial = self
+            .status_history
+            .first()
+            .map_or(self.status.as_str(), |e| e.previous_status.as_str());
+        (latest_unknown.is_none() && initial == "planted").then_some(initial)
     }
 }
 
@@ -1115,7 +1213,8 @@ impl<'a> TryFrom<&Row<'a>> for PacingConfig {
     }
 }
 
-pub const PACING_CURVE_COLUMNS: &str = "id, project_id, branch_id, book_number, act_breakpoints, scene_type_density, created_at, updated_at";
+pub const PACING_CURVE_COLUMNS: &str = "id, project_id, branch_id, book_number, act_breakpoints, scene_type_density, \
+     created_at, updated_at, intensity_points";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacingCurve {
@@ -1127,6 +1226,11 @@ pub struct PacingCurve {
     pub scene_type_density: BTreeMap<String, f64>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Per-position expected intensity samples (position = 0..1 fraction of the
+    /// book). JSON array (V0022), defaulted empty. The realized-intensity trend
+    /// directive interpolates against these when ≥2 points are present.
+    #[serde(default)]
+    pub intensity_points: Vec<StoredIntensityPoint>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for PacingCurve {
@@ -1141,6 +1245,7 @@ impl<'a> TryFrom<&Row<'a>> for PacingCurve {
             scene_type_density: row::json(r, 5)?,
             created_at: row::time(r, 6)?,
             updated_at: row::time(r, 7)?,
+            intensity_points: row::json(r, 8)?,
         })
     }
 }
@@ -1198,7 +1303,8 @@ impl<'a> TryFrom<&Row<'a>> for PacingTracker {
 // =============================================================================
 
 pub const CHAPTER_PLAN_COLUMNS: &str = "id, project_id, branch_id, book_number, chapter_number, pov_character_id, synopsis, \
-     target_theme_ids, target_conflict_ids, target_plot_line_ids, scenes, created_at, updated_at";
+     target_theme_ids, target_conflict_ids, target_plot_line_ids, scenes, created_at, updated_at, \
+     plan_revision";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterPlan {
@@ -1215,6 +1321,11 @@ pub struct ChapterPlan {
     pub scenes: Vec<StoredPlannedScene>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// ADR 0003 D4 outline-history counter (migration V0029). NULL (pre-V0029
+    /// plans and never-amended plans) reads as revision 0; the apply dispatcher
+    /// (Part B) increments it each time an amendment rewrites the plan.
+    #[serde(default)]
+    pub plan_revision: Option<i64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for ChapterPlan {
@@ -1234,6 +1345,7 @@ impl<'a> TryFrom<&Row<'a>> for ChapterPlan {
             scenes: row::json(r, 10)?,
             created_at: row::time(r, 11)?,
             updated_at: row::time(r, 12)?,
+            plan_revision: row::opt_int(r, 13)?,
         })
     }
 }
@@ -1339,7 +1451,7 @@ impl<'a> TryFrom<&Row<'a>> for ChapterOutline {
 }
 
 pub const SCENE_BEAT_ANNOTATION_COLUMNS: &str = "id, project_id, branch_id, scene_id, beats, motif_ids, theme_ids, conflict_ids, \
-     created_at, updated_at";
+     created_at, updated_at, intensity";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneBeatAnnotation {
@@ -1353,6 +1465,8 @@ pub struct SceneBeatAnnotation {
     pub conflict_ids: Vec<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Author-recorded 0.0-1.0 realized scene intensity (V0019); None when unset.
+    pub intensity: Option<f64>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for SceneBeatAnnotation {
@@ -1369,6 +1483,7 @@ impl<'a> TryFrom<&Row<'a>> for SceneBeatAnnotation {
             conflict_ids: row::json(r, 7)?,
             created_at: row::time(r, 8)?,
             updated_at: row::time(r, 9)?,
+            intensity: row::opt_real(r, 10)?,
         })
     }
 }
@@ -1571,7 +1686,8 @@ impl<'a> TryFrom<&Row<'a>> for FutureKnowledge {
 }
 
 pub const KNOWLEDGE_FACT_COLUMNS: &str = "id, project_id, branch_id, character_id, fact, normalized_fact, source_summary, \
-     learned_at, confidence, tags, reader_visible, source_import_session_id, created_at, updated_at";
+     learned_at, confidence, tags, reader_visible, source_import_session_id, created_at, updated_at, \
+     secret_of_fact_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeFact {
@@ -1589,6 +1705,11 @@ pub struct KnowledgeFact {
     pub source_import_session_id: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Secret-knowledge gating (V0023): when set, this per-character knowledge
+    /// row grants membership in the circle of trust for the referenced secret
+    /// `canonical_fact.id`. NULL for ordinary knowledge rows and pre-V0023
+    /// rows. The circle is derived from these links (never duplicated).
+    pub secret_of_fact_id: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for KnowledgeFact {
@@ -1609,6 +1730,7 @@ impl<'a> TryFrom<&Row<'a>> for KnowledgeFact {
             source_import_session_id: row::opt_text(r, 11)?,
             created_at: row::time(r, 12)?,
             updated_at: row::time(r, 13)?,
+            secret_of_fact_id: row::opt_text(r, 14)?,
         })
     }
 }
@@ -1919,14 +2041,18 @@ impl<'a> TryFrom<&Row<'a>> for WriterPosition {
 
 pub const CANONICAL_FACT_COLUMNS: &str = "id, project_id, branch_id, scene_id, source_scene_id, book_number, chapter_number, \
      subject_table, subject_id, predicate, value_kind, value_number, value_text, value_json, \
-     unit, aliases, scope, valid_from, valid_until, superseded_by, created_at, updated_at";
+     unit, aliases, scope, valid_from, valid_until, superseded_by, created_at, updated_at, \
+     secret, concealment_note";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalFact {
     pub id: String,
     pub project_id: String,
     pub branch_id: String,
-    pub scene_id: String,
+    /// None for planned-and-pending facts registered before their scene
+    /// exists (V0038); placed by book/chapter only until bound via
+    /// bind_canonical_fact_to_scene.
+    pub scene_id: Option<String>,
     pub source_scene_id: Option<String>,
     pub book_number: i32,
     pub chapter_number: i32,
@@ -1945,6 +2071,14 @@ pub struct CanonicalFact {
     pub superseded_by: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// Secret-knowledge gating (V0023): true when this fact is held in
+    /// confidence by a circle of trust. Defaults to false (public) for every
+    /// pre-V0023 row and every fact registered without a `secrecy` scope.
+    pub secret: bool,
+    /// Optional drafting guidance rendered into the `[SECRETS IN PLAY]`
+    /// envelope when the fact ships to the model (Part B). NULL for public
+    /// facts and pre-V0023 rows.
+    pub concealment_note: Option<String>,
 }
 
 impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
@@ -1954,7 +2088,7 @@ impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
             id: row::text(r, 0)?,
             project_id: row::text(r, 1)?,
             branch_id: row::text(r, 2)?,
-            scene_id: row::text(r, 3)?,
+            scene_id: row::opt_text(r, 3)?,
             source_scene_id: row::opt_text(r, 4)?,
             book_number: row::int(r, 5)? as i32,
             chapter_number: row::int(r, 6)? as i32,
@@ -1973,6 +2107,8 @@ impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
             superseded_by: row::opt_text(r, 19)?,
             created_at: row::time(r, 20)?,
             updated_at: row::time(r, 21)?,
+            secret: row::boolean(r, 22)?,
+            concealment_note: row::opt_text(r, 23)?,
         })
     }
 }
@@ -2480,6 +2616,383 @@ impl<'a> TryFrom<&Row<'a>> for ImportReviewItem {
     }
 }
 
+// =============================================================================
+// Authoring Runs
+// =============================================================================
+
+pub const AUTHORING_RUN_COLUMNS: &str = "id, project_id, active_branch_id, book_number, start_chapter, end_chapter, checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir, editorial_directives, status, created_at, updated_at, mining_policy, max_revise_attempts, checkpoint_policy, replan_policy";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringRun {
+    pub id: String,
+    pub project_id: String,
+    pub active_branch_id: String,
+    pub book_number: i32,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub checkpoint_interval: i64,
+    pub last_checkpoint_end_chapter: i32,
+    pub artifacts_dir: String,
+    pub editorial_directives: Vec<String>,
+    pub status: String,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    /// Canon-mining opt-in (V0025). `None` = disabled (pre-upgrade + default);
+    /// `Some("propose_all")` inserts the MineScene step after each commit.
+    pub mining_policy: Option<String>,
+    /// Bounded in-run verify/revise budget (V0026). `None` = disabled
+    /// (pre-upgrade + default = 0); `Some(1..=2)` inserts the VerifyScene step
+    /// after each draft and bounds the revise loop.
+    pub max_revise_attempts: Option<i32>,
+    /// Checkpoint policy (V0028). `None` = manual (pre-upgrade + default): the
+    /// classic 4-step operator checkpoint flow. `Some("auto_advisory")` /
+    /// `Some("auto_strict")` opt into the in-process auto-checkpoint automation.
+    pub checkpoint_policy: Option<String>,
+    /// Living-outline replan opt-in (V0030, ADR 0003). `None` = disabled
+    /// (pre-upgrade + default): the run never replans. `Some("propose_all")` runs
+    /// a replan pass after each chapter summary, staging amendment proposals
+    /// against the not-yet-drafted future chapters for operator ratification.
+    pub replan_policy: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringRun {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            active_branch_id: row::text(r, 2)?,
+            book_number: row::int(r, 3)? as i32,
+            start_chapter: row::int(r, 4)? as i32,
+            end_chapter: row::int(r, 5)? as i32,
+            checkpoint_interval: row::int(r, 6)? as i64,
+            last_checkpoint_end_chapter: row::int(r, 7)? as i32,
+            artifacts_dir: row::text(r, 8)?,
+            editorial_directives: row::json(r, 9)?,
+            status: row::text(r, 10)?,
+            created_at: row::time(r, 11)?,
+            updated_at: row::time(r, 12)?,
+            mining_policy: row::opt_text(r, 13)?,
+            max_revise_attempts: row::opt_int(r, 14)?.map(|value| value as i32),
+            checkpoint_policy: row::opt_text(r, 15)?,
+            replan_policy: row::opt_text(r, 16)?,
+        })
+    }
+}
+
+pub const AUTHORING_RUN_CHAPTER_COLUMNS: &str = "authoring_run_id, chapter_number, planned, synopsis, pov_character_id, status, summary_saved, summary_artifact_path, replan_status, replan_detail";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringRunChapter {
+    pub authoring_run_id: String,
+    pub chapter_number: i32,
+    pub planned: bool,
+    pub synopsis: String,
+    pub pov_character_id: Option<String>,
+    pub status: String,
+    pub summary_saved: bool,
+    pub summary_artifact_path: Option<String>,
+    /// Living-outline replan outcome for this chapter's post-summary pass (V0030,
+    /// ADR 0003). `None` = not attempted (disabled run, or summary not yet
+    /// saved); otherwise `staged` | `skipped` | `no_targets` | `no_summary` |
+    /// `error`. Additive, serde-default so pre-V0030 rows deserialize.
+    #[serde(default)]
+    pub replan_status: Option<String>,
+    /// Human-readable detail for the replan outcome (staged amendment count or
+    /// the skip/no-targets reason). Never carries prose (evolution I8). Additive.
+    #[serde(default)]
+    pub replan_detail: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringRunChapter {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            authoring_run_id: row::text(r, 0)?,
+            chapter_number: row::int(r, 1)? as i32,
+            planned: row::int(r, 2)? != 0,
+            synopsis: row::text(r, 3)?,
+            pov_character_id: row::opt_text(r, 4)?,
+            status: row::text(r, 5)?,
+            summary_saved: row::int(r, 6)? != 0,
+            summary_artifact_path: row::opt_text(r, 7)?,
+            replan_status: row::opt_text(r, 8)?,
+            replan_detail: row::opt_text(r, 9)?,
+        })
+    }
+}
+
+pub const AUTHORING_RUN_SCENE_COLUMNS: &str = "authoring_run_id, chapter_number, scene_order, character_ids, location_id, content_rating, tone, source_path, phase, scene_id, scene_artifact_path, draft_diagnostics, blocked_reason, research_required, research_tags, explicit_query, mine_status, mine_detail, verify_status, verify_detail, revise_attempts, last_finding_fingerprint";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringRunScene {
+    pub authoring_run_id: String,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub character_ids: Vec<String>,
+    pub location_id: String,
+    pub content_rating: String,
+    pub tone: Option<String>,
+    pub source_path: Option<String>,
+    pub phase: String,
+    pub scene_id: Option<String>,
+    pub scene_artifact_path: Option<String>,
+    pub draft_diagnostics: Option<serde_json::Value>,
+    pub blocked_reason: Option<String>,
+    pub research_required: Option<bool>,
+    pub research_tags: Vec<String>,
+    pub explicit_query: Option<String>,
+    /// Canon-mining outcome (V0025). `None` = not attempted; otherwise
+    /// `staged` | `skipped` | `model_output_rejected` | `error`.
+    pub mine_status: Option<String>,
+    /// Detail for the mining outcome: staged count or skip/error reason.
+    pub mine_detail: Option<String>,
+    /// In-run verification outcome (V0026). `None` = not attempted; otherwise
+    /// `clean` | `findings` | `parked_findings` | `error`.
+    pub verify_status: Option<String>,
+    /// Detail for the verify outcome: finding counts, parked reason, or error.
+    pub verify_detail: Option<String>,
+    /// Bounded revision passes consumed by this scene (V0026, DEFAULT 0).
+    pub revise_attempts: i32,
+    /// Deterministic digest of the last verify's warning-or-worse finding set
+    /// (V0026 convergence guard). `None` until the first `findings` verify.
+    pub last_finding_fingerprint: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringRunScene {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            authoring_run_id: row::text(r, 0)?,
+            chapter_number: row::int(r, 1)? as i32,
+            scene_order: row::int(r, 2)? as i32,
+            character_ids: row::json(r, 3)?,
+            location_id: row::text(r, 4)?,
+            content_rating: row::text(r, 5)?,
+            tone: row::opt_text(r, 6)?,
+            source_path: row::opt_text(r, 7)?,
+            phase: row::text(r, 8)?,
+            scene_id: row::opt_text(r, 9)?,
+            scene_artifact_path: row::opt_text(r, 10)?,
+            draft_diagnostics: row::opt_json(r, 11)?,
+            blocked_reason: row::opt_text(r, 12)?,
+            research_required: row::opt_int(r, 13)?.map(|value| value != 0),
+            research_tags: row::json(r, 14)?,
+            explicit_query: row::opt_text(r, 15)?,
+            mine_status: row::opt_text(r, 16)?,
+            mine_detail: row::opt_text(r, 17)?,
+            verify_status: row::opt_text(r, 18)?,
+            verify_detail: row::opt_text(r, 19)?,
+            revise_attempts: row::int(r, 20)? as i32,
+            last_finding_fingerprint: row::opt_text(r, 21)?,
+        })
+    }
+}
+
+pub const AUTHORING_CHECKPOINT_COLUMNS: &str = "authoring_run_id, start_chapter, end_chapter, save_point_id, status, report_artifact_path, auto_outcome, pending_manual_scene_ids";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoringCheckpoint {
+    pub authoring_run_id: String,
+    pub start_chapter: i32,
+    pub end_chapter: i32,
+    pub save_point_id: String,
+    pub status: String,
+    pub report_artifact_path: Option<String>,
+    /// In-process auto-checkpoint outcome (V0028). `None` = manual policy or
+    /// automation not run; otherwise `approved` | `blocked` | `manual`.
+    pub auto_outcome: Option<String>,
+    /// Scene ids whose sampled review fell back to manual (rating not covered —
+    /// evolution §3.3 I3). Empty when none. Ids only, never prose.
+    pub pending_manual_scene_ids: Vec<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for AuthoringCheckpoint {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            authoring_run_id: row::text(r, 0)?,
+            start_chapter: row::int(r, 1)? as i32,
+            end_chapter: row::int(r, 2)? as i32,
+            save_point_id: row::text(r, 3)?,
+            status: row::text(r, 4)?,
+            report_artifact_path: row::opt_text(r, 5)?,
+            auto_outcome: row::opt_text(r, 6)?,
+            // NULL/absent reads as the empty list (pre-upgrade rows and the
+            // no-fallback case).
+            pending_manual_scene_ids: row::opt_json(r, 7)?.unwrap_or_default(),
+        })
+    }
+}
+
+pub const RESEARCH_SOURCE_COLUMNS: &str = "id, project_id, branch_id, title, source_type, url, file_path, author, publisher, published_date, accessed_at, reliability, tags, summary, created_at, updated_at, archived_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchSource {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: Option<String>,
+    pub title: String,
+    pub source_type: String,
+    pub url: Option<String>,
+    pub file_path: Option<String>,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub published_date: Option<String>,
+    pub accessed_at: Timestamp,
+    pub reliability: String,
+    pub tags: Vec<String>,
+    pub summary: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    /// Archival tombstone (V0033). `Some` means the row is archived and is
+    /// excluded from every research consumer (packing, search, listings).
+    pub archived_at: Option<Timestamp>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchSource {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::opt_text(r, 2)?,
+            title: row::text(r, 3)?,
+            source_type: row::text(r, 4)?,
+            url: row::opt_text(r, 5)?,
+            file_path: row::opt_text(r, 6)?,
+            author: row::opt_text(r, 7)?,
+            publisher: row::opt_text(r, 8)?,
+            published_date: row::opt_text(r, 9)?,
+            accessed_at: row::time(r, 10)?,
+            reliability: row::text(r, 11)?,
+            tags: row::json(r, 12)?,
+            summary: row::opt_text(r, 13)?,
+            created_at: row::time(r, 14)?,
+            updated_at: row::time(r, 15)?,
+            archived_at: row::opt_time(r, 16)?,
+        })
+    }
+}
+
+pub const RESEARCH_NOTE_COLUMNS: &str = "id, project_id, source_id, branch_id, note, quote, locator, tags, created_at, updated_at, archived_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchNote {
+    pub id: String,
+    pub project_id: String,
+    pub source_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub note: String,
+    pub quote: Option<String>,
+    pub locator: Option<String>,
+    pub tags: Vec<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    /// Archival tombstone (V0033) — see [`ResearchSource::archived_at`].
+    pub archived_at: Option<Timestamp>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchNote {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            source_id: row::opt_text(r, 2)?,
+            branch_id: row::opt_text(r, 3)?,
+            note: row::text(r, 4)?,
+            quote: row::opt_text(r, 5)?,
+            locator: row::opt_text(r, 6)?,
+            tags: row::json(r, 7)?,
+            created_at: row::time(r, 8)?,
+            updated_at: row::time(r, 9)?,
+            archived_at: row::opt_time(r, 10)?,
+        })
+    }
+}
+
+pub const RESEARCH_CLAIM_COLUMNS: &str = "id, project_id, source_id, note_id, branch_id, claim, topic, time_period, location, confidence, tags, created_at, updated_at, archived_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchClaim {
+    pub id: String,
+    pub project_id: String,
+    pub source_id: Option<String>,
+    pub note_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub claim: String,
+    pub topic: Option<String>,
+    pub time_period: Option<String>,
+    pub location: Option<String>,
+    pub confidence: String,
+    pub tags: Vec<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    /// Archival tombstone (V0033) — see [`ResearchSource::archived_at`].
+    pub archived_at: Option<Timestamp>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchClaim {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            source_id: row::opt_text(r, 2)?,
+            note_id: row::opt_text(r, 3)?,
+            branch_id: row::opt_text(r, 4)?,
+            claim: row::text(r, 5)?,
+            topic: row::opt_text(r, 6)?,
+            time_period: row::opt_text(r, 7)?,
+            location: row::opt_text(r, 8)?,
+            confidence: row::text(r, 9)?,
+            tags: row::json(r, 10)?,
+            created_at: row::time(r, 11)?,
+            updated_at: row::time(r, 12)?,
+            archived_at: row::opt_time(r, 13)?,
+        })
+    }
+}
+
+pub const RESEARCH_USAGE_COLUMNS: &str = "id, project_id, branch_id, run_id, step_checkpoint_id, scene_id, source_ids, note_ids, claim_ids, query_pack_input, context_hash, created_at";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchUsage {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub run_id: String,
+    pub step_checkpoint_id: Option<String>,
+    pub scene_id: String,
+    pub source_ids: Vec<String>,
+    pub note_ids: Vec<String>,
+    pub claim_ids: Vec<String>,
+    pub query_pack_input: String,
+    pub context_hash: String,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for ResearchUsage {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            run_id: row::text(r, 3)?,
+            step_checkpoint_id: row::opt_text(r, 4)?,
+            scene_id: row::text(r, 5)?,
+            source_ids: row::json(r, 6)?,
+            note_ids: row::json(r, 7)?,
+            claim_ids: row::json(r, 8)?,
+            query_pack_input: row::text(r, 9)?,
+            context_hash: row::text(r, 10)?,
+            created_at: row::time(r, 11)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2620,5 +3133,564 @@ mod tests {
             .await
             .unwrap();
         assert!(voice.vocabulary.is_empty());
+    }
+}
+
+// =============================================================================
+// Story-time side tables (V0017): project calendar + per-entity story clocks.
+// =============================================================================
+
+pub const PROJECT_CALENDAR_COLUMNS: &str = "project_id, days_per_week, hours_per_day, \
+     week_day_names, months, days_per_year, epoch_label, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredProjectCalendar {
+    pub project_id: String,
+    pub calendar: spindle_core::models::CalendarDef,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredProjectCalendar {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            project_id: row::text(r, 0)?,
+            calendar: spindle_core::models::CalendarDef {
+                days_per_week: row::int(r, 1)? as i32,
+                hours_per_day: row::int(r, 2)? as i32,
+                week_day_names: row::opt_json(r, 3)?.unwrap_or_default(),
+                months: row::opt_json(r, 4)?.unwrap_or_default(),
+                days_per_year: row::int(r, 5)? as i32,
+                epoch_label: row::opt_text(r, 6)?,
+            },
+            updated_at: row::time(r, 8)?,
+        })
+    }
+}
+
+pub const SCENE_CLOCK_COLUMNS: &str = "scene_id, project_id, branch_id, day_index, \
+     time_of_day, duration_days, precision, temporal_mode, thread_key, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredSceneClock {
+    pub scene_id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub clock: spindle_core::models::StoryClock,
+    pub temporal_mode: Option<String>,
+    pub thread_key: Option<String>,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredSceneClock {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            scene_id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            clock: spindle_core::models::StoryClock {
+                day_index: row::opt_int(r, 3)?,
+                time_of_day: row::opt_int(r, 4)?.map(|value| value as i32),
+                duration_days: row::opt_real(r, 5)?,
+                precision: row::opt_text(r, 6)?,
+            },
+            temporal_mode: row::opt_text(r, 7)?,
+            thread_key: row::opt_text(r, 8)?,
+            updated_at: row::time(r, 10)?,
+        })
+    }
+}
+
+pub const TIMELINE_EVENT_CLOCK_COLUMNS: &str = "timeline_event_id, project_id, branch_id, \
+     day_index, time_of_day, duration_days, precision, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredTimelineEventClock {
+    pub timeline_event_id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub clock: spindle_core::models::StoryClock,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredTimelineEventClock {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            timeline_event_id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            clock: spindle_core::models::StoryClock {
+                day_index: row::opt_int(r, 3)?,
+                time_of_day: row::opt_int(r, 4)?.map(|value| value as i32),
+                duration_days: row::opt_real(r, 5)?,
+                precision: row::opt_text(r, 6)?,
+            },
+            updated_at: row::time(r, 8)?,
+        })
+    }
+}
+
+pub const CHARACTER_BIRTH_COLUMNS: &str = "character_id, project_id, birth_day_index, \
+     time_of_day, precision, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredCharacterBirth {
+    pub character_id: String,
+    pub project_id: String,
+    pub clock: spindle_core::models::StoryClock,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredCharacterBirth {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            character_id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            clock: spindle_core::models::StoryClock {
+                day_index: row::opt_int(r, 2)?,
+                time_of_day: row::opt_int(r, 3)?.map(|value| value as i32),
+                duration_days: None,
+                precision: row::opt_text(r, 4)?,
+            },
+            updated_at: row::time(r, 6)?,
+        })
+    }
+}
+
+// =============================================================================
+// Book digest (V0018): per-book "story so far" rollup.
+// =============================================================================
+
+pub const BOOK_DIGEST_COLUMNS: &str = "id, project_id, branch_id, book_number, synopsis, \
+     open_threads, last_chapter_covered, token_estimate, truncated, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredBookDigest {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub book_number: i32,
+    pub synopsis: String,
+    pub open_threads: Vec<String>,
+    pub last_chapter_covered: i32,
+    pub token_estimate: i64,
+    pub truncated: bool,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredBookDigest {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            book_number: row::int(r, 3)? as i32,
+            synopsis: row::text(r, 4)?,
+            open_threads: row::json(r, 5)?,
+            last_chapter_covered: row::int(r, 6)? as i32,
+            token_estimate: row::int(r, 7)?,
+            truncated: row::int(r, 8)? != 0,
+            updated_at: row::time(r, 10)?,
+        })
+    }
+}
+
+// =============================================================================
+// Quantity-continuity side tables (V0020): per-project quantity schemes +
+// stamped per-subject quantity state.
+// =============================================================================
+
+pub const PROJECT_QUANTITY_SCHEME_COLUMNS: &str = "project_id, branch_id, measure, \
+     denominations, bands, max_band_jump, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredQuantityScheme {
+    pub project_id: String,
+    pub branch_id: String,
+    pub scheme: spindle_core::models::QuantityScheme,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredQuantityScheme {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            project_id: row::text(r, 0)?,
+            branch_id: row::text(r, 1)?,
+            scheme: spindle_core::models::QuantityScheme {
+                measure: row::text(r, 2)?,
+                denominations: row::opt_json(r, 3)?.unwrap_or_default(),
+                bands: row::opt_json(r, 4)?.unwrap_or_default(),
+                max_band_jump: row::opt_int(r, 5)?.map(|value| value as i32),
+            },
+            updated_at: row::time(r, 7)?,
+        })
+    }
+}
+
+pub const QUANTITY_STATE_COLUMNS: &str = "id, project_id, branch_id, subject_table, \
+     subject_id, measure, amount, unit, band, change_reason, scene_id, book_number, \
+     chapter_number, scene_order, created_at";
+
+#[derive(Debug, Clone)]
+pub struct StoredQuantityState {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub subject_table: String,
+    pub subject_id: String,
+    pub measure: String,
+    pub state: spindle_core::models::QuantityState,
+    pub scene_id: Option<String>,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredQuantityState {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            subject_table: row::text(r, 3)?,
+            subject_id: row::text(r, 4)?,
+            measure: row::text(r, 5)?,
+            state: spindle_core::models::QuantityState {
+                amount: row::opt_real(r, 6)?,
+                unit: row::opt_text(r, 7)?,
+                band: row::opt_text(r, 8)?,
+                change_reason: row::opt_text(r, 9)?,
+            },
+            scene_id: row::opt_text(r, 10)?,
+            book_number: row::int(r, 11)? as i32,
+            chapter_number: row::int(r, 12)? as i32,
+            scene_order: row::int(r, 13)? as i32,
+            created_at: row::time(r, 14)?,
+        })
+    }
+}
+
+pub const AUTHORING_RUN_EVENT_COLUMNS: &str =
+    "id, authoring_run_id, seq, kind, payload, created_at";
+
+/// One appended row of the authoring-run event journal (ADR 0002, migration
+/// V0027). Append-only: there is no update/delete path. `payload` carries
+/// ids/paths/counts/enums only — never prose (ADR D3.1). `created_at` is the
+/// stored microsecond [`Timestamp`]; consumers that need ISO-8601 map it at the
+/// boundary (mirrors [`StoredCanonDelta`]).
+#[derive(Debug, Clone)]
+pub struct StoredRunEvent {
+    pub id: String,
+    pub authoring_run_id: String,
+    pub seq: i64,
+    pub kind: String,
+    pub payload: Value,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredRunEvent {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            authoring_run_id: row::text(r, 1)?,
+            seq: row::int(r, 2)?,
+            kind: row::text(r, 3)?,
+            payload: row::json(r, 4)?,
+            created_at: row::time(r, 5)?,
+        })
+    }
+}
+
+pub const GENERATION_RECEIPT_COLUMNS: &str = "id, project_id, branch_id, route, \
+     agent_id, rating, explicit_capable, output_sha256, output_text, created_at, \
+     expires_at, claimed_scene_key";
+
+/// One persisted generation receipt (migration V0032, live-run bug 4c). Rows
+/// are written by `register_generation_receipt` and read back — with expiry
+/// enforced — by the `verified_*` lookups so a receipt issued in one process
+/// survives a primary restart. `output_text` is stored whole because
+/// `revise_generation` still feeds it into the revision prompt (see the
+/// migration's storage-decision note). Timestamps are stored microsecond
+/// [`Timestamp`]s.
+#[derive(Debug, Clone)]
+pub struct StoredGenerationReceipt {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub route: String,
+    pub agent_id: String,
+    pub rating: Option<String>,
+    pub explicit_capable: bool,
+    pub output_sha256: String,
+    pub output_text: String,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+    /// The one scene this receipt has been spent authorizing, as the
+    /// `{project_id}|{book}|{chapter}|{scene_order}` natural key (migration
+    /// V0034). `None` = unclaimed. Bound by the first explicit
+    /// `save_scene_draft` that presents the receipt; a later explicit save on a
+    /// DIFFERENT scene is then rejected, so one clearance cannot blanket-
+    /// authorize a chapter. See the migration for why binding happens on first
+    /// use rather than at mint time.
+    pub claimed_scene_key: Option<String>,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredGenerationReceipt {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::opt_text(r, 1)?,
+            branch_id: row::opt_text(r, 2)?,
+            route: row::text(r, 3)?,
+            agent_id: row::text(r, 4)?,
+            rating: row::opt_text(r, 5)?,
+            explicit_capable: row::int(r, 6)? != 0,
+            output_sha256: row::text(r, 7)?,
+            output_text: row::text(r, 8)?,
+            created_at: row::time(r, 9)?,
+            expires_at: row::time(r, 10)?,
+            claimed_scene_key: row::opt_text(r, 11)?,
+        })
+    }
+}
+
+pub const CANON_DELTA_COLUMNS: &str = "id, project_id, branch_id, scene_id, \
+     authoring_run_id, delta_class, target_id, payload, evidence, confidence, \
+     status, decided_at, decided_by, created_at, updated_at";
+
+/// A staged/decided canon delta (ADR 0001, migration V0024). Timestamps are the
+/// stored microsecond [`Timestamp`]; the adapter maps them to ISO-8601 strings
+/// when producing the spindle-core [`spindle_core::models::CanonDelta`] read
+/// model.
+#[derive(Debug, Clone)]
+pub struct StoredCanonDelta {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub scene_id: String,
+    pub authoring_run_id: Option<String>,
+    pub delta_class: String,
+    pub target_id: Option<String>,
+    pub payload: Value,
+    pub evidence: String,
+    pub confidence: String,
+    pub status: String,
+    pub decided_at: Option<Timestamp>,
+    pub decided_by: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredCanonDelta {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            scene_id: row::text(r, 3)?,
+            authoring_run_id: row::opt_text(r, 4)?,
+            delta_class: row::text(r, 5)?,
+            target_id: row::opt_text(r, 6)?,
+            payload: row::json(r, 7)?,
+            evidence: row::text(r, 8)?,
+            confidence: row::text(r, 9)?,
+            status: row::text(r, 10)?,
+            decided_at: row::opt_time(r, 11)?,
+            decided_by: row::opt_text(r, 12)?,
+            created_at: row::time(r, 13)?,
+            updated_at: row::time(r, 14)?,
+        })
+    }
+}
+
+impl StoredCanonDelta {
+    /// Map to the spindle-core read model, rendering microsecond timestamps as
+    /// ISO-8601 strings (mirrors the `SessionActivity` / scene mappings).
+    pub fn into_core(self) -> spindle_core::models::CanonDelta {
+        spindle_core::models::CanonDelta {
+            id: self.id,
+            project_id: self.project_id,
+            branch_id: self.branch_id,
+            scene_id: self.scene_id,
+            authoring_run_id: self.authoring_run_id,
+            delta_class: self.delta_class,
+            target_id: self.target_id,
+            payload: self.payload,
+            evidence: self.evidence,
+            confidence: self.confidence,
+            status: self.status,
+            decided_at: self.decided_at.map(|t| t.to_rfc3339()),
+            decided_by: self.decided_by,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+pub const STYLE_EDIT_CANDIDATE_COLUMNS: &str = "id, project_id, branch_id, scene_id, book_number, \
+     chapter_number, scene_order, agent_draft, operator_edit, content_rating, status, \
+     created_at, updated_at";
+
+/// A staged before/after style-edit pair captured when the operator re-saves an
+/// agent-drafted scene with different prose (evolution §3.9, migration V0031).
+/// The `operator_edit` is the positive example fed into the style-profile
+/// refresh flow; the `agent_draft` is the contrast. Timestamps are the stored
+/// microsecond [`Timestamp`] (mirrors [`StoredCanonDelta`]).
+#[derive(Debug, Clone)]
+pub struct StoredStyleEditCandidate {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub scene_id: String,
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: i32,
+    pub agent_draft: String,
+    pub operator_edit: String,
+    pub content_rating: String,
+    pub status: String,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredStyleEditCandidate {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            scene_id: row::text(r, 3)?,
+            book_number: row::int(r, 4)? as i32,
+            chapter_number: row::int(r, 5)? as i32,
+            scene_order: row::int(r, 6)? as i32,
+            agent_draft: row::text(r, 7)?,
+            operator_edit: row::text(r, 8)?,
+            content_rating: row::text(r, 9)?,
+            status: row::text(r, 10)?,
+            created_at: row::time(r, 11)?,
+            updated_at: row::time(r, 12)?,
+        })
+    }
+}
+
+pub const PLAN_AMENDMENT_COLUMNS: &str = "id, project_id, branch_id, source_chapter, book_number, \
+     authoring_run_id, amendment_class, target_chapter, payload, rationale, confidence, \
+     status, decided_at, decided_by, prior_state, created_at, updated_at";
+
+/// A staged/decided plan amendment (ADR 0003, migration V0029). Timestamps are
+/// the stored microsecond [`Timestamp`]; the adapter maps them to ISO-8601
+/// strings when producing the spindle-core
+/// [`spindle_core::models::PlanAmendment`] read model (mirrors
+/// [`StoredCanonDelta`]).
+#[derive(Debug, Clone)]
+pub struct StoredPlanAmendment {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub source_chapter: i32,
+    pub book_number: i32,
+    pub authoring_run_id: Option<String>,
+    pub amendment_class: String,
+    pub target_chapter: Option<i32>,
+    pub payload: Value,
+    pub rationale: String,
+    pub confidence: String,
+    pub status: String,
+    pub decided_at: Option<Timestamp>,
+    pub decided_by: Option<String>,
+    pub prior_state: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredPlanAmendment {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            source_chapter: row::int(r, 3)? as i32,
+            book_number: row::int(r, 4)? as i32,
+            authoring_run_id: row::opt_text(r, 5)?,
+            amendment_class: row::text(r, 6)?,
+            target_chapter: row::opt_int(r, 7)?.map(|v| v as i32),
+            payload: row::json(r, 8)?,
+            rationale: row::text(r, 9)?,
+            confidence: row::text(r, 10)?,
+            status: row::text(r, 11)?,
+            decided_at: row::opt_time(r, 12)?,
+            decided_by: row::opt_text(r, 13)?,
+            prior_state: row::opt_text(r, 14)?,
+            created_at: row::time(r, 15)?,
+            updated_at: row::time(r, 16)?,
+        })
+    }
+}
+
+impl StoredPlanAmendment {
+    /// Map to the spindle-core read model, rendering microsecond timestamps as
+    /// ISO-8601 strings (mirrors [`StoredCanonDelta::into_core`]).
+    pub fn into_core(self) -> spindle_core::models::PlanAmendment {
+        spindle_core::models::PlanAmendment {
+            id: self.id,
+            project_id: self.project_id,
+            branch_id: self.branch_id,
+            source_chapter: self.source_chapter,
+            book_number: self.book_number,
+            authoring_run_id: self.authoring_run_id,
+            amendment_class: self.amendment_class,
+            target_chapter: self.target_chapter,
+            payload: self.payload,
+            rationale: self.rationale,
+            confidence: self.confidence,
+            status: self.status,
+            decided_at: self.decided_at.map(|t| t.to_rfc3339()),
+            decided_by: self.decided_by,
+            prior_state: self.prior_state,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+pub const ANTI_SLOP_SUPPRESSION_COLUMNS: &str =
+    "id, project_id, branch_id, shelf_id, excerpt_normalized, source, created_at";
+
+/// Learned false-positive suppression (Phase 5 / V0045).
+#[derive(Debug, Clone)]
+pub struct StoredAntiSlopSuppression {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub shelf_id: String,
+    pub excerpt_normalized: String,
+    pub source: String,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredAntiSlopSuppression {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            shelf_id: row::text(r, 3)?,
+            excerpt_normalized: row::text(r, 4)?,
+            source: row::text(r, 5)?,
+            created_at: row::time(r, 6)?,
+        })
     }
 }

@@ -111,6 +111,16 @@ The Phase 4 validators (run by default, cached per `scene_text_hash`):
 - `voice_drift`
 - `retcon_reachability`
 
+Deterministic check arms also run by default (not Phase 4, not cached) and show
+up in `issues` by `check_type`: `chronology` (between-scene clock rewinds),
+`temporal_coherence` (within-scene time jumps — unsignaled morning→night skips,
+time-of-day drift, unrendered declared spans), `knowledge_timing`,
+`quantity_drift`, and others. Pass `deep_check: true` to add the model-backed
+semantic passes, including a Tier 2 `temporal_coherence` pass that catches the
+idiomatic time jumps a fixed lexicon misses and a `scene_purpose_fulfillment`
+pass (advisory `info`) that flags a drafted scene which fails to accomplish its
+chapter-plan `purpose` — use it for a thorough editorial sweep.
+
 Treat these outputs as authoritative technical evidence. If editorial instinct
 conflicts with validator findings, inspect canon records and either revise prose
 or update canon explicitly.
@@ -131,10 +141,18 @@ run_dual_persona_review({
 ```
 
 This provides both a Literary Critic perspective (reader engagement, emotional
-truth, character depth) and a Craft Technician perspective (MRU ordering,
-show-don't-tell, POV discipline, dialogue technique). The result is persisted
+truth, character depth, plus a structure block: opening / turn / close /
+lived-in space — not BLUF) and a Craft Technician perspective (MRU ordering,
+show-don't-tell, POV discipline, dialogue technique, and shelf-ID citations
+from the injected anti-slop report). The result is persisted
 as a `PersistedDualPersonaReview` record with a `review_id` and `status` so
 you can reference it later.
+
+Spindle frames every dual-persona review as editorial feedback for a fictional
+book project, not real-world advice. The tool also forwards the saved scene
+`content_rating` into the `review` model route; if the scene is `explicit` and
+the project-local config has `[[routing]] route = "review" rating = "explicit"`,
+that explicit-capable reviewer is used automatically.
 
 ### 5. Fact-Checking
 
@@ -215,6 +233,35 @@ Before any export, run `preflight_book_export`. It returns typed issues split
 into errors (block export) and warnings (proceed at your discretion). Fix
 all errors before calling `export_epub` or `export_bible`.
 
+## Subagent orchestration (Claude Code / grok)
+
+An editorial pass over a chapter range splits cleanly into independent review
+dimensions, and every finding should survive an adversarial check before it
+reaches the author. If your harness supports subagents (Claude Code's Task/Agent
+tool, grok's subagents), fan this work out; otherwise run the same dimensions
+and refutation checks sequentially inline — same steps, less concurrency.
+
+**Write discipline (non-negotiable):** the editor diagnoses; it does not write.
+Subagents are read-only researchers — they call `get_scene_context`,
+`search_bible`, `find_scenes_referencing`, `check_consistency`, `research_query`
+and return findings. They never call `record_note`, `save_summary`,
+`register_canonical_fact`, `run_dual_persona_review` (it persists a record), or
+any `revise_*`/`update_*`/`push_chapter_to_file` write. The editor (main
+context) runs the persisted `run_dual_persona_review`, records notes, and
+promotes facts.
+
+Fan out the review **dimensions** as parallel subagents over the same chapter
+range — one each for continuity, voice/style, pacing, and thread-advancement —
+each returning a scene-anchored finding list. Then run an **adversarial
+verification pass**: dispatch one skeptic subagent per significant finding whose
+only job is to *refute* it, gathering counter-evidence from the bible
+(`search_bible`, `get_scene_context`, `find_scenes_referencing`). A finding that
+survives refutation is surfaced as confirmed; a finding the skeptic cannot
+verify is surfaced **labeled as unverified — never dropped silently** — so the
+author sees it with its confidence. The editor then synthesizes (step 6) from
+the confirmed + labeled-unverified set. Without subagents, do the dimension
+sweeps and the per-finding refutation in the main context one at a time.
+
 ### 9. Skill Chains
 
 After editorial review, hand off to the appropriate skill for fixes:
@@ -236,8 +283,8 @@ The editor diagnoses. Other skills treat.
 
 The shipped craft references most relevant to editorial work:
 
-- `bible://references/anti-slop` — AI writing patterns to flag and eliminate
-  during craft review (Step 4).
+- `bible://references/anti-slop` — Fiction shelf catalog (hard vs soft) to
+  flag during craft review (Step 4). Editorial, not an AI detector.
 - `bible://references/voice-differentiation` — Voice diagnosis when
   `voice_drift` findings need editorial judgment.
 - `bible://references/swain-scene-sequel` — Scene structure diagnosis when

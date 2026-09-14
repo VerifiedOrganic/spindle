@@ -14,22 +14,23 @@ use std::collections::BTreeSet;
 
 use spindle_core::context_bundle::{estimate_json_tokens, estimate_text_tokens};
 use spindle_core::models::{
-    AgencyCheckSummary, BookOutline, BranchSummary, CanonicalFactReadModel,
+    ActiveThreadSummary, AgencyCheckSummary, BookOutline, BranchSummary, CanonicalFactReadModel,
     ChapterBriefingSceneSeed, ChapterOutline, ChapterPlanBriefing, ChapterSummaryBriefing,
-    CharacterStateSummary, ConsistencyScope, ContextFormat, FutureKnowledgeSummary,
+    CharacterStateSummary, ConsistencyScope, ContextFormat, EconomySummary, FutureKnowledgeSummary,
     GetSceneDeleteImpactOutput, GetSceneMoveImpactOutput, HardConstraint, KnowledgeBriefingItem,
-    LocationSummary, NarrativePromiseDueSummary, PacingDirectiveSummary, ReaderContract,
-    RecentSceneSummary, RelationshipSummary, SceneContextNovelLayer, SceneContextOutput,
-    SceneContextSceneLayer, SceneDeleteImpactGroup, SceneMoveImpactGroup, SearchBibleResultItem,
-    SystemOverlaySummary, TimelineEventSummary, WorldStateSummary, WriterIntent, WriterState,
+    LocationSummary, NarrativePromiseDueSummary, PacingDirectiveSummary, PreviousSceneTail,
+    ReaderContract, RecentSceneSummary, RelationshipSummary, SceneContextNovelLayer,
+    SceneContextOutput, SceneContextSceneLayer, SceneDeleteImpactGroup, SceneMoveImpactGroup,
+    SearchBibleResultItem, SystemOverlaySummary, TimelineEventSummary, WorldStateSummary,
+    WriterIntent, WriterState,
 };
 use spindle_core::subject_snapshot::{RenderDepth, SubjectSnapshot as SnapshotSubject};
 
 use crate::sqlite::json_records::StoredStoryPlacement;
 use crate::sqlite::records::{
-    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, FutureKnowledge,
-    KnowledgeFact, Location, NarrativePromise, PacingTracker, Scene, SystemOverlay, TimelineEvent,
-    WorldRule,
+    BibleBranch, CanonicalFact, ChapterPlan, ChapterSummary, CharacterArc, Conflict, Economy,
+    FutureKnowledge, KnowledgeFact, Location, NarrativePromise, PacingTracker, PlotLine, Scene,
+    SceneBeatAnnotation, SystemOverlay, TimelineEvent, WorldRule,
 };
 
 // =============================================================================
@@ -253,6 +254,7 @@ pub fn format_chapter_briefing_markdown(
     chapter_outline: Option<&ChapterOutline>,
     book_outline: Option<&BookOutline>,
     chapter_plan: Option<&ChapterPlanBriefing>,
+    active_threads: &[ActiveThreadSummary],
     scene_context: Option<&SceneContextOutput>,
     scene_seed: &ChapterBriefingSceneSeed,
 ) -> String {
@@ -284,6 +286,10 @@ pub fn format_chapter_briefing_markdown(
     }
     if let Some(chapter_plan) = chapter_plan {
         lines.push(format_current_chapter_plan_markdown(chapter_plan));
+    }
+    let active_threads_markdown = format_chapter_briefing_active_threads_markdown(active_threads);
+    if !active_threads_markdown.is_empty() {
+        lines.push(active_threads_markdown);
     }
     lines.push(format_chapter_briefing_scene_context_markdown(
         scene_context,
@@ -464,6 +470,25 @@ pub fn format_chapter_briefing_scene_context_markdown(
                 lines.push(format!("  goals: {goals}"));
                 lines.push(format!("  status: {status}"));
             }
+        }
+        if let Some(digest) = scene_context.compact_shelf_digest.as_ref() {
+            lines.push(format!(
+                "- compact_shelf_digest: {} shelves ({})",
+                digest.shelves.len(),
+                digest.catalog_uri
+            ));
+        }
+        if !scene_context.voice_samples.is_empty() {
+            lines.push(format!(
+                "- voice_samples: {} on-voice hook(s)",
+                scene_context.voice_samples.len()
+            ));
+        }
+        if !scene_context.scene_negatives.is_empty() {
+            lines.push(format!(
+                "- scene_negatives: {} do-not-repeat hook(s)",
+                scene_context.scene_negatives.len()
+            ));
         }
         if let Some(warning) = scene_context.scene.agency_check.warning.as_deref() {
             lines.push(format!("- Agency warning: {warning}"));
@@ -854,6 +879,13 @@ pub fn scope_contains_chapter(
             chapter_key >= (*start_book_number, *start_chapter_number)
                 && chapter_key <= (*end_book_number, *end_chapter_number)
         }
+        // A scene scope is chapter-level for chapter-keyed data (rules,
+        // summaries, plans): the containing chapter is in scope.
+        ConsistencyScope::Scene {
+            book_number: scoped_book,
+            chapter_number: scoped_chapter,
+            ..
+        } => book_number == *scoped_book && chapter_number == *scoped_chapter,
     }
 }
 
@@ -877,6 +909,17 @@ pub fn scope_contains_position(
             let position = (book_number, chapter_number, scene_order);
             position >= (*start_book_number, *start_chapter_number, i32::MIN)
                 && position <= (*end_book_number, *end_chapter_number, i32::MAX)
+        }
+        // Scene scope: exactly one (book, chapter, scene_order). This is what
+        // collapses `scoped_scenes` (and every per-scene check that iterates
+        // it) to a single scene.
+        ConsistencyScope::Scene {
+            book_number: scoped_book,
+            chapter_number: scoped_chapter,
+            scene_order: scoped_scene_order,
+        } => {
+            (book_number, chapter_number, scene_order)
+                == (*scoped_book, *scoped_chapter, *scoped_scene_order)
         }
     }
 }
@@ -911,7 +954,7 @@ pub fn world_rule_established_before_scene(rule: &WorldRule, scene: &Scene) -> b
     let scene_index = story_index_from_scene(scene);
     rule.established_in
         .as_ref()
-        .map(|placement| placement.book_number * 10_000 + placement.chapter_number * 100)
+        .map(|placement| chapter_story_index(placement.book_number, placement.chapter_number))
         .is_none_or(|rule_index| rule_index <= scene_index)
 }
 
@@ -925,29 +968,55 @@ pub fn keyword_tokens(input: &str) -> BTreeSet<String> {
         .collect()
 }
 
-pub fn story_index_from_placement(placement: &StoredStoryPlacement) -> i32 {
-    placement.book_number * 10_000
-        + placement.chapter_number * 100
-        + placement.scene_order.unwrap_or(0)
+/// Radix for packing a `(book, chapter, scene)` placement into a single, stable,
+/// totally-ordered `i64` index. Each chapter gets `SCENE_RADIX` scene slots and
+/// each book gets `CHAPTER_RADIX` chapter slots. Placement components are
+/// validated at write time (`create_chapter` and scene persistence) to stay
+/// strictly below these radixes, so the packing stays collision-free even for
+/// books with hundreds of chapters or chapters with hundreds of scenes.
+pub const SCENE_RADIX: i64 = 1_000;
+pub const CHAPTER_RADIX: i64 = 1_000;
+pub const BOOK_RADIX: i64 = CHAPTER_RADIX * SCENE_RADIX;
+
+#[inline]
+fn pack_story_index(book_number: i32, chapter_number: i32, scene_order: i32) -> i64 {
+    book_number as i64 * BOOK_RADIX + chapter_number as i64 * SCENE_RADIX + scene_order as i64
 }
 
-pub fn end_scope_index(scope: &ConsistencyScope, scenes: &[Scene]) -> Option<i32> {
+pub fn story_index_from_placement(placement: &StoredStoryPlacement) -> i64 {
+    pack_story_index(
+        placement.book_number,
+        placement.chapter_number,
+        placement.scene_order.unwrap_or(0),
+    )
+}
+
+pub fn end_scope_index(scope: &ConsistencyScope, scenes: &[Scene]) -> Option<i64> {
     scenes
         .last()
         .map(story_index_from_scene)
         .or_else(|| match scope {
             ConsistencyScope::Full => None,
-            ConsistencyScope::Book { book_number } => Some(book_number * 10_000),
+            ConsistencyScope::Book { book_number } => Some((*book_number as i64) * BOOK_RADIX),
             ConsistencyScope::ChapterRange {
                 end_book_number,
                 end_chapter_number,
                 ..
-            } => Some(end_book_number * 10_000 + end_chapter_number * 100),
+            } => Some(pack_story_index(*end_book_number, *end_chapter_number, 0)),
+            ConsistencyScope::Scene {
+                book_number,
+                chapter_number,
+                scene_order,
+            } => Some(pack_story_index(
+                *book_number,
+                *chapter_number,
+                *scene_order,
+            )),
         })
 }
 
-pub fn story_index_from_scene(scene: &Scene) -> i32 {
-    scene.book_number * 10_000 + scene.chapter_number * 100 + scene.scene_order
+pub fn story_index_from_scene(scene: &Scene) -> i64 {
+    pack_story_index(scene.book_number, scene.chapter_number, scene.scene_order)
 }
 
 // =============================================================================
@@ -974,11 +1043,55 @@ pub fn format_search_bible_markdown(query: &str, results: &[SearchBibleResultIte
 // Scene context markdown
 // =============================================================================
 
+pub fn format_writing_packet_markdown(
+    digest: Option<&spindle_core::style::antislop::CompactShelfDigest>,
+    voice_samples: &[spindle_core::style::antislop::VoiceSample],
+    scene_negatives: &[spindle_core::style::antislop::SceneNegative],
+) -> String {
+    use spindle_core::style::antislop::{
+        WritingPacketHooks, render_compact_shelf_digest_markdown,
+        render_writing_packet_hooks_markdown,
+    };
+    let mut parts = Vec::new();
+    if let Some(digest) = digest {
+        parts.push(render_compact_shelf_digest_markdown(digest));
+    }
+    let hooks = WritingPacketHooks {
+        voice_samples: voice_samples.to_vec(),
+        scene_negatives: scene_negatives.to_vec(),
+    };
+    let hooks_markdown = render_writing_packet_hooks_markdown(&hooks);
+    if !hooks_markdown.is_empty() {
+        parts.push(hooks_markdown);
+    }
+    parts.join("\n\n")
+}
+
 pub fn format_scene_context_markdown(
     standards: Option<&str>,
     hard_constraints: &[HardConstraint],
     novel: &SceneContextNovelLayer,
     scene: &SceneContextSceneLayer,
+) -> String {
+    format_scene_context_markdown_with_packet(
+        standards,
+        hard_constraints,
+        novel,
+        scene,
+        None,
+        &[],
+        &[],
+    )
+}
+
+pub fn format_scene_context_markdown_with_packet(
+    standards: Option<&str>,
+    hard_constraints: &[HardConstraint],
+    novel: &SceneContextNovelLayer,
+    scene: &SceneContextSceneLayer,
+    compact_shelf_digest: Option<&spindle_core::style::antislop::CompactShelfDigest>,
+    voice_samples: &[spindle_core::style::antislop::VoiceSample],
+    scene_negatives: &[spindle_core::style::antislop::SceneNegative],
 ) -> String {
     let mut lines = vec!["# Scene context".to_string()];
 
@@ -995,6 +1108,12 @@ pub fn format_scene_context_markdown(
         .and_then(|directive| directive.render_markdown())
     {
         lines.push(directive);
+    }
+
+    let packet_markdown =
+        format_writing_packet_markdown(compact_shelf_digest, voice_samples, scene_negatives);
+    if !packet_markdown.is_empty() {
+        lines.push(format!("\n{packet_markdown}"));
     }
 
     lines.push(format_scene_context_reader_contract_markdown(
@@ -1033,10 +1152,21 @@ pub fn format_scene_context_markdown(
     ));
     lines.push(format_scene_context_pacing_markdown(
         &novel.pacing_directives,
+        novel.realized_intensity_trend.as_deref(),
     ));
     lines.push(format_scene_context_promises_markdown(
         &novel.narrative_promises_due,
     ));
+    let active_threads_markdown =
+        format_scene_context_active_threads_markdown(&novel.active_threads);
+    if !active_threads_markdown.is_empty() {
+        lines.push(active_threads_markdown);
+    }
+    let previous_scene_tail_markdown =
+        format_scene_context_previous_scene_tail_markdown(novel.previous_scene_tail.as_ref());
+    if !previous_scene_tail_markdown.is_empty() {
+        lines.push(previous_scene_tail_markdown);
+    }
     lines.push(format_scene_context_characters_markdown(&scene.characters));
     lines.push(scene_context_subjects_markdown(&novel.subjects));
     lines.push(format_scene_context_semantic_references_markdown(
@@ -1179,6 +1309,29 @@ pub fn format_scene_context_timeline_markdown(items: &[TimelineEventSummary]) ->
     lines.join("\n")
 }
 
+pub fn format_scene_context_economy_markdown(items: &[EconomySummary]) -> String {
+    let mut lines = vec!["\n## Economies in play".to_string()];
+    if items.is_empty() {
+        lines.push("- None.".to_string());
+    } else {
+        for economy in items {
+            lines.push(format!(
+                "- {} (currency: {})",
+                economy.name,
+                economy.currency.as_deref().unwrap_or("unspecified")
+            ));
+            lines.push(format!("  {}", economy.summary));
+            if !economy.scarce_resources.is_empty() {
+                lines.push(format!("  Scarce: {}", economy.scarce_resources.join(", ")));
+            }
+            if !economy.trade_goods.is_empty() {
+                lines.push(format!("  Trade goods: {}", economy.trade_goods.join(", ")));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
 pub fn format_scene_context_future_knowledge_markdown(items: &[FutureKnowledgeSummary]) -> String {
     let mut lines = vec!["\n## Future knowledge".to_string()];
     if items.is_empty() {
@@ -1259,10 +1412,18 @@ pub fn format_scene_context_system_overlays_markdown(items: &[SystemOverlaySumma
     lines.join("\n")
 }
 
-pub fn format_scene_context_pacing_markdown(items: &[PacingDirectiveSummary]) -> String {
+pub fn format_scene_context_pacing_markdown(
+    items: &[PacingDirectiveSummary],
+    realized_intensity_trend: Option<&str>,
+) -> String {
     let mut lines = vec!["\n## Pacing".to_string()];
+    if let Some(trend) = realized_intensity_trend {
+        lines.push(format!("- {trend}"));
+    }
     if items.is_empty() {
-        lines.push("- None.".to_string());
+        if realized_intensity_trend.is_none() {
+            lines.push("- None.".to_string());
+        }
     } else {
         for directive in items {
             lines.push(format!(
@@ -1319,6 +1480,120 @@ pub fn format_scene_context_promises_markdown(items: &[NarrativePromiseDueSummar
             }
             push_briefing_list(&mut lines, "  notes", &promise.notes);
         }
+    }
+    lines.join("\n")
+}
+
+/// Maximum length, in characters, of an [`ActiveThreadSummary`] statement.
+/// Statements longer than this are truncated on a char boundary.
+pub const ACTIVE_THREAD_STATEMENT_CHARS: usize = 240;
+
+/// Char-boundary-safe truncation of a targeted-thread statement so the result
+/// is at most [`ACTIVE_THREAD_STATEMENT_CHARS`] characters *including* the
+/// trailing ellipsis. The cut always lands on a char boundary, so multibyte
+/// text near the budget is never split.
+pub fn truncate_active_thread_statement(text: &str) -> String {
+    const ELLIPSIS: &str = "...";
+    if text.chars().count() <= ACTIVE_THREAD_STATEMENT_CHARS {
+        return text.trim().to_string();
+    }
+    // Reserve room for the ellipsis so the total stays within budget.
+    let keep = ACTIVE_THREAD_STATEMENT_CHARS.saturating_sub(ELLIPSIS.chars().count());
+    let end_byte = text
+        .char_indices()
+        .nth(keep)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    format!("{}{ELLIPSIS}", text[..end_byte].trim_end())
+}
+
+/// Render one active-thread line: `- [kind] name — statement (status)`, with an
+/// appended ` | next: <expectation>` when present.
+fn format_active_thread_line(thread: &ActiveThreadSummary) -> String {
+    let mut line = format!("- [{}] {} — {}", thread.kind, thread.name, thread.statement);
+    if !thread.status.is_empty() {
+        line.push_str(&format!(" ({})", thread.status));
+    }
+    if let Some(next) = thread.next_expectation.as_deref() {
+        line.push_str(&format!(" | next: {next}"));
+    }
+    line
+}
+
+/// Render the ACTIVE THREADS block for scene-context markdown. Returns an empty
+/// string when there are no threads so the block is omitted entirely.
+pub fn format_scene_context_active_threads_markdown(items: &[ActiveThreadSummary]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["\n## ACTIVE THREADS".to_string()];
+    for thread in items {
+        lines.push(format_active_thread_line(thread));
+    }
+    lines.join("\n")
+}
+
+/// Maximum length, in characters, of a previous-scene closing excerpt.
+pub const PREVIOUS_SCENE_TAIL_CHARS: usize = 1200;
+
+/// Char-boundary-safe closing excerpt: the final at most
+/// [`PREVIOUS_SCENE_TAIL_CHARS`] characters of `full_text`, taken from the END.
+/// Returns `None` when the prose is empty or whitespace-only, so an empty
+/// excerpt is never surfaced. The cut always lands on a char boundary, so
+/// multibyte text near the budget is never split.
+pub fn scene_closing_excerpt(full_text: &str) -> Option<String> {
+    if full_text.trim().is_empty() {
+        return None;
+    }
+    let char_count = full_text.chars().count();
+    if char_count <= PREVIOUS_SCENE_TAIL_CHARS {
+        return Some(full_text.to_string());
+    }
+    // Skip the leading chars beyond the budget and start the byte slice at the
+    // boundary of the first char we keep, so the tail is always valid UTF-8.
+    let skip = char_count - PREVIOUS_SCENE_TAIL_CHARS;
+    let start_byte = full_text
+        .char_indices()
+        .nth(skip)
+        .map(|(idx, _)| idx)
+        .unwrap_or(full_text.len());
+    Some(full_text[start_byte..].to_string())
+}
+
+/// Render the PREVIOUS SCENE (closing) block for scene-context markdown.
+/// Returns an empty string when there is no preceding-scene tail so the block
+/// is omitted entirely.
+pub fn format_scene_context_previous_scene_tail_markdown(
+    tail: Option<&PreviousSceneTail>,
+) -> String {
+    let Some(tail) = tail else {
+        return String::new();
+    };
+    // A rating-elided tail carries the neighbour's SUMMARY, not its prose. The
+    // "…" prefix used for a real tail would present that summary as the scene's
+    // closing lines and invite the agent to continue from it verbatim, so the
+    // elided form is labelled instead.
+    if let Some(reason) = tail.elided_reason.as_deref() {
+        return format!(
+            "\n## PREVIOUS SCENE (closing)\nCh {}.{} [prose withheld — {}]\nSummary: {}",
+            tail.chapter_number, tail.scene_order, reason, tail.excerpt
+        );
+    }
+    format!(
+        "\n## PREVIOUS SCENE (closing)\nCh {}.{}: …{}",
+        tail.chapter_number, tail.scene_order, tail.excerpt
+    )
+}
+
+/// Render the ACTIVE THREADS block for chapter-briefing markdown. Returns an
+/// empty string when there are no threads so the block is omitted entirely.
+pub fn format_chapter_briefing_active_threads_markdown(items: &[ActiveThreadSummary]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["\n## ACTIVE THREADS".to_string()];
+    for thread in items {
+        lines.push(format_active_thread_line(thread));
     }
     lines.join("\n")
 }
@@ -1420,17 +1695,18 @@ pub fn canonical_fact_float_string(value: f64) -> String {
 // helpers.
 // =============================================================================
 
-/// Stable ordering key for "place X within the book/chapter/scene grid".
-/// Used to compare arbitrary placements (e.g., promise planted_at vs cursor
-/// position). Each book gets 10k slots, each chapter gets 100 — far more than
-/// any realistic chapter holds, so collisions are impossible.
-pub fn story_index(book_number: i32, chapter_number: i32, scene_order: i32) -> i32 {
-    book_number * 10_000 + chapter_number * 100 + scene_order
+/// Stable, totally-ordered key for "place X within the book/chapter/scene grid".
+/// Used to compare arbitrary placements (e.g., promise `planted_at` vs cursor
+/// position). See [`SCENE_RADIX`]/[`CHAPTER_RADIX`]: placement components are
+/// validated below their radixes at write time, so the packing is collision-free.
+pub fn story_index(book_number: i32, chapter_number: i32, scene_order: i32) -> i64 {
+    pack_story_index(book_number, chapter_number, scene_order)
 }
 
-/// Same as [`story_index`] but for chapter-level placements (no scene order).
-pub fn chapter_story_index(book_number: i32, chapter_number: i32) -> i32 {
-    book_number * 10_000 + chapter_number
+/// Same as [`story_index`] but for chapter-level placements (scene order 0), so
+/// it stays directly comparable with scene-level indices.
+pub fn chapter_story_index(book_number: i32, chapter_number: i32) -> i64 {
+    pack_story_index(book_number, chapter_number, 0)
 }
 
 /// Map the persisted intent string to a typed [`WriterIntent`]. Unknown
@@ -1593,7 +1869,11 @@ pub fn enforce_writer_state_budget(
 // projections.
 // =============================================================================
 
-pub const DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS: usize = 6000;
+pub const DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS: usize = 24_000;
+/// Extra room added when mandatory scene hard constraints alone exceed the
+/// caller's preferred budget. Hard constraints are canon, not optional prompt
+/// filler, so the service expands instead of dropping or rejecting them.
+pub const SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS: usize = 4_000;
 /// Default markdown-render token budget for `check_consistency`. Mirrors the
 /// SurrealDB-era `DEFAULT_CHECK_CONSISTENCY_BUDGET_TOKENS = 4000`.
 pub const DEFAULT_CHECK_CONSISTENCY_BUDGET_TOKENS: usize = 4000;
@@ -1785,6 +2065,173 @@ fn normalize_relevance_text(text: &str) -> String {
 // Pacing / promise / agency helpers.
 // -----------------------------------------------------------------------------
 
+/// Mean realized intensity per `(book_number, chapter_number)`, computed from
+/// scene-beat annotations. Only annotations with a non-NULL intensity attached
+/// to one of `scenes` contribute; a chapter whose annotations all lack an
+/// intensity value produces no entry (it is treated as unannotated). Shared by
+/// the `pacing_drift` consistency check and the `get_scene_context` realized-
+/// intensity feed-forward so the two surfaces never disagree about the same
+/// per-chapter means. Deterministic (BTreeMap keys iterate in sorted order).
+pub(crate) fn chapter_mean_intensities(
+    scenes: &[Scene],
+    annotations: &[SceneBeatAnnotation],
+) -> std::collections::BTreeMap<(i32, i32), f64> {
+    use std::collections::BTreeMap;
+
+    let intensity_by_scene: BTreeMap<&str, f64> = annotations
+        .iter()
+        .filter_map(|annotation| {
+            annotation
+                .intensity
+                .map(|value| (annotation.scene_id.as_str(), value))
+        })
+        .collect();
+
+    let mut chapter_intensities: BTreeMap<(i32, i32), Vec<f64>> = BTreeMap::new();
+    for scene in scenes {
+        if let Some(intensity) = intensity_by_scene.get(scene.id.as_str()) {
+            chapter_intensities
+                .entry((scene.book_number, scene.chapter_number))
+                .or_default()
+                .push(*intensity);
+        }
+    }
+
+    chapter_intensities
+        .into_iter()
+        .map(|(key, values)| {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            (key, mean)
+        })
+        .collect()
+}
+
+/// Whether the trend across `values` (chronological chapter means) reads as
+/// rising, falling, or flat. Flat when the max-min spread is within
+/// `REALIZED_INTENSITY_FLAT_EPSILON`; otherwise the sign of last-minus-first
+/// decides. Only meaningful for two or more values.
+pub(crate) const REALIZED_INTENSITY_FLAT_EPSILON: f64 = 0.05;
+
+/// Number of prior annotated chapters the realized-intensity feed-forward
+/// summarizes. Fixed by T-109; not a configurable knob.
+pub(crate) const REALIZED_INTENSITY_TREND_WINDOW: usize = 3;
+
+fn realized_intensity_direction(values: &[f64]) -> &'static str {
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if max - min <= REALIZED_INTENSITY_FLAT_EPSILON {
+        "flat"
+    } else if values.last() >= values.first() {
+        "rising"
+    } else {
+        "falling"
+    }
+}
+
+/// Linearly interpolate the expected intensity at `position` (a 0..1 book
+/// fraction) from a curve's sampled `intensity_points`. Returns `None` when
+/// fewer than two points are present. Points are sorted by position; a position
+/// outside the sampled range clamps to the nearest endpoint. Deterministic.
+pub(crate) fn interpolate_expected_intensity(
+    intensity_points: &[super::sqlite::json_records::StoredIntensityPoint],
+    position: f64,
+) -> Option<f64> {
+    if intensity_points.len() < 2 {
+        return None;
+    }
+    let mut points: Vec<(f64, f64)> = intensity_points
+        .iter()
+        .map(|point| (point.position, point.intensity))
+        .collect();
+    points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Clamp outside the sampled range to the nearest endpoint.
+    if position <= points[0].0 {
+        return Some(points[0].1);
+    }
+    let last = points[points.len() - 1];
+    if position >= last.0 {
+        return Some(last.1);
+    }
+    // Find the surrounding pair and interpolate.
+    for window in points.windows(2) {
+        let (lo_pos, lo_int) = window[0];
+        let (hi_pos, hi_int) = window[1];
+        if position >= lo_pos && position <= hi_pos {
+            let span = hi_pos - lo_pos;
+            if span <= f64::EPSILON {
+                return Some(lo_int);
+            }
+            let t = (position - lo_pos) / span;
+            return Some(lo_int + t * (hi_int - lo_int));
+        }
+    }
+    // Unreachable given the clamps above, but stay total.
+    Some(last.1)
+}
+
+/// Build the realized-intensity feed-forward directive for a scene about to be
+/// drafted in `(book_number, chapter_number)`. Summarizes the last up-to-3
+/// annotated chapters strictly before `chapter_number` in the same book (a
+/// chapter with no non-NULL intensity annotation is excluded). Returns `None`
+/// when no prior chapter is annotated; a single-chapter window states the mean
+/// with no direction claim; two or three chapters state the sequence and its
+/// direction. Values are rounded to two decimals and the directive is capped at
+/// 300 chars. Deterministic.
+///
+/// When the book's pacing curve carries ≥2 `intensity_points` AND the chapter
+/// denominator (`max_chapter`) is derivable, the directive is extended with a
+/// `; curve expects {e:.2} here` clause where `e` is the linearly interpolated
+/// expected intensity at `chapter_number / max_chapter` (clamped to 0..1). With
+/// fewer than two points or an underivable denominator, the without-expectation
+/// form is emitted verbatim.
+pub(crate) fn realized_intensity_trend_directive(
+    chapter_means: &std::collections::BTreeMap<(i32, i32), f64>,
+    book_number: i32,
+    chapter_number: i32,
+    intensity_points: &[super::sqlite::json_records::StoredIntensityPoint],
+    max_chapter: Option<i32>,
+) -> Option<String> {
+    let mut prior: Vec<f64> = chapter_means
+        .iter()
+        .filter(|((book, chapter), _)| *book == book_number && *chapter < chapter_number)
+        .map(|(_, mean)| (*mean * 100.0).round() / 100.0)
+        .collect();
+    if prior.is_empty() {
+        return None;
+    }
+    // `chapter_means` iterates in ascending (book, chapter) order, so `prior` is
+    // already chronological; keep only the last `WINDOW` chapters.
+    if prior.len() > REALIZED_INTENSITY_TREND_WINDOW {
+        prior.drain(0..prior.len() - REALIZED_INTENSITY_TREND_WINDOW);
+    }
+
+    let sequence = prior
+        .iter()
+        .map(|value| format!("{value:.2}"))
+        .collect::<Vec<_>>()
+        .join(" → ");
+    let n = prior.len();
+
+    let mut directive = if n == 1 {
+        format!("Realized intensity last {n} chapter: {sequence}")
+    } else {
+        let direction = realized_intensity_direction(&prior);
+        format!("Realized intensity last {n} chapters: {sequence} ({direction})")
+    };
+
+    // Expectation clause: only when a curve with ≥2 points and a derivable
+    // chapter denominator lets us interpolate an expected intensity here.
+    if let Some(denominator) = max_chapter.filter(|max| *max > 0) {
+        let position = (chapter_number as f64 / denominator as f64).clamp(0.0, 1.0);
+        if let Some(expected) = interpolate_expected_intensity(intensity_points, position) {
+            directive.push_str(&format!("; curve expects {expected:.2} here"));
+        }
+    }
+
+    Some(truncate_at_chars(&directive, 300))
+}
+
 pub fn pacing_directives_for_characters(
     arcs: &[CharacterArc],
     trackers: &[PacingTracker],
@@ -1814,6 +2261,141 @@ pub fn pacing_directives_for_characters(
         .collect()
 }
 
+/// How urgently an open narrative promise needs attention at a given story
+/// position. Ordered least-to-most pressing. `Resolved` is returned for
+/// promises that are already paid off or abandoned and must never be flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseUrgency {
+    Resolved,
+    Watch,
+    Soon,
+    Due,
+    Overdue,
+}
+
+impl PromiseUrgency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PromiseUrgency::Resolved => "resolved",
+            PromiseUrgency::Watch => "watch",
+            PromiseUrgency::Soon => "soon",
+            PromiseUrgency::Due => "due",
+            PromiseUrgency::Overdue => "overdue",
+        }
+    }
+
+    /// Least-to-most-pressing ordinal. Used to sort open threads so the most
+    /// pressing promises surface first in the persisted digest.
+    pub fn rank(self) -> u8 {
+        match self {
+            PromiseUrgency::Resolved => 0,
+            PromiseUrgency::Watch => 1,
+            PromiseUrgency::Soon => 2,
+            PromiseUrgency::Due => 3,
+            PromiseUrgency::Overdue => 4,
+        }
+    }
+}
+
+/// Verdict produced by [`promise_timing_verdict`]: the single source of truth
+/// for promise timing, shared by the scene-context "promises due" summary and
+/// the `narrative_promise_tracking` consistency check so the two surfaces never
+/// disagree about the same promise.
+#[derive(Debug, Clone, Copy)]
+pub struct PromiseTimingVerdict {
+    pub urgency: PromiseUrgency,
+    /// Whole in-world chapters elapsed since the promise was planted.
+    pub chapters_since_plant: i64,
+    /// Whole chapters past the declared `planned_payoff` (0 unless overdue).
+    pub overdue_by_chapters: i64,
+}
+
+/// Chapters of look-ahead within which an unpaid promise whose `planned_payoff`
+/// is approaching is flagged "soon".
+pub const PROMISE_DUE_SOON_CHAPTERS: i64 = 3;
+/// Chapters past a declared payoff before "due" escalates to "overdue".
+pub const PROMISE_OVERDUE_ESCALATE_CHAPTERS: i64 = 2;
+/// Fallback aging thresholds (whole chapters) for promises with NO declared
+/// `planned_payoff`. Chapter-scaled so deliberately long arcs are not flagged
+/// after a handful of scenes; `reinforced` promises get more slack than freshly
+/// `planted` ones, preserving the previous intent without the unit bug.
+pub const PROMISE_PLANTED_SOON_CHAPTERS: i64 = 8;
+pub const PROMISE_PLANTED_OVERDUE_CHAPTERS: i64 = 14;
+pub const PROMISE_REINFORCED_SOON_CHAPTERS: i64 = 12;
+pub const PROMISE_REINFORCED_OVERDUE_CHAPTERS: i64 = 20;
+
+/// Compute the timing verdict for `promise` at `current_index` (a [`story_index`]
+/// value). Honors the author's declared `planned_payoff` when present and falls
+/// back to chapter-scaled aging otherwise. Resolved/abandoned promises always
+/// return [`PromiseUrgency::Resolved`].
+pub fn promise_timing_verdict(
+    promise: &NarrativePromise,
+    current_index: i64,
+) -> PromiseTimingVerdict {
+    let planted_index = story_index_from_placement(&promise.planted_at);
+    let chapters_since_plant = (current_index - planted_index).max(0) / SCENE_RADIX;
+
+    if promise.status == "paid_off" || promise.status == "abandoned" {
+        return PromiseTimingVerdict {
+            urgency: PromiseUrgency::Resolved,
+            chapters_since_plant,
+            overdue_by_chapters: 0,
+        };
+    }
+
+    if let Some(payoff) = promise.planned_payoff.as_ref() {
+        let payoff_index = story_index_from_placement(payoff);
+        if current_index >= payoff_index {
+            let overdue_by_chapters = (current_index - payoff_index) / SCENE_RADIX;
+            let urgency = if overdue_by_chapters >= PROMISE_OVERDUE_ESCALATE_CHAPTERS {
+                PromiseUrgency::Overdue
+            } else {
+                PromiseUrgency::Due
+            };
+            return PromiseTimingVerdict {
+                urgency,
+                chapters_since_plant,
+                overdue_by_chapters,
+            };
+        }
+        let chapters_until_payoff = (payoff_index - current_index) / SCENE_RADIX;
+        let urgency = if chapters_until_payoff <= PROMISE_DUE_SOON_CHAPTERS {
+            PromiseUrgency::Soon
+        } else {
+            PromiseUrgency::Watch
+        };
+        return PromiseTimingVerdict {
+            urgency,
+            chapters_since_plant,
+            overdue_by_chapters: 0,
+        };
+    }
+
+    let (soon, overdue) = if promise.status == "reinforced" {
+        (
+            PROMISE_REINFORCED_SOON_CHAPTERS,
+            PROMISE_REINFORCED_OVERDUE_CHAPTERS,
+        )
+    } else {
+        (
+            PROMISE_PLANTED_SOON_CHAPTERS,
+            PROMISE_PLANTED_OVERDUE_CHAPTERS,
+        )
+    };
+    let urgency = if chapters_since_plant >= overdue {
+        PromiseUrgency::Overdue
+    } else if chapters_since_plant >= soon {
+        PromiseUrgency::Soon
+    } else {
+        PromiseUrgency::Watch
+    };
+    PromiseTimingVerdict {
+        urgency,
+        chapters_since_plant,
+        overdue_by_chapters: 0,
+    }
+}
+
 pub fn narrative_promise_due_summary(
     promise: &NarrativePromise,
     book_number: i32,
@@ -1821,31 +2403,18 @@ pub fn narrative_promise_due_summary(
     scene_order: i32,
 ) -> NarrativePromiseDueSummary {
     let current_index = story_index(book_number, chapter_number, scene_order);
-    let planted_index = story_index_from_placement(&promise.planted_at);
-    let chapters_since_plant = ((current_index - planted_index).max(0)) / 100;
-
-    let urgency = if let Some(payoff) = promise.planned_payoff.as_ref() {
-        let payoff_index = story_index_from_placement(payoff);
-        if current_index >= payoff_index {
-            "due"
-        } else if payoff_index - current_index <= 100 {
-            "soon"
-        } else {
-            "watch"
-        }
-    } else if chapters_since_plant >= 5 {
-        "overdue"
-    } else if chapters_since_plant >= 3 {
-        "soon"
-    } else {
-        "watch"
-    };
+    let verdict = promise_timing_verdict(promise, current_index);
 
     let mut notes = promise.notes.clone();
-    if urgency == "overdue" {
-        notes.push("Promise has stayed open long enough to risk narrative drag.".to_string());
-    } else if urgency == "due" {
-        notes.push("Planned payoff point has arrived or passed.".to_string());
+    match verdict.urgency {
+        PromiseUrgency::Overdue => notes.push(format!(
+            "Promise is {} chapter(s) past its planned payoff and risks narrative drag.",
+            verdict.overdue_by_chapters
+        )),
+        PromiseUrgency::Due => {
+            notes.push("Planned payoff point has arrived or passed.".to_string())
+        }
+        _ => {}
     }
 
     NarrativePromiseDueSummary {
@@ -1858,8 +2427,8 @@ pub fn narrative_promise_due_summary(
             .planned_payoff
             .clone()
             .map(|placement| placement.into_core()),
-        urgency: urgency.to_string(),
-        chapters_since_plant,
+        urgency: verdict.urgency.as_str().to_string(),
+        chapters_since_plant: verdict.chapters_since_plant as i32,
         notes,
     }
 }
@@ -2203,7 +2772,7 @@ pub fn canonical_fact_read_model(fact: &CanonicalFact) -> CanonicalFactReadModel
     }
 }
 
-fn canonical_fact_value_display(fact: &CanonicalFact) -> String {
+pub fn canonical_fact_value_display(fact: &CanonicalFact) -> String {
     if let Some(value_text) = fact.value_text.as_ref().filter(|value| !value.is_empty()) {
         return value_text.clone();
     }
@@ -2424,12 +2993,36 @@ pub fn build_scene_context_bundle(
         json!({ "novel": { "narrative_promises_due": novel.narrative_promises_due } }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
-        "pacing_directives",
-        SectionKind::Supplementary(4),
-        format_scene_context_pacing_markdown(&novel.pacing_directives)
+        "active_threads",
+        SectionKind::Supplementary(7),
+        format_scene_context_active_threads_markdown(&novel.active_threads)
             .trim_start_matches('\n')
             .to_string(),
-        json!({ "novel": { "pacing_directives": novel.pacing_directives } }),
+        json!({ "novel": { "active_threads": novel.active_threads } }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "previous_scene_tail",
+        SectionKind::Supplementary(8),
+        format_scene_context_previous_scene_tail_markdown(novel.previous_scene_tail.as_ref())
+            .trim_start_matches('\n')
+            .to_string(),
+        json!({ "novel": { "previous_scene_tail": novel.previous_scene_tail } }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "pacing_directives",
+        SectionKind::Supplementary(4),
+        format_scene_context_pacing_markdown(
+            &novel.pacing_directives,
+            novel.realized_intensity_trend.as_deref(),
+        )
+        .trim_start_matches('\n')
+        .to_string(),
+        json!({
+            "novel": {
+                "pacing_directives": novel.pacing_directives,
+                "realized_intensity_trend": novel.realized_intensity_trend,
+            }
+        }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
         "future_knowledge_briefing",
@@ -2438,6 +3031,14 @@ pub fn build_scene_context_bundle(
             .trim_start_matches('\n')
             .to_string(),
         json!({ "novel": { "future_knowledge_briefing": novel.future_knowledge_briefing } }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "economy_briefing",
+        SectionKind::Supplementary(2),
+        format_scene_context_economy_markdown(&novel.economy_briefing)
+            .trim_start_matches('\n')
+            .to_string(),
+        json!({ "novel": { "economy_briefing": novel.economy_briefing } }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
         "timeline_briefing",
@@ -2477,9 +3078,15 @@ pub fn apply_scene_context_bundle_trims(
             "reader_contract" => novel.reader_contract = empty_reader_contract(),
             "system_overlays" => novel.system_overlays.clear(),
             "timeline_briefing" => novel.timeline_briefing.clear(),
+            "economy_briefing" => novel.economy_briefing.clear(),
             "future_knowledge_briefing" => novel.future_knowledge_briefing.clear(),
-            "pacing_directives" => novel.pacing_directives.clear(),
+            "pacing_directives" => {
+                novel.pacing_directives.clear();
+                novel.realized_intensity_trend = None;
+            }
             "narrative_promises_due" => novel.narrative_promises_due.clear(),
+            "active_threads" => novel.active_threads.clear(),
+            "previous_scene_tail" => novel.previous_scene_tail = None,
             "knowledge_briefing" => novel.knowledge_briefing.clear(),
             "semantic_references" => novel.semantic_references.clear(),
             "location" => scene.location = empty_location_summary(),
@@ -2585,6 +3192,7 @@ pub fn build_chapter_briefing_bundle(
     chapter_outline: Option<&ChapterOutline>,
     book_outline: Option<&BookOutline>,
     chapter_plan: Option<&ChapterPlanBriefing>,
+    active_threads: &[ActiveThreadSummary],
     scene_context: Option<&SceneContextOutput>,
     scene_seed: &ChapterBriefingSceneSeed,
 ) -> ContextBundle {
@@ -2648,6 +3256,14 @@ pub fn build_chapter_briefing_bundle(
         json!({ "chapter_plan": chapter_plan }),
     )));
     bundle.push_section(Box::new(SceneContextBundleSection::new(
+        "active_threads",
+        SectionKind::Supplementary(170),
+        format_chapter_briefing_active_threads_markdown(active_threads)
+            .trim_start_matches('\n')
+            .to_string(),
+        json!({ "active_threads": active_threads }),
+    )));
+    bundle.push_section(Box::new(SceneContextBundleSection::new(
         "book_outline",
         SectionKind::Supplementary(100),
         book_outline
@@ -2657,9 +3273,14 @@ pub fn build_chapter_briefing_bundle(
             .to_string(),
         json!({ "book_outline": book_outline }),
     )));
+    // Priority 190 (defect item 9): the story-so-far is core drafting
+    // continuity — it must outlive the whole-book outline, active threads, and
+    // the chapter plan under budget pressure. At its old priority (50) it was
+    // trimmed nearly first and the re-rendered briefing then claimed no
+    // summaries were recorded.
     bundle.push_section(Box::new(SceneContextBundleSection::new(
         "recent_chapter_summaries",
-        SectionKind::Supplementary(50),
+        SectionKind::Supplementary(190),
         format_recent_chapter_summaries_markdown(recent_chapter_summaries)
             .trim_start_matches('\n')
             .to_string(),
@@ -2685,16 +3306,23 @@ pub fn apply_chapter_briefing_bundle_trims(
     chapter_outline: &mut Option<ChapterOutline>,
     book_outline: &mut Option<BookOutline>,
     chapter_plan: &mut Option<ChapterPlanBriefing>,
+    active_threads: &mut Vec<ActiveThreadSummary>,
     scene_context: &mut Option<SceneContextOutput>,
 ) {
     for section_id in truncated_section_ids {
         match section_id.as_str() {
             "canonical_facts" => canonical_facts.clear(),
             "continuity_sheets" => continuity_sheets.clear(),
-            "recent_chapter_summaries" => recent_chapter_summaries.clear(),
+            // Keep the single most recent summary (the list arrives newest
+            // first): clearing everything made the briefing claim "None
+            // recorded before this chapter" while summaries existed but were
+            // trimmed for budget (defect item 9). The final line-boundary
+            // truncation still bounds the total.
+            "recent_chapter_summaries" => recent_chapter_summaries.truncate(1),
             "chapter_outline" => *chapter_outline = None,
             "book_outline" => *book_outline = None,
             "chapter_plan" => *chapter_plan = None,
+            "active_threads" => active_threads.clear(),
             "scene_context" => *scene_context = None,
             _ => {}
         }
@@ -2714,7 +3342,11 @@ fn compact_chapter_briefing_constraint_statement(statement: &str, max_chars: usi
     truncate_at_chars(&normalized, max_chars)
 }
 
-fn truncate_at_chars(text: &str, max_chars: usize) -> String {
+/// Char-boundary-safe truncation to at most `max_chars` characters, appending
+/// an ellipsis when the input is longer. The cut always lands on a char
+/// boundary so multibyte text is never split. Shared by scene-context
+/// compaction and the consistency-check message builders.
+pub fn truncate_at_chars(text: &str, max_chars: usize) -> String {
     let total = text.chars().count();
     if total <= max_chars {
         return text.trim().to_string();
@@ -2914,6 +3546,18 @@ pub fn system_overlay_summary(overlay: SystemOverlay) -> SystemOverlaySummary {
     }
 }
 
+/// Project a SQLite [`Economy`] record into the public [`EconomySummary`].
+pub fn economy_summary(economy: Economy) -> EconomySummary {
+    EconomySummary {
+        name: economy.name,
+        realm: economy.realm,
+        currency: economy.currency,
+        summary: economy.summary,
+        scarce_resources: economy.scarce_resources,
+        trade_goods: economy.trade_goods,
+    }
+}
+
 pub fn future_knowledge_summary(knowledge: &FutureKnowledge) -> FutureKnowledgeSummary {
     FutureKnowledgeSummary {
         character_id: knowledge.character_id.clone(),
@@ -2966,5 +3610,1464 @@ pub fn branch_summary(branch: &BibleBranch, active_branch_id: Option<&str>) -> B
         description: branch.description.clone(),
         parent_branch_id: branch.parent_branch_id.clone(),
         is_active: active_branch_id == Some(branch.id.as_str()),
+    }
+}
+
+/// A canonical-fact assertion reduced to exactly what contradiction detection
+/// needs: its `subject_table:subject_id:predicate` key, its canonicalized value,
+/// its half-open validity window `[from, until)` as story indices (None =
+/// unbounded), and the id of a fact it explicitly supersedes (if any).
+#[derive(Debug, Clone)]
+pub struct ContradictionCandidate {
+    pub id: String,
+    pub key: String,
+    pub value: String,
+    pub from_index: Option<i64>,
+    pub until_index: Option<i64>,
+    pub supersedes: Option<String>,
+}
+
+/// A detected contradiction: two or more candidates sharing a key that carry
+/// different values over overlapping validity windows.
+#[derive(Debug, Clone)]
+pub struct FactContradiction {
+    pub composite_key: String,
+    pub conflicting_ids: Vec<String>,
+    pub values: Vec<String>,
+}
+
+/// Build the canonical `subject_table:subject_id:predicate` grouping key. A
+/// missing subject id collapses to the project-level `project` sentinel, matching
+/// how facts are grouped elsewhere.
+pub fn contradiction_subject_key(
+    subject_table: &str,
+    subject_id: Option<&str>,
+    predicate: &str,
+) -> String {
+    format!(
+        "{}:{}:{}",
+        subject_table,
+        subject_id.unwrap_or("project"),
+        predicate
+    )
+}
+
+/// Half-open `[from, until)` overlap test, treating `None` as unbounded. Adjacent
+/// windows (`a.until == b.from`) do NOT overlap, so consecutive evolving states
+/// are not flagged.
+fn validity_windows_overlap(a: &ContradictionCandidate, b: &ContradictionCandidate) -> bool {
+    let a_starts_before_b_ends = match (a.from_index, b.until_index) {
+        (Some(a_from), Some(b_until)) => a_from < b_until,
+        _ => true,
+    };
+    let b_starts_before_a_ends = match (b.from_index, a.until_index) {
+        (Some(b_from), Some(a_until)) => b_from < a_until,
+        _ => true,
+    };
+    a_starts_before_b_ends && b_starts_before_a_ends
+}
+
+/// Scope-aware canonical-fact contradiction detection. Two facts conflict only
+/// when they share a key, carry different values, have OVERLAPPING (or unbounded)
+/// validity windows, and neither explicitly supersedes the other. Facts whose
+/// windows are disjoint (legitimate evolving state across story time) are not
+/// reported — this replaces the previous behavior that treated any two differing
+/// active facts as a contradiction regardless of their validity windows.
+pub fn detect_fact_contradictions(candidates: &[ContradictionCandidate]) -> Vec<FactContradiction> {
+    let mut by_key: std::collections::BTreeMap<&str, Vec<&ContradictionCandidate>> =
+        std::collections::BTreeMap::new();
+    for candidate in candidates {
+        by_key
+            .entry(candidate.key.as_str())
+            .or_default()
+            .push(candidate);
+    }
+
+    let mut contradictions = Vec::new();
+    for (key, group) in by_key {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut conflicting_ids: BTreeSet<String> = BTreeSet::new();
+        let mut values: BTreeSet<String> = BTreeSet::new();
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                if a.value == b.value {
+                    continue;
+                }
+                if a.supersedes.as_deref() == Some(b.id.as_str())
+                    || b.supersedes.as_deref() == Some(a.id.as_str())
+                {
+                    continue;
+                }
+                if validity_windows_overlap(a, b) {
+                    conflicting_ids.insert(a.id.clone());
+                    conflicting_ids.insert(b.id.clone());
+                    values.insert(a.value.clone());
+                    values.insert(b.value.clone());
+                }
+            }
+        }
+        if values.len() >= 2 {
+            contradictions.push(FactContradiction {
+                composite_key: key.to_string(),
+                conflicting_ids: conflicting_ids.into_iter().collect(),
+                values: values.into_iter().collect(),
+            });
+        }
+    }
+    contradictions
+}
+
+/// Canonicalize a stored fact's value: prefer text, then number, then JSON, else
+/// the `<unset>` sentinel.
+pub fn canonical_fact_value(fact: &crate::sqlite::records::CanonicalFact) -> String {
+    if let Some(value) = fact.value_text.clone().filter(|value| !value.is_empty()) {
+        return value;
+    }
+    if let Some(value) = fact
+        .value_number
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = fact
+        .value_json
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    "<unset>".to_string()
+}
+
+/// Reduce a stored canonical fact to a [`ContradictionCandidate`]. Active facts
+/// carry no supersedes link (they are the survivors), so `supersedes` is None.
+pub fn candidate_from_canonical_fact(
+    fact: &crate::sqlite::records::CanonicalFact,
+) -> ContradictionCandidate {
+    ContradictionCandidate {
+        id: fact.id.clone(),
+        key: contradiction_subject_key(
+            &fact.subject_table,
+            fact.subject_id.as_deref(),
+            &fact.predicate,
+        ),
+        value: canonical_fact_value(fact),
+        from_index: fact.valid_from.as_ref().map(story_index_from_placement),
+        until_index: fact.valid_until.as_ref().map(story_index_from_placement),
+        supersedes: None,
+    }
+}
+
+/// Canonicalize an inbound commit fact entry's value (mirrors
+/// [`canonical_fact_value`], with the legacy `value` string as a final fallback).
+fn commit_entry_value(entry: &spindle_core::models::CanonicalFactEntry) -> String {
+    if let Some(value) = entry.value_text.clone().filter(|value| !value.is_empty()) {
+        return value;
+    }
+    if let Some(value) = entry
+        .value_number
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = entry
+        .value_json
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = entry.value.clone().filter(|value| !value.is_empty()) {
+        return value;
+    }
+    "<unset>".to_string()
+}
+
+/// Reduce a prospective commit fact entry to a [`ContradictionCandidate`]. Only
+/// typed entries (explicit `subject_table` plus `predicate`/`key`) can be keyed
+/// the same way stored facts are; untyped/legacy entries return None and are not
+/// checked for contradictions here.
+pub fn candidate_from_commit_entry(
+    entry: &spindle_core::models::CanonicalFactEntry,
+    pending_id: String,
+) -> Option<ContradictionCandidate> {
+    let subject_table = entry.subject_table.as_deref()?;
+    let predicate = entry.predicate.as_deref().or(entry.key.as_deref())?;
+    let placement_index = |placement: &spindle_core::models::StoryPlacement| {
+        story_index(
+            placement.book_number,
+            placement.chapter_number,
+            placement.scene_order.unwrap_or(0),
+        )
+    };
+    Some(ContradictionCandidate {
+        id: pending_id,
+        key: contradiction_subject_key(subject_table, entry.subject_id.as_deref(), predicate),
+        value: commit_entry_value(entry),
+        from_index: entry.valid_from.as_ref().map(placement_index),
+        until_index: entry.valid_until.as_ref().map(placement_index),
+        supersedes: entry.supersedes_fact_id.clone(),
+    })
+}
+
+/// Deterministically build a per-book "story so far" synopsis from its ordered
+/// `(chapter_number, summary)` pairs, capped to `char_cap`. Under the cap it
+/// joins every chapter; over it, it keeps the most recent chapters that fit
+/// behind a condensation marker (a model compaction pass can replace this
+/// later). Returns `(synopsis, truncated)`.
+pub fn build_book_synopsis(parts: &[(i32, String)], char_cap: usize) -> (String, bool) {
+    let rendered: Vec<String> = parts
+        .iter()
+        .map(|(chapter, summary)| format!("Ch {chapter}: {summary}"))
+        .collect();
+    let full = rendered.join("\n");
+    if full.len() <= char_cap {
+        return (full, false);
+    }
+    const MARKER: &str = "[earlier chapters omitted]";
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = MARKER.len();
+    for line in rendered.iter().rev() {
+        let add = line.len() + 1; // newline
+        if used + add > char_cap {
+            if kept.is_empty() {
+                let head = truncate_to_bytes(line, char_cap.saturating_sub(used + 1));
+                if !head.is_empty() {
+                    kept.push(head);
+                }
+            }
+            break;
+        }
+        used += add;
+        kept.push(line.as_str());
+    }
+    kept.reverse();
+    let mut out = truncate_to_bytes(MARKER, char_cap).to_string();
+    for line in kept {
+        out.push('\n');
+        out.push_str(line);
+    }
+    (out, true)
+}
+
+/// UTF-8 safe byte budget shared by bounded serial context surfaces.
+pub fn truncate_to_bytes(text: &str, max_bytes: usize) -> &str {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Recent books and live commitments have independent budgets. The caller
+/// supplies only summaries preceding the drafting cursor.
+pub fn render_story_so_far(
+    books: &std::collections::BTreeMap<i32, Vec<(i32, String)>>,
+    threads: &[String],
+) -> String {
+    if books.is_empty() && threads.is_empty() {
+        return String::new();
+    }
+    const TOTAL_BYTES: usize = 2000;
+    let mut out =
+        String::from("STORY SO FAR (summaries before this chapter; newest books first):\n");
+    let open = render_open_threads_segment(threads, 600);
+    if !open.is_empty() {
+        out.push_str(&open);
+        out.push_str("\n(Thread priorities are current author plans.)\n");
+    }
+    let mut included = 0;
+    for (book, parts) in books.iter().rev() {
+        let Some((last_chapter, _)) = parts.last() else {
+            continue;
+        };
+        let header = format!("Book {book} (through ch {last_chapter}): ");
+        let remaining = TOTAL_BYTES.saturating_sub(out.len() + 80);
+        if remaining < header.len() + 80 {
+            break;
+        }
+        let cap = remaining.min(700).saturating_sub(header.len() + 1);
+        let (synopsis, _) = build_book_synopsis(parts, cap);
+        out.push_str(&header);
+        out.push_str(&synopsis);
+        out.push('\n');
+        included += 1;
+    }
+    if included < books.len() {
+        out.push_str(&format!(
+            "[{} earlier books omitted; retrieve summaries for detail.]",
+            books.len() - included
+        ));
+    }
+    out
+}
+
+/// Maximum number of open-thread entries persisted into a book digest.
+pub const OPEN_THREADS_MAX_ENTRIES: usize = 12;
+/// Maximum characters retained from a thread's name/description before the
+/// status/urgency suffix. Char-boundary safe (never byte-slices).
+const OPEN_THREAD_NAME_CHARS: usize = 80;
+
+/// Deterministically collect the still-open narrative threads for a book's
+/// "story so far" digest from its unresolved promises, conflicts, and plot
+/// lines. Filtering:
+///   * promises whose status is neither `paid_off` nor `abandoned`,
+///   * conflicts with at least one `stated_consequences[].delivered == false`,
+///   * plot lines whose status is not `complete`.
+///
+/// Each entry renders as `"<kind>: <name-or-description> (<status|urgency>)"`,
+/// where the name/description is truncated to [`OPEN_THREAD_NAME_CHARS`] on a
+/// char boundary. Ordering is stable: promises first by urgency rank descending
+/// then id ascending, then conflicts by id ascending, then plot lines by id
+/// ascending. Capped at [`OPEN_THREADS_MAX_ENTRIES`]. `current_index` is a
+/// [`story_index`] value used only to derive each promise's urgency label.
+pub fn build_open_threads(
+    promises: &[NarrativePromise],
+    conflicts: &[Conflict],
+    plot_lines: &[PlotLine],
+    current_index: i64,
+) -> Vec<String> {
+    let mut open_promises: Vec<(&NarrativePromise, PromiseUrgency)> = promises
+        .iter()
+        .filter(|p| p.status != "paid_off" && p.status != "abandoned")
+        .map(|p| (p, promise_timing_verdict(p, current_index).urgency))
+        .collect();
+    // Most pressing first (urgency rank desc), ties broken by id ascending.
+    open_promises
+        .sort_by(|(a, ua), (b, ub)| ub.rank().cmp(&ua.rank()).then_with(|| a.id.cmp(&b.id)));
+
+    let mut open_conflicts: Vec<&Conflict> = conflicts
+        .iter()
+        .filter(|c| c.stated_consequences.iter().any(|sc| !sc.delivered))
+        .collect();
+    open_conflicts.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut open_plots: Vec<&PlotLine> = plot_lines
+        .iter()
+        .filter(|pl| pl.status != "complete")
+        .collect();
+    open_plots.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut threads: Vec<String> = Vec::new();
+    for (promise, urgency) in open_promises {
+        threads.push(format!(
+            "promise: {} ({})",
+            truncate_open_thread_name(&promise.description),
+            urgency.as_str()
+        ));
+        if threads.len() >= OPEN_THREADS_MAX_ENTRIES {
+            return threads;
+        }
+    }
+    for conflict in open_conflicts {
+        threads.push(format!(
+            "conflict: {} ({})",
+            truncate_open_thread_name(&conflict.name),
+            conflict.conflict_type
+        ));
+        if threads.len() >= OPEN_THREADS_MAX_ENTRIES {
+            return threads;
+        }
+    }
+    for plot in open_plots {
+        threads.push(format!(
+            "plot: {} ({})",
+            truncate_open_thread_name(&plot.name),
+            plot.status
+        ));
+        if threads.len() >= OPEN_THREADS_MAX_ENTRIES {
+            return threads;
+        }
+    }
+    threads
+}
+
+/// Char-boundary-safe truncation of a thread name/description to
+/// [`OPEN_THREAD_NAME_CHARS`] characters.
+fn truncate_open_thread_name(text: &str) -> String {
+    text.chars().take(OPEN_THREAD_NAME_CHARS).collect()
+}
+
+/// Render the `Open threads: …` segment for one book's [STORY SO FAR] entry,
+/// joining thread entries with `; ` and staying within `char_cap` BYTES. Threads
+/// are dropped whole from the tail until the segment fits; the final surviving
+/// entry may itself be truncated on a char boundary if a single entry exceeds
+/// the cap. Returns an empty string when there are no threads or none fit.
+pub fn render_open_threads_segment(threads: &[String], char_cap: usize) -> String {
+    if threads.is_empty() {
+        return String::new();
+    }
+    const LABEL: &str = "Open threads: ";
+    if char_cap <= LABEL.len() {
+        return String::new();
+    }
+    let body_cap = char_cap - LABEL.len();
+    let mut body = String::new();
+    for thread in threads {
+        let candidate_extra = if body.is_empty() {
+            thread.len()
+        } else {
+            "; ".len() + thread.len()
+        };
+        if body.len() + candidate_extra <= body_cap {
+            if !body.is_empty() {
+                body.push_str("; ");
+            }
+            body.push_str(thread);
+            continue;
+        }
+        // This whole thread does not fit. If nothing has been kept yet, keep a
+        // char-boundary-safe prefix of the first entry so the segment is not
+        // empty; otherwise stop (drop remaining threads).
+        if body.is_empty() {
+            let remaining = body_cap;
+            let mut end = 0usize;
+            for (idx, ch) in thread.char_indices() {
+                let next = idx + ch.len_utf8();
+                if next > remaining {
+                    break;
+                }
+                end = next;
+            }
+            body.push_str(&thread[..end]);
+        }
+        break;
+    }
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("{LABEL}{body}")
+}
+
+// =============================================================================
+// Secret-knowledge gating: the pure `SecretVisibility` resolver.
+//
+// Part A of the secret-knowledge gating system (see
+// `docs/secret-knowledge-gating-design.md` §2.2). This is the ONE place the
+// per-scene context gate decides, for a single secret fact, whether the model
+// sees the fact at all and — when it does — which characters are inside its
+// circle of trust. The context-gate wiring in `get_scene_context` that calls
+// this resolver is deliberately Part B; here we only encode the decision table.
+//
+// The resolver is fully pure: it takes the fact's circle (each member's
+// `character_id` plus the story index at which they entered the circle, or
+// `None` for always-known), the scene cast, the POV character, and the scene's
+// story cursor, and returns a [`SecretDecision`].
+// =============================================================================
+
+/// The gating decision for a single secret fact in a single scene. See the
+/// §2.2 decision table in the design doc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretDecision {
+    /// No circle member (and no POV insider) is present: strip the fact from
+    /// every context carrier. The model cannot leak what it never saw (P-A).
+    Withhold,
+    /// At least one non-POV circle member is present: ship the fact with an
+    /// envelope naming who is and is not in the know (P-B).
+    Envelope {
+        /// Circle members, known at the cursor, who are present in the scene.
+        known_to: Vec<String>,
+        /// Present cast members who are NOT in the circle — they must not act
+        /// on the secret.
+        unaware_present: Vec<String>,
+        concealment_note: Option<String>,
+    },
+    /// The POV character is the only present circle member: the same envelope,
+    /// but narration may carry the POV's private awareness while dialogue and
+    /// other characters' behavior must not.
+    PovEnvelope {
+        known_to: Vec<String>,
+        concealment_note: Option<String>,
+    },
+}
+
+/// Resolve how a single secret fact should be gated for one scene.
+///
+/// `circle` is the fact's derived circle of trust: one entry per holder, the
+/// story index at which they learned it (`None` = always known, i.e. known
+/// from the start). `scene_cast` is the characters present in the scene;
+/// `pov_character_id` is the POV, if any. `scene_cursor` is the scene's packed
+/// story index. `concealment_note` is optional drafting guidance carried into
+/// the envelope.
+///
+/// Normalization: the POV character always counts as *present* whether or not
+/// its id also appears in `scene_cast` — the resolver treats the present set as
+/// `scene_cast ∪ {pov}`. Circle membership is evaluated *at the cursor*: a
+/// member with `learned_at = Some(idx)` is only in the circle when
+/// `idx <= scene_cursor` (so a ch-12 reveal does not leak into a ch-9 flashback
+/// drafted later); `learned_at = None` is always in the circle.
+///
+/// A secret with an empty circle (zero holders) resolves to [`SecretDecision::Withhold`]
+/// everywhere — an orphaned secret can never be drafted around. This is
+/// intentional and acceptable per the design: a secret nobody holds is inert.
+pub fn resolve_secret_visibility(
+    circle: &[(String, Option<i64>)],
+    scene_cast: &[String],
+    pov_character_id: Option<&str>,
+    scene_cursor: i64,
+    concealment_note: Option<&str>,
+) -> SecretDecision {
+    // Circle-at-cursor: members whose learned_at is None (always known) or
+    // has been reached by this scene's story position.
+    let circle_at_cursor: BTreeSet<&str> = circle
+        .iter()
+        .filter(|(_, learned_at)| learned_at.is_none_or(|idx| idx <= scene_cursor))
+        .map(|(id, _)| id.as_str())
+        .collect();
+
+    // Present set = cast ∪ {pov}. The POV counts as present even when the cast
+    // list omits its id (POV interiority is on-page regardless).
+    let mut present: BTreeSet<&str> = scene_cast.iter().map(String::as_str).collect();
+    if let Some(pov) = pov_character_id {
+        present.insert(pov);
+    }
+
+    let pov_in_circle = pov_character_id.is_some_and(|pov| circle_at_cursor.contains(pov));
+
+    // Circle members (at cursor) actually present in the scene.
+    let present_circle: Vec<&str> = present
+        .iter()
+        .copied()
+        .filter(|id| circle_at_cursor.contains(id))
+        .collect();
+
+    // Non-POV present circle members drive the plain Envelope variant.
+    let has_other_present_circle_member = present_circle
+        .iter()
+        .any(|id| pov_character_id != Some(*id));
+
+    let concealment_note = concealment_note.map(str::to_string);
+
+    if has_other_present_circle_member {
+        // ≥1 circle member present (someone other than the POV): full envelope.
+        let known_to: Vec<String> = present_circle.iter().map(|id| id.to_string()).collect();
+        let unaware_present: Vec<String> = present
+            .iter()
+            .filter(|id| !circle_at_cursor.contains(*id))
+            .map(|id| id.to_string())
+            .collect();
+        SecretDecision::Envelope {
+            known_to,
+            unaware_present,
+            concealment_note,
+        }
+    } else if pov_in_circle {
+        // POV is the only present circle member: POV-only envelope.
+        let known_to: Vec<String> = present_circle.iter().map(|id| id.to_string()).collect();
+        SecretDecision::PovEnvelope {
+            known_to,
+            concealment_note,
+        }
+    } else {
+        // No circle member present and POV not in circle: withhold entirely.
+        SecretDecision::Withhold
+    }
+}
+
+/// The hard-constraint id under which the secret-knowledge envelope renders.
+/// Non-truncatable, same tier as `[STORY SO FAR]` / `[IN-WORLD TIME]`.
+pub const SECRETS_IN_PLAY_CONSTRAINT_ID: &str = "[SECRETS IN PLAY]";
+
+/// Render the `[SECRETS IN PLAY]` hard-constraint statement for one secret fact
+/// (design §2.2). `fact_statement` is the secret's rendered prose; `known_to`
+/// and `unaware_present` are resolved character *names* (not ids). When
+/// `pov_only` is set, `pov_display` names the POV insider for the private-
+/// awareness narration line. Returns `None` for the `Withhold` decision — a
+/// withheld secret has no block at all.
+///
+/// Wording follows the design doc verbatim, gender-neutralized to the POV
+/// character name (or "the POV character" when unnamed).
+pub fn secret_in_play_block(
+    fact_statement: &str,
+    decision: &SecretDecision,
+    concealment_note: Option<&str>,
+) -> Option<String> {
+    let (known_to, unaware_present, is_pov_only) = match decision {
+        SecretDecision::Withhold => return None,
+        SecretDecision::Envelope {
+            known_to,
+            unaware_present,
+            ..
+        } => (known_to.as_slice(), unaware_present.as_slice(), false),
+        SecretDecision::PovEnvelope { known_to, .. } => (known_to.as_slice(), [].as_slice(), true),
+    };
+
+    let mut lines = vec![format!("Secret: {fact_statement}")];
+    lines.push(format!("Known ONLY to: {}", join_names(known_to)));
+    if !unaware_present.is_empty() {
+        lines.push(format!(
+            "Present and NOT in the know: {}",
+            join_names(unaware_present)
+        ));
+    }
+    lines.push(
+        "These characters must not reference, imply, or react to this — they do not know it."
+            .to_string(),
+    );
+    if let Some(note) = concealment_note
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+    {
+        lines.push(format!("Concealment: {note}"));
+    }
+    if is_pov_only {
+        let pov_name = known_to
+            .first()
+            .map(String::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("the POV character");
+        lines.push(format!(
+            "Narration may carry {pov_name}'s private awareness; dialogue and other characters' behavior must not."
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Join resolved character names for an envelope roster line. Empty rosters
+/// render as `(none)` so the constraint text is never dangling.
+fn join_names(names: &[String]) -> String {
+    if names.is_empty() {
+        "(none)".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+#[cfg(test)]
+mod secret_visibility_tests {
+    use super::*;
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// §2.2 row 1: no circle member present and POV not in circle → withhold.
+    #[test]
+    fn no_circle_member_present_withholds() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision = resolve_secret_visibility(
+            &circle,
+            &ids(&["bran", "aldric"]),
+            Some("bran"),
+            1_000,
+            None,
+        );
+        assert_eq!(decision, SecretDecision::Withhold);
+    }
+
+    /// §2.2 row 2: a non-POV circle member present → full envelope naming the
+    /// insider (known_to) and the out-of-circle cast (unaware_present).
+    #[test]
+    fn circle_member_present_yields_envelope() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision = resolve_secret_visibility(
+            &circle,
+            &ids(&["mara", "bran"]),
+            Some("bran"),
+            1_000,
+            Some("she deflects with dry humor"),
+        );
+        match decision {
+            SecretDecision::Envelope {
+                known_to,
+                unaware_present,
+                concealment_note,
+            } => {
+                assert_eq!(known_to, ids(&["mara"]));
+                assert_eq!(unaware_present, ids(&["bran"]));
+                assert_eq!(
+                    concealment_note.as_deref(),
+                    Some("she deflects with dry humor")
+                );
+            }
+            other => panic!("expected Envelope, got {other:?}"),
+        }
+    }
+
+    /// §2.2 row 3: POV is in the circle and is the ONLY present circle member →
+    /// POV-only envelope (narration may carry her private awareness).
+    #[test]
+    fn pov_only_circle_member_yields_pov_envelope() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("mara"), 1_000, None);
+        match decision {
+            SecretDecision::PovEnvelope { known_to, .. } => {
+                assert_eq!(known_to, ids(&["mara"]));
+            }
+            other => panic!("expected PovEnvelope, got {other:?}"),
+        }
+    }
+
+    /// POV counts as present via cast∪{pov} normalization even when the cast
+    /// list omits the POV id: a POV insider alone still yields PovEnvelope.
+    #[test]
+    fn pov_present_via_normalization_when_absent_from_cast() {
+        let circle = vec![("mara".to_string(), None)];
+        // Cast lists only bran; mara is POV but not in the cast slice.
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["bran"]), Some("mara"), 1_000, None);
+        match decision {
+            SecretDecision::PovEnvelope { known_to, .. } => {
+                assert_eq!(known_to, ids(&["mara"]));
+            }
+            other => panic!("expected PovEnvelope via pov normalization, got {other:?}"),
+        }
+    }
+
+    /// Flashback cursor: a member who learns the secret at index 500 is NOT in
+    /// the circle-at-cursor for a scene at cursor 400 → withhold.
+    #[test]
+    fn future_reveal_not_in_circle_before_cursor() {
+        let circle = vec![("mara".to_string(), Some(500))];
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("bran"), 400, None);
+        assert_eq!(
+            decision,
+            SecretDecision::Withhold,
+            "a reveal at index 500 must not leak into a scene at cursor 400"
+        );
+    }
+
+    /// The same member at the same cursor is in-circle once the cursor reaches
+    /// the reveal index (learned_at <= cursor).
+    #[test]
+    fn reveal_in_circle_at_or_after_cursor() {
+        let circle = vec![("mara".to_string(), Some(500))];
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("bran"), 500, None);
+        match decision {
+            SecretDecision::Envelope { known_to, .. } => assert_eq!(known_to, ids(&["mara"])),
+            other => panic!("expected Envelope at cursor 500, got {other:?}"),
+        }
+    }
+
+    /// Always-known (`learned_at = None`) members are in the circle at any
+    /// cursor, including cursor 0.
+    #[test]
+    fn always_known_member_in_circle_at_cursor_zero() {
+        let circle = vec![("mara".to_string(), None)];
+        let decision = resolve_secret_visibility(&circle, &ids(&["mara"]), Some("mara"), 0, None);
+        match decision {
+            SecretDecision::PovEnvelope { known_to, .. } => assert_eq!(known_to, ids(&["mara"])),
+            other => panic!("expected PovEnvelope for always-known member, got {other:?}"),
+        }
+    }
+
+    /// Degenerate: a secret with zero holders withholds everywhere — an
+    /// orphaned secret can never be drafted around (design-acceptable).
+    #[test]
+    fn empty_circle_withholds_everywhere() {
+        let circle: Vec<(String, Option<i64>)> = Vec::new();
+        let decision =
+            resolve_secret_visibility(&circle, &ids(&["mara", "bran"]), Some("mara"), 1_000, None);
+        assert_eq!(decision, SecretDecision::Withhold);
+    }
+
+    /// Two present insiders plus an outsider: known_to lists both insiders,
+    /// unaware_present lists only the outsider.
+    #[test]
+    fn multiple_insiders_and_one_outsider() {
+        let circle = vec![("mara".to_string(), None), ("aldric".to_string(), None)];
+        let decision = resolve_secret_visibility(
+            &circle,
+            &ids(&["mara", "aldric", "bran"]),
+            Some("bran"),
+            1_000,
+            None,
+        );
+        match decision {
+            SecretDecision::Envelope {
+                known_to,
+                unaware_present,
+                ..
+            } => {
+                assert_eq!(known_to, ids(&["aldric", "mara"]));
+                assert_eq!(unaware_present, ids(&["bran"]));
+            }
+            other => panic!("expected Envelope, got {other:?}"),
+        }
+    }
+
+    /// Withhold has no block at all.
+    #[test]
+    fn secret_block_none_for_withhold() {
+        assert_eq!(
+            secret_in_play_block("is a reincarnated warden", &SecretDecision::Withhold, None),
+            None
+        );
+    }
+
+    /// Envelope block names insiders (Known ONLY to), unaware present, the
+    /// must-not-reference sentence, and the concealment note when set.
+    #[test]
+    fn secret_block_envelope_names_roster_and_note() {
+        let decision = SecretDecision::Envelope {
+            known_to: ids(&["Mara"]),
+            unaware_present: ids(&["Bran"]),
+            concealment_note: None,
+        };
+        let block =
+            secret_in_play_block("is a reincarnated warden", &decision, Some("dry humor")).unwrap();
+        assert!(block.contains("Secret: is a reincarnated warden"));
+        assert!(block.contains("Known ONLY to: Mara"));
+        assert!(block.contains("Present and NOT in the know: Bran"));
+        assert!(block.contains("must not reference, imply, or react"));
+        assert!(block.contains("Concealment: dry humor"));
+        assert!(
+            !block.contains("Narration may carry"),
+            "the non-POV envelope carries no narration line"
+        );
+    }
+
+    /// PovEnvelope block carries the private-awareness narration line named to
+    /// the POV character, with no unaware-present roster.
+    #[test]
+    fn secret_block_pov_envelope_carries_narration_line() {
+        let decision = SecretDecision::PovEnvelope {
+            known_to: ids(&["Mara"]),
+            concealment_note: None,
+        };
+        let block = secret_in_play_block("is a reincarnated warden", &decision, None).unwrap();
+        assert!(block.contains("Known ONLY to: Mara"));
+        assert!(
+            block.contains(
+                "Narration may carry Mara's private awareness; dialogue and other characters' behavior must not."
+            ),
+            "POV narration line, named to the POV character: {block}"
+        );
+        assert!(
+            !block.contains("Present and NOT in the know"),
+            "the POV-only variant lists no unaware-present roster: {block}"
+        );
+    }
+
+    /// An unnamed POV falls back to "the POV character".
+    #[test]
+    fn secret_block_pov_envelope_falls_back_to_generic_pov_name() {
+        let decision = SecretDecision::PovEnvelope {
+            known_to: Vec::new(),
+            concealment_note: None,
+        };
+        let block = secret_in_play_block("a secret", &decision, None).unwrap();
+        assert!(
+            block.contains("Narration may carry the POV character's private awareness"),
+            "generic fallback wording: {block}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod promise_timing_tests {
+    use super::*;
+
+    fn placement(book: i32, chapter: i32, scene: i32) -> StoredStoryPlacement {
+        StoredStoryPlacement {
+            book_number: book,
+            chapter_number: chapter,
+            scene_order: Some(scene),
+            note: None,
+        }
+    }
+
+    fn promise(
+        status: &str,
+        planted: StoredStoryPlacement,
+        payoff: Option<StoredStoryPlacement>,
+    ) -> NarrativePromise {
+        let now = chrono::Utc::now();
+        NarrativePromise {
+            id: "narrative_promise:test".to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            promise_type: "setup".to_string(),
+            description: "a test promise".to_string(),
+            status: status.to_string(),
+            status_history: Vec::new(),
+            planted_at: planted,
+            planned_payoff: payoff,
+            notes: Vec::new(),
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn planted_promise_does_not_flag_after_a_few_scene_steps() {
+        // Regression for the ~100x unit bug: planted b1/ch1, cursor b1/ch1/scene5
+        // must read as 0 chapters elapsed and stay on "watch".
+        let p = promise("planted", placement(1, 1, 0), None);
+        let verdict = promise_timing_verdict(&p, story_index(1, 1, 5));
+        assert_eq!(verdict.chapters_since_plant, 0);
+        assert_eq!(verdict.urgency, PromiseUrgency::Watch);
+    }
+
+    #[test]
+    fn long_arc_with_distant_payoff_progresses_watch_soon_due() {
+        let p = promise("planted", placement(1, 1, 0), Some(placement(1, 50, 0)));
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 5, 0)).urgency,
+            PromiseUrgency::Watch
+        );
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 49, 0)).urgency,
+            PromiseUrgency::Soon
+        );
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 50, 0)).urgency,
+            PromiseUrgency::Due
+        );
+    }
+
+    #[test]
+    fn promise_well_past_payoff_is_overdue_with_chapter_count() {
+        let p = promise("reinforced", placement(1, 1, 0), Some(placement(1, 10, 0)));
+        let verdict = promise_timing_verdict(&p, story_index(1, 14, 0));
+        assert_eq!(verdict.urgency, PromiseUrgency::Overdue);
+        assert_eq!(verdict.overdue_by_chapters, 4);
+    }
+
+    #[test]
+    fn resolved_promise_never_flags() {
+        let p = promise("paid_off", placement(1, 1, 0), Some(placement(1, 10, 0)));
+        let verdict = promise_timing_verdict(&p, story_index(5, 0, 0));
+        assert_eq!(verdict.urgency, PromiseUrgency::Resolved);
+    }
+
+    #[test]
+    fn unscheduled_promise_uses_chapter_scaled_fallback() {
+        // No declared payoff: stays "watch" through the early chapters and only
+        // ages into "soon"/"overdue" on a chapter scale, not a scene-step scale.
+        let p = promise("planted", placement(1, 1, 0), None);
+        assert_eq!(
+            promise_timing_verdict(&p, story_index(1, 4, 0)).urgency,
+            PromiseUrgency::Watch
+        );
+        assert_eq!(
+            promise_timing_verdict(
+                &p,
+                story_index(1, 1 + PROMISE_PLANTED_SOON_CHAPTERS as i32, 0)
+            )
+            .urgency,
+            PromiseUrgency::Soon
+        );
+        assert_eq!(
+            promise_timing_verdict(
+                &p,
+                story_index(1, 1 + PROMISE_PLANTED_OVERDUE_CHAPTERS as i32, 0)
+            )
+            .urgency,
+            PromiseUrgency::Overdue
+        );
+    }
+
+    #[test]
+    fn story_index_no_longer_collides_across_book_boundary_within_radix() {
+        // Old packing collided: story_index(1,100,0) == story_index(2,0,0).
+        assert_ne!(story_index(1, 100, 0), story_index(2, 0, 0));
+        // The whole in-radix range of book 1 stays strictly below book 2.
+        assert!(
+            story_index(1, (CHAPTER_RADIX - 1) as i32, (SCENE_RADIX - 1) as i32)
+                < story_index(2, 0, 0)
+        );
+    }
+}
+
+#[cfg(test)]
+mod contradiction_tests {
+    use super::*;
+
+    fn cand(
+        id: &str,
+        value: &str,
+        from: Option<i64>,
+        until: Option<i64>,
+        supersedes: Option<&str>,
+    ) -> ContradictionCandidate {
+        ContradictionCandidate {
+            id: id.to_string(),
+            key: "character:c1:eye_color".to_string(),
+            value: value.to_string(),
+            from_index: from,
+            until_index: until,
+            supersedes: supersedes.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn unbounded_facts_with_different_values_conflict() {
+        let candidates = vec![
+            cand("a", "blue", None, None, None),
+            cand("b", "brown", None, None, None),
+        ];
+        let found = detect_fact_contradictions(&candidates);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].values,
+            vec!["blue".to_string(), "brown".to_string()]
+        );
+    }
+
+    #[test]
+    fn disjoint_validity_windows_do_not_conflict() {
+        // A holds [day1, day10); B holds [day10, day20): adjacent, no overlap —
+        // legitimate evolving state, must NOT be flagged.
+        let candidates = vec![
+            cand("a", "captain", Some(1), Some(10), None),
+            cand("b", "major", Some(10), Some(20), None),
+        ];
+        assert!(detect_fact_contradictions(&candidates).is_empty());
+    }
+
+    #[test]
+    fn overlapping_validity_windows_conflict() {
+        let candidates = vec![
+            cand("a", "captain", Some(1), Some(20), None),
+            cand("b", "major", Some(10), Some(30), None),
+        ];
+        assert_eq!(detect_fact_contradictions(&candidates).len(), 1);
+    }
+
+    #[test]
+    fn superseding_fact_does_not_conflict() {
+        let candidates = vec![
+            cand("old", "blue", None, None, None),
+            cand("new", "brown", None, None, Some("old")),
+        ];
+        assert!(detect_fact_contradictions(&candidates).is_empty());
+    }
+
+    #[test]
+    fn identical_values_never_conflict() {
+        let candidates = vec![
+            cand("a", "blue", None, None, None),
+            cand("b", "blue", None, None, None),
+        ];
+        assert!(detect_fact_contradictions(&candidates).is_empty());
+    }
+
+    #[test]
+    fn single_fact_does_not_conflict() {
+        assert!(detect_fact_contradictions(&[cand("a", "blue", None, None, None)]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod book_digest_tests {
+    use super::*;
+
+    #[test]
+    fn synopsis_joins_all_chapters_under_cap() {
+        let parts = vec![(1, "setup".to_string()), (2, "rising".to_string())];
+        let (synopsis, truncated) = build_book_synopsis(&parts, 1000);
+        assert!(!truncated);
+        assert!(synopsis.contains("Ch 1: setup"));
+        assert!(synopsis.contains("Ch 2: rising"));
+    }
+
+    #[test]
+    fn synopsis_keeps_recent_chapters_over_cap() {
+        let parts: Vec<(i32, String)> = (1..=10)
+            .map(|n| (n, format!("event number {n} occurs here")))
+            .collect();
+        let (synopsis, truncated) = build_book_synopsis(&parts, 90);
+        assert!(truncated, "should report truncation");
+        assert!(
+            synopsis.contains("omitted"),
+            "should identify omitted chapters"
+        );
+        assert!(synopsis.contains("Ch 10:"), "most recent chapter retained");
+        assert!(
+            !synopsis.contains("Ch 1:"),
+            "oldest chapter dropped under cap"
+        );
+        assert!(synopsis.len() <= 90, "synopsis stays within the char cap");
+    }
+}
+
+#[cfg(test)]
+mod open_threads_tests {
+    use super::*;
+
+    fn placement(book: i32, chapter: i32, scene: i32) -> StoredStoryPlacement {
+        StoredStoryPlacement {
+            book_number: book,
+            chapter_number: chapter,
+            scene_order: Some(scene),
+            note: None,
+        }
+    }
+
+    fn promise(id: &str, status: &str, description: &str) -> NarrativePromise {
+        let now = chrono::Utc::now();
+        NarrativePromise {
+            id: id.to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            promise_type: "setup".to_string(),
+            description: description.to_string(),
+            status: status.to_string(),
+            status_history: Vec::new(),
+            planted_at: placement(1, 1, 0),
+            planned_payoff: None,
+            notes: Vec::new(),
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn conflict(id: &str, name: &str, deliver_done: bool) -> Conflict {
+        let now = chrono::Utc::now();
+        Conflict {
+            id: id.to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            name: name.to_string(),
+            normalized_name: name.to_ascii_lowercase(),
+            conflict_type: "external".to_string(),
+            stakes: "everything".to_string(),
+            escalation_stages: Vec::new(),
+            expected_total_cycles: None,
+            try_fail_cycles: Vec::new(),
+            stated_consequences: vec![crate::sqlite::json_records::StoredStatedConsequence {
+                description: "a stated cost".to_string(),
+                stated_at: None,
+                must_demonstrate_by: None,
+                delivered: deliver_done,
+            }],
+            resolution_summary: None,
+            notes: None,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+            escalation_demonstrated: Vec::new(),
+        }
+    }
+
+    fn plot_line(id: &str, name: &str, status: &str) -> PlotLine {
+        let now = chrono::Utc::now();
+        PlotLine {
+            id: id.to_string(),
+            project_id: "project:test".to_string(),
+            branch_id: "branch:test".to_string(),
+            name: name.to_string(),
+            normalized_name: name.to_ascii_lowercase(),
+            plot_type: "main".to_string(),
+            summary: "a plot".to_string(),
+            status: status.to_string(),
+            convergence_points: Vec::new(),
+            notes: None,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+            connected_conflict_ids: Vec::new(),
+            connected_theme_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collects_unresolved_threads_with_kind_prefixes() {
+        let threads = build_open_threads(
+            &[promise(
+                "narrative_promise:p1",
+                "active",
+                "the missing heir returns",
+            )],
+            &[conflict("conflict:c1", "Siege of Ash", false)],
+            &[plot_line("plot_line:pl1", "The Rebellion", "developing")],
+            story_index(1, 5, 0),
+        );
+        assert_eq!(threads.len(), 3, "one entry per unresolved thread");
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.starts_with("promise:") && t.contains("the missing heir returns")),
+            "promise entry present: {threads:?}"
+        );
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.starts_with("conflict:") && t.contains("Siege of Ash")),
+            "conflict entry present: {threads:?}"
+        );
+        assert!(
+            threads
+                .iter()
+                .any(|t| t.starts_with("plot:") && t.contains("The Rebellion")),
+            "plot entry present: {threads:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_threads_are_excluded() {
+        // Paid-off/abandoned promise, delivered consequence, complete plot line.
+        let threads = build_open_threads(
+            &[
+                promise("narrative_promise:p1", "paid_off", "resolved promise"),
+                promise("narrative_promise:p2", "abandoned", "dropped promise"),
+            ],
+            &[conflict("conflict:c1", "Done Conflict", true)],
+            &[plot_line("plot_line:pl1", "Finished Line", "complete")],
+            story_index(1, 5, 0),
+        );
+        assert!(threads.is_empty(), "no open threads: {threads:?}");
+    }
+
+    #[test]
+    fn conflict_with_any_undelivered_consequence_is_open() {
+        let now = chrono::Utc::now();
+        let mut c = conflict("conflict:c1", "Mixed", true);
+        c.stated_consequences
+            .push(crate::sqlite::json_records::StoredStatedConsequence {
+                description: "an undelivered cost".to_string(),
+                stated_at: None,
+                must_demonstrate_by: None,
+                delivered: false,
+            });
+        c.updated_at = now;
+        let threads = build_open_threads(&[], &[c], &[], story_index(1, 5, 0));
+        assert_eq!(threads.len(), 1, "still open due to undelivered cost");
+    }
+
+    #[test]
+    fn deterministic_order_promises_by_urgency_then_id_then_conflicts_then_plots() {
+        // Two promises: p_overdue (overdue) should sort ahead of p_watch (watch).
+        let mut overdue = promise("narrative_promise:z_overdue", "planted", "overdue one");
+        overdue.planted_at = placement(1, 1, 0);
+        overdue.planned_payoff = Some(placement(1, 2, 0));
+        let mut watch = promise("narrative_promise:a_watch", "planted", "watch one");
+        watch.planted_at = placement(1, 1, 0);
+        watch.planned_payoff = Some(placement(1, 50, 0));
+        let current = story_index(1, 10, 0);
+
+        let a = build_open_threads(
+            &[watch.clone(), overdue.clone()],
+            &[conflict("conflict:c1", "Cee", false)],
+            &[plot_line("plot_line:pl1", "Pee", "developing")],
+            current,
+        );
+        // Reverse input order → identical output (sort is stable/deterministic).
+        let b = build_open_threads(
+            &[overdue, watch],
+            &[conflict("conflict:c1", "Cee", false)],
+            &[plot_line("plot_line:pl1", "Pee", "developing")],
+            current,
+        );
+        assert_eq!(a, b, "byte-identical regardless of input order");
+        // Overdue promise before watch promise; both before conflict; conflict before plot.
+        let idx = |needle: &str| a.iter().position(|t| t.contains(needle)).unwrap();
+        assert!(idx("overdue one") < idx("watch one"));
+        assert!(idx("watch one") < idx("Cee"));
+        assert!(idx("Cee") < idx("Pee"));
+    }
+
+    #[test]
+    fn caps_at_twelve_entries() {
+        let promises: Vec<NarrativePromise> = (0..20)
+            .map(|n| promise(&format!("narrative_promise:p{n:02}"), "active", "a promise"))
+            .collect();
+        let threads = build_open_threads(&promises, &[], &[], story_index(1, 5, 0));
+        assert_eq!(threads.len(), 12, "capped at 12 entries");
+    }
+
+    #[test]
+    fn thread_description_truncated_to_eighty_chars_char_safe() {
+        // 100 em-dashes (multibyte) — truncation must land on a char boundary.
+        let long = "—".repeat(100);
+        let threads = build_open_threads(
+            &[promise("narrative_promise:p1", "active", &long)],
+            &[],
+            &[],
+            story_index(1, 5, 0),
+        );
+        assert_eq!(threads.len(), 1);
+        // The rendered name portion holds at most 80 chars of the description.
+        let entry = &threads[0];
+        assert!(entry.is_char_boundary(0));
+        // Whole string is valid UTF-8 by construction; count em-dashes retained.
+        let dashes = entry.chars().filter(|c| *c == '—').count();
+        assert!(
+            dashes <= 80,
+            "at most 80 description chars retained: {dashes}"
+        );
+        assert!(dashes >= 1, "some description retained");
+    }
+
+    #[test]
+    fn render_segment_stays_within_cap_and_truncates_threads_first() {
+        let threads: Vec<String> = (0..15)
+            .map(|n| {
+                format!("promise: a fairly long open thread description number {n:02} (watch)")
+            })
+            .collect();
+        let segment = render_open_threads_segment(&threads, 120);
+        assert!(
+            segment.len() <= 120,
+            "segment within cap: {}",
+            segment.len()
+        );
+        assert!(segment.starts_with("Open threads:"), "labelled: {segment}");
+    }
+
+    #[test]
+    fn render_segment_empty_when_no_threads() {
+        assert!(render_open_threads_segment(&[], 700).is_empty());
+    }
+
+    #[test]
+    fn render_segment_char_boundary_safe_with_multibyte() {
+        // Force a truncation boundary inside a run of em-dashes.
+        let threads = vec![format!("promise: {} (watch)", "—".repeat(200))];
+        let segment = render_open_threads_segment(&threads, 40);
+        // Must be valid UTF-8 and within the cap.
+        assert!(segment.chars().count() <= 40 || segment.len() <= 40 * 4);
+        assert!(segment.len() <= 40, "byte cap respected: {}", segment.len());
+    }
+}
+
+#[cfg(test)]
+mod intensity_trend_expectation_tests {
+    use super::*;
+    use crate::sqlite::json_records::StoredIntensityPoint;
+
+    fn means(entries: &[((i32, i32), f64)]) -> std::collections::BTreeMap<(i32, i32), f64> {
+        entries.iter().copied().collect()
+    }
+
+    fn point(position: f64, intensity: f64) -> StoredIntensityPoint {
+        StoredIntensityPoint {
+            position,
+            intensity,
+        }
+    }
+
+    /// Interpolation correctness: points at 0.0→0.2 and 1.0→0.9, drafting
+    /// chapter 5 of 10 (position 0.5) → expected 0.55, appended to the trend.
+    #[test]
+    fn interpolates_expectation_between_two_points() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5), ((1, 3), 0.6)]);
+        let points = vec![point(0.0, 0.2), point(1.0, 0.9)];
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 5, &points, Some(10)).expect("directive");
+        assert!(
+            directive.contains("curve expects 0.55 here"),
+            "expected interpolated 0.55 clause: {directive}"
+        );
+    }
+
+    /// A single intensity point yields no expectation clause (needs ≥2).
+    #[test]
+    fn single_point_yields_no_expectation_clause() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5)]);
+        let points = vec![point(0.5, 0.5)];
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 3, &points, Some(10)).expect("directive");
+        assert!(
+            !directive.contains("curve expects"),
+            "single point must not emit an expectation clause: {directive}"
+        );
+    }
+
+    /// No intensity points → the directive is exactly the without-expectation
+    /// form (unchanged from the pre-V0022 behavior).
+    #[test]
+    fn no_points_leaves_directive_unchanged() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5)]);
+        let with_none =
+            realized_intensity_trend_directive(&m, 1, 3, &[], Some(10)).expect("directive");
+        assert!(
+            !with_none.contains("curve expects"),
+            "no points must not emit an expectation clause: {with_none}"
+        );
+        assert!(with_none.starts_with("Realized intensity last"));
+    }
+
+    /// Denominator underivable (no max chapter) → no expectation clause even
+    /// with ≥2 points.
+    #[test]
+    fn missing_denominator_yields_no_clause() {
+        let m = means(&[((1, 1), 0.4), ((1, 2), 0.5)]);
+        let points = vec![point(0.0, 0.2), point(1.0, 0.9)];
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 3, &points, None).expect("directive");
+        assert!(
+            !directive.contains("curve expects"),
+            "no denominator must not emit an expectation clause: {directive}"
+        );
+    }
+
+    /// Position past the last point clamps to the nearest (last) point.
+    #[test]
+    fn position_clamps_to_nearest_point_outside_range() {
+        let m = means(&[((1, 8), 0.4)]);
+        let points = vec![point(0.0, 0.2), point(0.5, 0.6)];
+        // chapter 9 of 10 → position 0.9, past the last point (0.5) → clamp 0.6.
+        let directive =
+            realized_intensity_trend_directive(&m, 1, 9, &points, Some(10)).expect("directive");
+        assert!(
+            directive.contains("curve expects 0.60 here"),
+            "position past range clamps to nearest point: {directive}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod briefing_trim_tests {
+    use super::*;
+
+    fn summary(chapter_number: i32) -> ChapterSummaryBriefing {
+        ChapterSummaryBriefing {
+            book_number: 1,
+            chapter_number,
+            summary: format!("Chapter {chapter_number} happened."),
+            key_events: Vec::new(),
+            character_changes: Vec::new(),
+            relationship_shifts: Vec::new(),
+            arc_advances: Vec::new(),
+            promise_events: Vec::new(),
+        }
+    }
+
+    /// Defect item 9: budget trims cleared the whole recent-summaries list, so
+    /// the re-rendered briefing claimed "None recorded before this chapter"
+    /// even though the preceding chapter's summary row existed. A trim must
+    /// keep the single most recent summary (the list arrives newest-first).
+    #[test]
+    fn budget_trim_keeps_the_most_recent_chapter_summary() {
+        let mut canonical_facts = Vec::new();
+        let mut continuity_sheets = Vec::new();
+        let mut recent = vec![summary(11), summary(10), summary(9)];
+        let mut chapter_outline = None;
+        let mut book_outline = None;
+        let mut chapter_plan = None;
+        let mut active_threads = Vec::new();
+        let mut scene_context = None;
+
+        apply_chapter_briefing_bundle_trims(
+            &["recent_chapter_summaries".to_string()],
+            &mut canonical_facts,
+            &mut continuity_sheets,
+            &mut recent,
+            &mut chapter_outline,
+            &mut book_outline,
+            &mut chapter_plan,
+            &mut active_threads,
+            &mut scene_context,
+        );
+
+        assert_eq!(
+            recent.iter().map(|s| s.chapter_number).collect::<Vec<_>>(),
+            vec![11],
+            "the immediately preceding chapter's summary must survive a budget trim"
+        );
     }
 }
