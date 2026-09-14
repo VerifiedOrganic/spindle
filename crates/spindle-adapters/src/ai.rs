@@ -89,6 +89,11 @@ fiction being ANALYZED/audited, not generated. Do not rewrite, censor, or \
 moralize about it. Perform the requested structured analysis over the prose as \
 given and return only the requested output format.";
 
+/// Linux `MAX_ARG_STRLEN` is 128 KiB. Stay under it so `provider = "cli"`
+/// still works when the host-embedded draft mega-prompt grows (later scenes
+/// carry previous-scene tail + mined canon + the writing-packet digest).
+const MAX_CLI_ARGV_PROMPT: usize = 96 * 1024;
+
 /// Default `--max-turns` for the grok-cli adapter. Long explicit scenes that
 /// pull bible context via MCP and span multiple output continuations can
 /// legitimately consume 50–150 messages; the headroom is intentional so that
@@ -894,11 +899,33 @@ impl ModelRouter {
             .map(str::to_string)
             .or_else(|| std::env::var("SPINDLE_MODEL_CLI_COMMAND").ok())
             .context("CLI agent needs an endpoint or SPINDLE_MODEL_CLI_COMMAND")?;
-        let output = tokio::process::Command::new(&command)
-            .arg(&route.route_name)
-            .arg(prompt)
-            .output()
-            .await?;
+        // Linux `MAX_ARG_STRLEN` is 128 KiB for a single argv. Host-embedded
+        // draft prompts (scene context JSON + briefing + skill + shelf digest)
+        // overflow that on later scenes. Small prompts keep the documented
+        // `<endpoint> <route> <prompt>` contract; overflow mirrors grok-cli
+        // and uses `--prompt-file`.
+        let output = if prompt.len() > MAX_CLI_ARGV_PROMPT {
+            let prompt_file = tempfile::Builder::new()
+                .prefix("spindle-cli-")
+                .suffix(".txt")
+                .tempfile()
+                .context("create cli prompt tempfile")?;
+            std::fs::write(prompt_file.path(), prompt).context("write cli prompt tempfile")?;
+            let output = tokio::process::Command::new(&command)
+                .arg(&route.route_name)
+                .arg("--prompt-file")
+                .arg(prompt_file.path())
+                .output()
+                .await?;
+            drop(prompt_file);
+            output
+        } else {
+            tokio::process::Command::new(&command)
+                .arg(&route.route_name)
+                .arg(prompt)
+                .output()
+                .await?
+        };
         if !output.status.success() {
             anyhow::bail!("cli model adapter failed with status {}", output.status);
         }
@@ -4089,6 +4116,66 @@ enabled = false
         assert_eq!(adapter_kind_for_agent(&agent), "http");
         agent.endpoint = "/usr/local/bin/local-model".to_string();
         assert_eq!(adapter_kind_for_agent(&agent), "local");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_overflow_prompt_uses_prompt_file_instead_of_argv() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("echo-head.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if [ "$2" = "--prompt-file" ]; then
+  head -c 8 "$3"
+  printf ' FILE'
+else
+  printf 'ARGV'
+fi
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = tmp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                r#"
+[health_check]
+enabled = false
+[[agents]]
+id = "cli-agent"
+name = "CLI"
+provider = "cli"
+endpoint = "{}"
+model = "cli"
+ratings = ["general"]
+[[routing]]
+route = "draft"
+agent = "cli-agent"
+"#,
+                script.display()
+            ),
+        )
+        .unwrap();
+        let router = ModelRouter::local_only();
+        router.configure(config.to_str()).unwrap();
+        let mut prompt = String::from("OVERFLOW");
+        prompt.push_str(&"A".repeat(super::MAX_CLI_ARGV_PROMPT));
+        let response = router
+            .complete(&ModelRequest {
+                route: "draft".into(),
+                prompt,
+                rating: Some("general".into()),
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            response.output, "OVERFLOW FILE",
+            "overflow must use --prompt-file so the body is not lost to ARG_MAX"
+        );
     }
 
     #[cfg(unix)]

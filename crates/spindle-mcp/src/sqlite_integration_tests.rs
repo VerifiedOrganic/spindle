@@ -448,7 +448,11 @@ async fn authoring_supervisor_integration_flow() {
     let script_path = tmp.path().join("mock_agent.sh");
     let script_content = r#"#!/bin/bash
 ROUTE=$1
-PROMPT=$2
+if [ "$2" = "--prompt-file" ]; then
+  PROMPT=$(cat -- "$3")
+else
+  PROMPT=$2
+fi
 
 if [ "$ROUTE" = "draft" ]; then
   cat <<EOF
@@ -2497,7 +2501,11 @@ agent = "bold-review"
 /// Non-draft (review) branch: a plain strengths/concerns block.
 const UNIVERSAL_MOCK_AGENT_SCRIPT: &str = r#"#!/bin/bash
 ROUTE=$1
-PROMPT=$2
+if [ "$2" = "--prompt-file" ]; then
+  PROMPT=$(cat -- "$3")
+else
+  PROMPT=$2
+fi
 if [ "$ROUTE" = "draft" ]; then
   # BUG 3 fixture: a scene whose synopsis carries MOCK_DRAFT_JSONFREE gets a
   # draft reply with NO JSON at all, so the harness parse fails every time. The
@@ -5288,15 +5296,20 @@ async fn auto_execute_next(fx: &AutoCheckpointFixture) -> serde_json::Value {
         "run_id": fx.run_id,
         "mode": "agent",
     });
-    fx.router
+    let result = fx
+        .router
         .call_tool(
             "authoring_execute_next",
             Some(exec_args.as_object().unwrap()),
         )
         .await
-        .unwrap()
-        .structured_content
-        .unwrap()
+        .unwrap();
+    result.structured_content.unwrap_or_else(|| {
+        panic!(
+            "authoring_execute_next returned no structured_content (is_error={:?}): {:?}",
+            result.is_error, result.content
+        )
+    })
 }
 
 async fn auto_status(fx: &AutoCheckpointFixture) -> serde_json::Value {
@@ -6868,15 +6881,19 @@ agent = "tame-analyst"
     loop {
         guard += 1;
         assert!(guard < 60, "run did not reach checkpoint/complete in time");
-        let val = router
+        let result = router
             .call_tool(
                 "authoring_execute_next",
                 Some(exec_args.as_object().unwrap()),
             )
             .await
-            .unwrap()
-            .structured_content
             .unwrap();
+        let val = result.structured_content.unwrap_or_else(|| {
+            panic!(
+                "authoring_execute_next returned no structured_content (is_error={:?}): {:?}",
+                result.is_error, result.content
+            )
+        });
         let status = val["status"].as_str().unwrap();
         if status == "blocked" || status == "completed" {
             break;

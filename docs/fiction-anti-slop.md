@@ -1,12 +1,14 @@
 # Fiction anti-slop
 
-Status: **Phase 2 writing-packet digest** is live. `compact_shelf_digest`,
-`voice_samples`, and `scene_negatives` ride `get_scene_context` /
-`get_chapter_briefing`, guidance/standards, and harness draft prompts. The
+Status: **Phase 3 critic / revise loop** is live. Hard verify fail uses a
+rewrite-from-beats prompt contract (adapters + harness), capped at 1–2
+passes, then re-lints and surfaces residuals. Dual-persona review injects
+the scan report; the Craft Technician must cite shelf IDs; the Literary
+Critic gets a structure block that is not a BLUF/tech-structure gate. The
 Phase 1 scanner still lives at `style/antislop/` in `spindle-core`. Soft
 shelves (including `solitary_fade` and `said_bookism` by product lock) are
-warnings and do not increment `hard_count`. Soft-on-save / hard-on-verify
-semantics are unchanged.
+warnings and do not increment `hard_count`. Soft-on-save stays advisory;
+hard fail-closes only when verify/revise is on.
 
 This is the current design contract for fiction anti-slop. The human catalog is
 [`references/anti-slop.md`](../references/anti-slop.md). The versioned pack stub
@@ -148,19 +150,21 @@ Later scan results (also reserved, not shipped):
 | `anti_slop.soft_count` | Advisory cluster count. Never sufficient to fail a save. |
 | `anti_slop.hits[]` | Per-hit id, severity, span, rewrite hint (`from_beats`). |
 
-## Authoring-loop hook (Phase 1+, not implemented)
+## Authoring-loop hook (Phase 3)
 
-When a scanner exists, wire it as follows — do not implement this in Phase 0:
-
-1. **Save:** run scan; attach soft + hard hits as warnings. Save always
-   succeeds for soft. Hard does not block while verify is off.
-2. **Verify/revise on:** hard over-limit joins the scene-scoped verify set and
-   fail-closes. Soft remains advisory.
-3. **Checkpoint `auto_strict`:** treat `anti_slop.hard_count != 0` as a
-   finding. Soft-only must not auto-approve if hard_count is non-zero; it also
-   must not *create* a hard finding by itself.
-4. **Rewrite:** at most two from-beats passes, then park or carry to
-   checkpoint like other unchanged verify findings.
+1. **Save:** `save_scene_draft` scans and attaches `anti_slop` on the output.
+   Soft + hard hits are advisory. The write always succeeds. Hard does not
+   block while `max_revise_attempts` is `0`.
+2. **Verify/revise on:** hard over-limit joins `SCENE_VERIFY_CHECKS` as
+   `anti_slop` / `warning` and fail-closes. Soft remains advisory (not a
+   verify finding).
+3. **Checkpoint `auto_strict`:** `anti_slop.hard_count != 0` blocks
+   auto-approve (product lock). Soft-only must not invent a hard finding.
+4. **Rewrite:** rewrite-from-beats contract, at most two passes, then
+   re-lint. Leftovers park like other unchanged verify findings.
+5. **Dual-persona:** inject the report; Craft Technician cites shelf IDs (or
+   NONE); Literary Critic uses the structure block (no BLUF / Voices / Flesch
+   / delve gates).
 
 ## Skill honesty
 
@@ -168,10 +172,9 @@ When a scanner exists, wire it as follows — do not implement this in Phase 0:
 claim a missing "100+" pattern list. The authoring supervisor does not repeat
 that claim.
 
-## Out of scope (Phase 2)
+## Out of scope (Phase 3)
 
-- Wiring the scanner into `save_scene_draft` / verify / `auto_strict`
-- Dual-persona revise
+- Phase 4 eval/CI pack
 - Promoting `said_bookism` to hard in the default pack
 - Porting Voices / tech gates
 - Persisting source-corpus voice samples (hooks come from style-profile

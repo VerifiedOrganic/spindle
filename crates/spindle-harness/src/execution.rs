@@ -606,6 +606,21 @@ fn finding_is_actionable(severity: &str) -> bool {
     matches!(severity, "warning" | "error")
 }
 
+/// Residual hard-shelf line for verify detail (re-lint surface). Soft never
+/// appears here because `anti_slop` findings are hard-only.
+fn residual_anti_slop_detail(findings: &[(String, String)]) -> String {
+    let residuals: Vec<&str> = findings
+        .iter()
+        .filter(|(check_type, _)| check_type == spindle_core::style::antislop::ANTI_SLOP_CHECK)
+        .map(|(_, message)| message.as_str())
+        .collect();
+    if residuals.is_empty() {
+        "anti_slop residuals: none".to_string()
+    } else {
+        format!("anti_slop residuals: {}", residuals.join(" | "))
+    }
+}
+
 /// Run the scene-scoped deterministic check subset for one scene and return its
 /// actionable (severity ≥ warning) findings as `(check_type, message)` pairs,
 /// deterministically ordered.
@@ -693,6 +708,17 @@ fn render_revision_directives(findings: &[(String, String)]) -> String {
          The previous draft tripped these scene-scoped checks. Revise the scene to \
          resolve each finding, then return the same strict JSON package:\n",
     );
+    if findings
+        .iter()
+        .any(|(check_type, _)| check_type == spindle_core::style::antislop::ANTI_SLOP_CHECK)
+    {
+        block.push('\n');
+        block.push_str(spindle_core::style::antislop::rewrite_from_beats_contract());
+        block.push('\n');
+        block.push_str(
+            "Re-lint after the rewrite. Surface leftover hard shelf IDs; do not drop residuals.\n",
+        );
+    }
     for (check_type, message) in findings.iter().take(MAX_REVISION_DIRECTIVE_LINES) {
         block.push_str(&format!("- [{check_type}] {message}\n"));
     }
@@ -757,20 +783,29 @@ async fn verify_scene(
                 // so parking beats another identical revision pass.
                 (
                     "parked_findings".to_string(),
-                    "unchanged after revision".to_string(),
+                    format!(
+                        "unchanged after revision; {}",
+                        residual_anti_slop_detail(&findings)
+                    ),
                     Some(fingerprint),
                 )
             } else if revise_attempts >= max {
                 // Budget spent on this finding set: park with counts.
                 (
                     "parked_findings".to_string(),
-                    format!("{count} finding(s) parked after {revise_attempts} revision(s)"),
+                    format!(
+                        "{count} finding(s) parked after {revise_attempts} revision(s); {}",
+                        residual_anti_slop_detail(&findings)
+                    ),
                     Some(fingerprint),
                 )
             } else {
                 (
                     "findings".to_string(),
-                    format!("{count} finding(s) at or above warning"),
+                    format!(
+                        "{count} finding(s) at or above warning; {}",
+                        residual_anti_slop_detail(&findings)
+                    ),
                     Some(fingerprint),
                 )
             }
@@ -2545,6 +2580,47 @@ mod tests {
         assert!(prompt.contains("emotion_cocktail"));
         assert!(prompt.contains("Rewrite-from-beats"));
         assert!(!prompt.contains("paraphrase-humanize") || prompt.contains("do not paraphrase"));
+    }
+
+    #[test]
+    fn revision_directives_use_rewrite_from_beats_on_hard_anti_slop() {
+        let findings = vec![
+            (
+                "anti_slop".to_string(),
+                "hard shelf `emotion_cocktail` over limit".to_string(),
+            ),
+            ("tone_consistency".to_string(), "tone drifted".to_string()),
+        ];
+        let block = render_revision_directives(&findings);
+        assert!(block.contains("## Revision directives"));
+        assert!(block.contains("[anti_slop]"));
+        assert!(block.contains("emotion_cocktail"));
+        assert!(
+            block.contains("from the scene beat") || block.contains("Rewrite from the scene beat")
+        );
+        assert!(
+            block.contains("paraphrase"),
+            "must forbid paraphrase-humanizer: {block}"
+        );
+        assert!(block.contains("Re-lint"));
+        assert!(block.contains("residuals"));
+        assert!(!block.contains("humanize the sentence"));
+        assert!(!block.contains("BLUF"));
+        assert!(!block.contains("Flesch"));
+    }
+
+    #[test]
+    fn residual_detail_surfaces_hard_anti_slop_only() {
+        assert_eq!(
+            residual_anti_slop_detail(&[("tone_consistency".into(), "x".into())]),
+            "anti_slop residuals: none"
+        );
+        let detail = residual_anti_slop_detail(&[(
+            "anti_slop".into(),
+            "hard shelf `fishing_ending` over limit".into(),
+        )]);
+        assert!(detail.contains("fishing_ending"));
+        assert!(detail.contains("anti_slop residuals"));
     }
 
     #[test]

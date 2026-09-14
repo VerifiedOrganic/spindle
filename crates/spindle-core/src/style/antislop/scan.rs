@@ -164,6 +164,18 @@ fn collect_matches(shelf: &ShelfSpec, prose: &str) -> Vec<RawMatch> {
     }
 }
 
+/// Snap a byte index down to the nearest UTF-8 char boundary so a close-window
+/// slice cannot panic inside a multibyte glyph (em dash, curly quotes).
+fn floor_char_boundary(text: &str, mut idx: usize) -> usize {
+    if idx >= text.len() {
+        return text.len();
+    }
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 fn find_all(re: &Regex, prose: &str) -> Vec<RawMatch> {
     re.find_iter(prose)
         .map(|mat| RawMatch {
@@ -181,7 +193,7 @@ fn find_in_close(re: &Regex, prose: &str) -> Vec<RawMatch> {
     }
     let para_start = trimmed.rfind("\n\n").map(|idx| idx + 2).unwrap_or(0);
     let close_start = if trimmed.len() > 400 {
-        trimmed.len().saturating_sub(400).max(para_start)
+        floor_char_boundary(trimmed, trimmed.len().saturating_sub(400).max(para_start))
     } else {
         para_start
     };

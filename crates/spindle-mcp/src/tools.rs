@@ -5228,12 +5228,18 @@ impl ToolRouter {
         let errors = *finding_counts.get("error").unwrap_or(&0);
         let warnings = *finding_counts.get("warning").unwrap_or(&0);
         let infos = *finding_counts.get("info").unwrap_or(&0);
-        let approve = match policy {
+        let mut approve = match policy {
             "auto_advisory" => errors == 0 && warnings == 0,
             "auto_strict" => errors == 0 && warnings == 0 && infos == 0,
             // Defensive: an unknown policy never auto-approves.
             _ => false,
         };
+        // Product lock: auto_strict requires anti_slop.hard_count == 0 even if
+        // a later mapping changes hard shelves off warning. Soft-only never
+        // invents a hard finding (verify_findings emits hard only).
+        if policy == "auto_strict" && auto_strict_anti_slop_blocks(&deep.issues) {
+            approve = false;
+        }
 
         if approve {
             // Approve via the SAME path authoring_review_checkpoint takes: an
@@ -6403,6 +6409,15 @@ struct AutoCheckpointOutcome {
 /// lowercase severity word (`error` / `warning` / `info`). Uses the returned
 /// `summary` (already computed by the service) so the verdict never re-walks
 /// prose. Counts only — no prose.
+/// Product lock: `auto_strict` blocks when any hard anti-slop finding is
+/// present (`check_type == "anti_slop"`). Soft hits are not issued as
+/// consistency findings, so they cannot trip this lock.
+fn auto_strict_anti_slop_blocks(issues: &[spindle_core::models::ConsistencyIssue]) -> bool {
+    issues
+        .iter()
+        .any(|issue| issue.check_type == spindle_core::style::antislop::ANTI_SLOP_CHECK)
+}
+
 fn auto_checkpoint_severity_counts(
     output: &spindle_core::models::CheckConsistencyOutput,
 ) -> std::collections::BTreeMap<String, i64> {
@@ -7369,6 +7384,38 @@ mod tests {
     /// A knowledge_learned reveal on its own SATISFIES the mandatory continuity
     /// package (design §2.3 path 2): a scene whose only durable change is an
     /// on-page reveal must not be rejected for an "empty" package.
+    #[test]
+    fn auto_strict_product_lock_requires_hard_count_zero() {
+        use spindle_core::models::ConsistencyIssue;
+        let soft_only: Vec<ConsistencyIssue> = Vec::new();
+        assert!(
+            !auto_strict_anti_slop_blocks(&soft_only),
+            "soft-only (no anti_slop issues) must not invent a hard finding"
+        );
+        let hard = vec![ConsistencyIssue {
+            severity: "warning".into(),
+            check_type: "anti_slop".into(),
+            message: "hard shelf `emotion_cocktail` over limit".into(),
+            entity_ids: vec!["scene:1".into()],
+            suggested_action: Some("rewrite from the beat".into()),
+        }];
+        assert!(
+            auto_strict_anti_slop_blocks(&hard),
+            "auto_strict must block when hard_count != 0"
+        );
+        let other = vec![ConsistencyIssue {
+            severity: "info".into(),
+            check_type: "scene_stub_text".into(),
+            message: "stub".into(),
+            entity_ids: vec![],
+            suggested_action: None,
+        }];
+        assert!(
+            !auto_strict_anti_slop_blocks(&other),
+            "non-anti_slop findings are not this product lock"
+        );
+    }
+
     #[test]
     fn knowledge_learned_counts_toward_package_satisfaction() {
         use spindle_core::models::{

@@ -1,4 +1,4 @@
-//! Fiction anti-slop scanner (Phase 1).
+//! Fiction anti-slop scanner (Phase 1) plus Phase 3 critic / revise contracts.
 //!
 //! Loads the Phase 0 shelf pack (`references/anti-slop-shelf-pack.v0.toml`)
 //! and the human catalog (`references/anti-slop.md`). Soft shelves stay
@@ -10,9 +10,12 @@
 //!
 //! Rewrite directions are rewrite-from-beats (≤1–2), not paraphrase-humanizer.
 //! Persist path for [`AntiSlopReport`] is sketched; this phase does not write it.
+//! Phase 3: hard verify fail uses [`rewrite_from_beats_prompt`]; dual-persona
+//! injects the report via [`dual_persona_injection`].
 
 mod pack;
 mod packet;
+mod revise;
 mod scan;
 
 pub use pack::{
@@ -24,6 +27,11 @@ pub use packet::{
     WritingPacketHooks, assemble_writing_packet, compact_shelf_digest,
     genre_override_from_style_texts, render_compact_shelf_digest_markdown,
     render_writing_packet_hooks_markdown, writing_packet_hooks_from_guidance,
+};
+pub use revise::{
+    ANTI_SLOP_CHECK, AntiSlopVerifyFinding, DualPersonaAntiSlopInjection, auto_strict_blocks,
+    dual_persona_injection, residual_hard_ids, residual_summary, rewrite_attempt_budget,
+    rewrite_from_beats_contract, rewrite_from_beats_prompt, verify_findings,
 };
 pub use scan::{AntiSlopHit, AntiSlopReport, ScanInput, ScanSurface, persist_path_sketch, scan};
 
@@ -158,6 +166,30 @@ mod tests {
             "within-limit contrast should stay silent: {report:?}"
         );
         assert_eq!(report.hard_count, 0);
+    }
+
+    #[test]
+    fn close_window_scan_does_not_panic_on_emdash_char_boundary() {
+        let pack = ShelfPack::load_default().expect("pack");
+        // Em dash is 3 UTF-8 bytes. Place it so `len - 400` lands inside the
+        // glyph (the Phase 3 save-path scan hit this on long fiction).
+        let prefix = "a".repeat(3700);
+        let fishing = " Only time would tell.";
+        let pad = 398 - fishing.len();
+        let prose = format!("{prefix}—{}{fishing}", "b".repeat(pad));
+        let close_start = prose.len().saturating_sub(400);
+        assert!(
+            !prose.is_char_boundary(close_start),
+            "fixture must land inside the em dash (idx {close_start})"
+        );
+        let report = scan(&pack, &fiction(&prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "fishing_ending"),
+            "{report:?}"
+        );
     }
 
     #[test]
@@ -395,5 +427,61 @@ mod tests {
         assert!(rendered.contains("voice_samples"));
         assert!(rendered.contains("scene_negatives"));
         assert!(!rendered.contains("100+"));
+    }
+
+    #[test]
+    fn phase3_hard_verify_uses_rewrite_from_beats_not_paraphrase() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let report = scan(
+            &pack,
+            &fiction(
+                "It wasn't anger. It was disappointment.\n\
+                 This wasn't a homecoming. It was a reckoning.\n\
+                 She felt a mix of relief and dread.",
+            ),
+        );
+        assert!(report.hard_count >= 1);
+        let prompt = rewrite_from_beats_prompt(&report);
+        assert!(prompt.contains("beat"));
+        assert!(
+            prompt.contains("paraphrase"),
+            "contract must name and forbid paraphrase-humanizer"
+        );
+        assert!(rewrite_attempt_budget(2) <= 2);
+        assert!(auto_strict_blocks(&report));
+        assert!(
+            verify_findings(&report)
+                .iter()
+                .all(|f| f.check_type == ANTI_SLOP_CHECK && f.severity == "warning")
+        );
+    }
+
+    #[test]
+    fn phase3_soft_only_does_not_fail_closed_or_block_auto_strict() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let report = scan(
+            &pack,
+            &fiction(
+                "She spent the afternoon thinking about what he'd said.\n\nHours passed.\n\n\
+                 Later, at the meeting, she told him everything.",
+            ),
+        );
+        assert!(
+            report
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "solitary_fade")
+        );
+        assert_eq!(report.hard_count, 0);
+        assert!(verify_findings(&report).is_empty());
+        assert!(!auto_strict_blocks(&report));
+        let injection = dual_persona_injection(&report);
+        assert!(
+            injection
+                .literary_critic_structure_block
+                .contains("structure")
+        );
+        assert!(injection.craft_technician_block.contains("NONE"));
+        assert!(injection.report_block.contains("solitary_fade"));
     }
 }
