@@ -927,6 +927,14 @@ mod tests {
             !body.contains("http://") && !body.contains("https://"),
             "console page must make no external requests"
         );
+        assert!(
+            body.contains("function formatAntiSlop("),
+            "console must render the anti_slop journal summary"
+        );
+        assert!(
+            body.contains("anti_slop hard="),
+            "console summary is ids + counts, not excerpts"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

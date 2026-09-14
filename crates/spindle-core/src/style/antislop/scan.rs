@@ -1,9 +1,27 @@
-use super::pack::{RewriteMode, Severity, ShelfPack, ShelfSpec};
+use super::pack::{GenreOverride, RewriteMode, Severity, ShelfPack, ShelfSpec};
 use crate::models::TextByteRange;
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
+
+/// Shelf IDs the scanner actually handles. CI drift fails if this set
+/// diverges from the catalog markdown or the v0 pack.
+pub const SCANNER_SHELF_IDS: &[&str] = &[
+    "contrast_not_x_but_y",
+    "emotion_cocktail",
+    "fishing_ending",
+    "said_bookism",
+    "body_reactions",
+    "eye_department",
+    "gesture_rack",
+    "atmosphere_prefabs",
+    "naming_watchlist",
+    "rhythm_cadence",
+    "triadic_listing",
+    "solitary_fade",
+];
 
 /// Surfaces the scanner is allowed to consider. Non-fiction is skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -56,6 +74,38 @@ pub struct AntiSlopReport {
     pub rewrite_max_passes: u8,
 }
 
+/// Journal / console summary: ids and counts only (ADR 0002 D3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AntiSlopJournalSummary {
+    pub hard_count: u32,
+    pub soft_count: u32,
+    pub hard_ids: Vec<String>,
+    pub soft_ids: Vec<String>,
+}
+
+/// Compact `anti_slop` payload for the run journal and operator console.
+/// Never includes excerpts or rewrite hints.
+pub fn journal_summary(report: &AntiSlopReport) -> AntiSlopJournalSummary {
+    let mut hard_ids = BTreeSet::new();
+    let mut soft_ids = BTreeSet::new();
+    for hit in &report.hits {
+        match hit.severity {
+            Severity::Hard => {
+                hard_ids.insert(hit.shelf_id.clone());
+            }
+            Severity::Soft => {
+                soft_ids.insert(hit.shelf_id.clone());
+            }
+        }
+    }
+    AntiSlopJournalSummary {
+        hard_count: report.hard_count,
+        soft_count: report.soft_count,
+        hard_ids: hard_ids.into_iter().collect(),
+        soft_ids: soft_ids.into_iter().collect(),
+    }
+}
+
 /// Later persist (not wired in Phase 1): JSON beside the scene receipt.
 pub fn persist_path_sketch(project_id: &str, branch_id: &str, scene_id: &str) -> String {
     format!("projects/{project_id}/branches/{branch_id}/scenes/{scene_id}/anti_slop_report.json")
@@ -70,6 +120,17 @@ struct RawMatch {
 
 /// Scan fiction prose against the loaded pack. Soft hits never raise `hard_count`.
 pub fn scan(pack: &ShelfPack, input: &ScanInput<'_>) -> AntiSlopReport {
+    scan_with_overlay(pack, input, None)
+}
+
+/// Scan with an optional project / profile overlay (`disable` / `soften` /
+/// `promote_to_hard`). Product locks still apply (`said_bookism` stays soft
+/// unless the overlay explicitly promotes it).
+pub fn scan_with_overlay(
+    pack: &ShelfPack,
+    input: &ScanInput<'_>,
+    overlay: Option<&GenreOverride>,
+) -> AntiSlopReport {
     let rewrite_max_passes = pack.rewrite_budget();
     if input.surface != ScanSurface::Fiction {
         return AntiSlopReport {
@@ -91,10 +152,10 @@ pub fn scan(pack: &ShelfPack, input: &ScanInput<'_>) -> AntiSlopReport {
     let mut soft_count = 0_u32;
 
     for shelf in &pack.shelves {
-        if !pack.is_enabled(shelf, None) {
+        if !pack.is_enabled(shelf, overlay) {
             continue;
         }
-        let severity = pack.effective_severity(shelf, None);
+        let severity = pack.effective_severity(shelf, overlay);
         let raw = collect_matches(shelf, input.prose);
         let emit = select_emitted(shelf, raw);
         for raw in emit {

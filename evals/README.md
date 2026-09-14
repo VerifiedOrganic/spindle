@@ -1,3 +1,29 @@
+# Eval kits
+
+## Fiction anti-slop (scanner regressions)
+
+Phase 4 locks the twelve fiction shelves against scanner drift. Cases live in
+`evals/anti_slop/cases.json`. Optional `preference_dims` are labeled
+editorial observations (`present` / `absent` / `n/a`) — not a quality
+superiority claim.
+
+```sh
+python3 evals/anti_slop.py self-test
+python3 evals/anti_slop.py drift
+python3 evals/anti_slop.py regress
+python3 evals/anti_slop.py score
+```
+
+`self-test` validates case schema, twelve-shelf coverage, and `solitary_fade`
+stability. `drift` fails if catalog markdown, the v0 pack, the scanner
+constant, and the eval manifest disagree. `regress` runs
+`cargo test -p spindle-core --test antislop_eval`. `score` tallies labeled
+dims without ranking writing quality.
+
+CI runs `self-test` and `drift` on every pull request.
+
+---
+
 # Serial-fiction comparison kit
 
 Twelve original synthetic cases compare three conditions: compact context,

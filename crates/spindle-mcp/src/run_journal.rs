@@ -115,18 +115,38 @@ pub fn run_started_payload(
 }
 
 /// `scene_drafted` payload (ADR D2). `origin` is `"host"` or `"agent"`.
+/// Optional `anti_slop` is additive (ADR D3.2): ids and counts only.
 pub fn scene_drafted_payload(
     chapter: i32,
     scene_order: i32,
     scene_id: &str,
     origin: &str,
+    anti_slop: Option<&spindle_core::style::antislop::AntiSlopJournalSummary>,
 ) -> Value {
-    json!({
-        "chapter": chapter,
-        "scene_order": scene_order,
-        "scene_id": scene_id,
-        "origin": origin,
-    })
+    let mut map = Map::new();
+    map.insert("chapter".into(), json!(chapter));
+    map.insert("scene_order".into(), json!(scene_order));
+    map.insert("scene_id".into(), json!(scene_id));
+    map.insert("origin".into(), json!(origin));
+    insert_anti_slop(&mut map, anti_slop);
+    Value::Object(map)
+}
+
+fn insert_anti_slop(
+    map: &mut Map<String, Value>,
+    anti_slop: Option<&spindle_core::style::antislop::AntiSlopJournalSummary>,
+) {
+    if let Some(summary) = anti_slop {
+        map.insert(
+            "anti_slop".into(),
+            json!({
+                "hard_count": summary.hard_count,
+                "soft_count": summary.soft_count,
+                "hard_ids": summary.hard_ids,
+                "soft_ids": summary.soft_ids,
+            }),
+        );
+    }
 }
 
 /// Parse a `verify_detail` string into a `finding_counts` map and the ADR D2
@@ -145,6 +165,7 @@ pub fn verify_completed_payload(
     scene_id: &str,
     verify_status: &str,
     verify_detail: Option<&str>,
+    anti_slop: Option<&spindle_core::style::antislop::AntiSlopJournalSummary>,
 ) -> Value {
     let verdict = if verify_status == "clean" {
         "clean"
@@ -157,13 +178,14 @@ pub fn verify_completed_payload(
     {
         finding_counts.insert("actionable".into(), json!(count));
     }
-    json!({
-        "chapter": chapter,
-        "scene_order": scene_order,
-        "scene_id": scene_id,
-        "finding_counts": Value::Object(finding_counts),
-        "verdict": verdict,
-    })
+    let mut map = Map::new();
+    map.insert("chapter".into(), json!(chapter));
+    map.insert("scene_order".into(), json!(scene_order));
+    map.insert("scene_id".into(), json!(scene_id));
+    map.insert("finding_counts".into(), Value::Object(finding_counts));
+    map.insert("verdict".into(), json!(verdict));
+    insert_anti_slop(&mut map, anti_slop);
+    Value::Object(map)
 }
 
 /// `scene_revised` payload (ADR D2).
@@ -383,9 +405,10 @@ mod tests {
 
     #[test]
     fn verify_completed_maps_status_to_verdict_and_counts() {
-        let clean = verify_completed_payload(1, 1, "scene:a", "clean", Some("0 finding(s)"));
+        let clean = verify_completed_payload(1, 1, "scene:a", "clean", Some("0 finding(s)"), None);
         assert_eq!(clean["verdict"], json!("clean"));
         assert_eq!(clean["finding_counts"], json!({}));
+        assert!(clean.get("anti_slop").is_none());
 
         let findings = verify_completed_payload(
             1,
@@ -393,6 +416,7 @@ mod tests {
             "scene:a",
             "findings",
             Some("3 finding(s) at or above warning"),
+            None,
         );
         assert_eq!(findings["verdict"], json!("findings"));
         assert_eq!(findings["finding_counts"]["actionable"], json!(3));
@@ -403,6 +427,7 @@ mod tests {
             "scene:a",
             "parked_findings",
             Some("2 finding(s) parked after 1 revision(s)"),
+            None,
         );
         assert_eq!(parked["verdict"], json!("findings"));
         assert_eq!(parked["finding_counts"]["actionable"], json!(2));
@@ -436,6 +461,31 @@ mod tests {
         // The count recovers from the harness's prose-free detail line.
         assert_eq!(leading_count_pub("staged 4 amendment(s)"), Some(4));
         assert_eq!(leading_count_pub("no_targets"), None);
+    }
+
+    #[test]
+    fn scene_drafted_carries_optional_anti_slop_ids_and_counts() {
+        let without = scene_drafted_payload(1, 1, "scene:a", "host", None);
+        assert_eq!(without["origin"], json!("host"));
+        assert!(without.get("anti_slop").is_none());
+
+        let summary = spindle_core::style::antislop::AntiSlopJournalSummary {
+            hard_count: 1,
+            soft_count: 2,
+            hard_ids: vec!["emotion_cocktail".into()],
+            soft_ids: vec!["solitary_fade".into(), "said_bookism".into()],
+        };
+        let with = scene_drafted_payload(1, 1, "scene:a", "host", Some(&summary));
+        assert_eq!(with["anti_slop"]["hard_count"], json!(1));
+        assert_eq!(with["anti_slop"]["soft_count"], json!(2));
+        assert_eq!(with["anti_slop"]["hard_ids"], json!(["emotion_cocktail"]));
+        assert_eq!(
+            with["anti_slop"]["soft_ids"],
+            json!(["solitary_fade", "said_bookism"])
+        );
+        let encoded = serde_json::to_string(&with).expect("json");
+        assert!(!encoded.contains("excerpt"));
+        assert!(!encoded.contains("mix of"));
     }
 
     #[test]

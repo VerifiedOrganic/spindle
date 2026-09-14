@@ -419,6 +419,11 @@ Product locks (do not weaken them):
   (or NONE). Literary Critic uses the structure block — not BLUF / Voices /
   Flesch / delve.
 - Fiction only. No Voices / BLUF / Flesch / delve-as-tech-gate ports.
+- Host `save_scene_draft` journals an `anti_slop` summary (hard/soft counts
+  and shelf IDs, no excerpts). The `/console` live timeline shows it.
+- Optional `[anti_slop]` in `spindle.toml` / `.spindle/config.toml` can
+  disable, soften, or (explicitly) promote shelves. Pack defaults stay if
+  the table is empty. `said_bookism` stays soft unless promoted.
 
 ## Style learning from edits (opt-in)
 

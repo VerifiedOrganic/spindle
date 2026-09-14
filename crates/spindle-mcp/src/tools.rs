@@ -4248,6 +4248,10 @@ impl ToolRouter {
         // the host's revision, so emit `scene_revised` in that case. Ordering:
         // draft first, then revised (the revision is a property of this save).
         let journal = RunJournal::new(repo);
+        let anti_slop = save_output
+            .anti_slop
+            .as_ref()
+            .map(spindle_core::style::antislop::journal_summary);
         journal
             .emit(
                 &run_id,
@@ -4257,6 +4261,7 @@ impl ToolRouter {
                     input.scene_order,
                     &save_output.scene_id,
                     "host",
+                    anti_slop.as_ref(),
                 ),
             )
             .await;
@@ -5708,6 +5713,7 @@ async fn authoring_emit_step_events(
                             *scene_order,
                             scene_id,
                             "agent",
+                            None,
                         ),
                     )
                     .await;
@@ -5731,6 +5737,7 @@ async fn authoring_emit_step_events(
                             scene_id,
                             status,
                             scene.verify_detail.as_deref(),
+                            None,
                         ),
                     )
                     .await;

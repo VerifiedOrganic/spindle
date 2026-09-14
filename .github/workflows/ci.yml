@@ -22,4 +22,7 @@ jobs:
       # stack-overflows in GitHub's default debug stack. Not introduced by
       # Phase 1; skip it so workspace CI can land the anti-slop scanner.
       - run: cargo test --workspace -- --skip authoring_supervisor_integration_flow
+      - run: python3 evals/anti_slop.py self-test
+      - run: python3 evals/anti_slop.py drift
+      - run: node crates/spindle-mcp/tests/console_antislop_timeline.cjs
       - run: cargo clippy --workspace --all-targets -- -D warnings

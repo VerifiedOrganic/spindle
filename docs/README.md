@@ -18,9 +18,9 @@ Start here if you are new to the repository.
 - [`local-markdown-style-profiles.md`](local-markdown-style-profiles.md) —
   design for deriving reusable style cards from user-provided Markdown corpora.
 - [`fiction-anti-slop.md`](fiction-anti-slop.md) — Fiction anti-slop contract
-  (shelf IDs, product locks, reserved packet fields) plus Phase 1
-  `style/antislop/` scanner. Human catalog:
-  [`references/anti-slop.md`](../references/anti-slop.md).
+  (shelf IDs, product locks, reserved packet fields), Phase 1
+  `style/antislop/` scanner, and Phase 4 eval / CI / console telemetry.
+  Human catalog: [`references/anti-slop.md`](../references/anti-slop.md).
 - [`spindle-harness-usage.md`](spindle-harness-usage.md) — operator workflow
   for the `spindle-harness` batch drafting CLI.
 - [`spindle-harness-seed.example.json`](spindle-harness-seed.example.json) —

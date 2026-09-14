@@ -319,6 +319,13 @@ is safe to leave open on a shared screen. Consumers must ignore unknown kinds an
 unknown payload keys (additive-evolution rule, ADR §D3.2); the P3/P4 kinds in the
 ADR table are reserved and do not occur until those phases land.
 
+`scene_drafted` (host save) may include an additive `anti_slop` object:
+`hard_count`, `soft_count`, `hard_ids`, `soft_ids`. That is the scan summary
+for the just-saved prose — ids and counts only, never excerpts. Soft IDs
+(including `solitary_fade`) never imply a failed save. The operator console
+timeline renders the summary when the key is present. Consumers that do not
+know the key ignore it (D3.2).
+
 ### Streaming over SSE
 
 The journal streams over the existing HTTP surface at
@@ -333,3 +340,23 @@ The journal streams over the existing HTTP surface at
   model-routes snapshot. A malformed topic (unknown scheme or an id that is not a
   well-formed `authoring_run:` id) returns `400`. A well-formed run id with no
   events is a valid empty stream (no existence check).
+
+### Fiction anti-slop project config
+
+Workspace config (`spindle.toml` or `.spindle/config.toml`) may carry an
+`[anti_slop]` table. Empty or omitted means the v0 pack defaults. The overlay
+is applied at scan time (save + scene-scoped verify):
+
+```toml
+[anti_slop]
+disable = []              # shelf IDs to skip
+soften = []               # hard → advisory
+promote_to_hard = []      # soft → hard (explicit)
+```
+
+Product locks still apply: fiction-only; `said_bookism` stays soft unless
+`promote_to_hard` lists it; `auto_strict` still requires
+`anti_slop.hard_count == 0`; rewrite-from-beats stays ≤1–2. Soft-on-save
+stays advisory even when a shelf is promoted. Scanner regression eval:
+`python3 evals/anti_slop.py self-test` (schema + drift) and
+`python3 evals/anti_slop.py regress`.
