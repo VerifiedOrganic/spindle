@@ -2092,6 +2092,76 @@ impl Repository {
             .await
     }
 
+    // ── Fiction anti-slop suppressions (Phase 5 / V0045) ───────────────────────
+
+    /// Persist learned suppressions. Duplicate (project, branch, shelf,
+    /// excerpt) rows are ignored.
+    pub async fn upsert_anti_slop_suppressions(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        entries: &[spindle_core::style::antislop::FalsePositiveSuppression],
+        source: &str,
+    ) -> Result<u64> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let source = source.to_string();
+        let entries: Vec<(String, String)> = entries
+            .iter()
+            .map(|entry| (entry.shelf_id.clone(), entry.excerpt_normalized.clone()))
+            .collect();
+        self.inner
+            .pool
+            .write(move |conn| {
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let mut inserted = 0u64;
+                for (shelf_id, excerpt) in &entries {
+                    let id = mint_id_local("anti_slop_suppression");
+                    let changed = conn.execute(
+                        "INSERT OR IGNORE INTO anti_slop_suppression \
+                         (id, project_id, branch_id, shelf_id, excerpt_normalized, source, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        rusqlite::params![
+                            &id, &project_id, &branch_id, shelf_id, excerpt, &source, now
+                        ],
+                    )?;
+                    inserted += changed as u64;
+                }
+                Ok(inserted)
+            })
+            .await
+    }
+
+    pub async fn list_anti_slop_suppressions(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<crate::sqlite::records::StoredAntiSlopSuppression>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM anti_slop_suppression \
+                     WHERE project_id = ?1 AND branch_id = ?2 \
+                     ORDER BY created_at, id",
+                    crate::sqlite::records::ANTI_SLOP_SUPPRESSION_COLUMNS
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
+                        crate::sqlite::records::StoredAntiSlopSuppression::try_from(r)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
     // ── Plan amendments (ADR 0003 — living-outline replanning) ────────────────
 
     /// Stage a proposed plan amendment (ADR 0003 D2). Validates:

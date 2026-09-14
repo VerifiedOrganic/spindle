@@ -107,16 +107,20 @@ agent = "local-http"
 
 # Optional. Empty / omitted = fiction pack defaults.
 # said_bookism stays soft unless listed under promote_to_hard.
+# experimental_structural is off unless explicitly true.
 [anti_slop]
 disable = []
 soften = []
 promote_to_hard = []
+experimental_structural = false
 ```
 
 `[anti_slop]` is a project overlay on the fiction shelf pack, not a new
 scanner. `disable` skips a shelf, `soften` keeps a hard shelf advisory, and
 `promote_to_hard` is the only way `said_bookism` (or another soft ID) becomes
-hard. Soft-on-save stays advisory. See
+hard. Soft-on-save stays advisory. Chapter-scoped quotas roll across
+scenes. Learned suppressions apply when present. `experimental_structural`
+emits StoryScope notes only when true — never a fail gate. See
 [`authoring-supervisor.md`](authoring-supervisor.md) and
 [`fiction-anti-slop.md`](fiction-anti-slop.md).
 

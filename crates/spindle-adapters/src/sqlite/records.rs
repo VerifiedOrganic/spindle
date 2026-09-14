@@ -3664,3 +3664,33 @@ impl StoredPlanAmendment {
         }
     }
 }
+
+pub const ANTI_SLOP_SUPPRESSION_COLUMNS: &str =
+    "id, project_id, branch_id, shelf_id, excerpt_normalized, source, created_at";
+
+/// Learned false-positive suppression (Phase 5 / V0045).
+#[derive(Debug, Clone)]
+pub struct StoredAntiSlopSuppression {
+    pub id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub shelf_id: String,
+    pub excerpt_normalized: String,
+    pub source: String,
+    pub created_at: Timestamp,
+}
+
+impl<'a> TryFrom<&Row<'a>> for StoredAntiSlopSuppression {
+    type Error = rusqlite::Error;
+    fn try_from(r: &Row<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row::text(r, 0)?,
+            project_id: row::text(r, 1)?,
+            branch_id: row::text(r, 2)?,
+            shelf_id: row::text(r, 3)?,
+            excerpt_normalized: row::text(r, 4)?,
+            source: row::text(r, 5)?,
+            created_at: row::time(r, 6)?,
+        })
+    }
+}

@@ -352,11 +352,15 @@ is applied at scan time (save + scene-scoped verify):
 disable = []              # shelf IDs to skip
 soften = []               # hard → advisory
 promote_to_hard = []      # soft → hard (explicit)
+experimental_structural = false  # StoryScope notes; off by default
 ```
 
 Product locks still apply: fiction-only; `said_bookism` stays soft unless
 `promote_to_hard` lists it; `auto_strict` still requires
 `anti_slop.hard_count == 0`; rewrite-from-beats stays ≤1–2. Soft-on-save
-stays advisory even when a shelf is promoted. Scanner regression eval:
+stays advisory even when a shelf is promoted. Chapter-scoped quotas roll
+across earlier scenes in the same chapter. Operator edits captured by
+style learning (V0031) may suppress kept excerpts as false positives.
+`experimental_structural` is off unless set. Scanner regression eval:
 `python3 evals/anti_slop.py self-test` (schema + drift) and
 `python3 evals/anti_slop.py regress`.

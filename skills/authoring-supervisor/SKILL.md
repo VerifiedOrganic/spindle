@@ -424,6 +424,9 @@ Product locks (do not weaken them):
 - Optional `[anti_slop]` in `spindle.toml` / `.spindle/config.toml` can
   disable, soften, or (explicitly) promote shelves. Pack defaults stay if
   the table is empty. `said_bookism` stays soft unless promoted.
+  Chapter-scoped quotas roll across earlier scenes in the same chapter.
+  Operator edits captured by style learning may suppress kept excerpts.
+  `experimental_structural` is off by default and is never a fail gate.
 
 ## Style learning from edits (opt-in)
 
