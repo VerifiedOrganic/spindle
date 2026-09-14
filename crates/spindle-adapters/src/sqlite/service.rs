@@ -8923,11 +8923,26 @@ impl SqliteSpindleService {
         if should_run_check(&requested_checks_set, "anti_slop")
             && let Some(pack) = load_anti_slop_pack()
         {
+            let overlay = project_anti_slop_overlay();
+            let suppressions =
+                load_suppression_store(&self.repository, &project_id, &active_branch.id).await;
+            let experimental = project_anti_slop_experimental_structural();
+            let mut chapter_priors: std::collections::BTreeMap<
+                (i32, i32),
+                spindle_core::style::antislop::ChapterCounters,
+            > = std::collections::BTreeMap::new();
             for scene in &scenes {
-                let report = spindle_core::style::antislop::scan_with_overlay(
+                let key = (scene.book_number, scene.chapter_number);
+                let prior = chapter_priors.get(&key);
+                let report = spindle_core::style::antislop::scan_with_options(
                     &pack,
                     &spindle_core::style::antislop::ScanInput::fiction(&scene.full_text),
-                    project_anti_slop_overlay().as_ref(),
+                    spindle_core::style::antislop::ScanOptions {
+                        overlay: overlay.as_ref(),
+                        chapter_prior: prior,
+                        suppressions: Some(&suppressions),
+                        experimental_structural: experimental,
+                    },
                 );
                 for finding in spindle_core::style::antislop::verify_findings(&report) {
                     issues.push(ConsistencyIssue {
@@ -8938,6 +8953,10 @@ impl SqliteSpindleService {
                         suggested_action: Some(finding.suggested_action),
                     });
                 }
+                chapter_priors
+                    .entry(key)
+                    .or_default()
+                    .add_scene(&pack, &scene.full_text);
             }
         }
 
@@ -22635,7 +22654,8 @@ impl SqliteSpindleService {
             return Ok(());
         }
 
-        self.repository
+        let captured = self
+            .repository
             .capture_style_edit_candidate(crate::sqlite::repository::CaptureStyleEditParams {
                 project_id: input.project_id.clone(),
                 branch_id: branch_id.to_string(),
@@ -22651,6 +22671,30 @@ impl SqliteSpindleService {
                 content_rating: scene.content_rating.trim().to_ascii_lowercase(),
             })
             .await?;
+        if let Some(pack) = load_anti_slop_pack() {
+            let learned = spindle_core::style::antislop::learn_suppressions_from_edit(
+                &pack,
+                &captured.agent_draft,
+                &captured.operator_edit,
+            );
+            if !learned.is_empty()
+                && let Err(error) = self
+                    .repository
+                    .upsert_anti_slop_suppressions(
+                        &input.project_id,
+                        branch_id,
+                        &learned,
+                        "style_edit",
+                    )
+                    .await
+            {
+                tracing::warn!(
+                    scene_id = %scene.id,
+                    error = %error,
+                    "anti-slop suppression learn failed"
+                );
+            }
+        }
 
         // Re-stamp provenance so a subsequent same-scene operator save is
         // recognized as operator-over-operator (replace, not a fresh pair).
@@ -23078,7 +23122,23 @@ impl SqliteSpindleService {
         // Fiction anti-slop: attach the scan as advisory. Soft and hard hits
         // never fail this write. Hard over-limit fail-closes only when the
         // verify/revise loop is on (scene-scoped `anti_slop` check).
-        let anti_slop = scan_scene_anti_slop(&scene.full_text);
+        // Phase 5: roll chapter-scoped quotas from earlier scenes and apply
+        // learned suppressions. Experimental structural stays off unless
+        // configured.
+        let chapter_prior = chapter_counters_before(
+            &self.repository,
+            &save_input.project_id,
+            &branch_id,
+            scene.book_number,
+            scene.chapter_number,
+            scene.scene_order,
+            Some(&scene.id),
+        )
+        .await;
+        let suppressions =
+            load_suppression_store(&self.repository, &save_input.project_id, &branch_id).await;
+        let anti_slop =
+            scan_scene_anti_slop_with(&scene.full_text, Some(&chapter_prior), Some(&suppressions));
 
         Ok(SaveSceneDraftOutput {
             scene_id: scene.id.clone(),
@@ -26239,14 +26299,100 @@ fn project_anti_slop_overlay() -> Option<spindle_core::style::antislop::GenreOve
         .and_then(|config| config.anti_slop.to_overlay())
 }
 
-/// Advisory scan for `save_scene_draft`. Never fails the save.
-fn scan_scene_anti_slop(prose: &str) -> Option<spindle_core::style::antislop::AntiSlopReport> {
+fn project_anti_slop_experimental_structural() -> bool {
+    crate::agent_config::load_agent_config(None)
+        .ok()
+        .is_some_and(|config| config.anti_slop.experimental_structural)
+}
+
+fn suppression_store_from_rows(
+    rows: &[crate::sqlite::records::StoredAntiSlopSuppression],
+) -> spindle_core::style::antislop::SuppressionStore {
+    spindle_core::style::antislop::SuppressionStore::from_entries(
+        rows.iter()
+            .map(
+                |row| spindle_core::style::antislop::FalsePositiveSuppression {
+                    shelf_id: row.shelf_id.clone(),
+                    excerpt_normalized: row.excerpt_normalized.clone(),
+                },
+            )
+            .collect(),
+    )
+}
+
+fn scan_scene_anti_slop_with(
+    prose: &str,
+    chapter_prior: Option<&spindle_core::style::antislop::ChapterCounters>,
+    suppressions: Option<&spindle_core::style::antislop::SuppressionStore>,
+) -> Option<spindle_core::style::antislop::AntiSlopReport> {
     let pack = load_anti_slop_pack()?;
-    Some(spindle_core::style::antislop::scan_with_overlay(
+    Some(spindle_core::style::antislop::scan_with_options(
         &pack,
         &spindle_core::style::antislop::ScanInput::fiction(prose),
-        project_anti_slop_overlay().as_ref(),
+        spindle_core::style::antislop::ScanOptions {
+            overlay: project_anti_slop_overlay().as_ref(),
+            chapter_prior,
+            suppressions,
+            experimental_structural: project_anti_slop_experimental_structural(),
+        },
     ))
+}
+
+/// Advisory scan for `save_scene_draft` / review when chapter context is
+/// unavailable. Never fails the save.
+fn scan_scene_anti_slop(prose: &str) -> Option<spindle_core::style::antislop::AntiSlopReport> {
+    scan_scene_anti_slop_with(prose, None, None)
+}
+
+async fn chapter_counters_before(
+    repo: &Repository,
+    project_id: &str,
+    branch_id: &str,
+    book_number: i32,
+    chapter_number: i32,
+    scene_order: i32,
+    exclude_scene_id: Option<&str>,
+) -> spindle_core::style::antislop::ChapterCounters {
+    let mut counters = spindle_core::style::antislop::ChapterCounters::new();
+    let Some(pack) = load_anti_slop_pack() else {
+        return counters;
+    };
+    let Ok(scenes) = repo
+        .list_scenes_by_project_and_branch(project_id, branch_id)
+        .await
+    else {
+        return counters;
+    };
+    for scene in scenes {
+        if scene.book_number != book_number || scene.chapter_number != chapter_number {
+            continue;
+        }
+        if scene.scene_order >= scene_order {
+            continue;
+        }
+        if exclude_scene_id.is_some_and(|id| id == scene.id) {
+            continue;
+        }
+        counters.add_scene(&pack, &scene.full_text);
+    }
+    counters
+}
+
+async fn load_suppression_store(
+    repo: &Repository,
+    project_id: &str,
+    branch_id: &str,
+) -> spindle_core::style::antislop::SuppressionStore {
+    match repo
+        .list_anti_slop_suppressions(project_id, branch_id)
+        .await
+    {
+        Ok(rows) => suppression_store_from_rows(&rows),
+        Err(error) => {
+            tracing::warn!(error = %error, "anti-slop suppressions failed to load");
+            spindle_core::style::antislop::SuppressionStore::new()
+        }
+    }
 }
 
 /// Render the pre-draft in-world-time hard constraint: the previous scene's end

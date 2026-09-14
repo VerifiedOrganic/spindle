@@ -1,20 +1,27 @@
 # Fiction anti-slop
 
-Status: **Phase 4 eval / CI / console telemetry** is live. Eval cases lock
-scanner regressions; optional labeled preference dims are editorial
-observations, not a quality superiority claim. The run journal may carry an
-additive `anti_slop` summary (ids + counts). CI fails if catalog MD, the v0
-pack, and the scanner shelf IDs drift. Project `[anti_slop]` config can
-disable / soften / promote shelves; pack defaults and product locks still
-apply. Phase 3 critic / revise remains: hard verify fail uses a
-rewrite-from-beats prompt contract (adapters + harness), capped at 1–2
-passes, then re-lints and surfaces residuals. Dual-persona review injects
-the scan report; the Craft Technician must cite shelf IDs; the Literary
-Critic gets a structure block that is not a BLUF/tech-structure gate. The
-Phase 1 scanner still lives at `style/antislop/` in `spindle-core`. Soft
-shelves (including `solitary_fade` and `said_bookism` by product lock) are
-warnings and do not increment `hard_count`. Soft-on-save stays advisory;
-hard fail-closes only when verify/revise is on.
+Status: **Phase 5 optional ship-it** is live. Rolling chapter counters apply
+chapter-scoped shelf quotas across scenes in a chapter. Learned
+false-positive suppressions persist from V0031 style-edit captures (operator
+kept a flagged excerpt) and apply on later scans. StoryScope-inspired
+structural observations exist behind `[anti_slop] experimental_structural`
+and are **off by default** — they are not shelves and never increment
+`hard_count`. Self-hosted sampler / FTPO is out of band. Phase 4 eval / CI /
+console telemetry remains: eval cases lock scanner regressions; optional
+labeled preference dims are editorial observations, not a quality
+superiority claim. The run journal may carry an additive `anti_slop`
+summary (ids + counts). CI fails if catalog MD, the v0 pack, and the
+scanner shelf IDs drift. Project `[anti_slop]` config can disable / soften /
+promote shelves; pack defaults and product locks still apply. Phase 3
+critic / revise remains: hard verify fail uses a rewrite-from-beats prompt
+contract (adapters + harness), capped at 1–2 passes, then re-lints and
+surfaces residuals. Dual-persona review injects the scan report; the Craft
+Technician must cite shelf IDs; the Literary Critic gets a structure block
+that is not a BLUF/tech-structure gate. The Phase 1 scanner still lives at
+`style/antislop/` in `spindle-core`. Soft shelves (including `solitary_fade`
+and `said_bookism` by product lock) are warnings and do not increment
+`hard_count`. Soft-on-save stays advisory; hard fail-closes only when
+verify/revise is on.
 
 This is the current design contract for fiction anti-slop. The human catalog is
 [`references/anti-slop.md`](../references/anti-slop.md). The versioned pack stub
@@ -195,10 +202,41 @@ that claim.
   (`disable`, `soften`, `promote_to_hard`). Empty means pack defaults.
   `said_bookism` stays soft unless explicitly promoted.
 
-## Out of scope (Phase 4)
+## Rolling chapter counters (Phase 5)
 
-- Phase 5 rolling chapter counters or a self-hosted sampler
+Chapter-scoped numeric quotas (`limit_scope = "chapter"`) accumulate raw
+matches across earlier scenes in the same book/chapter. Scene 1 may consume
+the chapter's allowed `contrast_not_x_but_y` hinge; scene 2's next hinge is
+then over-limit. Scene-scoped advisory clusters (including `solitary_fade`)
+do not roll. A new chapter resets the counters. Soft-on-save and
+hard-on-verify locks are unchanged.
+
+## Learned suppressions (Phase 5)
+
+When style learning (V0031) captures an operator edit that **keeps** a
+scanner-flagged excerpt, that `(shelf_id, normalized excerpt)` is stored
+(`anti_slop_suppression`, migration V0045) and skipped on later scans.
+`spindle-core` exposes a clean store + apply path even when learning is
+off. Suppressions never invent a hard finding and never promote a soft
+shelf.
+
+## Experimental structural observations (Phase 5)
+
+`[anti_slop] experimental_structural` (default **false**) may emit
+StoryScope-inspired editorial notes (`theme_stated`, `gestured_reference`,
+`tidy_close`). These are not shelves, not scores, and not verify findings.
+They never increment `hard_count`. Genre may "fail" them on purpose.
+
+## Self-hosted sampler / FTPO (out of band)
+
+Spindle's `draft` route is an LLM chat completion (HTTP or builtin-local
+stub), not a preference-pair trainer. Do not ship a half-baked in-process
+sampler. Operators who want FTPO run it out of band.
+
+## Out of scope
+
 - Promoting `said_bookism` to hard in the default pack
 - Porting Voices / tech gates
 - Persisting source-corpus voice samples (hooks come from style-profile
   guidance only)
+- An in-process self-hosted sampler / FTPO loop

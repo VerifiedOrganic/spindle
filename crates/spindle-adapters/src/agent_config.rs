@@ -34,6 +34,7 @@ pub struct SpindleConfigFile {
 
 /// Project-local `[anti_slop]` overlay. Empty means pack defaults.
 /// `said_bookism` stays soft unless `promote_to_hard` lists it.
+/// `experimental_structural` is off by default (product lock).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AntiSlopProjectConfig {
     #[serde(default)]
@@ -42,6 +43,9 @@ pub struct AntiSlopProjectConfig {
     pub soften: Vec<String>,
     #[serde(default)]
     pub promote_to_hard: Vec<String>,
+    /// StoryScope-inspired observations. Off unless explicitly true.
+    #[serde(default)]
+    pub experimental_structural: bool,
 }
 
 impl AntiSlopProjectConfig {
@@ -891,6 +895,10 @@ promote_to_hard = ["said_bookism"]
         assert_eq!(parsed.anti_slop.disable, vec!["fishing_ending"]);
         assert_eq!(parsed.anti_slop.soften, vec!["contrast_not_x_but_y"]);
         assert_eq!(parsed.anti_slop.promote_to_hard, vec!["said_bookism"]);
+        assert!(
+            !parsed.anti_slop.experimental_structural,
+            "experimental_structural must default off"
+        );
         let overlay = parsed.anti_slop.to_overlay().expect("overlay");
         assert_eq!(overlay.profile, "project.config");
         assert_eq!(overlay.disable, vec!["fishing_ending"]);

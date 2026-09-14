@@ -326,7 +326,11 @@ shared screen. The kind vocabulary and payload shapes are a **one-way door** fix
 by ADR 0002; consumers must ignore unknown kinds/keys. `authoring_status` (the run
 tables) remains the source of truth; the journal is the timeline view. Host
 `scene_drafted` rows may include an additive `anti_slop` summary (ids +
-counts). The console timeline renders it when present.
+counts). The console timeline renders it when present. Chapter-scoped
+shelf quotas roll across earlier scenes in the same chapter. Learned
+false-positive suppressions (V0031 style-edit keep + V0045 store) apply
+on later scans. Experimental structural observations stay off unless
+`[anti_slop] experimental_structural` is set.
 
 The journal streams over the existing HTTP surface at
 `GET /events?topic=run:<authoring_run_id>` (SSE `id` = `seq`, `event` = kind,

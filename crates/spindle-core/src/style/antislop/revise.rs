@@ -356,6 +356,7 @@ mod tests {
             soft_count: 0,
             hits: Vec::new(),
             rewrite_max_passes: 2,
+            structural_observations: Vec::new(),
         });
         assert!(clean.contains("none"));
     }

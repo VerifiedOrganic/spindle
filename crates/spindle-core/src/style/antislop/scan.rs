@@ -1,10 +1,23 @@
+use super::chapter::{ChapterCounters, is_chapter_scoped};
 use super::pack::{GenreOverride, RewriteMode, Severity, ShelfPack, ShelfSpec};
+use super::structural::{StructuralObservation, experimental_structural_observations};
+use super::suppress::{SuppressionStore, recount_after_suppress};
 use crate::models::TextByteRange;
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
+
+/// Options for [`scan_with_options`]. Defaults match Phases 0–4: no chapter
+/// prior, no suppressions, experimental structural off.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScanOptions<'a> {
+    pub overlay: Option<&'a GenreOverride>,
+    pub chapter_prior: Option<&'a ChapterCounters>,
+    pub suppressions: Option<&'a SuppressionStore>,
+    pub experimental_structural: bool,
+}
 
 /// Shelf IDs the scanner actually handles. CI drift fails if this set
 /// diverges from the catalog markdown or the v0 pack.
@@ -72,6 +85,10 @@ pub struct AntiSlopReport {
     pub soft_count: u32,
     pub hits: Vec<AntiSlopHit>,
     pub rewrite_max_passes: u8,
+    /// StoryScope-inspired notes. Empty unless experimental structural is on.
+    /// Never increment `hard_count`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub structural_observations: Vec<StructuralObservation>,
 }
 
 /// Journal / console summary: ids and counts only (ADR 0002 D3.1).
@@ -120,7 +137,7 @@ struct RawMatch {
 
 /// Scan fiction prose against the loaded pack. Soft hits never raise `hard_count`.
 pub fn scan(pack: &ShelfPack, input: &ScanInput<'_>) -> AntiSlopReport {
-    scan_with_overlay(pack, input, None)
+    scan_with_options(pack, input, ScanOptions::default())
 }
 
 /// Scan with an optional project / profile overlay (`disable` / `soften` /
@@ -130,6 +147,23 @@ pub fn scan_with_overlay(
     pack: &ShelfPack,
     input: &ScanInput<'_>,
     overlay: Option<&GenreOverride>,
+) -> AntiSlopReport {
+    scan_with_options(
+        pack,
+        input,
+        ScanOptions {
+            overlay,
+            ..ScanOptions::default()
+        },
+    )
+}
+
+/// Full scan: overlay, rolling chapter counters, suppressions, and the
+/// experimental structural flag (off unless set).
+pub fn scan_with_options(
+    pack: &ShelfPack,
+    input: &ScanInput<'_>,
+    options: ScanOptions<'_>,
 ) -> AntiSlopReport {
     let rewrite_max_passes = pack.rewrite_budget();
     if input.surface != ScanSurface::Fiction {
@@ -144,12 +178,12 @@ pub fn scan_with_overlay(
             soft_count: 0,
             hits: Vec::new(),
             rewrite_max_passes,
+            structural_observations: Vec::new(),
         };
     }
 
+    let overlay = options.overlay;
     let mut hits = Vec::new();
-    let mut hard_count = 0_u32;
-    let mut soft_count = 0_u32;
 
     for shelf in &pack.shelves {
         if !pack.is_enabled(shelf, overlay) {
@@ -157,9 +191,17 @@ pub fn scan_with_overlay(
         }
         let severity = pack.effective_severity(shelf, overlay);
         let raw = collect_matches(shelf, input.prose);
-        let emit = select_emitted(shelf, raw);
+        let prior = if is_chapter_scoped(&shelf.limit_scope) {
+            options
+                .chapter_prior
+                .map(|counters| counters.used(&shelf.id))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let emit = select_emitted(shelf, raw, prior);
         for raw in emit {
-            let hit = AntiSlopHit {
+            hits.push(AntiSlopHit {
                 shelf_id: shelf.id.clone(),
                 severity,
                 rewrite: RewriteMode::FromBeats,
@@ -169,14 +211,20 @@ pub fn scan_with_overlay(
                     start: raw.start,
                     end: raw.end,
                 },
-            };
-            match severity {
-                Severity::Hard => hard_count += 1,
-                Severity::Soft => soft_count += 1,
-            }
-            hits.push(hit);
+            });
         }
     }
+
+    if let Some(store) = options.suppressions {
+        hits.retain(|hit| !store.suppresses(hit));
+    }
+    let (hard_count, soft_count) = recount_after_suppress(&hits);
+
+    let structural_observations = if options.experimental_structural {
+        experimental_structural_observations(input.prose)
+    } else {
+        Vec::new()
+    };
 
     AntiSlopReport {
         pack_id: pack.pack_id.clone(),
@@ -189,12 +237,14 @@ pub fn scan_with_overlay(
         soft_count,
         hits,
         rewrite_max_passes,
+        structural_observations,
     }
 }
 
-fn select_emitted(shelf: &ShelfSpec, matches: Vec<RawMatch>) -> Vec<RawMatch> {
+fn select_emitted(shelf: &ShelfSpec, matches: Vec<RawMatch>, prior_used: u32) -> Vec<RawMatch> {
     if let Some(allowed) = shelf.default_limit.allowed_count() {
-        matches.into_iter().skip(allowed as usize).collect()
+        let remaining = allowed.saturating_sub(prior_used);
+        matches.into_iter().skip(remaining as usize).collect()
     } else if shelf.default_limit.is_advisory_cluster() {
         let threshold = if shelf.id == "solitary_fade" { 1 } else { 2 };
         if matches.len() >= threshold {
@@ -205,6 +255,11 @@ fn select_emitted(shelf: &ShelfSpec, matches: Vec<RawMatch>) -> Vec<RawMatch> {
     } else {
         Vec::new()
     }
+}
+
+/// Raw match count for one shelf (used by rolling chapter counters).
+pub(crate) fn raw_match_count(shelf: &ShelfSpec, prose: &str) -> u32 {
+    collect_matches(shelf, prose).len() as u32
 }
 
 fn collect_matches(shelf: &ShelfSpec, prose: &str) -> Vec<RawMatch> {

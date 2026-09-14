@@ -1,5 +1,6 @@
-//! Fiction anti-slop scanner (Phase 1) plus Phase 3 critic / revise contracts
-//! and Phase 4 eval / journal / project-overlay helpers.
+//! Fiction anti-slop scanner (Phase 1) plus Phase 3 critic / revise contracts,
+//! Phase 4 eval / journal / project-overlay helpers, and Phase 5 chapter
+//! counters, learned suppressions, and experimental structural observations.
 //!
 //! Loads the Phase 0 shelf pack (`references/anti-slop-shelf-pack.v0.toml`)
 //! and the human catalog (`references/anti-slop.md`). Soft shelves stay
@@ -13,12 +14,20 @@
 //! Persist path for [`AntiSlopReport`] is sketched; this phase does not write it.
 //! Phase 3: hard verify fail uses [`rewrite_from_beats_prompt`]; dual-persona
 //! injects the report via [`dual_persona_injection`].
+//! Phase 5: rolling [`ChapterCounters`] for `limit_scope = chapter`;
+//! [`learn_suppressions_from_edit`] + [`SuppressionStore`]; experimental
+//! structural notes off by default. Self-hosted sampler is out of band.
 
+mod chapter;
 mod pack;
 mod packet;
 mod revise;
+mod sampler;
 mod scan;
+mod structural;
+mod suppress;
 
+pub use chapter::ChapterCounters;
 pub use pack::{
     AntislopError, DEFAULT_CATALOG_MARKDOWN, DEFAULT_PACK_TOML, GenreOverride, PackPolicy,
     RewriteMode, Severity, ShelfLimit, ShelfPack, ShelfSpec, catalog_shelf_ids,
@@ -34,9 +43,16 @@ pub use revise::{
     dual_persona_injection, residual_hard_ids, residual_summary, rewrite_attempt_budget,
     rewrite_from_beats_contract, rewrite_from_beats_prompt, verify_findings,
 };
+pub use sampler::{SamplerStatus, self_hosted_sampler_status};
 pub use scan::{
-    AntiSlopHit, AntiSlopJournalSummary, AntiSlopReport, SCANNER_SHELF_IDS, ScanInput, ScanSurface,
-    journal_summary, persist_path_sketch, scan, scan_with_overlay,
+    AntiSlopHit, AntiSlopJournalSummary, AntiSlopReport, SCANNER_SHELF_IDS, ScanInput, ScanOptions,
+    ScanSurface, journal_summary, persist_path_sketch, scan, scan_with_options, scan_with_overlay,
+};
+pub use structural::{
+    StructuralObservation, experimental_structural_default, experimental_structural_observations,
+};
+pub use suppress::{
+    FalsePositiveSuppression, SuppressionStore, learn_suppressions_from_edit, normalize_excerpt,
 };
 
 /// Tech / Voices gates that must not appear as fiction shelves.
@@ -570,5 +586,20 @@ mod tests {
         for id in NON_PORTS {
             assert!(!catalog.iter().any(|shelf| shelf == id));
         }
+    }
+
+    #[test]
+    fn experimental_structural_defaults_off_and_sampler_is_out_of_band() {
+        assert!(!experimental_structural_default());
+        let status = self_hosted_sampler_status();
+        assert_eq!(status.as_str(), "out_of_band");
+        assert!(!status.in_process());
+        let pack = ShelfPack::load_default().expect("pack");
+        let report = scan(
+            &pack,
+            &fiction("And that was the point. An old novel she had loved sat unopened."),
+        );
+        assert!(report.structural_observations.is_empty());
+        assert_eq!(report.hard_count, 0);
     }
 }
