@@ -390,6 +390,7 @@ impl Default for ModelRouter {
                 routing: Vec::new(),
                 health_check: crate::agent_config::default_health_check_config(),
                 route_import_to_explicit: false,
+                anti_slop: crate::agent_config::AntiSlopProjectConfig::default(),
             }),
         )
     }
@@ -403,6 +404,7 @@ impl ModelRouter {
             routing: Vec::new(),
             health_check: crate::agent_config::default_health_check_config(),
             route_import_to_explicit: false,
+            anti_slop: crate::agent_config::AntiSlopProjectConfig::default(),
         })
     }
 

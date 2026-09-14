@@ -404,7 +404,8 @@ open http://127.0.0.1:4321/console
   (mine / verify / revise statuses, checkpoint states), plus a **live timeline**
   that streams the run's event journal over SSE (`/events?topic=run:<id>`),
   resuming automatically on reconnect and rendering any event kind — including
-  ones added in later phases — generically.
+  ones added in later phases — generically. Host-saved drafts show an
+  `anti_slop` summary (hard/soft counts and shelf IDs, no excerpts).
 - **Manuscript** — pick a project + book number → the compiled Markdown rendered
   in a reading pane (via `compile_manuscript`; undrafted scenes are flagged).
 - **Canon queue** — the `staged` canon deltas awaiting ratification (class, scene

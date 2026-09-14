@@ -1,4 +1,5 @@
-//! Fiction anti-slop scanner (Phase 1) plus Phase 3 critic / revise contracts.
+//! Fiction anti-slop scanner (Phase 1) plus Phase 3 critic / revise contracts
+//! and Phase 4 eval / journal / project-overlay helpers.
 //!
 //! Loads the Phase 0 shelf pack (`references/anti-slop-shelf-pack.v0.toml`)
 //! and the human catalog (`references/anti-slop.md`). Soft shelves stay
@@ -20,7 +21,7 @@ mod scan;
 
 pub use pack::{
     AntislopError, DEFAULT_CATALOG_MARKDOWN, DEFAULT_PACK_TOML, GenreOverride, PackPolicy,
-    RewriteMode, Severity, ShelfLimit, ShelfPack, ShelfSpec,
+    RewriteMode, Severity, ShelfLimit, ShelfPack, ShelfSpec, catalog_shelf_ids,
 };
 pub use packet::{
     CompactShelfDigest, CompactShelfEntry, ProfileOverlay, SceneNegative, VoiceSample,
@@ -33,7 +34,10 @@ pub use revise::{
     dual_persona_injection, residual_hard_ids, residual_summary, rewrite_attempt_budget,
     rewrite_from_beats_contract, rewrite_from_beats_prompt, verify_findings,
 };
-pub use scan::{AntiSlopHit, AntiSlopReport, ScanInput, ScanSurface, persist_path_sketch, scan};
+pub use scan::{
+    AntiSlopHit, AntiSlopJournalSummary, AntiSlopReport, SCANNER_SHELF_IDS, ScanInput, ScanSurface,
+    journal_summary, persist_path_sketch, scan, scan_with_overlay,
+};
 
 /// Tech / Voices gates that must not appear as fiction shelves.
 pub const NON_PORTS: &[&str] = &[
@@ -483,5 +487,88 @@ mod tests {
         );
         assert!(injection.craft_technician_block.contains("NONE"));
         assert!(injection.report_block.contains("solitary_fade"));
+    }
+
+    #[test]
+    fn project_overlay_can_disable_or_soften_without_breaking_locks() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "It wasn't anger. It was disappointment.\n\
+                     This wasn't a homecoming. It was a reckoning.\n\
+                     She felt a mix of relief and dread.";
+        let baseline = scan(&pack, &fiction(prose));
+        assert!(baseline.hard_count >= 2);
+
+        let disable = GenreOverride {
+            profile: "project.config".into(),
+            disable: vec!["contrast_not_x_but_y".into(), "emotion_cocktail".into()],
+            soften: Vec::new(),
+            promote_to_hard: Vec::new(),
+        };
+        let disabled = scan_with_overlay(&pack, &fiction(prose), Some(&disable));
+        assert_eq!(disabled.hard_count, 0);
+        assert!(disabled.hits.iter().all(
+            |hit| hit.shelf_id != "contrast_not_x_but_y" && hit.shelf_id != "emotion_cocktail"
+        ));
+
+        let soften = GenreOverride {
+            profile: "project.config".into(),
+            disable: Vec::new(),
+            soften: vec!["contrast_not_x_but_y".into()],
+            promote_to_hard: Vec::new(),
+        };
+        let softened = scan_with_overlay(&pack, &fiction(prose), Some(&soften));
+        assert!(
+            softened
+                .hits
+                .iter()
+                .filter(|hit| hit.shelf_id == "contrast_not_x_but_y")
+                .all(|hit| hit.severity == Severity::Soft)
+        );
+        assert!(
+            softened
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "emotion_cocktail" && hit.severity == Severity::Hard)
+        );
+    }
+
+    #[test]
+    fn journal_summary_is_ids_and_counts_only() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let report = scan(
+            &pack,
+            &fiction(
+                "It wasn't anger. It was disappointment.\n\
+                 This wasn't a homecoming. It was a reckoning.\n\
+                 She felt a mix of relief and dread.\n\
+                 She spent the afternoon thinking about what he'd said.",
+            ),
+        );
+        let summary = journal_summary(&report);
+        assert_eq!(summary.hard_count, report.hard_count);
+        assert_eq!(summary.soft_count, report.soft_count);
+        assert!(summary.hard_ids.contains(&"emotion_cocktail".to_string()));
+        let encoded = serde_json::to_string(&summary).expect("json");
+        assert!(!encoded.contains("excerpt"));
+        assert!(!encoded.contains("mix of relief"));
+        assert!(!encoded.contains("rewrite_hint"));
+    }
+
+    #[test]
+    fn catalog_pack_and_scanner_shelf_ids_match() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let catalog = catalog_shelf_ids(DEFAULT_CATALOG_MARKDOWN);
+        let pack_ids = pack.shelf_ids();
+        let scanner: Vec<String> = SCANNER_SHELF_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+        assert_eq!(catalog, pack_ids);
+        assert_eq!(catalog, scanner);
+        assert_eq!(catalog.len(), 12);
+        assert!(catalog.iter().any(|id| id == "solitary_fade"));
+        for id in NON_PORTS {
+            assert!(!catalog.iter().any(|shelf| shelf == id));
+        }
     }
 }

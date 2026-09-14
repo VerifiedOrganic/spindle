@@ -8924,9 +8924,10 @@ impl SqliteSpindleService {
             && let Some(pack) = load_anti_slop_pack()
         {
             for scene in &scenes {
-                let report = spindle_core::style::antislop::scan(
+                let report = spindle_core::style::antislop::scan_with_overlay(
                     &pack,
                     &spindle_core::style::antislop::ScanInput::fiction(&scene.full_text),
+                    project_anti_slop_overlay().as_ref(),
                 );
                 for finding in spindle_core::style::antislop::verify_findings(&report) {
                     issues.push(ConsistencyIssue {
@@ -26232,12 +26233,19 @@ fn load_anti_slop_pack() -> Option<spindle_core::style::antislop::ShelfPack> {
     }
 }
 
+fn project_anti_slop_overlay() -> Option<spindle_core::style::antislop::GenreOverride> {
+    crate::agent_config::load_agent_config(None)
+        .ok()
+        .and_then(|config| config.anti_slop.to_overlay())
+}
+
 /// Advisory scan for `save_scene_draft`. Never fails the save.
 fn scan_scene_anti_slop(prose: &str) -> Option<spindle_core::style::antislop::AntiSlopReport> {
     let pack = load_anti_slop_pack()?;
-    Some(spindle_core::style::antislop::scan(
+    Some(spindle_core::style::antislop::scan_with_overlay(
         &pack,
         &spindle_core::style::antislop::ScanInput::fiction(prose),
+        project_anti_slop_overlay().as_ref(),
     ))
 }
 

@@ -1,6 +1,8 @@
+use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::OnceLock;
 
 /// Embedded Phase 0 pack stub. Phase 1 loads this rather than inventing IDs.
 pub const DEFAULT_PACK_TOML: &str =
@@ -178,4 +180,17 @@ impl ShelfPack {
     pub fn rewrite_budget(&self) -> u8 {
         self.policy.max_rewrite_from_beats.clamp(1, 2)
     }
+
+    pub fn shelf_ids(&self) -> Vec<String> {
+        self.shelves.iter().map(|shelf| shelf.id.clone()).collect()
+    }
+}
+
+/// Shelf IDs from the human catalog headings (`### \`id\``).
+pub fn catalog_shelf_ids(markdown: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"(?m)^### `([a-z][a-z0-9_]+)`").expect("catalog ids"));
+    re.captures_iter(markdown)
+        .map(|cap| cap[1].to_string())
+        .collect()
 }

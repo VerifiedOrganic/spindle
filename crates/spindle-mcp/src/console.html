@@ -86,6 +86,7 @@
   .ev .seq { color: var(--dim); min-width: 42px; }
   .ev .kind { color: var(--accent); min-width: 180px; }
   .ev .pl { color: var(--fg); word-break: break-word; }
+  .ev .as { color: var(--warn); white-space: nowrap; }
   .ev.unknown .kind { color: var(--warn); }
   .sse-state { font: 11px var(--mono); color: var(--dim); margin-left: 8px; }
 
@@ -196,6 +197,7 @@
     <div class="card">
       <div class="row" style="margin-bottom:6px">
         <strong>Live timeline</strong>
+        <span class="muted"> · anti_slop summary (ids + counts) when a draft reports it</span>
         <span class="sse-state" id="sse-state">idle</span>
       </div>
       <div id="timeline"><div class="empty">No run selected.</div></div>
@@ -476,15 +478,30 @@ function startTimeline(runId) {
   };
 }
 
+function formatAntiSlop(data) {
+  try {
+    const obj = typeof data === "string" ? JSON.parse(data) : data;
+    const a = obj && obj.anti_slop;
+    if (!a || typeof a !== "object") return "";
+    const hardIds = Array.isArray(a.hard_ids) && a.hard_ids.length ? a.hard_ids.join(",") : "none";
+    const softIds = Array.isArray(a.soft_ids) && a.soft_ids.length ? a.soft_ids.join(",") : "none";
+    return `anti_slop hard=${Number(a.hard_count) || 0} soft=${Number(a.soft_count) || 0} hard_ids=${hardIds} soft_ids=${softIds}`;
+  } catch (_err) {
+    return "";
+  }
+}
+
 function appendEvent(seq, kind, data, known) {
   const tl = $("timeline");
   const first = tl.querySelector(".empty");
   if (first) tl.innerHTML = "";
   const div = document.createElement("div");
   div.className = "ev" + (known ? "" : " unknown");
+  const summary = formatAntiSlop(data);
   div.innerHTML =
     `<span class="seq">#${esc(seq)}</span>` +
     `<span class="kind">${esc(kind)}${known ? "" : " (unknown)"}</span>` +
+    (summary ? `<span class="as">${esc(summary)}</span>` : "") +
     `<span class="pl">${esc(data)}</span>`;
   tl.appendChild(div); // append-only
   tl.scrollTop = tl.scrollHeight;

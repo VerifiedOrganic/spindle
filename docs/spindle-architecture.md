@@ -324,7 +324,9 @@ step). Payloads carry **ids, artifact paths, counts, and enums only — never pr
 fact text, evidence, or model output** — so the stream is safe to leave open on a
 shared screen. The kind vocabulary and payload shapes are a **one-way door** fixed
 by ADR 0002; consumers must ignore unknown kinds/keys. `authoring_status` (the run
-tables) remains the source of truth; the journal is the timeline view.
+tables) remains the source of truth; the journal is the timeline view. Host
+`scene_drafted` rows may include an additive `anti_slop` summary (ids +
+counts). The console timeline renders it when present.
 
 The journal streams over the existing HTTP surface at
 `GET /events?topic=run:<authoring_run_id>` (SSE `id` = `seq`, `event` = kind,

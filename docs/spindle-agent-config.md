@@ -54,7 +54,8 @@ If none of those files exist, Spindle starts with the default built-in routes.
 
 ## Config shape
 
-The shipped parser currently supports `[[agents]]` and `[[routing]]`.
+The shipped parser currently supports `[[agents]]`, `[[routing]]`, and an
+optional `[anti_slop]` overlay.
 
 ```toml
 [[agents]]
@@ -103,7 +104,21 @@ agent = "local-http"
 [[routing]]
 route = "style_analyze"
 agent = "local-http"
+
+# Optional. Empty / omitted = fiction pack defaults.
+# said_bookism stays soft unless listed under promote_to_hard.
+[anti_slop]
+disable = []
+soften = []
+promote_to_hard = []
 ```
+
+`[anti_slop]` is a project overlay on the fiction shelf pack, not a new
+scanner. `disable` skips a shelf, `soften` keeps a hard shelf advisory, and
+`promote_to_hard` is the only way `said_bookism` (or another soft ID) becomes
+hard. Soft-on-save stays advisory. See
+[`authoring-supervisor.md`](authoring-supervisor.md) and
+[`fiction-anti-slop.md`](fiction-anti-slop.md).
 
 ## Route names
 

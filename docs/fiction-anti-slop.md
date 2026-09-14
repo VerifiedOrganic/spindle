@@ -1,6 +1,12 @@
 # Fiction anti-slop
 
-Status: **Phase 3 critic / revise loop** is live. Hard verify fail uses a
+Status: **Phase 4 eval / CI / console telemetry** is live. Eval cases lock
+scanner regressions; optional labeled preference dims are editorial
+observations, not a quality superiority claim. The run journal may carry an
+additive `anti_slop` summary (ids + counts). CI fails if catalog MD, the v0
+pack, and the scanner shelf IDs drift. Project `[anti_slop]` config can
+disable / soften / promote shelves; pack defaults and product locks still
+apply. Phase 3 critic / revise remains: hard verify fail uses a
 rewrite-from-beats prompt contract (adapters + harness), capped at 1–2
 passes, then re-lints and surfaces residuals. Dual-persona review injects
 the scan report; the Craft Technician must cite shelf IDs; the Literary
@@ -172,9 +178,26 @@ Later scan results (also reserved, not shipped):
 claim a missing "100+" pattern list. The authoring supervisor does not repeat
 that claim.
 
-## Out of scope (Phase 3)
+## Eval / CI / console (Phase 4)
 
-- Phase 4 eval/CI pack
+- **Regression eval:** `evals/anti_slop/cases.json` plus
+  `python3 evals/anti_slop.py self-test|drift|regress|score`. Cases lock
+  expected shelf IDs, severity, and `hard_count`. `solitary_fade` stays
+  soft. Preference dims are optional labels (`present` / `absent` / `n/a`),
+  never a ranking of writing quality.
+- **Journal / console:** `scene_drafted` (host save) may include an
+  additive `anti_slop` key: `hard_count`, `soft_count`, `hard_ids`,
+  `soft_ids`. The operator console timeline renders that summary. No
+  excerpts (ADR 0002 D3.1).
+- **CI drift:** catalog headings, `references/anti-slop-shelf-pack.v0.toml`
+  shelf `id`s, and `SCANNER_SHELF_IDS` must be the same twelve IDs.
+- **Project config:** `[anti_slop]` in `spindle.toml` / `.spindle/config.toml`
+  (`disable`, `soften`, `promote_to_hard`). Empty means pack defaults.
+  `said_bookism` stays soft unless explicitly promoted.
+
+## Out of scope (Phase 4)
+
+- Phase 5 rolling chapter counters or a self-hosted sampler
 - Promoting `said_bookism` to hard in the default pack
 - Porting Voices / tech gates
 - Persisting source-corpus voice samples (hooks come from style-profile

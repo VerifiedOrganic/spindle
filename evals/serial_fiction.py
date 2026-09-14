@@ -211,7 +211,8 @@ def blind(candidates_path, output, seed):
         packet.append({"case_id": case["id"], "task": case["task"], "contract": case["contract"],
             "continuity_checklist": case["criteria"], "candidates": {label: candidates[case["id"], condition]["text"] for label, condition in mapping.items()}})
         ratings.append({"case_id": case["id"], "preferred": [], "candidates": {label: {"continuity_errors": None,
-            "voice": None, "engagement": None, "revision_minutes": None} for label in "ABC"}})
+            "voice": None, "engagement": None, "revision_minutes": None,
+            "anti_slop_dims": None} for label in "ABC"}})
     write(output / "reviewer-packet.json", packet)
     write(output / "ratings.json", ratings)
     write(output / "private-key.json", {"seed": seed, "source_hash": digest(source), "mapping": key, "candidates": source})
@@ -225,7 +226,9 @@ def score(key_path, ratings_path):
     if len({r["case_id"] for r in ratings}) != len(ratings) or {r["case_id"] for r in ratings} != set(mappings):
         raise ValueError("Rating cases must match the blinded packet exactly")
     result = {condition: {"preference_credit": 0.0, "outright_wins": 0, "tied_top": 0,
-                         "continuity_errors": [], "voice": [], "engagement": [], "revision_minutes": []} for condition in CONDITIONS}
+                         "continuity_errors": [], "voice": [], "engagement": [], "revision_minutes": [],
+                         "anti_slop_dims": []} for condition in CONDITIONS}
+    ANTI_SLOP_DIM_VALUES = {"present", "absent", "n/a"}
     judged = 0
     for row in ratings:
         mapping, preferred = mappings[row["case_id"]], row["preferred"]
@@ -244,16 +247,32 @@ def score(key_path, ratings_path):
                     raise ValueError(f"{metric} must be 1–5 or null")
                 if value is not None:
                     result[condition][metric].append(value)
+            dims = row["candidates"][label].get("anti_slop_dims")
+            if dims is not None:
+                if not isinstance(dims, dict):
+                    raise ValueError("anti_slop_dims must be an object of labeled observations or null")
+                for dim, value in dims.items():
+                    if value not in ANTI_SLOP_DIM_VALUES:
+                        raise ValueError(
+                            "anti_slop_dims values must be present|absent|n/a; "
+                            "they are editorial labels, not a quality score"
+                        )
+                result[condition]["anti_slop_dims"].append(dims)
     for condition, data in result.items():
         for metric in ["continuity_errors", "voice", "engagement", "revision_minutes"]:
             values = data[metric]
             data[metric] = {"rated": len(values), "mean": statistics.mean(values) if values else None}
+        labeled = data.pop("anti_slop_dims")
+        data["anti_slop_dims"] = {
+            "labeled": len(labeled),
+            "note": "Labeled editorial observations only. Not a quality superiority claim.",
+        }
         costs = [c for c in key["candidates"] if c["condition"] == condition]
         for metric in ["input_tokens", "output_tokens", "elapsed_seconds"]:
             values = [c.get(metric) for c in costs if c.get(metric) is not None]
             data[metric] = {"known_total": sum(values), "unknown_candidates": len(costs) - len(values)}
     return {"preference_cases_rated": judged, "preference_cases_unrated": len(ratings) - judged,
-            "conditions": result, "interpretation": "Descriptive results only. Report missing judgments, model versions and human-vs-model rater provenance; this is not proof of superiority."}
+            "conditions": result, "interpretation": "Descriptive results only. Report missing judgments, model versions and human-vs-model rater provenance; this is not proof of superiority. Optional anti_slop_dims are labeled observations (present/absent/n/a), not a quality ranking."}
 
 
 def self_test():
