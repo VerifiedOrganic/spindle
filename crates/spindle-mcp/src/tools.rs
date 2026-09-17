@@ -399,6 +399,15 @@ impl ToolRouter {
                 "import_hydrate_bible",
             ],
             "authoring" => &[
+                "list_agents",
+                "get_character_snapshot",
+                "update_writer_position",
+                "commit_character_state",
+                "register_canonical_fact",
+                "record_knowledge",
+                "create_future_knowledge",
+                "set_project_calendar",
+                "set_scene_clock",
                 "record_note",
                 "update_arc_milestone",
                 "create_character_arc",
@@ -7855,6 +7864,7 @@ mod tests {
             .filter_map(|skill| skill["name"].as_str())
             .collect();
         for expected in [
+            "spindle",
             "scene-writer",
             "character-creator",
             "worldbuilder",
@@ -7974,6 +7984,15 @@ mod tests {
             }
             if profile == "authoring" {
                 for step in [
+                    "list_agents",
+                    "get_character_snapshot",
+                    "update_writer_position",
+                    "commit_character_state",
+                    "register_canonical_fact",
+                    "record_knowledge",
+                    "create_future_knowledge",
+                    "set_project_calendar",
+                    "set_scene_clock",
                     "authoring_prepare_run",
                     "authoring_start_run",
                     "authoring_status",
