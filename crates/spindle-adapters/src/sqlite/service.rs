@@ -194,6 +194,15 @@ pub(crate) fn scene_stub_reason(full_text: &str, min_words: usize) -> Option<Str
     None
 }
 
+/// Map a poisoned service lock to the pre-decided `anyhow` error naming the
+/// lock. Every hot-path lock acquisition funnels through this so a poisoned
+/// lock surfaces as `Err` instead of panicking the server. Lock ordering,
+/// scope, and granularity are unchanged — only the poisoned-lock outcome
+/// changes (panic → `Err`).
+fn poisoned_lock(lock: &'static str) -> anyhow::Error {
+    anyhow::anyhow!("{lock} poisoned")
+}
+
 /// In-memory record of one `continue_generation` / `revise_generation` call.
 /// Kept on the service instance so a subsequent `save_scene_draft` /
 /// `revise_generation` can resolve a `generation_id` back to the actual
@@ -445,15 +454,15 @@ impl SqliteSpindleService {
         &self.repository
     }
 
-    pub fn get_all_generation_receipts(&self) -> Vec<(Option<String>, bool)> {
+    pub fn get_all_generation_receipts(&self) -> Result<Vec<(Option<String>, bool)>> {
         let receipts = self
             .generation_receipts
             .read()
-            .expect("generation receipts read lock");
-        receipts
+            .map_err(|_| poisoned_lock("generation receipts read lock"))?;
+        Ok(receipts
             .values()
             .map(|r| (r.rating.clone(), r.explicit_capable_agent))
-            .collect()
+            .collect())
     }
 
     async fn resolve_phase_four_caches(
@@ -914,7 +923,7 @@ impl SqliteSpindleService {
             SearchBibleMode::Semantic => {
                 // Use the configured embedder to produce a query vector,
                 // then ask the vec0 mirror for the k nearest matches.
-                let embedding_session = self.repository.model_router().embedding_session();
+                let embedding_session = self.repository.model_router().embedding_session()?;
                 let query_embedding = embedding_session.embed_text(&input.query).await?;
                 let hits = self
                     .repository
@@ -2528,7 +2537,7 @@ impl SqliteSpindleService {
 
         // If FTS turns up no hits, fall back to vec0 semantic search.
         if matches.is_empty() {
-            let embedding_session = self.repository.model_router().embedding_session();
+            let embedding_session = self.repository.model_router().embedding_session()?;
             let query_embedding = embedding_session.embed_text(query).await?;
             let knn = self
                 .repository
@@ -2824,7 +2833,7 @@ impl SqliteSpindleService {
 
         Ok(RebuildSearchIndexOutput {
             indexed_records: indexed,
-            embedding_version: self.repository.current_embedding_version(),
+            embedding_version: self.repository.current_embedding_version()?,
         })
     }
 
@@ -4207,19 +4216,20 @@ impl SqliteSpindleService {
     // Agent / config tools (delegate to model_router; no DB work)
     // =========================================================================
 
-    pub fn list_agents(&self) -> ListAgentsOutput {
+    pub fn list_agents(&self) -> Result<ListAgentsOutput> {
         self.repository.model_router().list_agents()
     }
 
-    pub fn agent_routing_config(&self) -> spindle_core::models::AgentRoutingConfigOutput {
+    pub fn agent_routing_config(&self) -> Result<spindle_core::models::AgentRoutingConfigOutput> {
         self.repository.model_router().routing_config()
     }
 
-    pub fn model_routes(&self) -> Vec<spindle_core::models::ModelRouteSummary> {
+    pub fn model_routes(&self) -> Result<Vec<spindle_core::models::ModelRouteSummary>> {
         use crate::ai::adapter_pulls_canon_via_mcp;
-        self.repository
+        Ok(self
+            .repository
             .model_router()
-            .list_route_bindings()
+            .list_route_bindings()?
             .into_iter()
             .map(|binding| {
                 let caller_should_send_brief =
@@ -4233,7 +4243,7 @@ impl SqliteSpindleService {
                     caller_should_send_brief,
                 }
             })
-            .collect()
+            .collect())
     }
 
     pub fn configure_agents(&self, input: ConfigureAgentsInput) -> Result<ConfigureAgentsOutput> {
@@ -4261,7 +4271,7 @@ impl SqliteSpindleService {
                     &output.model_name,
                     &output.output,
                 )
-                .await;
+                .await?;
             output.generation_id = Some(receipt.id);
             output.generation_agent_id = Some(receipt.agent_id);
             output.generation_output_sha256 = Some(receipt.output_sha256);
@@ -7771,7 +7781,7 @@ impl SqliteSpindleService {
                 if query.trim().is_empty() {
                     Vec::new()
                 } else {
-                    let embedding_session = self.repository.model_router().embedding_session();
+                    let embedding_session = self.repository.model_router().embedding_session()?;
                     let query_embedding = embedding_session.embed_text(&query).await?;
                     // Over-fetch so excluding present-scene entities (which are
                     // already rendered in the scene layer) can't starve the slice.
@@ -13669,7 +13679,7 @@ impl SqliteSpindleService {
                 &response.model_name,
                 &format!("{}{}", input.prior_output, response.output),
             )
-            .await;
+            .await?;
         Ok(ContinueGenerationOutput {
             output: response.output,
             truncated: response.truncated,
@@ -13725,7 +13735,7 @@ impl SqliteSpindleService {
                 &response.model_name,
                 &response.output,
             )
-            .await;
+            .await?;
 
         Ok(ReviseGenerationOutput {
             output: response.output,
@@ -13752,7 +13762,7 @@ impl SqliteSpindleService {
         rating: Option<&str>,
         agent_id: &str,
         output: &str,
-    ) -> GenerationReceiptRecord {
+    ) -> Result<GenerationReceiptRecord> {
         use std::sync::atomic::Ordering;
 
         let output_text = normalized_generation_text(output);
@@ -13772,7 +13782,7 @@ impl SqliteSpindleService {
             agent_id: agent_id.to_string(),
             output_sha256: output_sha256.clone(),
             output_text: output_text.clone(),
-            explicit_capable_agent: self.agent_supports_rating(agent_id, "explicit"),
+            explicit_capable_agent: self.agent_supports_rating(agent_id, "explicit")?,
         };
 
         // Persist (source of truth across restarts). A DB write failure must not
@@ -13809,7 +13819,7 @@ impl SqliteSpindleService {
         let mut receipts = self
             .generation_receipts
             .write()
-            .expect("generation receipts write lock");
+            .map_err(|_| poisoned_lock("generation receipts write lock"))?;
         receipts.insert(id, receipt.clone());
         while receipts.len() > MAX_GENERATION_RECEIPTS {
             if let Some(oldest) = receipts.keys().next().cloned() {
@@ -13819,14 +13829,15 @@ impl SqliteSpindleService {
             }
         }
 
-        receipt
+        Ok(receipt)
     }
 
-    fn agent_supports_rating(&self, agent_id: &str, rating: &str) -> bool {
+    fn agent_supports_rating(&self, agent_id: &str, rating: &str) -> Result<bool> {
         let expected = normalize_generation_rating(rating);
-        self.repository
+        Ok(self
+            .repository
             .model_router()
-            .list_agents()
+            .list_agents()?
             .agents
             .into_iter()
             .find(|agent| agent.id == agent_id)
@@ -13835,7 +13846,7 @@ impl SqliteSpindleService {
                     .ratings
                     .iter()
                     .any(|candidate| normalize_generation_rating(candidate) == expected)
-            })
+            }))
     }
 
     /// Resolve a receipt by id: in-memory cache first (fast path, and the seam
@@ -13852,7 +13863,7 @@ impl SqliteSpindleService {
         if let Some(cached) = self
             .generation_receipts
             .read()
-            .expect("generation receipts read lock")
+            .map_err(|_| poisoned_lock("generation receipts read lock"))?
             .get(generation_id)
             .cloned()
         {
@@ -13878,7 +13889,7 @@ impl SqliteSpindleService {
         };
         self.generation_receipts
             .write()
-            .expect("generation receipts write lock")
+            .map_err(|_| poisoned_lock("generation receipts write lock"))?
             .insert(receipt.id.clone(), receipt.clone());
         Ok(receipt)
     }
@@ -14339,7 +14350,7 @@ impl SqliteSpindleService {
             Some(scene.content_rating.trim().to_ascii_lowercase()).as_deref(),
         )?;
 
-        let existing_job = self.lookup_review_job(&job_key);
+        let existing_job = self.lookup_review_job(&job_key)?;
         let target_rounds = match existing_job.as_ref() {
             Some(job) => job.target_rounds,
             None => prior_rounds.len() + requested_rounds,
@@ -14366,7 +14377,7 @@ impl SqliteSpindleService {
 
         let job = match existing_job {
             Some(job) => job,
-            None => self.spawn_review_job(&job_key, &input, &scene, target_rounds, prior_rounds),
+            None => self.spawn_review_job(&job_key, &input, &scene, target_rounds, prior_rounds)?,
         };
 
         // Bounded wait: answer the caller promptly either way.
@@ -14392,7 +14403,7 @@ impl SqliteSpindleService {
         };
 
         if let Some(terminal) = terminal {
-            self.clear_review_job(&job_key);
+            self.clear_review_job(&job_key)?;
             if let ReviewJobState::Failed(message) = terminal {
                 anyhow::bail!("dual persona review failed: {message}");
             }
@@ -14462,19 +14473,21 @@ impl SqliteSpindleService {
             .unwrap_or_default())
     }
 
-    fn lookup_review_job(&self, job_key: &str) -> Option<ReviewJob> {
-        self.review_jobs
+    fn lookup_review_job(&self, job_key: &str) -> Result<Option<ReviewJob>> {
+        Ok(self
+            .review_jobs
             .lock()
-            .expect("review job registry lock")
+            .map_err(|_| poisoned_lock("review job registry lock"))?
             .get(job_key)
-            .cloned()
+            .cloned())
     }
 
-    fn clear_review_job(&self, job_key: &str) {
+    fn clear_review_job(&self, job_key: &str) -> Result<()> {
         self.review_jobs
             .lock()
-            .expect("review job registry lock")
+            .map_err(|_| poisoned_lock("review job registry lock"))?
             .remove(job_key);
+        Ok(())
     }
 
     /// Detach the remaining rounds onto a background task and register it so
@@ -14486,18 +14499,21 @@ impl SqliteSpindleService {
         scene: &crate::sqlite::records::Scene,
         target_rounds: usize,
         prior_rounds: Vec<spindle_core::models::DualPersonaReviewRound>,
-    ) -> ReviewJob {
+    ) -> Result<ReviewJob> {
         let (tx, rx) = tokio::sync::watch::channel(ReviewJobState::Running);
         let job = ReviewJob {
             target_rounds,
             state: rx,
         };
         {
-            let mut guard = self.review_jobs.lock().expect("review job registry lock");
+            let mut guard = self
+                .review_jobs
+                .lock()
+                .map_err(|_| poisoned_lock("review job registry lock"))?;
             // Re-check under the lock: another caller may have registered a job
             // for this key between our lookup and here.
             if let Some(existing) = guard.get(job_key) {
-                return existing.clone();
+                return Ok(existing.clone());
             }
             guard.insert(job_key.to_string(), job.clone());
         }
@@ -14526,10 +14542,18 @@ impl SqliteSpindleService {
             // Leave the entry for a waiter to collect; if none ever comes, drop
             // it here so the registry cannot grow without bound.
             tokio::time::sleep(Duration::from_secs(if cfg!(test) { 0 } else { 300 })).await;
-            service.clear_review_job(&job_key_owned);
+            // The reaper runs detached with no caller to propagate to; a
+            // poisoned registry is logged and stays observable: every
+            // request-path registry access surfaces it as `Err`.
+            if let Err(error) = service.clear_review_job(&job_key_owned) {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "review job reaper could not clear its registry entry"
+                );
+            }
         });
 
-        job
+        Ok(job)
     }
 
     /// Run rounds until `target_rounds` are banked, persisting after EACH one.
@@ -14865,7 +14889,7 @@ impl SqliteSpindleService {
 
         // 1. Perform rating and route configurations check
         if is_explicit_rating {
-            let bindings = self.repository.model_router().list_route_bindings();
+            let bindings = self.repository.model_router().list_route_bindings()?;
             let has_explicit_route = bindings.iter().any(|b| {
                 b.route.route_name == "research"
                     && b.rating
@@ -34343,7 +34367,7 @@ rating = "explicit"
         })
         .unwrap();
 
-        let routes = svc.model_routes();
+        let routes = svc.model_routes().unwrap();
         assert!(routes.iter().any(|route| {
             route.route_name == "review"
                 && route.rating.as_deref() == Some("explicit")
@@ -34765,7 +34789,8 @@ rating = "explicit"
                 "local-adapter-stub",
                 "Mara crossed the rain-slick alley, salt charm warm in her fist.",
             )
-            .await;
+            .await
+            .unwrap();
 
         let outcome = svc
             .revise_generation(spindle_core::models::ReviseGenerationInput {
@@ -34804,7 +34829,8 @@ rating = "explicit"
                 "local-adapter-stub-no-explicit",
                 "Some explicit prose.",
             )
-            .await;
+            .await
+            .unwrap();
         let err = svc
             .revise_generation(spindle_core::models::ReviseGenerationInput {
                 generation_id: receipt.id.clone(),
@@ -34915,7 +34941,8 @@ rating = "explicit"
                 "explicit-agent",
                 receipt_output,
             )
-            .await;
+            .await
+            .unwrap();
         {
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
@@ -34987,7 +35014,8 @@ rating = "explicit"
             .unwrap();
         let receipt = svc
             .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed output")
-            .await;
+            .await
+            .unwrap();
         {
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
@@ -35289,7 +35317,8 @@ rating = "explicit"
             .unwrap();
         let receipt = svc
             .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed")
-            .await;
+            .await
+            .unwrap();
         {
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
@@ -35358,7 +35387,8 @@ rating = "explicit"
                 "mature-agent",
                 "Receipt narration that is NOT the prose.",
             )
-            .await;
+            .await
+            .unwrap();
         let caller_full_text = "The mist rolled off the cliffs as she climbed the last switchback.";
 
         let out = svc
@@ -35413,7 +35443,8 @@ rating = "explicit"
         let seed_receipt = async |svc: &SqliteSpindleService, output: &str| {
             let receipt = svc
                 .register_generation_receipt("draft", Some("explicit"), "explicit-agent", output)
-                .await;
+                .await
+                .unwrap();
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
                 .get_mut(&receipt.id)
@@ -35496,7 +35527,8 @@ rating = "explicit"
                 "mature-agent",
                 "Mature route output.",
             )
-            .await;
+            .await
+            .unwrap();
 
         let err = svc
             .save_scene_draft(SaveSceneDraftInput {
@@ -35557,7 +35589,8 @@ rating = "explicit"
                 "draft-agent",
                 "Prose the agent produced in process one.",
             )
-            .await;
+            .await
+            .unwrap();
 
         // Fresh instance (process two): no shared in-memory cache.
         let svc_b = service_over_same_db(&db_path, &data_dir).await;
@@ -35590,7 +35623,8 @@ rating = "explicit"
         let svc_a = service_over_same_db(&db_path, &data_dir).await;
         let receipt = svc_a
             .register_generation_receipt("draft", Some("mature"), "draft-agent", "Expiring prose.")
-            .await;
+            .await
+            .unwrap();
 
         // Backdate expires_at into the past directly in the DB (deterministic,
         // no clock injection needed — the row's own expiry is the seam).
@@ -35703,7 +35737,8 @@ agent = "explicit-agent"
                 "explicit-agent",
                 "Agent narration — NOT the prose.",
             )
-            .await;
+            .await
+            .unwrap();
         let generation_id = receipt.id.clone();
 
         // Primary restart: drop A entirely; a brand-new process (B) reconfigures.
@@ -38890,7 +38925,8 @@ agent = "explicit-agent"
         // reach a non-explicit drafting agent.
         let receipt = svc
             .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed")
-            .await;
+            .await
+            .unwrap();
         {
             let mut receipts = svc.generation_receipts.write().unwrap();
             receipts
@@ -39183,7 +39219,11 @@ rating = "explicit"
                 .find(|plan| plan.book_number == 1 && plan.chapter_number == 1)
                 .expect("chapter plan should persist");
 
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
             for scene in &stored.scenes {
                 let rating = scene
                     .content_rating
@@ -43290,7 +43330,11 @@ agent = "review-dead"
             let (tmp, svc) = fresh_service_local().await;
             let project_id = seed_project(&svc, "temporal-uncleared").await;
             install_review_agent(&tmp, &svc, &["general"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
 
             save_rated_scene(&svc, &project_id, EXPLICIT_PROSE, ContentRating::Explicit).await;
 
@@ -43339,7 +43383,11 @@ agent = "review-dead"
             let project_id = seed_project(&svc, "world-rule-uncleared").await;
             seed_world_rule(&svc, &project_id).await;
             install_review_agent(&tmp, &svc, &["general"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
 
             save_rated_scene(&svc, &project_id, EXPLICIT_PROSE, ContentRating::Explicit).await;
 
@@ -43389,7 +43437,11 @@ agent = "review-dead"
             let project_id = seed_project(&svc, "temporal-cleared").await;
             seed_world_rule(&svc, &project_id).await;
             install_review_agent(&tmp, &svc, &["general", "explicit"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
 
             save_rated_scene(&svc, &project_id, EXPLICIT_PROSE, ContentRating::Explicit).await;
 
@@ -43449,7 +43501,11 @@ agent = "review-dead"
             let project_id = seed_project(&svc, "temporal-general").await;
             seed_world_rule(&svc, &project_id).await;
             install_review_agent(&tmp, &svc, &["general"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
 
             save_rated_scene(
                 &svc,
@@ -43535,7 +43591,11 @@ agent = "review-dead"
             let (tmp, svc) = fresh_service_local().await;
             let project_id = seed_project(&svc, "temporal-dead-route").await;
             install_unreachable_review_agent(&tmp, &svc, &["general"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
 
             save_rated_scene_ordered(
                 &svc,
@@ -43608,7 +43668,11 @@ agent = "review-dead"
             let project_id = seed_project(&svc, "world-rule-dead-route").await;
             seed_world_rule(&svc, &project_id).await;
             install_unreachable_review_agent(&tmp, &svc, &["general"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
 
             save_rated_scene_ordered(
                 &svc,
@@ -52634,7 +52698,11 @@ agent = "review-rated"
             let (_tmp, svc) = fresh_service_local().await;
             let project_id = seed_project(&svc, "purpose-noplan").await;
             // No plan at all for chapter 1.
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
             save_scene(
                 &svc,
                 &project_id,
@@ -52675,7 +52743,11 @@ agent = "review-rated"
             let (_tmp, svc) = fresh_service_local().await;
             let project_id = seed_project(&svc, "purpose-empty").await;
             plan_scene_purpose(&svc, &project_id, 1, 1, "   ").await;
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
             save_scene(
                 &svc,
                 &project_id,
@@ -52742,7 +52814,11 @@ agent = "review-rated"
             let project_id = seed_project(&svc, "purpose-uncleared").await;
             plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
             install_review_agent(&tmp, &svc, &["general"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
             save_scene(
                 &svc,
                 &project_id,
@@ -52800,7 +52876,11 @@ agent = "review-rated"
             let project_id = seed_project(&svc, "purpose-cleared").await;
             plan_scene_purpose(&svc, &project_id, 1, 1, "rupture the alliance").await;
             install_review_agent(&tmp, &svc, &["general", "explicit"]);
-            let log = svc.repository.model_router().install_dispatch_recorder();
+            let log = svc
+                .repository
+                .model_router()
+                .install_dispatch_recorder()
+                .unwrap();
             save_scene(
                 &svc,
                 &project_id,
@@ -54499,7 +54579,11 @@ agent = "review-safe"
         .await
         .unwrap();
 
-        let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+        let dispatch_log = svc
+            .repository()
+            .model_router()
+            .install_dispatch_recorder()
+            .unwrap();
         let out = svc
             .reader_sim_chapter(ReaderSimChapterInput {
                 project_id: project.project_id.clone(),
@@ -54609,7 +54693,11 @@ agent = "review-dead"
         let (_tmp, svc) = fresh_service_local().await;
         let (project, _scene_id, _) = project_with_scene(&svc, "Reader Empty").await;
 
-        let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+        let dispatch_log = svc
+            .repository()
+            .model_router()
+            .install_dispatch_recorder()
+            .unwrap();
         let out = svc
             .reader_sim_chapter(ReaderSimChapterInput {
                 project_id: project.project_id.clone(),
@@ -55393,7 +55481,11 @@ agent = "review-safe"
         // the `review` route and never to a `replan` route.
         use spindle_core::models::ReplanChapterInput;
         let (_tmp, svc) = fresh_service_local().await;
-        let log = svc.repository.model_router().install_dispatch_recorder();
+        let log = svc
+            .repository
+            .model_router()
+            .install_dispatch_recorder()
+            .unwrap();
 
         let project = project_with_target_plan(
             &svc,
@@ -58226,7 +58318,8 @@ agent = "draft-agent"
                     "draft-agent",
                     "The agent drafted the gate scene, first pass.",
                 )
-                .await;
+                .await
+                .unwrap();
             let saved = svc
                 .save_scene_draft(SaveSceneDraftInput {
                     project_id: project.project_id.clone(),
@@ -58255,7 +58348,8 @@ agent = "draft-agent"
                     "draft-agent",
                     "The agent revised the gate scene, second pass, sharper.",
                 )
-                .await;
+                .await
+                .unwrap();
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project.project_id.clone(),
                 book_number: 1,
@@ -58391,7 +58485,8 @@ agent = "draft-agent"
                     "draft-agent",
                     "The agent drafted this general-rated watch scene.",
                 )
-                .await;
+                .await
+                .unwrap();
             let saved = svc
                 .save_scene_draft(SaveSceneDraftInput {
                     project_id: project.project_id.clone(),
@@ -58450,7 +58545,8 @@ agent = "draft-agent"
                     "draft-agent",
                     "The agent wrote this line plainly.",
                 )
-                .await;
+                .await
+                .unwrap();
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project.project_id.clone(),
                 book_number: 1,
@@ -58604,7 +58700,8 @@ agent = "draft-agent"
                     "draft-agent",
                     "The agent drafted the watch, first pass.",
                 )
-                .await;
+                .await
+                .unwrap();
             svc.save_scene_draft(SaveSceneDraftInput {
                 project_id: project.project_id.clone(),
                 book_number: 1,
@@ -58627,7 +58724,8 @@ agent = "draft-agent"
                     "draft-agent",
                     "The agent revised the watch, second pass, sharper.",
                 )
-                .await;
+                .await
+                .unwrap();
             let resaved = svc
                 .save_scene_draft(SaveSceneDraftInput {
                     project_id: project.project_id.clone(),
@@ -58948,5 +59046,85 @@ agent = "local-style"
             assert_eq!(dismissed.len(), 1);
             drop(tmp);
         }
+    }
+
+    /// Panic while holding an `RwLock` write guard on a second thread, so the
+    /// lock stays poisoned for every later acquisition. Each test poisons a
+    /// fresh service, so the sticky poison cannot leak across tests.
+    fn poison_rwlock<T: Send + Sync>(lock: std::sync::Arc<std::sync::RwLock<T>>) {
+        std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let _guard = lock.write().unwrap();
+                panic!("intentional lock poison for test");
+            });
+            assert!(handle.join().is_err(), "poisoning thread must panic");
+        });
+    }
+
+    fn poison_mutex<T: Send + 'static>(lock: std::sync::Arc<std::sync::Mutex<T>>) {
+        let handle = std::thread::spawn(move || {
+            let _guard = lock.lock().unwrap();
+            panic!("intentional lock poison for test");
+        });
+        assert!(handle.join().is_err(), "poisoning thread must panic");
+    }
+
+    #[tokio::test]
+    async fn poisoned_generation_receipts_lock_returns_err_naming_the_lock() {
+        let (_tmp, svc) = fresh_service_local().await;
+        poison_rwlock(svc.generation_receipts.clone());
+        let err = svc.get_all_generation_receipts().unwrap_err();
+        assert!(
+            err.to_string().contains("generation receipts read lock"),
+            "must name the poisoned lock, got: {err:?}"
+        );
+        let err = svc.lookup_generation_receipt("missing").await.unwrap_err();
+        assert!(
+            err.to_string().contains("generation receipts read lock"),
+            "must name the poisoned lock, got: {err:?}"
+        );
+        let err = svc
+            .register_generation_receipt("draft", Some("explicit"), "explicit-agent", "seed")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("generation receipts write lock"),
+            "must name the poisoned lock, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn poisoned_review_job_registry_returns_err_naming_the_lock() {
+        let (_tmp, svc) = fresh_service_local().await;
+        let (project, scene_id, _text) = project_with_scene(&svc, "poison-review").await;
+        let scene = svc.repository.get_scene(&scene_id).await.unwrap();
+        poison_mutex(svc.review_jobs.clone());
+        let err = match svc.lookup_review_job("job-key") {
+            Ok(_) => panic!("lookup must fail on poisoned lock"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("review job registry lock"),
+            "lookup must name the poisoned lock, got: {err:?}"
+        );
+        let err = svc.clear_review_job("job-key").unwrap_err();
+        assert!(
+            err.to_string().contains("review job registry lock"),
+            "clear must name the poisoned lock, got: {err:?}"
+        );
+        let input = spindle_core::models::RunDualPersonaReviewInput {
+            project_id: project.project_id.clone(),
+            branch_id: None,
+            scene_id: scene_id.clone(),
+            rounds: Some(1),
+        };
+        let err = match svc.spawn_review_job("job-key", &input, &scene, 1, vec![]) {
+            Ok(_) => panic!("spawn must fail on poisoned lock"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("review job registry lock"),
+            "spawn must name the poisoned lock, got: {err:?}"
+        );
     }
 }

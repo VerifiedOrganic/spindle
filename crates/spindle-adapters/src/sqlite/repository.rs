@@ -660,7 +660,7 @@ impl Repository {
         &self.inner.model_router
     }
 
-    pub fn current_embedding_version(&self) -> String {
+    pub fn current_embedding_version(&self) -> Result<String> {
         self.inner.model_router.embedding_version()
     }
 
@@ -10220,10 +10220,10 @@ impl Repository {
         entity_id: &str,
         document: &SearchDocument,
     ) -> Result<()> {
-        let embedding_session = self.inner.model_router.embedding_session();
+        let embedding_session = self.inner.model_router.embedding_session()?;
         let embedding = embedding_session.embed_text(&document.content).await?;
         let embedding_blob = pack_embedding(&embedding);
-        let version = self.inner.model_router.embedding_version();
+        let version = self.inner.model_router.embedding_version()?;
         let project_id = project_id.to_string();
         let branch_id = branch_id.to_string();
         let entity_id_owned = entity_id.to_string();

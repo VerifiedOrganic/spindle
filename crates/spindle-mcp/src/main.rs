@@ -375,10 +375,17 @@ fn http_listen_addr() -> anyhow::Result<Option<std::net::SocketAddr>> {
     let Some(raw) = std::env::var_os("SPINDLE_HTTP_ADDR") else {
         return Ok(None);
     };
-    let parsed = raw
+    let parsed: std::net::SocketAddr = raw
         .to_string_lossy()
         .parse()
         .context("failed to parse SPINDLE_HTTP_ADDR as socket address")?;
+    if !parsed.ip().is_loopback()
+        && std::env::var("SPINDLE_HTTP_ALLOW_NONLOOPBACK").as_deref() != Ok("1")
+    {
+        anyhow::bail!(
+            "refusing to bind non-loopback address {parsed} (set SPINDLE_HTTP_ALLOW_NONLOOPBACK=1 to override)"
+        );
+    }
     Ok(Some(parsed))
 }
 
@@ -414,6 +421,17 @@ mod tests {
 
     use super::*;
 
+    /// Serializes tests that mutate process env. Every test that calls
+    /// `set_var`/`remove_var` must hold this lock for its whole body —
+    /// otherwise parallel test threads clobber each other's variables.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
     #[test]
     fn default_platform_data_dir_has_stable_leaf_name() {
         assert_eq!(
@@ -426,6 +444,7 @@ mod tests {
 
     #[test]
     fn explicit_env_data_dir_wins() {
+        let _guard = env_lock();
         let expected = Path::new("/tmp/spindle-explicit");
         unsafe {
             std::env::set_var("SPINDLE_DATA_DIR", expected);
@@ -439,6 +458,7 @@ mod tests {
 
     #[test]
     fn http_addr_defaults_to_stdio_mode() {
+        let _guard = env_lock();
         unsafe {
             std::env::remove_var("SPINDLE_HTTP_ADDR");
         }
@@ -446,7 +466,54 @@ mod tests {
     }
 
     #[test]
+    fn http_addr_loopback_bind_is_allowed() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("SPINDLE_HTTP_ADDR", "127.0.0.1:8937");
+            std::env::remove_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK");
+        }
+        let addr = http_listen_addr().expect("loopback bind must succeed");
+        unsafe {
+            std::env::remove_var("SPINDLE_HTTP_ADDR");
+        }
+        assert_eq!(addr, Some("127.0.0.1:8937".parse().unwrap()));
+    }
+
+    #[test]
+    fn http_addr_non_loopback_bind_is_rejected() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("SPINDLE_HTTP_ADDR", "0.0.0.0:8937");
+            std::env::remove_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK");
+        }
+        let err = http_listen_addr().expect_err("non-loopback bind must fail");
+        unsafe {
+            std::env::remove_var("SPINDLE_HTTP_ADDR");
+        }
+        assert!(
+            err.to_string().contains("0.0.0.0:8937"),
+            "error must name the address: {err:#}"
+        );
+    }
+
+    #[test]
+    fn http_addr_non_loopback_bind_allowed_with_override() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("SPINDLE_HTTP_ADDR", "0.0.0.0:8937");
+            std::env::set_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK", "1");
+        }
+        let addr = http_listen_addr().expect("override must allow non-loopback");
+        unsafe {
+            std::env::remove_var("SPINDLE_HTTP_ADDR");
+            std::env::remove_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK");
+        }
+        assert_eq!(addr, Some("0.0.0.0:8937".parse().unwrap()));
+    }
+
+    #[test]
     fn explicit_config_path_wins() {
+        let _guard = env_lock();
         unsafe {
             std::env::set_var("SPINDLE_CONFIG", "/tmp/spindle.toml");
         }

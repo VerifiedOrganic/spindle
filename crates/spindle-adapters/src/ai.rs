@@ -396,6 +396,15 @@ impl Default for ModelRouter {
     }
 }
 
+/// Map a poisoned router lock to the pre-decided `anyhow` error naming the
+/// lock. Every `ModelRouter` request path funnels its lock acquisitions
+/// through this so a poisoned lock surfaces as `Err` instead of panicking
+/// the server. Lock ordering, scope, and granularity are unchanged — only
+/// the poisoned-lock outcome changes (panic → `Err`).
+fn poisoned_lock(lock: &'static str) -> anyhow::Error {
+    anyhow::anyhow!("{lock} poisoned")
+}
+
 impl ModelRouter {
     pub fn local_only() -> Self {
         Self::from_loaded_config(LoadedAgentConfig {
@@ -416,24 +425,30 @@ impl ModelRouter {
     /// `configure` swap is guaranteed because the recorder lives on the router
     /// struct, not the runtime it replaces.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn install_dispatch_recorder(&self) -> DispatchLog {
+    pub fn install_dispatch_recorder(&self) -> anyhow::Result<DispatchLog> {
         let log: DispatchLog = Arc::new(std::sync::Mutex::new(Vec::new()));
-        *self.dispatch_log.write().expect("dispatch log write lock") = Some(log.clone());
-        log
+        *self
+            .dispatch_log
+            .write()
+            .map_err(|_| poisoned_lock("dispatch log write lock"))? = Some(log.clone());
+        Ok(log)
     }
 
     /// Append a record to the installed dispatch recorder, if any. No-op when
     /// no recorder is installed (the common case). Test-only.
     #[cfg(any(test, feature = "test-support"))]
-    fn record_dispatch(&self, record: DispatchRecord) {
+    fn record_dispatch(&self, record: DispatchRecord) -> anyhow::Result<()> {
         if let Some(log) = self
             .dispatch_log
             .read()
-            .expect("dispatch log read lock")
+            .map_err(|_| poisoned_lock("dispatch log read lock"))?
             .as_ref()
         {
-            log.lock().expect("dispatch log lock").push(record);
+            log.lock()
+                .map_err(|_| poisoned_lock("dispatch log lock"))?
+                .push(record);
         }
+        Ok(())
     }
 
     fn from_loaded_config(loaded: LoadedAgentConfig) -> Self {
@@ -451,11 +466,14 @@ impl ModelRouter {
         router
     }
 
-    pub fn list_routes(&self) -> Vec<ModelRoute> {
-        let runtime = self.runtime.read().expect("model router read lock");
+    pub fn list_routes(&self) -> anyhow::Result<Vec<ModelRoute>> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
         let mut routes: Vec<ModelRoute> = runtime.routes.values().cloned().collect();
         routes.extend(runtime.rating_routes.values().cloned());
-        routes
+        Ok(routes)
     }
 
     /// Like `list_routes` but each entry carries the optional `rating` the
@@ -463,8 +481,11 @@ impl ModelRouter {
     /// per-rating overrides carry the lowercase rating string. Use this when
     /// you need to disambiguate two ModelRoute entries with the same
     /// `route_name` (e.g. one default + one explicit override).
-    pub fn list_route_bindings(&self) -> Vec<RouteBinding> {
-        let runtime = self.runtime.read().expect("model router read lock");
+    pub fn list_route_bindings(&self) -> anyhow::Result<Vec<RouteBinding>> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
         let mut out: Vec<RouteBinding> = runtime
             .routes
             .values()
@@ -483,7 +504,7 @@ impl ModelRouter {
                     rating: Some(rating.clone()),
                 }),
         );
-        out
+        Ok(out)
     }
 
     pub fn configure(&self, explicit_path: Option<&str>) -> anyhow::Result<ConfigureAgentsOutput> {
@@ -494,7 +515,10 @@ impl ModelRouter {
         }
         let health_checks = health_checks_enabled(&loaded);
         let runtime = runtime_from_loaded_config(&self.http_client, loaded.clone());
-        *self.runtime.write().expect("model router write lock") = runtime;
+        *self
+            .runtime
+            .write()
+            .map_err(|_| poisoned_lock("model router write lock"))? = runtime;
         self.refresh_health_heartbeat();
         Ok(ConfigureAgentsOutput {
             source_path: loaded.source_path,
@@ -512,9 +536,12 @@ impl ModelRouter {
     /// agent's declared `ratings` list not covering the rating (ASCII-lowercase
     /// comparison). A route that falls back to a built-in local route has no
     /// external agent, serves every rating, and is never flagged.
-    pub fn draft_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
-        let runtime = self.runtime.read().expect("model router read lock");
-        route_preflight(&runtime, "draft", rating)
+    pub fn draft_route_preflight(&self, rating: &str) -> anyhow::Result<DraftRoutePreflight> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        Ok(route_preflight(&runtime, "draft", rating))
     }
 
     /// Verify — without network I/O — that the `review` route can serve a scene
@@ -527,9 +554,12 @@ impl ModelRouter {
     /// collapses into (a) today because the same `review` route serves the
     /// deep pass). Config-level only; a built-in local review route serves every
     /// rating and is never flagged.
-    pub fn review_route_preflight(&self, rating: &str) -> DraftRoutePreflight {
-        let runtime = self.runtime.read().expect("model router read lock");
-        route_preflight(&runtime, "review", rating)
+    pub fn review_route_preflight(&self, rating: &str) -> anyhow::Result<DraftRoutePreflight> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        Ok(route_preflight(&runtime, "review", rating))
     }
 
     /// Verify — without network I/O — that canon mining can serve a scene of
@@ -540,18 +570,24 @@ impl ModelRouter {
     /// exhausted — no cleared route for the rating on either `mine` or `review`.
     /// The reported problem is the `mine`-route problem (the primary role),
     /// mirroring `draft_route_preflight`'s shape for the caller's message.
-    pub fn mine_fallback_preflight(&self, rating: &str) -> Option<DraftRoutePreflight> {
-        let runtime = self.runtime.read().expect("model router read lock");
+    pub fn mine_fallback_preflight(
+        &self,
+        rating: &str,
+    ) -> anyhow::Result<Option<DraftRoutePreflight>> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
         let mine = route_preflight(&runtime, "mine", rating);
         // Cleared via mine, or (fallback) via review → the ladder is servable.
         let review_clears = route_preflight(&runtime, "review", rating)
             .problem
             .is_none();
         if mine.problem.is_none() || review_clears {
-            return None;
+            return Ok(None);
         }
         // Ladder exhausted: report the primary (mine) route's problem.
-        Some(mine)
+        Ok(Some(mine))
     }
 
     /// Verify — without network I/O — whether a route's resolved agent declares
@@ -581,26 +617,39 @@ impl ModelRouter {
         route_name: &str,
         rating: Option<&str>,
     ) -> Result<(), RouteClearanceError> {
-        let runtime = self.runtime.read().expect("model router read lock");
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| RouteClearanceError::LockPoisoned {
+                lock: "model router read lock",
+            })?;
         resolve_cleared_route(&runtime, route_name, rating).map(|_| ())
     }
 
-    pub fn route_clears_rating(&self, route_name: &str, rating: &str) -> bool {
-        let runtime = self.runtime.read().expect("model router read lock");
+    pub fn route_clears_rating(&self, route_name: &str, rating: &str) -> anyhow::Result<bool> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
         // "Declares the rating" — a missing API key means the DECLARED agent is
         // unreachable, not that it fails to declare the rating; only an
         // unresolvable route or an agent that does not declare the rating counts
         // as "not cleared" for the source-side discipline.
-        match route_preflight(&runtime, route_name, rating).problem {
-            None | Some(DraftRoutePreflightProblem::MissingApiKey { .. }) => true,
-            Some(DraftRoutePreflightProblem::Unresolved)
-            | Some(DraftRoutePreflightProblem::RatingNotCovered) => false,
-        }
+        Ok(
+            match route_preflight(&runtime, route_name, rating).problem {
+                None | Some(DraftRoutePreflightProblem::MissingApiKey { .. }) => true,
+                Some(DraftRoutePreflightProblem::Unresolved)
+                | Some(DraftRoutePreflightProblem::RatingNotCovered) => false,
+            },
+        )
     }
 
-    pub fn list_agents(&self) -> ListAgentsOutput {
-        let runtime = self.runtime.read().expect("model router read lock");
-        ListAgentsOutput {
+    pub fn list_agents(&self) -> anyhow::Result<ListAgentsOutput> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        Ok(ListAgentsOutput {
             source_path: runtime.source_path.clone(),
             health_checks_enabled: runtime.health_checks_enabled,
             agents: agent_statuses(&runtime)
@@ -630,12 +679,15 @@ impl ModelRouter {
                     route_names: agent.route_names,
                 })
                 .collect(),
-        }
+        })
     }
 
-    pub fn routing_config(&self) -> AgentRoutingConfigOutput {
-        let runtime = self.runtime.read().expect("model router read lock");
-        AgentRoutingConfigOutput {
+    pub fn routing_config(&self) -> anyhow::Result<AgentRoutingConfigOutput> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        Ok(AgentRoutingConfigOutput {
             source_path: runtime.source_path.clone(),
             health_checks_enabled: runtime.health_checks_enabled,
             rules: runtime
@@ -663,7 +715,7 @@ impl ModelRouter {
                     }
                 })
                 .collect(),
-        }
+        })
     }
 
     pub async fn test_agent(
@@ -673,7 +725,11 @@ impl ModelRouter {
         route: Option<&str>,
         rating: Option<&str>,
     ) -> anyhow::Result<TestAgentOutput> {
-        let runtime = self.runtime.read().expect("model router read lock").clone();
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
         let route_name = select_test_agent_route(&runtime, agent_id, route, rating)?;
 
         let response = self
@@ -709,7 +765,11 @@ impl ModelRouter {
     }
 
     async fn complete_inner(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
-        let runtime = self.runtime.read().expect("model router read lock").clone();
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
         // Rating-gated dispatch chokepoint (evolution §4 rule 2): every prose-
         // bearing completion resolves through `resolve_cleared_route`, so an
         // explicit-rated request whose agent is not cleared errors here rather
@@ -726,7 +786,7 @@ impl ModelRouter {
                     agent: dispatch_agent_label(&runtime, route),
                     rating: request.rating.clone(),
                     prompt: request.prompt.clone(),
-                });
+                })?;
                 route
             }
             Err(err) => {
@@ -735,7 +795,7 @@ impl ModelRouter {
                     route: request.route.clone(),
                     rating: request.rating.clone(),
                     error: err.to_string(),
-                });
+                })?;
                 return Err(anyhow::Error::new(err));
             }
         };
@@ -775,22 +835,39 @@ impl ModelRouter {
         }
     }
 
-    pub fn embedding_version(&self) -> String {
-        self.embedding_session().version().to_string()
+    pub fn embedding_version(&self) -> anyhow::Result<String> {
+        Ok(self.embedding_session()?.version().to_string())
     }
 
-    pub(crate) fn embedding_session(&self) -> EmbeddingSession {
-        let runtime = self.runtime.read().expect("model router read lock").clone();
-        EmbeddingSession::from_runtime(self.http_client.clone(), &runtime)
+    pub(crate) fn embedding_session(&self) -> anyhow::Result<EmbeddingSession> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        Ok(EmbeddingSession::from_runtime(
+            self.http_client.clone(),
+            &runtime,
+        ))
     }
 
     pub async fn embed_text(&self, input: &str) -> anyhow::Result<Vec<f64>> {
-        self.embedding_session().embed_text(input).await
+        self.embedding_session()?.embed_text(input).await
     }
 
     fn refresh_health_heartbeat(&self) {
         let generation = self.health_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let runtime = self.runtime.read().expect("model router read lock").clone();
+        // The heartbeat cannot propagate an error (it runs from infallible
+        // constructors and detached threads), so a poisoned lock skips the
+        // spawn with a warning. Nothing is recovered: the poison is sticky,
+        // and every request path surfaces it as `Err` on its own lock.
+        let runtime = match self.runtime.read() {
+            Ok(runtime) => runtime.clone(),
+            Err(_) => {
+                tracing::warn!("health heartbeat skipped: model router read lock poisoned");
+                return;
+            }
+        };
         if !runtime.health_checks_enabled || runtime.agents.is_empty() {
             return;
         }
@@ -840,7 +917,11 @@ impl ModelRouter {
         original_prompt: &str,
         prior_output: &str,
     ) -> anyhow::Result<ModelResponse> {
-        let runtime = self.runtime.read().expect("model router read lock").clone();
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
         // Same rating-gated chokepoint as `complete` — a continuation carries
         // the same prose and rating as the original request (I3), so an
         // uncleared prose-bearing continuation must fail here too.
@@ -855,7 +936,7 @@ impl ModelRouter {
                     // request; recording the original prompt keeps the seam's
                     // no-leak sweep exact.
                     prompt: original_prompt.to_string(),
-                });
+                })?;
                 route
             }
             Err(err) => {
@@ -864,7 +945,7 @@ impl ModelRouter {
                     route: route_name.to_string(),
                     rating: rating.map(ToString::to_string),
                     error: err.to_string(),
-                });
+                })?;
                 return Err(anyhow::Error::new(err));
             }
         };
@@ -1355,6 +1436,14 @@ pub enum RouteClearanceError {
         rating: String,
         agent_id: String,
     },
+    /// The router's config lock was poisoned by a panicking thread, so the
+    /// clearance check could not run. Surfaces through the existing
+    /// `?`-into-anyhow path; callers matching on `NoRoute` /
+    /// `RatingNotCovered` via `downcast_ref` see this as some other failure,
+    /// which is honest — it is neither an unconfigured route nor an
+    /// uncleared rating.
+    #[error("{lock} poisoned")]
+    LockPoisoned { lock: &'static str },
 }
 
 /// A production route (`style_analyze`, `style_revise`, `research`) resolved to
@@ -1947,7 +2036,17 @@ fn refresh_agent_health_once(
     generation: &Arc<AtomicU64>,
     generation_id: u64,
 ) {
-    let snapshot = runtime.read().expect("model router read lock").clone();
+    // The heartbeat runs on a detached thread with no caller to propagate
+    // to, so a poisoned lock ends this pass with a warning. Nothing is
+    // recovered: the poison is sticky, and every request path surfaces it
+    // as `Err` on its own lock.
+    let snapshot = match runtime.read() {
+        Ok(snapshot) => snapshot.clone(),
+        Err(_) => {
+            tracing::warn!("health heartbeat skipped: model router read lock poisoned");
+            return;
+        }
+    };
     if !snapshot.health_checks_enabled {
         return;
     }
@@ -1970,7 +2069,13 @@ fn refresh_agent_health_once(
         .filter(|(_, health)| !health.reachable)
         .count();
 
-    let mut runtime = runtime.write().expect("model router write lock");
+    let mut runtime = match runtime.write() {
+        Ok(runtime) => runtime,
+        Err(_) => {
+            tracing::warn!("health heartbeat skipped: model router write lock poisoned");
+            return;
+        }
+    };
     if !runtime.health_checks_enabled {
         return;
     }
@@ -3029,14 +3134,17 @@ mod tests {
 
         assert_eq!(output.adapter_kind, "local");
         assert!(output.output.contains("reviewed"));
-        assert_eq!(router.list_routes().len(), 9);
+        assert_eq!(router.list_routes().expect("list routes").len(), 9);
     }
 
     #[tokio::test]
     async fn embedding_route_defaults_to_token_hash_when_unconfigured() {
         let router = ModelRouter::local_only();
 
-        assert_eq!(router.embedding_version(), EMBEDDING_VERSION);
+        assert_eq!(
+            router.embedding_version().expect("embedding version"),
+            EMBEDDING_VERSION
+        );
         assert_eq!(
             router
                 .embed_text("loyal border regiment")
@@ -3081,7 +3189,7 @@ stop = ["###"]
         assert_eq!(configured.routing_rules_loaded, 1);
         assert!(!configured.health_checks_enabled);
 
-        let routes = router.list_routes();
+        let routes = router.list_routes().expect("list routes");
         let draft = routes
             .iter()
             .find(|route| route.route_name == "draft")
@@ -3135,11 +3243,7 @@ rating = "explicit"
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
 
-        let runtime = router
-            .runtime
-            .read()
-            .expect("model router read lock")
-            .clone();
+        let runtime = router.runtime.read().unwrap().clone();
 
         // Explicit rating must pick the override agent.
         let explicit_route =
@@ -3189,11 +3293,7 @@ agent = "grok-local"
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
 
-        let runtime = router
-            .runtime
-            .read()
-            .expect("model router read lock")
-            .clone();
+        let runtime = router.runtime.read().unwrap().clone();
 
         assert_eq!(
             select_test_agent_route(&runtime, "grok-local", Some("draft"), None)
@@ -3238,11 +3338,7 @@ agent = "default-draft"
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
 
-        let runtime = router
-            .runtime
-            .read()
-            .expect("model router read lock")
-            .clone();
+        let runtime = router.runtime.read().unwrap().clone();
 
         // Even with a rating context, the default rule applies because no
         // override exists.
@@ -3509,7 +3605,7 @@ agent = "embed-http"
             .expect("configured embedding");
 
         assert_eq!(
-            router.embedding_version(),
+            router.embedding_version().expect("embedding version"),
             format!("model-embedding-v1:openai-compatible:{endpoint}:text-embedding-3-small")
         );
         assert_eq!(server.join().expect("server join"), 1);
@@ -3549,7 +3645,7 @@ agent = "external-draft"
             .expect("configure router");
         assert!(configured.health_checks_enabled);
 
-        let agents = router.list_agents();
+        let agents = router.list_agents().expect("list agents");
         let agent = agents.agents.first().expect("configured agent");
         assert_eq!(agent.status, AgentConfigStatus::Unreachable);
         assert!(agent.health.checked);
@@ -3618,7 +3714,7 @@ enabled = false
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
 
-        let initial_agents = router.list_agents();
+        let initial_agents = router.list_agents().expect("list agents");
         let initial_agent = initial_agents.agents.first().expect("configured agent");
         assert_eq!(initial_agent.status, AgentConfigStatus::Active);
         assert!(initial_agent.health.checked);
@@ -3626,7 +3722,7 @@ enabled = false
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let refreshed_agents = router.list_agents();
+        let refreshed_agents = router.list_agents().expect("list agents");
         let refreshed_agent = refreshed_agents.agents.first().expect("configured agent");
         assert_eq!(refreshed_agent.status, AgentConfigStatus::Unreachable);
         assert!(refreshed_agent.health.checked);
@@ -3861,10 +3957,7 @@ enabled = false
                     .split_once("\r\n\r\n")
                     .map(|(_, body)| body.to_string())
                     .unwrap_or_default();
-                captured_for_thread
-                    .lock()
-                    .expect("captured requests lock")
-                    .push(request_body);
+                captured_for_thread.lock().unwrap().push(request_body);
 
                 let status_text = match status {
                     200 => "OK",
@@ -3889,7 +3982,7 @@ enabled = false
     }
 
     fn captured_json_body(captured: &Arc<Mutex<Vec<String>>>) -> serde_json::Value {
-        let requests = captured.lock().expect("captured requests lock");
+        let requests = captured.lock().unwrap();
         let body = requests.first().expect("captured request body");
         serde_json::from_str(body).expect("request body json")
     }
@@ -4290,7 +4383,7 @@ rating = "explicit"
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
 
-        let routes = router.list_routes();
+        let routes = router.list_routes().expect("list routes");
         let explicit_draft = routes
             .iter()
             .find(|r| r.route_name == "draft" && r.adapter_kind == "grok")
@@ -4304,7 +4397,7 @@ rating = "explicit"
         assert_eq!(default_draft.model_name, "default-draft");
 
         // list_route_bindings disambiguates the two draft entries via rating.
-        let bindings = router.list_route_bindings();
+        let bindings = router.list_route_bindings().expect("list bindings");
         let default_binding = bindings
             .iter()
             .find(|b| b.route.route_name == "draft" && b.rating.is_none())
@@ -4318,7 +4411,7 @@ rating = "explicit"
 
         // routing_config exposes adapter_kind + caller_should_send_brief so
         // skills can pick a prompt strategy without joining against list_agents.
-        let routing = router.routing_config();
+        let routing = router.routing_config().expect("routing config");
         let explicit_rule = routing
             .rules
             .iter()
@@ -4348,7 +4441,7 @@ rating = "explicit"
     }
 
     /// Wire-shape contract: `bible://config/routing` is rendered by
-    /// `serde_json::to_string_pretty(&service.agent_routing_config())`, and
+    /// `serde_json::to_string_pretty(&service.agent_routing_config()?)`, and
     /// the scene-writer skill reads the literal field names
     /// `caller_should_send_brief` and `adapter_kind` per rule. If anyone
     /// adds `#[serde(rename)]` to either field on `AgentRoutingRuleSummary`
@@ -4396,7 +4489,7 @@ rating = "explicit"
             .configure(Some(&config_path.display().to_string()))
             .expect("configure router");
 
-        let routing = router.routing_config();
+        let routing = router.routing_config().expect("routing config");
         let json = serde_json::to_string(&routing).expect("serialize routing config");
 
         // Field names the skill reads. A rename/removal breaks the contract.
@@ -4583,7 +4676,7 @@ agent = "explicit-agent"
 
         // Case-insensitive coverage: scene needs `explicit`, agent declares
         // `Explicit` — the preflight must treat that as covered.
-        let preflight = router.draft_route_preflight("explicit");
+        let preflight = router.draft_route_preflight("explicit").expect("preflight");
         assert_eq!(
             preflight.problem, None,
             "expected covered, got {preflight:?}"
@@ -4919,7 +5012,7 @@ rating = "explicit"
         let path = write_fixture(&temp, &import_offload_fixture(true));
         router.configure(Some(&path)).expect("configure");
 
-        let runtime = router.runtime.read().expect("read lock");
+        let runtime = router.runtime.read().unwrap();
         let route =
             resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
         assert_eq!(
@@ -4935,7 +5028,7 @@ rating = "explicit"
         let path = write_fixture(&temp, &import_offload_fixture(false));
         router.configure(Some(&path)).expect("configure");
 
-        let runtime = router.runtime.read().expect("read lock");
+        let runtime = router.runtime.read().unwrap();
         let route =
             resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
         assert_eq!(
@@ -4997,7 +5090,7 @@ rating = "explicit"
         );
         router.configure(Some(&path)).expect("configure");
 
-        let runtime = router.runtime.read().expect("read lock");
+        let runtime = router.runtime.read().unwrap();
         let route =
             resolve_route(&runtime, "import_extract", None).expect("import_extract must resolve");
         assert_eq!(
@@ -5073,7 +5166,7 @@ agent = "keyed-agent"
         );
 
         router.configure(Some(&path)).expect("configure");
-        let preflight = router.draft_route_preflight("explicit");
+        let preflight = router.draft_route_preflight("explicit").expect("preflight");
         assert_eq!(preflight.agent_id.as_deref(), Some("keyed-agent"));
         match &preflight.problem {
             Some(DraftRoutePreflightProblem::MissingApiKey { env_var: reported }) => {
@@ -5108,7 +5201,7 @@ agent = "tame-agent"
         );
 
         router.configure(Some(&path)).expect("configure");
-        let preflight = router.draft_route_preflight("explicit");
+        let preflight = router.draft_route_preflight("explicit").expect("preflight");
         assert_eq!(preflight.agent_id.as_deref(), Some("tame-agent"));
         assert_eq!(
             preflight.problem,
@@ -5116,7 +5209,7 @@ agent = "tame-agent"
         );
 
         // A rating the agent covers must pass.
-        let covered = router.draft_route_preflight("general");
+        let covered = router.draft_route_preflight("general").expect("preflight");
         assert_eq!(covered.problem, None, "general should be covered");
     }
 
@@ -5125,7 +5218,7 @@ agent = "tame-agent"
         // local_only() has no external agents; the built-in draft route serves
         // every rating and must never be flagged.
         let router = ModelRouter::local_only();
-        let preflight = router.draft_route_preflight("explicit");
+        let preflight = router.draft_route_preflight("explicit").expect("preflight");
         assert_eq!(preflight.agent_id, None);
         assert_eq!(preflight.problem, None);
     }
@@ -5136,8 +5229,18 @@ agent = "tame-agent"
         // `mine` route but a `review` route whose agent covers the rating, the
         // fallback preflight is satisfied — the pass will resolve via review.
         let router = cleared_route_router(&["general", "explicit"]);
-        assert!(router.mine_fallback_preflight("explicit").is_none());
-        assert!(router.mine_fallback_preflight("general").is_none());
+        assert!(
+            router
+                .mine_fallback_preflight("explicit")
+                .expect("preflight")
+                .is_none()
+        );
+        assert!(
+            router
+                .mine_fallback_preflight("general")
+                .expect("preflight")
+                .is_none()
+        );
     }
 
     #[test]
@@ -5146,9 +5249,17 @@ agent = "tame-agent"
         // uncovered by both mine (absent) and review — the fallback ladder is
         // exhausted, so the preflight reports a problem.
         let router = cleared_route_router(&["general"]);
-        assert!(router.mine_fallback_preflight("general").is_none());
         assert!(
-            router.mine_fallback_preflight("explicit").is_some(),
+            router
+                .mine_fallback_preflight("general")
+                .expect("preflight")
+                .is_none()
+        );
+        assert!(
+            router
+                .mine_fallback_preflight("explicit")
+                .expect("preflight")
+                .is_some(),
             "explicit is covered by neither mine nor review"
         );
     }
@@ -5158,7 +5269,12 @@ agent = "tame-agent"
         // local_only() resolves both mine and review to the built-in local
         // route, which serves every rating and is never flagged.
         let router = ModelRouter::local_only();
-        assert!(router.mine_fallback_preflight("explicit").is_none());
+        assert!(
+            router
+                .mine_fallback_preflight("explicit")
+                .expect("preflight")
+                .is_none()
+        );
     }
 
     // ── Style-refresh source-side rating discipline (evolution §3.9 / §4) ────
@@ -5167,7 +5283,11 @@ agent = "tame-agent"
     fn route_clears_rating_true_for_builtin_local_route() {
         // A built-in local style_analyze route serves every rating.
         let router = ModelRouter::local_only();
-        assert!(router.route_clears_rating("style_analyze", "explicit"));
+        assert!(
+            router
+                .route_clears_rating("style_analyze", "explicit")
+                .expect("route clears")
+        );
     }
 
     #[test]
@@ -5195,11 +5315,15 @@ agent = "style-agent"
         );
         router.configure(Some(&path)).expect("configure");
         assert!(
-            !router.route_clears_rating("style_analyze", "explicit"),
+            !router
+                .route_clears_rating("style_analyze", "explicit")
+                .expect("route clears"),
             "style route agent without explicit is NOT cleared"
         );
         assert!(
-            router.route_clears_rating("style_analyze", "general"),
+            router
+                .route_clears_rating("style_analyze", "general")
+                .expect("route clears"),
             "style route agent WITH general IS cleared"
         );
     }
@@ -5229,7 +5353,9 @@ agent = "style-agent"
         );
         router.configure(Some(&path)).expect("configure");
         assert!(
-            router.route_clears_rating("style_analyze", "explicit"),
+            router
+                .route_clears_rating("style_analyze", "explicit")
+                .expect("route clears"),
             "style route agent declaring explicit IS cleared"
         );
     }
@@ -5291,7 +5417,9 @@ agent = "reviewer"
         // gate and recorded as a Rejection — never a Dispatch. Network-free: the
         // gate rejects before any adapter call.
         let router = cleared_route_router(&["general"]);
-        let log = router.install_dispatch_recorder();
+        let log = router
+            .install_dispatch_recorder()
+            .expect("install recorder");
         let err = router
             .complete(&ModelRequest {
                 route: "mine".to_string(),
@@ -5305,7 +5433,7 @@ agent = "reviewer"
             err.downcast_ref::<RouteClearanceError>().is_some(),
             "the typed clearance error must be preserved through anyhow"
         );
-        let records = log.lock().expect("dispatch log lock").clone();
+        let records = log.lock().unwrap().clone();
         assert_eq!(records.len(), 1, "exactly one record: {records:?}");
         match &records[0] {
             DispatchRecord::Rejection {
@@ -5336,7 +5464,9 @@ agent = "reviewer"
         // written — proving the seam observes cleared dispatches (a leak would
         // therefore surface as a Dispatch to an uncleared agent).
         let router = cleared_route_router(&["general", "explicit"]);
-        let log = router.install_dispatch_recorder();
+        let log = router
+            .install_dispatch_recorder()
+            .expect("install recorder");
         let _ = router
             .complete(&ModelRequest {
                 route: "mine".to_string(),
@@ -5345,7 +5475,7 @@ agent = "reviewer"
                 context: None,
             })
             .await; // network error is fine; the record precedes dispatch.
-        let records = log.lock().expect("dispatch log lock").clone();
+        let records = log.lock().unwrap().clone();
         let dispatch = records
             .iter()
             .find_map(|r| match r {
@@ -5381,7 +5511,7 @@ agent = "reviewer"
     #[test]
     fn resolve_cleared_route_passes_through_when_agent_covers_rating() {
         let router = cleared_route_router(&["mature", "explicit"]);
-        let runtime = router.runtime.read().expect("read lock").clone();
+        let runtime = router.runtime.read().unwrap().clone();
         let route = resolve_cleared_route(&runtime, "review", Some("explicit"))
             .expect("explicit review is cleared");
         assert_eq!(route.model_name, "reviewer");
@@ -5391,7 +5521,7 @@ agent = "reviewer"
     fn resolve_cleared_route_errors_rating_not_covered_when_agent_lacks_rating() {
         // Agent covers only general/teen; an explicit review must be rejected.
         let router = cleared_route_router(&["general", "teen"]);
-        let runtime = router.runtime.read().expect("read lock").clone();
+        let runtime = router.runtime.read().unwrap().clone();
         let err = resolve_cleared_route(&runtime, "review", Some("explicit"))
             .expect_err("explicit not covered");
         match err {
@@ -5411,7 +5541,7 @@ agent = "reviewer"
     #[test]
     fn resolve_cleared_route_errors_no_route_when_unresolvable() {
         let router = cleared_route_router(&["explicit"]);
-        let runtime = router.runtime.read().expect("read lock").clone();
+        let runtime = router.runtime.read().unwrap().clone();
         let err = resolve_cleared_route(&runtime, "reader_sim", Some("explicit"))
             .expect_err("no reader_sim route configured");
         assert!(matches!(err, RouteClearanceError::NoRoute { .. }));
@@ -5422,7 +5552,7 @@ agent = "reviewer"
         // `research` is not prose-bearing: even a rating the agent does not
         // cover must pass through (no clearance check applies).
         let router = cleared_route_router(&["general"]);
-        let runtime = router.runtime.read().expect("read lock").clone();
+        let runtime = router.runtime.read().unwrap().clone();
         // Add nothing; `research` falls back to the built-in local route which
         // resolves for any rating. The point is no RatingNotCovered is raised.
         let route = resolve_cleared_route(&runtime, "research", Some("explicit"))
@@ -5433,7 +5563,7 @@ agent = "reviewer"
     #[test]
     fn resolve_cleared_route_none_rating_is_passthrough() {
         let router = cleared_route_router(&["general"]);
-        let runtime = router.runtime.read().expect("read lock").clone();
+        let runtime = router.runtime.read().unwrap().clone();
         // No rating supplied → no clearance check even for a prose route.
         let route =
             resolve_cleared_route(&runtime, "review", None).expect("None rating passes through");
@@ -5537,5 +5667,139 @@ agent = "reviewer"
         assert!(!mature.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
         let none = system_prompt_for_request(&review, None);
         assert!(!none.contains(EXPLICIT_ANALYSIS_SYSTEM_APPENDIX));
+    }
+
+    /// Panic while holding an `RwLock` write guard on a second thread, so the
+    /// lock stays poisoned for every later acquisition. Each test poisons a
+    /// fresh router, so the sticky poison cannot leak across tests.
+    fn poison_rwlock<T: Send + Sync>(lock: Arc<RwLock<T>>) {
+        thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let _guard = lock.write().unwrap();
+                panic!("intentional lock poison for test");
+            });
+            assert!(handle.join().is_err(), "poisoning thread must panic");
+        });
+    }
+
+    fn poison_mutex<T: Send + 'static>(lock: Arc<Mutex<T>>) {
+        let handle = thread::spawn(move || {
+            let _guard = lock.lock().unwrap();
+            panic!("intentional lock poison for test");
+        });
+        assert!(handle.join().is_err(), "poisoning thread must panic");
+    }
+
+    #[test]
+    fn poisoned_router_read_lock_returns_err_naming_the_lock() {
+        let router = ModelRouter::local_only();
+        poison_rwlock(router.runtime.clone());
+        for (name, err) in [
+            ("list_routes", router.list_routes().unwrap_err()),
+            ("list_agents", router.list_agents().unwrap_err()),
+            ("routing_config", router.routing_config().unwrap_err()),
+            (
+                "list_route_bindings",
+                router.list_route_bindings().unwrap_err(),
+            ),
+            (
+                "draft_preflight",
+                router.draft_route_preflight("explicit").unwrap_err(),
+            ),
+            (
+                "review_preflight",
+                router.review_route_preflight("explicit").unwrap_err(),
+            ),
+            (
+                "mine_preflight",
+                router.mine_fallback_preflight("explicit").unwrap_err(),
+            ),
+            (
+                "route_clears_rating",
+                router.route_clears_rating("draft", "explicit").unwrap_err(),
+            ),
+            (
+                "embedding_session",
+                match router.embedding_session() {
+                    Ok(_) => panic!("embedding_session must fail on poisoned lock"),
+                    Err(err) => err,
+                },
+            ),
+            ("embedding_version", router.embedding_version().unwrap_err()),
+        ] {
+            assert!(
+                err.to_string().contains("model router read lock"),
+                "{name} must name the poisoned lock, got: {err:?}"
+            );
+        }
+        // The typed clearance path keeps its error type and names the lock.
+        let err = router
+            .check_route_clearance("draft", Some("explicit"))
+            .unwrap_err();
+        assert!(
+            matches!(err, RouteClearanceError::LockPoisoned { .. }),
+            "expected LockPoisoned, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("model router read lock"),
+            "typed error must name the lock, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn poisoned_router_write_lock_returns_err_on_configure() {
+        let router = ModelRouter::local_only();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(&config_path, "[health_check]\nenabled = false\n").expect("write config");
+        poison_rwlock(router.runtime.clone());
+        let err = router
+            .configure(Some(&config_path.display().to_string()))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("model router write lock"),
+            "configure must name the poisoned lock, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn poisoned_dispatch_log_mutex_returns_err_naming_the_lock() {
+        let router = ModelRouter::local_only();
+        let log = router.install_dispatch_recorder().unwrap();
+        poison_mutex(log.clone());
+        let err = router
+            .record_dispatch(DispatchRecord::Dispatch {
+                route: "draft".to_string(),
+                agent: "builtin:local".to_string(),
+                rating: None,
+                prompt: "hello".to_string(),
+            })
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("dispatch log lock"),
+            "record must name the poisoned lock, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn poisoned_dispatch_log_rwlock_returns_err_naming_the_lock() {
+        let router = ModelRouter::local_only();
+        poison_rwlock(router.dispatch_log.clone());
+        let err = router.install_dispatch_recorder().unwrap_err();
+        assert!(
+            err.to_string().contains("dispatch log write lock"),
+            "install must name the poisoned lock, got: {err:?}"
+        );
+        let err = router
+            .record_dispatch(DispatchRecord::Rejection {
+                route: "draft".to_string(),
+                rating: None,
+                error: "test".to_string(),
+            })
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("dispatch log read lock"),
+            "record must name the poisoned lock, got: {err:?}"
+        );
     }
 }

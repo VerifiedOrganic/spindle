@@ -1026,7 +1026,7 @@ impl SqliteSpindleService {
         let style_route_clears_explicit = self
             .repository()
             .model_router()
-            .route_clears_rating(STYLE_ANALYZE_ROUTE, "explicit");
+            .route_clears_rating(STYLE_ANALYZE_ROUTE, "explicit")?;
 
         let mut refs = Vec::new();
         let mut included_corpus = Vec::new();
