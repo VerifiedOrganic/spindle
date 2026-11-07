@@ -35,6 +35,13 @@ struct McpCli {
 
 #[derive(Subcommand, Debug)]
 enum McpCommand {
+    /// Install the Spindle writing skill globally for Codex (~/.agents/skills/).
+    #[command(name = "init-codex", alias = "init-codex-skills")]
+    InitCodexSkills {
+        /// Install in this book folder's .agents/skills/ instead of globally.
+        #[arg(long)]
+        target_dir: Option<PathBuf>,
+    },
     /// Initialize Grok-compatible skill adapters so Spindle's bible://skills/* work
     /// as first-class skills in the Grok TUI (similar to how they appear in Claude).
     InitGrokSkills {
@@ -48,7 +55,7 @@ enum McpCommand {
         #[arg(long, default_value_t = true)]
         global: bool,
     },
-    /// Initialize a project-local Spindle workspace in the current directory (creates `.spindle/`).
+    /// Initialize a local workspace (.spindle/) and install the global Codex skill.
     Init,
 }
 
@@ -60,6 +67,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = McpCli::parse();
     if let Some(cmd) = cli.command {
         match cmd {
+            McpCommand::InitCodexSkills { target_dir } => {
+                print_codex_skill(&init_codex_skill(target_dir.as_deref())?);
+                return Ok(());
+            }
             McpCommand::InitGrokSkills { target_dir, global } => {
                 // If the user explicitly gave a target directory, they almost certainly want local/repo-scoped.
                 let effective_global = if target_dir.is_some() { false } else { global };
@@ -79,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
                     "Initialized Spindle project-local workspace at {}",
                     spindle_dir.display()
                 );
+                print_codex_skill(&init_codex_skill(None)?);
                 return Ok(());
             }
         }
@@ -165,6 +177,46 @@ fn init_project_workspace(cwd: &Path) -> anyhow::Result<PathBuf> {
     }
 
     Ok(spindle_dir)
+}
+
+/// Install one entry skill; load specialist workflows from MCP on demand.
+/// Default to the global Codex discovery directory; an explicit book folder
+/// opts into project scope. Never replace an author's customized skill.
+fn init_codex_skill(target: Option<&Path>) -> anyhow::Result<PathBuf> {
+    use std::io::Write;
+
+    let root = target
+        .map(Path::to_path_buf)
+        .or_else(dirs::home_dir)
+        .context("could not determine home directory for global Codex skills")?;
+    let skill = spindle_adapters::get_skill("spindle").context("missing embedded spindle skill")?;
+    let directory = root.join(".agents/skills/spindle");
+    std::fs::create_dir_all(&directory).context("creating Codex skill directory")?;
+    let path = directory.join("SKILL.md");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => file
+            .write_all(skill.markdown.as_bytes())
+            .context("writing Codex skill")?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let current = std::fs::read_to_string(&path).context("reading existing Codex skill")?;
+            anyhow::ensure!(
+                current == skill.markdown,
+                "{} already exists with different content; preserve your edits before replacing it",
+                path.display()
+            );
+        }
+        Err(error) => return Err(error).context("creating Codex skill file"),
+    }
+    Ok(path)
+}
+
+fn print_codex_skill(path: &Path) {
+    println!("Spindle skill ready for Codex: {}", path.display());
+    println!("Connect the spindle MCP server in Codex, select GPT-6 Astra, and use $spindle.");
 }
 
 const DEFAULT_LOCAL_CONFIG: &str = r#"# Spindle local agent configuration
@@ -323,10 +375,17 @@ fn http_listen_addr() -> anyhow::Result<Option<std::net::SocketAddr>> {
     let Some(raw) = std::env::var_os("SPINDLE_HTTP_ADDR") else {
         return Ok(None);
     };
-    let parsed = raw
+    let parsed: std::net::SocketAddr = raw
         .to_string_lossy()
         .parse()
         .context("failed to parse SPINDLE_HTTP_ADDR as socket address")?;
+    if !parsed.ip().is_loopback()
+        && std::env::var("SPINDLE_HTTP_ALLOW_NONLOOPBACK").as_deref() != Ok("1")
+    {
+        anyhow::bail!(
+            "refusing to bind non-loopback address {parsed} (set SPINDLE_HTTP_ALLOW_NONLOOPBACK=1 to override)"
+        );
+    }
     Ok(Some(parsed))
 }
 
@@ -362,6 +421,17 @@ mod tests {
 
     use super::*;
 
+    /// Serializes tests that mutate process env. Every test that calls
+    /// `set_var`/`remove_var` must hold this lock for its whole body —
+    /// otherwise parallel test threads clobber each other's variables.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
     #[test]
     fn default_platform_data_dir_has_stable_leaf_name() {
         assert_eq!(
@@ -374,6 +444,7 @@ mod tests {
 
     #[test]
     fn explicit_env_data_dir_wins() {
+        let _guard = env_lock();
         let expected = Path::new("/tmp/spindle-explicit");
         unsafe {
             std::env::set_var("SPINDLE_DATA_DIR", expected);
@@ -387,6 +458,7 @@ mod tests {
 
     #[test]
     fn http_addr_defaults_to_stdio_mode() {
+        let _guard = env_lock();
         unsafe {
             std::env::remove_var("SPINDLE_HTTP_ADDR");
         }
@@ -394,7 +466,54 @@ mod tests {
     }
 
     #[test]
+    fn http_addr_loopback_bind_is_allowed() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("SPINDLE_HTTP_ADDR", "127.0.0.1:8937");
+            std::env::remove_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK");
+        }
+        let addr = http_listen_addr().expect("loopback bind must succeed");
+        unsafe {
+            std::env::remove_var("SPINDLE_HTTP_ADDR");
+        }
+        assert_eq!(addr, Some("127.0.0.1:8937".parse().unwrap()));
+    }
+
+    #[test]
+    fn http_addr_non_loopback_bind_is_rejected() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("SPINDLE_HTTP_ADDR", "0.0.0.0:8937");
+            std::env::remove_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK");
+        }
+        let err = http_listen_addr().expect_err("non-loopback bind must fail");
+        unsafe {
+            std::env::remove_var("SPINDLE_HTTP_ADDR");
+        }
+        assert!(
+            err.to_string().contains("0.0.0.0:8937"),
+            "error must name the address: {err:#}"
+        );
+    }
+
+    #[test]
+    fn http_addr_non_loopback_bind_allowed_with_override() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("SPINDLE_HTTP_ADDR", "0.0.0.0:8937");
+            std::env::set_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK", "1");
+        }
+        let addr = http_listen_addr().expect("override must allow non-loopback");
+        unsafe {
+            std::env::remove_var("SPINDLE_HTTP_ADDR");
+            std::env::remove_var("SPINDLE_HTTP_ALLOW_NONLOOPBACK");
+        }
+        assert_eq!(addr, Some("0.0.0.0:8937".parse().unwrap()));
+    }
+
+    #[test]
     fn explicit_config_path_wins() {
+        let _guard = env_lock();
         unsafe {
             std::env::set_var("SPINDLE_CONFIG", "/tmp/spindle.toml");
         }
@@ -439,5 +558,61 @@ mod tests {
 
         let config = std::fs::read_to_string(workspace.join("config.toml")).expect("read config");
         assert!(config.contains("Spindle local agent configuration"));
+    }
+
+    #[test]
+    fn codex_skill_install_is_repeatable_and_preserves_existing_work() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let book = temp.path().join("book with spaces");
+        let workspace = init_project_workspace(&book).expect("workspace");
+        let config_path = workspace.join("config.toml");
+        std::fs::write(&config_path, "# author's existing routes\n").unwrap();
+
+        let path = init_codex_skill(Some(&book)).expect("install");
+        assert_eq!(path, book.join(".agents/skills/spindle/SKILL.md"));
+        // Keep only one discovery entry; specialist prompts stay available over MCP.
+        assert_eq!(
+            std::fs::read_dir(book.join(".agents/skills"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            spindle_adapters::get_skill("spindle").unwrap().markdown
+        );
+        assert_eq!(init_codex_skill(Some(&book)).expect("repeat"), path);
+        std::fs::write(&path, "author's customized skill").unwrap();
+        assert!(init_codex_skill(Some(&book)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "author's customized skill"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config_path).unwrap(),
+            "# author's existing routes\n"
+        );
+
+        let empty_book = temp.path().join("another book");
+        init_codex_skill(Some(&empty_book)).expect("skills only");
+        assert!(!empty_book.join(".spindle").exists());
+        assert!(!empty_book.join(".codex").exists());
+    }
+
+    #[test]
+    fn codex_init_defaults_to_global_and_keeps_skills_alias() {
+        for command in ["init-codex", "init-codex-skills"] {
+            let cli = McpCli::try_parse_from(["spindle-mcp", command]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(McpCommand::InitCodexSkills { target_dir: None })
+            ));
+        }
+        let cli =
+            McpCli::try_parse_from(["spindle-mcp", "init-codex", "--target-dir", "/tmp/book"])
+                .unwrap();
+        assert!(
+            matches!(cli.command, Some(McpCommand::InitCodexSkills { target_dir: Some(path) }) if path == Path::new("/tmp/book"))
+        );
     }
 }

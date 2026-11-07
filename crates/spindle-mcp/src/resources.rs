@@ -651,21 +651,21 @@ impl ResourceRouter {
         }
 
         if uri == "bible://system/model-routes" {
-            let content = serde_json::to_string_pretty(&self.service.model_routes())?;
+            let content = serde_json::to_string_pretty(&self.service.model_routes()?)?;
             return Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(content, uri).with_mime_type("application/json"),
             ]));
         }
 
         if uri == "bible://config/agents" {
-            let content = serde_json::to_string_pretty(&self.service.list_agents())?;
+            let content = serde_json::to_string_pretty(&self.service.list_agents()?)?;
             return Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(content, uri).with_mime_type("application/json"),
             ]));
         }
 
         if uri == "bible://config/routing" {
-            let content = serde_json::to_string_pretty(&self.service.agent_routing_config())?;
+            let content = serde_json::to_string_pretty(&self.service.agent_routing_config()?)?;
             return Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(content, uri).with_mime_type("application/json"),
             ]));

@@ -1,5 +1,9 @@
 # Spindle
 
+**Writing with GPT-6 Astra in Codex?** Follow the [Codex setup guide](docs/codex.md).
+It connects your existing book, installs the `$spindle` skill, and keeps Codex as
+the writer. Host drafting needs no Spindle API key.
+
 For focused serial-fiction work, run the MCP server with `SPINDLE_TOOL_PROFILE=authoring`
 and load the `authoring-supervisor` skill. This smaller tool set covers planning,
 drafting, continuity, checkpoint review, recovery, and manuscript export. Leave
@@ -74,7 +78,7 @@ planning at series, arc and episode horizons.
 ## Who it's for
 
 Fiction writers — especially novelists and serial authors — who use AI
-writing tools (Claude Code, Claude Desktop, or any MCP-aware client) and have
+writing tools (Codex, Claude Code, Claude Desktop, or any MCP-aware client) and have
 hit the wall where the AI can't hold the whole story in its head. Spindle is
 the missing memory.
 
@@ -99,10 +103,16 @@ You'll need [Rust](https://rustup.rs/) installed.
    git init
    /path/to/spindle/target/release/spindle-mcp init
    ```
-   This creates a project-local `.spindle/` folder containing your `config.toml`, SQLite database, and `artifacts/` subdirectory.
+   This creates a project-local `.spindle/` folder with `config.toml`, `artifacts/`, and runtime directories; the server creates the SQLite database on first use. It also installs the Spindle entry skill globally for Codex in `~/.agents/skills/spindle/`.
 
 3. **Configure your MCP Client:**
-   Point your MCP-capable AI client at the built binary. For **Claude Code**, you can configure it to start from your book directory:
+   For **Codex**, `init` has already installed the global skill. For an existing
+   book, use `/path/to/spindle/target/release/spindle-mcp init-codex` to install
+   it without creating a workspace. Add the server to `.codex/config.toml` as
+   shown in the [Codex guide](docs/codex.md), select GPT-6 Astra, and use `$spindle`.
+
+   Other MCP-capable clients can point at the same binary and book folder.
+   For **Claude Code**:
    ```json
    {
      "mcpServers": {
@@ -192,6 +202,7 @@ flow.
 
 Spindle ships writing skills your AI client can load directly:
 
+- `spindle` — Codex entry skill for project recovery, workflow selection, and host writing
 - `bible-librarian` — search and lookup across the story bible
 - `authoring-supervisor` — coordinate interactive drafting and checkpoint runs
 - `scene-writer` — draft prose with the right context
@@ -204,6 +215,12 @@ Spindle ships writing skills your AI client can load directly:
 - `revision-manager` — branch, compare, and revise
 - `editor` — developmental and line edits
 - `manuscript-importer` — ingest an existing draft
+
+For Codex users, `spindle-mcp init` and `spindle-mcp init-codex` install the
+`spindle` entry skill globally into `~/.agents/skills/spindle/`.
+`init-codex --target-dir /path/to/book` opts into project scope instead.
+The entry loads all specialist workflows from MCP on demand, keeping the
+skill-discovery list small.
 
 For Grok users, `init_grok_skills` installs the full skill set into
 `~/.grok/skills/`.

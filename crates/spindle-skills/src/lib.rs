@@ -38,6 +38,7 @@ mod tests {
         assert!(names.contains(&"editor"));
         assert!(names.contains(&"authoring-supervisor"));
         assert!(names.contains(&"researcher"));
-        assert_eq!(skills.len(), 12);
+        assert!(names.contains(&"spindle"));
+        assert_eq!(skills.len(), 13);
     }
 }

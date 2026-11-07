@@ -399,6 +399,15 @@ impl ToolRouter {
                 "import_hydrate_bible",
             ],
             "authoring" => &[
+                "list_agents",
+                "get_character_snapshot",
+                "update_writer_position",
+                "commit_character_state",
+                "register_canonical_fact",
+                "record_knowledge",
+                "create_future_knowledge",
+                "set_project_calendar",
+                "set_scene_clock",
                 "record_note",
                 "update_arc_milestone",
                 "create_character_arc",
@@ -2051,7 +2060,7 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.read_episode(input))
                     .await
             }
-            "list_agents" => structured_result(&self.service.list_agents()),
+            "list_agents" => structured_result(&self.service.list_agents()?),
             "init_grok_skills" => match parse_arguments::<InitGrokSkillsInput>(arguments) {
                 Ok(input) => {
                     let output = self.handle_init_grok_skills(input)?;
@@ -2442,6 +2451,14 @@ fn tool_requires_global_serialization(name: &str) -> bool {
     )
 }
 
+const MAX_PREPARE_CHAPTER_SPAN: i64 = 1000;
+
+fn chapter_range_end(start_chapter: i32, chapter_count: i32) -> Option<i32> {
+    chapter_count
+        .checked_sub(1)
+        .and_then(|c| start_chapter.checked_add(c))
+}
+
 fn required_string_argument<'a>(
     arguments: &'a rmcp::model::JsonObject,
     field: &str,
@@ -2707,10 +2724,17 @@ impl ToolRouter {
         let project_id = input.project_id.clone();
         let repo = self.service.repository();
 
+        let mut range_overflow: Option<(i32, i32)> = None;
         let end_chapter = if let Some(ec) = input.end_chapter {
             ec
         } else if let Some(cc) = input.chapter_count {
-            input.start_chapter + cc - 1
+            match chapter_range_end(input.start_chapter, cc) {
+                Some(end) => end,
+                None => {
+                    range_overflow = Some((input.start_chapter, cc));
+                    input.start_chapter
+                }
+            }
         } else {
             let chapters = repo
                 .list_chapters_by_book_number(&project_id, input.book_number)
@@ -2741,6 +2765,17 @@ impl ToolRouter {
             invalid_inputs.push(format!(
                 "chapter_count must be positive when provided, got {}",
                 chapter_count
+            ));
+        }
+        if let Some((start_chapter, chapter_count)) = range_overflow {
+            invalid_inputs.push(format!(
+                "chapter range out of bounds: start_chapter {start_chapter} with chapter_count {chapter_count} exceeds the supported chapter-number range",
+            ));
+        }
+        let span = end_chapter as i64 - input.start_chapter as i64 + 1;
+        if span > MAX_PREPARE_CHAPTER_SPAN {
+            invalid_inputs.push(format!(
+                "chapter range spans {span} chapters, exceeding the per-call maximum of {MAX_PREPARE_CHAPTER_SPAN} chapters",
             ));
         }
         if end_chapter < input.start_chapter {
@@ -2895,7 +2930,7 @@ impl ToolRouter {
         // multi-hour authoring run fails fast at `prepare` instead of hours in.
         let model_router = self.service.repository().model_router();
         for rating in &planned_ratings {
-            let preflight = model_router.draft_route_preflight(rating);
+            let preflight = model_router.draft_route_preflight(rating)?;
             if let Some(problem) = preflight.problem {
                 let detail = match problem {
                     DraftRoutePreflightProblem::Unresolved => {
@@ -2926,7 +2961,7 @@ impl ToolRouter {
         // operator decides before the run starts, not hours in (I8).
         if input.mining_policy.as_deref() == Some("propose_all") {
             for rating in &planned_ratings {
-                if let Some(preflight) = model_router.mine_fallback_preflight(rating) {
+                if let Some(preflight) = model_router.mine_fallback_preflight(rating)? {
                     let detail = match preflight.problem {
                         Some(DraftRoutePreflightProblem::Unresolved) => {
                             "no mine or review route is configured for this rating".to_string()
@@ -2967,7 +3002,7 @@ impl ToolRouter {
         ) {
             let policy = input.checkpoint_policy.as_deref().unwrap_or("");
             for rating in &planned_ratings {
-                let preflight = model_router.review_route_preflight(rating);
+                let preflight = model_router.review_route_preflight(rating)?;
                 if let Some(problem) = preflight.problem {
                     let detail = match problem {
                         DraftRoutePreflightProblem::Unresolved => {
@@ -3157,14 +3192,14 @@ impl ToolRouter {
 
             let mut scene_seeds = Vec::new();
             for scene in &plan.scenes {
-                let (loc_id, rating) = planned_scene_location_and_rating(
+                let (loc_id, rating) = require_planned_scene_location_and_rating(
+                    ch_num,
+                    scene.scene_order,
                     scene.location_id.as_deref(),
                     scene.content_rating.as_ref(),
                     &scene.summary,
                     &scene.purpose,
-                );
-                let loc_id = loc_id.unwrap();
-                let rating = rating.unwrap();
+                )?;
 
                 scene_seeds.push(spindle_harness::state::SceneSeed {
                     scene_order: scene.scene_order,
@@ -5648,6 +5683,37 @@ fn planned_scene_location_and_rating(
     (location_id, rating)
 }
 
+/// Resolve a plan scene's seed location + rating for `authoring_start_run`.
+///
+/// `prepare` normally blocks incomplete plans first; this is the
+/// defense-in-depth guard so a plan that drifts between prepare and start
+/// fails with a chapter/scene-addressed error instead of panicking the
+/// handler. Never defaults: silent defaults corrupt fiction canon.
+fn require_planned_scene_location_and_rating(
+    chapter_number: i32,
+    scene_order: i32,
+    location_id: Option<&str>,
+    content_rating: Option<&ContentRating>,
+    summary: &str,
+    purpose: &str,
+) -> anyhow::Result<(String, ContentRating)> {
+    let (loc_id, rating) =
+        planned_scene_location_and_rating(location_id, content_rating, summary, purpose);
+    let loc_id = loc_id.with_context(|| {
+        format!(
+            "Chapter {chapter_number} scene {scene_order}: missing location ID; \
+             set location_id on the plan scene before starting the run"
+        )
+    })?;
+    let rating = rating.with_context(|| {
+        format!(
+            "Chapter {chapter_number} scene {scene_order}: missing content rating; \
+             set content_rating on the plan scene before starting the run"
+        )
+    })?;
+    Ok((loc_id, rating))
+}
+
 fn authoring_execute_uses_agent_drafting(mode: Option<&str>) -> bool {
     let Some(mode) = mode else {
         return false;
@@ -7855,6 +7921,7 @@ mod tests {
             .filter_map(|skill| skill["name"].as_str())
             .collect();
         for expected in [
+            "spindle",
             "scene-writer",
             "character-creator",
             "worldbuilder",
@@ -7974,6 +8041,15 @@ mod tests {
             }
             if profile == "authoring" {
                 for step in [
+                    "list_agents",
+                    "get_character_snapshot",
+                    "update_writer_position",
+                    "commit_character_state",
+                    "register_canonical_fact",
+                    "record_knowledge",
+                    "create_future_knowledge",
+                    "set_project_calendar",
+                    "set_scene_clock",
                     "authoring_prepare_run",
                     "authoring_start_run",
                     "authoring_status",
@@ -9745,6 +9821,435 @@ mod tests {
         assert_eq!(
             applied.deltas[0].decided_by.as_deref(),
             Some("mcp-operator")
+        );
+    }
+
+    /// A plan scene with no location and no rating must be a descriptive
+    /// `Err` naming chapter + scene — never a handler panic, never a silent
+    /// default (silent defaults corrupt fiction canon).
+    #[test]
+    fn start_run_seed_rejects_scene_missing_location_and_rating() {
+        let err = super::require_planned_scene_location_and_rating(
+            3,
+            2,
+            None,
+            None,
+            "A quiet scene with no legacy markers.",
+            "Advance the plot.",
+        )
+        .expect_err("missing location+rating must fail, not panic or default");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("Chapter 3"), "error names the chapter: {msg}");
+        assert!(msg.contains("scene 2"), "error names the scene: {msg}");
+    }
+
+    #[test]
+    fn start_run_seed_rejects_scene_missing_rating() {
+        let err = super::require_planned_scene_location_and_rating(
+            1,
+            1,
+            Some("location:hall"),
+            None,
+            "A quiet scene with no legacy markers.",
+            "Advance the plot.",
+        )
+        .expect_err("missing rating must fail, not panic or default");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("Chapter 1"), "error names the chapter: {msg}");
+        assert!(msg.contains("scene 1"), "error names the scene: {msg}");
+        assert!(
+            msg.contains("rating"),
+            "error names the missing field: {msg}"
+        );
+    }
+
+    #[test]
+    fn start_run_seed_rejects_scene_missing_location() {
+        let err = super::require_planned_scene_location_and_rating(
+            1,
+            4,
+            None,
+            Some(&ContentRating::General),
+            "A quiet scene with no legacy markers.",
+            "Advance the plot.",
+        )
+        .expect_err("missing location must fail, not panic or default");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("Chapter 1"), "error names the chapter: {msg}");
+        assert!(msg.contains("scene 4"), "error names the scene: {msg}");
+        assert!(
+            msg.contains("location"),
+            "error names the missing field: {msg}"
+        );
+    }
+
+    #[test]
+    fn start_run_seed_accepts_complete_scene() {
+        let (loc_id, rating) = super::require_planned_scene_location_and_rating(
+            1,
+            1,
+            Some("location:hall"),
+            Some(&ContentRating::Teen),
+            "A quiet scene with no legacy markers.",
+            "Advance the plot.",
+        )
+        .expect("complete scene resolves");
+        assert_eq!(loc_id, "location:hall");
+        assert_eq!(rating, ContentRating::Teen);
+    }
+
+    #[test]
+    fn start_run_seed_still_honors_legacy_markers() {
+        let (loc_id, rating) = super::require_planned_scene_location_and_rating(
+            1,
+            1,
+            None,
+            None,
+            "Confrontation. location:hall rating:teen",
+            "Advance the plot.",
+        )
+        .expect("legacy markers still resolve");
+        assert_eq!(loc_id, "location:hall");
+        assert_eq!(rating, ContentRating::Teen);
+    }
+
+    async fn prepare_run_project(router: &ToolRouter, name: &str) -> String {
+        let args = serde_json::to_value(CreateProjectInput {
+            name: name.to_string(),
+            project_type: "novel".to_string(),
+            genre: "fantasy".to_string(),
+            reader_contract: ReaderContract {
+                promise: "Chapter overflow regression.".to_string(),
+                style_notes: vec![],
+                boundaries: vec![],
+            },
+        })
+        .expect("project args");
+        let project: CreateProjectOutput = serde_json::from_value(structured_json(
+            router
+                .call_tool("create_project", Some(args.as_object().unwrap()))
+                .await
+                .expect("create project"),
+        ))
+        .expect("decode project");
+        project.project_id
+    }
+
+    fn has_range_message(missing: &[serde_json::Value]) -> bool {
+        missing.iter().any(|val| {
+            val.as_str()
+                .is_some_and(|text| text.contains("chapter range out of bounds"))
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_run_chapter_count_max_single_accepted() {
+        let router = router().await;
+        let project_id = prepare_run_project(&router, "Overflow Max Single").await;
+        // True end is exactly i32::MAX: representable, so no range message.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": i32::MAX,
+            "chapter_count": 1,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result, not panic");
+        assert_eq!(result.is_error, Some(false));
+        let content = result.structured_content.expect("structured content");
+        assert_eq!(content["end_chapter"].as_i64(), Some(i32::MAX as i64));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            !has_range_message(missing),
+            "representable (MAX, 1) range must not report out of bounds: {missing:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_run_chapter_count_min_rejected() {
+        let router = router().await;
+        let args = serde_json::json!({
+            "project_id": "project:overflow",
+            "book_number": 1,
+            "start_chapter": i32::MIN,
+            "chapter_count": 0,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result, not panic");
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("validation error uses structured content");
+        assert_eq!(content["ready_to_draft"].as_bool(), Some(false));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        let expected = format!(
+            "chapter range out of bounds: start_chapter {} with chapter_count {} exceeds the supported chapter-number range",
+            i32::MIN,
+            0,
+        );
+        assert!(
+            missing
+                .iter()
+                .any(|val| val.as_str() == Some(expected.as_str())),
+            "expected range message in: {missing:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_run_chapter_count_boundary_overflow_and_fit() {
+        let router = router().await;
+        let project_id = prepare_run_project(&router, "Overflow Boundary").await;
+
+        // True end i32::MAX + 1 is unrepresentable: validation error.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": i32::MAX - 1,
+            "chapter_count": 3,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result, not panic");
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("validation error uses structured content");
+        assert_eq!(content["ready_to_draft"].as_bool(), Some(false));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            has_range_message(missing),
+            "expected out-of-bounds validation error in: {missing:?}"
+        );
+
+        // True end is exactly i32::MAX: representable, so accepted.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": i32::MAX - 1,
+            "chapter_count": 2,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result, not panic");
+        assert_eq!(result.is_error, Some(false));
+        let content = result.structured_content.expect("structured content");
+        assert_eq!(content["end_chapter"].as_i64(), Some(i32::MAX as i64));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            !has_range_message(missing),
+            "representable (MAX-1, 2) range must not report out of bounds: {missing:?}"
+        );
+
+        // Small range near the boundary: proceeds with exact end.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": i32::MAX - 1,
+            "chapter_count": 1,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result");
+        assert_eq!(result.is_error, Some(false));
+        let content = result.structured_content.expect("structured content");
+        assert_eq!(content["end_chapter"].as_i64(), Some((i32::MAX - 1) as i64));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            !has_range_message(missing),
+            "exactly-fitting range must not report out of bounds: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn chapter_range_end_accepts_representable_max_ranges() {
+        // A full tool call for (1, MAX) is rejected by the span cap, so
+        // arithmetic representability is covered here against the same
+        // helper the handler uses.
+        assert_eq!(
+            super::chapter_range_end(1, i32::MAX),
+            Some(i32::MAX),
+            "(1, MAX) ends exactly at MAX and is representable"
+        );
+        assert_eq!(
+            super::chapter_range_end(i32::MAX, 1),
+            Some(i32::MAX),
+            "(MAX, 1) ends exactly at MAX and is representable"
+        );
+        assert_eq!(
+            super::chapter_range_end(i32::MAX - 1, 2),
+            Some(i32::MAX),
+            "(MAX-1, 2) ends exactly at MAX and is representable"
+        );
+        assert_eq!(
+            super::chapter_range_end(i32::MAX - 1, 3),
+            None,
+            "true end MAX+1 is unrepresentable"
+        );
+        assert_eq!(
+            super::chapter_range_end(i32::MIN, 0),
+            None,
+            "(MIN, 0) is out of bounds"
+        );
+        assert_eq!(
+            super::chapter_range_end(i32::MIN, i32::MIN),
+            None,
+            "subtract-first stays panic-free for MIN count"
+        );
+    }
+
+    fn has_span_message(missing: &[serde_json::Value]) -> bool {
+        missing.iter().any(|val| {
+            val.as_str().is_some_and(|text| {
+                text.contains("exceeding the per-call maximum of 1000 chapters")
+            })
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_run_chapter_span_over_max_rejected() {
+        let router = router().await;
+        let project_id = prepare_run_project(&router, "Span Over Max").await;
+
+        // count=1001 → span 1001, rejected before the per-chapter loop.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": 1,
+            "chapter_count": 1001,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result, not panic");
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("validation error uses structured content");
+        assert_eq!(content["ready_to_draft"].as_bool(), Some(false));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            missing.iter().any(|val| val.as_str() == Some(
+                "chapter range spans 1001 chapters, exceeding the per-call maximum of 1000 chapters"
+            )),
+            "expected span message in: {missing:?}"
+        );
+
+        // Explicit end = start + 1000 → span 1001, rejected.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": 1,
+            "end_chapter": 1001,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result, not panic");
+        assert_eq!(result.is_error, Some(false));
+        let content = result
+            .structured_content
+            .expect("validation error uses structured content");
+        assert_eq!(content["ready_to_draft"].as_bool(), Some(false));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            has_span_message(missing),
+            "expected span message in: {missing:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_run_chapter_span_at_max_accepted() {
+        let router = router().await;
+        let project_id = prepare_run_project(&router, "Span At Max").await;
+
+        // count=1000 → span 1000, no span message.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": 1,
+            "chapter_count": 1000,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result");
+        assert_eq!(result.is_error, Some(false));
+        let content = result.structured_content.expect("structured content");
+        assert_eq!(content["end_chapter"].as_i64(), Some(1000));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            !has_span_message(missing),
+            "span of exactly 1000 must not report span message: {missing:?}"
+        );
+
+        // Explicit end = start + 999 → span 1000, no span message.
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": 1,
+            "end_chapter": 1000,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result");
+        assert_eq!(result.is_error, Some(false));
+        let content = result.structured_content.expect("structured content");
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            !has_span_message(missing),
+            "explicit span of exactly 1000 must not report span message: {missing:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_run_chapter_count_happy_path_computes_end_chapter() {
+        let router = router().await;
+        let project_id = prepare_run_project(&router, "Overflow Happy Path").await;
+        let args = serde_json::json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "start_chapter": 1,
+            "chapter_count": 2,
+        });
+        let result = router
+            .call_tool("authoring_prepare_run", Some(args.as_object().unwrap()))
+            .await
+            .expect("tool call should return result");
+        assert_eq!(result.is_error, Some(false));
+        let content = result.structured_content.expect("structured content");
+        assert_eq!(content["end_chapter"].as_i64(), Some(2));
+        let missing = content["missing_requirements"]
+            .as_array()
+            .expect("missing_requirements array");
+        assert!(
+            !has_range_message(missing),
+            "normal range must not report out of bounds: {missing:?}"
         );
     }
 }

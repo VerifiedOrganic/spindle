@@ -125,9 +125,21 @@ pub async fn serve(service: SpindleService, addr: SocketAddr) -> anyhow::Result<
 }
 
 fn snapshot_payload(service: &SpindleService) -> serde_json::Value {
-    serde_json::json!({
-        "model_routes": service.model_routes(),
-    })
+    match service.model_routes() {
+        Ok(routes) => serde_json::json!({
+            "model_routes": routes,
+        }),
+        // The SSE snapshot stream is infallible, so a poisoned lock surfaces
+        // in-band (and in logs) rather than silently emitting empty routes.
+        // The poison is sticky: every poll re-reports until restart.
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "model routes snapshot unavailable");
+            serde_json::json!({
+                "model_routes": [],
+                "error": format!("model routes unavailable: {error:#}"),
+            })
+        }
+    }
 }
 
 async fn health() -> impl IntoResponse {
@@ -141,7 +153,14 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn model_routes(State(state): State<HttpState>) -> impl IntoResponse {
-    Json(state.service.model_routes())
+    match state.service.model_routes() {
+        Ok(routes) => Json(routes).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("model routes unavailable: {error:#}"),
+        )
+            .into_response(),
+    }
 }
 
 // ── Read-only operator console (evolution §3.7 console v1) ──────────────────
@@ -164,9 +183,10 @@ async fn console_page() -> axum::response::Response {
 /// (missing required query param) is a 400 so the defensive JS renders an error
 /// state, never a blank pane.
 fn read_error(err: anyhow::Error) -> axum::response::Response {
+    tracing::error!(error = ?format!("{err:#}"), "console read failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": err.to_string() })),
+        Json(serde_json::json!({ "error": "internal error" })),
     )
         .into_response()
 }
@@ -1182,6 +1202,20 @@ mod tests {
             before.updated_at, after.updated_at,
             "console status read must not persist a reconcile"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_error_returns_generic_message_without_leaking_details() {
+        let response = read_error(anyhow::anyhow!("secret db path /tmp/x leaked"));
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("error json");
+        assert_eq!(body, serde_json::json!({ "error": "internal error" }));
     }
 
     #[tokio::test(flavor = "current_thread")]

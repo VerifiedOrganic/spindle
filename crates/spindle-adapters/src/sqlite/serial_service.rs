@@ -659,7 +659,7 @@ fn reader_model_signature(svc: &SqliteSpindleService) -> Result<String> {
     let routes: Vec<_> = svc
         .repository()
         .model_router()
-        .list_routes()
+        .list_routes()?
         .into_iter()
         .filter(|r| matches!(r.route_name.as_str(), "reader_sim" | "review"))
         .collect();
@@ -1156,7 +1156,8 @@ mod tests {
         let log = reopened
             .repository()
             .model_router()
-            .install_dispatch_recorder();
+            .install_dispatch_recorder()
+            .unwrap();
         let cached = reopened.read_episode(input.clone()).await.unwrap();
         assert!(cached.memory.cached);
         assert_eq!(

@@ -35,6 +35,25 @@ not goals. Use them in service of the declared genre and voice — never let the
 toward prestige-literary defaults the contract did not ask for. This skill also teaches you how
 to use the Story Bible system to maintain consistency across a potentially massive series.
 
+## Voice and delivery
+
+Honor the author's current creative instructions and the project's style contract.
+If a new instruction changes established canon or an unresolved creative boundary,
+surface that specific conflict. Otherwise use the available context and finish the
+requested work without asking permission for routine drafting, saving, or local fixes.
+
+Before continuing, read a short passage of the preceding scene's actual prose
+(`list_chapter_scenes` to locate it, `get_entity` to read it), plus supplied
+`voice_samples` and character voice profiles. Summaries preserve events; prose
+preserves cadence. Match diction, narrative distance, humor, interiority, and
+dialogue without copying sample phrases. Keep a distinctive voice distinctive.
+
+Draft through the requested scene's intended change and ending at the requested
+length. Put only manuscript prose in the saved text: no assistant preface, beat
+outline, critique, or explanatory closing. Use headings, emphasis, or system
+blocks only where they belong to the book's established format. A writing task
+is complete when the prose and required state are saved, not when a plan is shown.
+
 ## Canonical scene loop
 
 Follow this loop for every drafting pass on an active branch:
@@ -336,7 +355,9 @@ Every scene must have a PURPOSE. Before writing, answer:
 
 ### Swain's Scene/Sequel Framework
 
-Every scene falls into one of two types. Alternate between them to create rhythm.
+Use these two patterns when they help this scene. They can blend, compress, or
+give way to another structure that better serves the reader contract; do not
+force every scene through the same sequence or manufacture a disaster.
 
 **SCENE (action)** — structured as Goal → Conflict → Disaster
 - **Goal**: The POV character wants something specific in THIS scene. Not "save the world" —
@@ -355,7 +376,8 @@ Every scene falls into one of two types. Alternate between them to create rhythm
 **SEQUEL (reaction)** — structured as Reaction → Dilemma → Decision
 - **Reaction**: The character's emotional and physical response to the previous disaster.
   This is where the reader processes what happened. Don't skip this. Readers need breathing room.
-  Show the emotion — don't name it. (See MRU section below.)
+  Render the response at the narrative distance the book uses: action, thought,
+  dialogue, or concise summary.
 - **Dilemma**: The character faces a choice with no good option. Every path has costs.
   This is where character is revealed — not by what they say, but by what they choose
   when the stakes are real and the options are bad.
@@ -392,54 +414,25 @@ to record them. Standard beat types:
 
 Now write. Follow these rules at every level — from paragraph to sentence to word.
 
-### Motivation-Reaction Units (MRUs) — The Line-Level Structure
+### Causality and reactions
 
-Every paragraph of your prose should follow the MRU pattern from Dwight Swain.
+MRUs help diagnose confusing action: can the reader connect a stimulus to the
+character's response? Use that causal clarity without requiring a bodily
+reaction, action beat, and line of speech in every paragraph. Compress routine
+reactions and give important choices room. Do not explain an emotion again after
+the action or dialogue has already conveyed it.
 
-**Motivation** (external stimulus) → **Reaction** (character's response)
+### Dramatization and summary
 
-The Motivation always comes FIRST. It's something external to the POV character:
-another character's words, a sound, a sight, a physical sensation from the environment.
+Dramatize moments whose choices, conflict, or intimacy the reader needs to
+experience. Use concise telling for transitions, orientation, elapsed time, or
+a direct thought that fits the narrator. Neither mode is forbidden.
 
-The Reaction follows, always in this order:
-1. **Feeling** (involuntary emotional/physical response — gut clench, heat in face, heart rate)
-2. **Action** (physical response — stepping back, clenching fists, reaching for weapon)
-3. **Speech** (verbal response — dialogue)
-
-Not every reaction needs all three. Minor stimuli may only trigger speech. Major turning
-points should include all three in order.
-
-**WRONG ORDER** (reaction before motivation):
-> Elena screamed when the knife embedded in the door frame inches from her face.
-
-**RIGHT ORDER** (motivation first, then reaction in feeling→action→speech):
-> The knife thunked into the door frame, splinters spraying her cheek. [MOTIVATION]
-> Ice flooded her veins. [FEELING]
-> She threw herself sideways, shoulder crashing into the stone wall. [ACTION]
-> "You missed," she said, her voice steadier than her hands. [SPEECH]
-
-### Show, Don't Tell — The Fundamental Discipline
-
-This is the single most important prose rule and the one AI models violate most often.
-
-**TELLING** names the emotion: "Marcus felt angry." "Elena was sad." "He was nervous."
-**SHOWING** renders the emotion through observable behavior, physical sensation, and action.
-
-| Telling (NEVER) | Showing (ALWAYS) |
-|-----------------|-------------------|
-| Marcus felt angry | Marcus's jaw clenched. His knuckles whitened on the sword grip. |
-| Elena was sad | Elena's gaze dropped to her hands. She picked at a loose thread on her sleeve. |
-| He was nervous | A bead of sweat traced his temple. He checked the door for the third time. |
-| She felt betrayed | Something cracked behind her ribs — not pain, exactly, but the sound a frozen lake makes before it gives way. |
-| They were in love | His thumb traced the scar on her wrist, the one she never talked about. She let him. |
-
-**Rules for show-don't-tell enforcement:**
-- NEVER use "felt [emotion]", "was [emotion]", "seemed [emotion]"
-- NEVER use "he/she realized" — show the realization through behavior change
-- NEVER summarize an emotional exchange — dramatize it with dialogue and action
-- Physical sensation > named emotion. "His stomach dropped" beats "he was afraid."
-- Subtext > text. Characters rarely say exactly what they mean, especially about feelings.
-- If you catch yourself writing "she felt a wave of [X]" — STOP and rewrite.
+Choose details specific to this person doing this task in this place. Replacing
+every named emotion with a clenched jaw, dropped stomach, held breath, or ornate
+bodily metaphor produces another formula. Prefer the revealing choice or precise
+observation; use physical sensation when it earns its space. Let subtext remain
+implicit when the reader can infer it.
 
 ### Character Voice
 
@@ -452,7 +445,8 @@ have:
 - any imported or canonical knowledge that changes how guarded or direct they are
 
 Then preserve continuity in:
-- **Vocabulary level**: A street thief doesn't use academic language. A scholar doesn't use slang.
+- **Vocabulary**: Follow the character's established word choices and social
+  context, rather than assigning a stock vocabulary to their profession.
 - **Sentence structure**: Short, punchy sentences for terse characters. Complex clauses for thinkers.
 - **Verbal tics**: Use sparingly but consistently. If Marcus says "hells" as a mild oath, he always does.
 - **Forbidden words**: If a character would NEVER say "please", they don't.
@@ -461,9 +455,10 @@ Then preserve continuity in:
 - **Formality range**: Characters speak differently to their superior, their lover, and a stranger.
 
 **Dialogue rules:**
-- No dialogue tags except "said" and "asked" (invisible to readers). Never "exclaimed",
-  "muttered", "declared", "retorted". SHOW the manner of speech through action beats.
-- Avoid adverbs on dialogue tags entirely. Not "she said quietly" — "she dropped her voice."
+- Prefer unobtrusive tags such as "said" and "asked". Use another tag when it
+  adds necessary meaning and fits the voice; `said_bookism` remains advisory
+  unless the project promotes it. Do not replace every tag with a stock gesture.
+- Keep modifiers only when they clarify something the dialogue does not convey.
 - Every line of dialogue should do at least one of: advance the plot, reveal character, or increase tension. Preferably two.
 - Characters interrupt each other, trail off, avoid questions, change the subject.
   Real people don't take turns delivering perfect paragraphs.
@@ -492,21 +487,21 @@ These combat common AI writing weaknesses:
 
 - **Vary sentence length.** Long sentences build tension. Short ones release it. A paragraph
   of all same-length sentences is monotonous. Read your prose aloud — it should have rhythm.
-- **Cut filter words.** Not "he saw the ship approach" — "the ship approached." Not "she heard
-  footsteps" — "footsteps echoed in the corridor." Remove the character from between the reader
-  and the experience.
-- **Active voice, not passive.** Not "the door was opened by Marcus" — "Marcus opened the door."
-  Passive voice distances the reader from the action.
+- **Choose narrative distance deliberately.** Direct description can make an
+  experience immediate; explicit perception can convey uncertainty or a
+  character's attention. Keep the form that serves the voice and moment.
+- **Make agency clear.** Active voice often sharpens action. Passive voice can
+  deliberately conceal the actor or center the affected person; use it with purpose.
 - **Concrete over abstract.** Not "the room was messy" — "crumpled maps covered the table,
   and a boot lay on its side by the door, its sole half-detached." Specific details create reality.
-- **Start scenes in medias res.** Don't open with the character waking up, traveling to the
-  location, or thinking about what they need to do. Open in the middle of something happening.
-- **End scenes on a hook.** The last line should make the reader NEED to read the next scene.
-  A question unanswered, a threat unresolved, a decision that will have consequences.
-- **No "suddenly."** If something is surprising, the surprise comes from the event itself, not
-  from the word "suddenly." Cut it every time.
-- **No "began to" / "started to."** Characters don't begin to do things. They do them.
-- **Avoid "could feel" / "could see" / "could hear."** They feel, see, hear. The modal adds nothing.
+- **Give openings a scene-specific reason to exist.** Ground the reader in the
+  present situation and begin where this scene's interest begins.
+- **Earn the ending the contract calls for.** A hook, quiet aftermath, comic
+  button, or unresolved choice can work. Do not add a cliffhanger or thematic
+  explanation merely because the scene is ending.
+- **Trim padding in context.** Words such as "suddenly", "began to", or "could
+  hear" may be unnecessary, or may express interruption, uncertainty, or voice.
+  Judge their function; do not run a universal search-and-delete pass.
 
 ---
 
@@ -745,8 +740,8 @@ Also check:
   characters sound identical, rewrite one.
 - **POV violations**: Did you accidentally access another character's thoughts?
 - **World rule compliance**: Did any action violate an established world_rule?
-- **Filter word creep**: Search for "felt", "seemed", "realized", "somehow",
-  "began to", "started to", "suddenly". Remove or rewrite each one.
+- **Unnecessary filtering**: Cut distancing or repetition when it weakens the
+  passage. Keep wording that carries meaningful perception, uncertainty, or voice.
 
 If ANY quality gate check fails, revise the prose BEFORE proceeding to state updates.
 Re-call `save_scene_draft` with the revised version.

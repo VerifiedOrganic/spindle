@@ -12,6 +12,8 @@ Start here if you are new to the repository.
 
 ## Operator and user docs
 
+- [`codex.md`](codex.md) — GPT-6 Astra host writing in Codex, existing-book
+  migration, MCP configuration, and skill installation.
 - [`spindle-agent-config.md`](spindle-agent-config.md) — runtime model-agent
   configuration (`spindle.toml`, `SPINDLE_CONFIG`).
 - [`project-local-workspaces.md`](project-local-workspaces.md) — guide to project-local workspaces (`.spindle/`), setup, resolution logic, and Git conventions.

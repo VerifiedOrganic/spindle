@@ -1031,7 +1031,7 @@ agent = "cli-agent-review"
 
     // Let's verify that the receipt was registered and it carries rating: explicit and explicit_capable = true
     println!("TEST: Verifying model receipts");
-    let receipts = svc.get_all_generation_receipts();
+    let receipts = svc.get_all_generation_receipts().unwrap();
     assert!(
         receipts.iter().any(|(rating, explicit_capable)| {
             rating.as_deref() == Some("explicit") && *explicit_capable
@@ -5136,7 +5136,11 @@ agent = "cli-agent-review"
         config_path: Some(config_path.to_string_lossy().to_string()),
     })
     .unwrap();
-    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+    let dispatch_log = svc
+        .repository()
+        .model_router()
+        .install_dispatch_recorder()
+        .unwrap();
 
     let project = svc
         .create_project(CreateProjectInput {
@@ -5657,7 +5661,11 @@ agent = "cli-agent-review"
         config_path: Some(config_path.to_string_lossy().to_string()),
     })
     .unwrap();
-    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+    let dispatch_log = svc
+        .repository()
+        .model_router()
+        .install_dispatch_recorder()
+        .unwrap();
 
     let project = svc
         .create_project(CreateProjectInput {
@@ -6109,7 +6117,11 @@ agent = "cli-agent-review"
         config_path: Some(config_path.to_string_lossy().to_string()),
     })
     .unwrap();
-    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+    let dispatch_log = svc
+        .repository()
+        .model_router()
+        .install_dispatch_recorder()
+        .unwrap();
 
     let project = svc
         .create_project(CreateProjectInput {
@@ -6725,7 +6737,11 @@ agent = "tame-analyst"
     // Install the post-gate dispatch recorder on the SAME router the harness,
     // mining, verify, and review all dispatch through (there is exactly one:
     // `configure_agents` mutates the router in place, so the recorder survives).
-    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+    let dispatch_log = svc
+        .repository()
+        .model_router()
+        .install_dispatch_recorder()
+        .unwrap();
 
     let project = svc
         .create_project(CreateProjectInput {
@@ -7550,7 +7566,11 @@ agent = "cli-agent-draft"
         config_path: Some(config_path.to_string_lossy().to_string()),
     })
     .unwrap();
-    let dispatch_log = svc.repository().model_router().install_dispatch_recorder();
+    let dispatch_log = svc
+        .repository()
+        .model_router()
+        .install_dispatch_recorder()
+        .unwrap();
 
     let project = svc
         .create_project(CreateProjectInput {
