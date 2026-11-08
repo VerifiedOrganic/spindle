@@ -1,3 +1,5 @@
+mod packet;
+
 use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1488,6 +1490,18 @@ impl ModelRouter {
         rating: Option<&str>,
         prompt: &str,
     ) -> anyhow::Result<ModelResponse> {
+        self.run_http_inner(runtime, route, rating, prompt, true)
+            .await
+    }
+
+    async fn run_http_inner(
+        &self,
+        runtime: &RuntimeConfig,
+        route: &ModelRoute,
+        rating: Option<&str>,
+        prompt: &str,
+        allow_retry: bool,
+    ) -> anyhow::Result<ModelResponse> {
         let agent = http_agent_for_route(runtime, route)?;
         let endpoint = format!(
             "{}/chat/completions",
@@ -1510,12 +1524,12 @@ impl ModelRouter {
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
         }
-        let response = send_request_with_retry(|| {
-            let mut request = self.http_client.post(&endpoint).json(&body);
-            request = with_provider_headers(request, agent);
-            request
-        })
-        .await?;
+        let request = || with_provider_headers(self.http_client.post(&endpoint).json(&body), agent);
+        let response = if allow_retry {
+            send_request_with_retry(request).await?
+        } else {
+            request().send().await?
+        };
         if !response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
@@ -4801,7 +4815,7 @@ enabled = false
         (format!("http://{address}/v1"), handle)
     }
 
-    fn spawn_http_capture_server(
+    pub(super) fn spawn_http_capture_server(
         responses: Vec<(u16, String)>,
     ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<usize>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
@@ -4843,7 +4857,7 @@ enabled = false
         (format!("http://{address}/v1"), captured, handle)
     }
 
-    fn captured_json_body(captured: &Arc<Mutex<Vec<String>>>) -> serde_json::Value {
+    pub(super) fn captured_json_body(captured: &Arc<Mutex<Vec<String>>>) -> serde_json::Value {
         let requests = captured.lock().unwrap();
         let body = requests.first().expect("captured request body");
         serde_json::from_str(body).expect("request body json")

@@ -452,6 +452,7 @@ mod generation;
 mod import_hydration;
 mod imports;
 mod narrative;
+mod packet_generation;
 mod plan_amendments;
 mod planning;
 mod projects;
