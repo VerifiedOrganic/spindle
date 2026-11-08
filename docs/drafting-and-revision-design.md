@@ -411,3 +411,27 @@ rate are necessary to validate this design-only PR.
 3. Should chapter revision run unattended? Recommended default: enable advisory
    chapter critique first; author opts into bounded gated edits. Book-wide
    structural changes remain an author-approved queue.
+
+## Implementation status: packet foundation (PR 1)
+
+`spindle_core::drafting` now defines the versioned packet and scene-card contracts.
+`spindle_adapters::drafting::assemble_packet` prepares counted, deterministic
+messages using a caller-supplied tokenizer verified for the resolved model.
+There is no approximate tokenizer fallback. Its result retains the complete
+source artifact and omission report; only `messages` are eligible for dispatch.
+The message hash covers an unambiguous JSON serialization of system and user
+text. Supplied assembly counts and rubric text are replaced during preparation.
+Inherited source branches must be explicitly present in `source_versions`;
+preparation validates membership, not database snapshot freshness. Duplicate and
+conflict checks use the full source (branch, ID, revision hash) plus its local
+proposition ID; independent sources may reuse proposition IDs. The future
+service integration must resolve branch visibility and perform snapshot CAS.
+
+This foundation is not connected to generation or exposed as an MCP tool.
+Existing runs and prompts retain legacy behavior. `EditorialPolicy` defaults to
+`legacy`; its `critique_v1` variant is a contract for subsequent rollout, not an
+active run setting. No model tokenizer is assumed supported by default. Packet
+messages contain a compact reviewed rubric and plain-prose contract rather than
+skills, standards or extraction instructions. Existing legacy combined-package
+prompts remain until the separately gated plain-text/extraction integration.
+No release quality gate has passed and no default is changed.
