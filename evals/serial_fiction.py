@@ -12,6 +12,7 @@ import tempfile
 import urllib.request
 
 CONDITIONS = ("compact", "spindle_context", "full_workflow")
+PAIRWISE_CONDITIONS = ("baseline", "candidate")
 HERE = Path(__file__).resolve().parent
 
 
@@ -185,8 +186,279 @@ def valid_number(value, name, integer=False):
         raise ValueError(f"{name} must be a nonnegative {'integer' if integer else 'number'} or null")
 
 
-def blind(candidates_path, output, seed):
-    source, all_cases = read(candidates_path), cases()
+def normalize_pairwise_input(source, briefs_by_id=None):
+    """Normalize either pair-record list or flat (pair_id/case_id, condition) candidate list into pair records."""
+    if not isinstance(source, list) or not source:
+        raise ValueError("Pairwise input must be a non-empty list")
+    briefs_by_id = briefs_by_id or {}
+    if "baseline" in source[0] and "candidate" in source[0]:
+        pairs = []
+        for idx, item in enumerate(source, start=1):
+            case_id = item.get("case_id") or item.get("brief_id")
+            if not case_id:
+                raise ValueError("Each pair record requires case_id or brief_id")
+            pair_id = item.get("pair_id") or f"P{idx:03d}"
+            brief = briefs_by_id.get(case_id, {})
+            base_dict = dict(item["baseline"])
+            cand_dict = dict(item["candidate"])
+            base_dict.setdefault("case_id", case_id)
+            cand_dict.setdefault("case_id", case_id)
+            pair_entry = {
+                "pair_id": pair_id,
+                "case_id": case_id,
+                "task": item.get("task") or brief.get("task", ""),
+                "contract": item.get("contract") or brief.get("contract", ""),
+                "scene_purpose": item.get("scene_purpose") or brief.get("scene_purpose", ""),
+                "continuity_checklist": item.get("continuity_checklist") or brief.get("criteria", []),
+                "baseline": base_dict,
+                "candidate": cand_dict,
+            }
+            pairs.append(pair_entry)
+    else:
+        grouped = {}
+        order_keys = []
+        for row in source:
+            cid = row.get("case_id") or row.get("brief_id")
+            pid = row.get("pair_id") or cid
+            cond = row.get("condition")
+            if not pid or cond not in PAIRWISE_CONDITIONS:
+                raise ValueError("Flat pairwise candidates require pair_id/case_id and condition in ('baseline', 'candidate')")
+            if pid not in grouped:
+                grouped[pid] = {"pair_id": pid, "case_id": cid or pid}
+                order_keys.append(pid)
+            if cond in grouped[pid]:
+                raise ValueError(f"Duplicate condition {cond} for pair {pid}")
+            grouped[pid][cond] = dict(row)
+        pairs = []
+        for pid in order_keys:
+            entry = grouped[pid]
+            if "baseline" not in entry or "candidate" not in entry:
+                raise ValueError(f"Pair {pid} requires both baseline and candidate entries")
+            brief = briefs_by_id.get(entry["case_id"], {})
+            pairs.append({
+                "pair_id": pid,
+                "case_id": entry["case_id"],
+                "task": entry["baseline"].get("task") or brief.get("task", ""),
+                "contract": entry["baseline"].get("contract") or brief.get("contract", ""),
+                "scene_purpose": entry["baseline"].get("scene_purpose") or brief.get("scene_purpose", ""),
+                "continuity_checklist": entry["baseline"].get("continuity_checklist") or brief.get("criteria", []),
+                "baseline": entry["baseline"],
+                "candidate": entry["candidate"],
+            })
+    seen_pids = set()
+    flat_candidates = []
+    for pair in pairs:
+        pid = pair["pair_id"]
+        if pid in seen_pids:
+            raise ValueError(f"Duplicate pair_id: {pid}")
+        seen_pids.add(pid)
+        for cond in PAIRWISE_CONDITIONS:
+            cand = pair[cond]
+            if not str(cand.get("text", "")).strip() or not str(cand.get("model", "")).strip() or not str(cand.get("model_version", "")).strip():
+                raise ValueError(f"Complete prose, model and model_version are required for {pid}/{cond}; never score placeholders")
+            for field in ["input_tokens", "output_tokens", "elapsed_seconds"]:
+                valid_number(cand.get(field), field, integer=field.endswith("tokens"))
+            flat_candidates.append({
+                "pair_id": pid,
+                "case_id": pair["case_id"],
+                "condition": cond,
+                "text": cand["text"],
+                "model": cand["model"],
+                "model_version": cand["model_version"],
+                "prompt_variant": cand.get("prompt_variant"),
+                "input_tokens": cand.get("input_tokens"),
+                "output_tokens": cand.get("output_tokens"),
+                "elapsed_seconds": cand.get("elapsed_seconds"),
+            })
+    return pairs, flat_candidates
+
+
+def blind_pairs(candidates_path, output, seed, briefs_path=None):
+    """Pairwise (A/B) blinding workflow for human calibration (~100 pairs or arbitrary N)."""
+    source = read(candidates_path) if not isinstance(candidates_path, list) else candidates_path
+    briefs_by_id = {}
+    if briefs_path and Path(briefs_path).exists():
+        raw_briefs = read(briefs_path)
+        briefs_list = raw_briefs.get("briefs", raw_briefs) if isinstance(raw_briefs, dict) else raw_briefs
+        briefs_by_id = {b["id"]: b for b in briefs_list}
+    else:
+        default_briefs = HERE / "prose_judge" / "briefs.json"
+        if default_briefs.exists():
+            raw_briefs = read(default_briefs)
+            briefs_list = raw_briefs.get("briefs", raw_briefs) if isinstance(raw_briefs, dict) else raw_briefs
+            briefs_by_id = {b["id"]: b for b in briefs_list}
+        for c in cases():
+            briefs_by_id.setdefault(c["id"], c)
+    pairs, flat_candidates = normalize_pairwise_input(source, briefs_by_id)
+    output = Path(output)
+    if output.exists() and any(output.iterdir()):
+        raise ValueError("Use an empty output directory; existing blinded evaluations are immutable inputs")
+    output.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(seed)
+    base_orders = list(itertools.permutations(PAIRWISE_CONDITIONS))
+    orders = (base_orders * math.ceil(len(pairs) / len(base_orders)))[:len(pairs)]
+    rng.shuffle(orders)
+    shuffled_pairs = list(pairs)
+    rng.shuffle(shuffled_pairs)
+    key, packet, ratings = [], [], []
+    for pair, order in zip(shuffled_pairs, orders):
+        mapping = dict(zip("AB", order))
+        key.append({"pair_id": pair["pair_id"], "case_id": pair["case_id"], "labels": mapping})
+        packet.append({
+            "pair_id": pair["pair_id"],
+            "case_id": pair["case_id"],
+            "task": pair["task"],
+            "contract": pair["contract"],
+            "scene_purpose": pair["scene_purpose"],
+            "continuity_checklist": pair["continuity_checklist"],
+            "candidates": {label: pair[condition]["text"] for label, condition in mapping.items()},
+        })
+        ratings.append({
+            "pair_id": pair["pair_id"],
+            "case_id": pair["case_id"],
+            "preferred": [],
+            "rationale": "",
+            "candidates": {
+                label: {
+                    "continuity_errors": None,
+                    "voice": None,
+                    "engagement": None,
+                    "revision_minutes": None,
+                    "anti_slop_dims": None,
+                    "rubric": None,
+                }
+                for label in "AB"
+            },
+        })
+    write(output / "reviewer-packet.json", packet)
+    write(output / "ratings.json", ratings)
+    write(output / "private-key.json", {
+        "mode": "pairwise",
+        "seed": seed,
+        "source_hash": digest(flat_candidates),
+        "mapping": key,
+        "candidates": flat_candidates,
+    })
+
+
+def score_pairs(key_path, ratings_path):
+    """Score a pairwise (A/B) blinded human evaluation and return de-blinded pair verdicts."""
+    key = read(key_path) if not isinstance(key_path, dict) else key_path
+    ratings = read(ratings_path) if not isinstance(ratings_path, list) else ratings_path
+    if digest(key["candidates"]) != key["source_hash"]:
+        raise ValueError("Candidate provenance hash changed")
+    mappings = {row["pair_id"]: row for row in key["mapping"]}
+    if len({r.get("pair_id") for r in ratings}) != len(ratings) or {r.get("pair_id") for r in ratings} != set(mappings):
+        raise ValueError("Rating pairs must match the blinded packet exactly")
+    result = {
+        condition: {
+            "preference_credit": 0.0,
+            "outright_wins": 0,
+            "tied_top": 0,
+            "continuity_errors": [],
+            "voice": [],
+            "engagement": [],
+            "revision_minutes": [],
+            "anti_slop_dims": [],
+            "rubric_scores": {},
+        }
+        for condition in PAIRWISE_CONDITIONS
+    }
+    ANTI_SLOP_DIM_VALUES = {"present", "absent", "n/a"}
+    judged = 0
+    deblinded_pairs = []
+    for row in ratings:
+        pid = row["pair_id"]
+        mapping_row = mappings[pid]
+        mapping = mapping_row["labels"]
+        preferred = row["preferred"]
+        if len(set(preferred)) != len(preferred) or not set(preferred) <= set("AB") or set(row["candidates"]) != set("AB"):
+            raise ValueError("Pairwise candidate labels must be A, B; preferences cannot repeat")
+        human_verdict = None
+        if preferred:
+            judged += 1
+            if len(preferred) == 1:
+                human_verdict = mapping[preferred[0]]
+            else:
+                human_verdict = "tie"
+        pair_rubric = {}
+        for label, condition in mapping.items():
+            if label in preferred:
+                result[condition]["preference_credit"] += 1 / len(preferred)
+                result[condition]["outright_wins" if len(preferred) == 1 else "tied_top"] += 1
+            for metric in ["continuity_errors", "voice", "engagement", "revision_minutes"]:
+                value = row["candidates"][label].get(metric)
+                valid_number(value, metric, integer=metric != "revision_minutes")
+                if metric in ("voice", "engagement") and value is not None and not 1 <= value <= 5:
+                    raise ValueError(f"{metric} must be 1–5 or null")
+                if value is not None:
+                    result[condition][metric].append(value)
+            dims = row["candidates"][label].get("anti_slop_dims")
+            if dims is not None:
+                if not isinstance(dims, dict):
+                    raise ValueError("anti_slop_dims must be an object of labeled observations or null")
+                for dim, value in dims.items():
+                    if value not in ANTI_SLOP_DIM_VALUES:
+                        raise ValueError(
+                            "anti_slop_dims values must be present|absent|n/a; "
+                            "they are editorial labels, not a quality score"
+                        )
+                result[condition]["anti_slop_dims"].append(dims)
+            rubric = row["candidates"][label].get("rubric")
+            if rubric is not None:
+                if not isinstance(rubric, dict):
+                    raise ValueError("rubric must be an object of 1-5 dimension scores or null")
+                pair_rubric[condition] = {}
+                for dim_name, score_val in rubric.items():
+                    valid_number(score_val, f"rubric.{dim_name}", integer=True)
+                    if score_val is not None:
+                        if not 1 <= score_val <= 5:
+                            raise ValueError(f"rubric.{dim_name} must be 1–5 or null")
+                        result[condition]["rubric_scores"].setdefault(dim_name, []).append(score_val)
+                        pair_rubric[condition][dim_name] = score_val
+        deblinded_pairs.append({
+            "pair_id": pid,
+            "case_id": mapping_row["case_id"],
+            "human_verdict": human_verdict,
+            "rationale": row.get("rationale", ""),
+            "rubric": pair_rubric if pair_rubric else None,
+        })
+    for condition, data in result.items():
+        for metric in ["continuity_errors", "voice", "engagement", "revision_minutes"]:
+            values = data[metric]
+            data[metric] = {"rated": len(values), "mean": statistics.mean(values) if values else None}
+        labeled = data.pop("anti_slop_dims")
+        data["anti_slop_dims"] = {
+            "labeled": len(labeled),
+            "note": "Labeled editorial observations only. Not a quality superiority claim.",
+        }
+        rubric_raw = data.pop("rubric_scores")
+        data["rubric"] = {
+            dim_name: {"rated": len(vals), "mean": statistics.mean(vals) if vals else None}
+            for dim_name, vals in sorted(rubric_raw.items())
+        }
+        costs = [c for c in key["candidates"] if c["condition"] == condition]
+        for metric in ["input_tokens", "output_tokens", "elapsed_seconds"]:
+            values = [c.get(metric) for c in costs if c.get(metric) is not None]
+            data[metric] = {"known_total": sum(values), "unknown_candidates": len(costs) - len(values)}
+    return {
+        "mode": "pairwise",
+        "preference_pairs_rated": judged,
+        "preference_pairs_unrated": len(ratings) - judged,
+        "conditions": result,
+        "deblinded_pairs": deblinded_pairs,
+        "interpretation": (
+            "Descriptive pairwise human results only. Report missing judgments, model versions "
+            "and human-vs-model rater provenance; this is not proof of universal superiority."
+        ),
+    }
+
+
+def blind(candidates_path, output, seed, pairwise=False, briefs_path=None):
+    source = read(candidates_path)
+    if pairwise or (isinstance(source, list) and source and ("baseline" in source[0] or source[0].get("condition") in PAIRWISE_CONDITIONS)):
+        return blind_pairs(source, output, seed, briefs_path=briefs_path)
+    all_cases = cases()
     expected = {(c["id"], condition) for c in all_cases for condition in CONDITIONS}
     candidates = {(c["case_id"], c["condition"]): c for c in source}
     if len(candidates) != len(source) or set(candidates) != expected:
@@ -220,6 +492,8 @@ def blind(candidates_path, output, seed):
 
 def score(key_path, ratings_path):
     key, ratings = read(key_path), read(ratings_path)
+    if key.get("mode") == "pairwise":
+        return score_pairs(key, ratings)
     if digest(key["candidates"]) != key["source_hash"]:
         raise ValueError("Candidate provenance hash changed")
     mappings = {row["case_id"]: row["labels"] for row in key["mapping"]}
@@ -308,6 +582,40 @@ def self_test():
                 raise AssertionError("accepted invalid metric")
             except ValueError:
                 pass
+        # Pairwise (A/B) 100-pair calibration workflow check
+        pair_candidates = [
+            {
+                "pair_id": f"P{i:03d}",
+                "case_id": f"S{(i - 1) % 12 + 1:02d}",
+                "condition": cond,
+                "text": f"Pairwise passage {i} ({cond}).",
+                "model": "test-only",
+                "model_version": "fixture",
+                "input_tokens": 100,
+                "output_tokens": None,
+                "elapsed_seconds": None,
+            }
+            for i in range(1, 101)
+            for cond in PAIRWISE_CONDITIONS
+        ]
+        write(root / "pair_candidates.json", pair_candidates)
+        blind(root / "pair_candidates.json", root / "pairs_blind", 42, pairwise=True)
+        pkey = read(root / "pairs_blind/private-key.json")
+        assert pkey["mode"] == "pairwise" and len(pkey["mapping"]) == 100
+        pcounts = {(label, cond): 0 for label in "AB" for cond in PAIRWISE_CONDITIONS}
+        for m in pkey["mapping"]:
+            for label, cond in m["labels"].items():
+                pcounts[label, cond] += 1
+        assert all(v == 50 for v in pcounts.values()), pcounts
+        ppacket = (root / "pairs_blind/reviewer-packet.json").read_text()
+        assert "test-only" not in ppacket and '"baseline"' not in ppacket
+        pratings = read(root / "pairs_blind/ratings.json")
+        pratings[0]["preferred"] = ["A"]
+        pratings[1]["preferred"] = ["A", "B"]
+        write(root / "pairs_blind/ratings.json", pratings)
+        presult = score(root / "pairs_blind/private-key.json", root / "pairs_blind/ratings.json")
+        assert presult["preference_pairs_rated"] == 2 and presult["preference_pairs_unrated"] == 98
+        assert sum(v["preference_credit"] for v in presult["conditions"].values()) == 2.0
     print("Blinding, balance, ties, missing ratings, zero/unknown usage and validation checks passed.")
 
 
@@ -317,13 +625,13 @@ def main():
     p = sub.add_parser("collect", help="Create new EVAL fixture projects and capture real context; use a disposable server")
     p.add_argument("--server", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("prepare"); p.add_argument("--captures", required=True); p.add_argument("--out", required=True)
-    p = sub.add_parser("blind"); p.add_argument("--candidates", required=True); p.add_argument("--out", required=True); p.add_argument("--seed", type=int, default=20260905)
+    p = sub.add_parser("blind"); p.add_argument("--candidates", required=True); p.add_argument("--out", required=True); p.add_argument("--seed", type=int, default=20260905); p.add_argument("--pairwise", action="store_true"); p.add_argument("--briefs", default=None)
     p = sub.add_parser("score"); p.add_argument("--key", required=True); p.add_argument("--ratings", required=True)
     sub.add_parser("self-test")
     args = parser.parse_args()
     if args.command == "collect": collect(args.server, args.out)
     elif args.command == "prepare": prepare(args.captures, args.out)
-    elif args.command == "blind": blind(args.candidates, args.out, args.seed)
+    elif args.command == "blind": blind(args.candidates, args.out, args.seed, pairwise=args.pairwise, briefs_path=args.briefs)
     elif args.command == "score": print(json.dumps(score(args.key, args.ratings), indent=2))
     else: self_test()
 
