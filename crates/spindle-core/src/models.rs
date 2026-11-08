@@ -6863,6 +6863,15 @@ pub struct AuthoringStatusCheckpoint {
     /// Additive, serde-default so pre-reader-sim clients ignore it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reader_sim_engagement: Vec<ReaderSimEngagementSummary>,
+    /// Sampled dual-persona review status read from the checkpoint report
+    /// artifact (`complete`, `pending_manual_review`, or
+    /// `pending_dual_persona_review`). Additive, serde-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_review_status: Option<String>,
+    /// Number of sampled dual-persona review outputs persisted in the
+    /// checkpoint report artifact. Additive, serde-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_review_count: Option<usize>,
 }
 
 /// A compact per-chapter reader-sim engagement summary surfaced on

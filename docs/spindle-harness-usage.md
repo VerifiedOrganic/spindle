@@ -283,6 +283,10 @@ Save as `~/ledger-batch-2.seed.json`:
 | `range.end_chapter` | Yes | Last chapter to write |
 | `checkpoint_interval` | Yes | Run editorial review every N completed chapters |
 | `editorial_directives` | No | Standing instructions applied to every scene prompt |
+| `mining_policy` | No | Canon-mining policy (`disabled` or `propose_all`; omit or `disabled` to disable) |
+| `max_revise_attempts` | No | Bounded in-run verify/revise budget (`0`, `1`, or `2`; omit or `0` to disable) |
+| `checkpoint_policy` | No | Checkpoint review policy (`manual`, `auto_advisory`, or `auto_strict`; omit or `manual` for manual review) |
+| `replan_policy` | No | Living-outline replan policy (`disabled` or `propose_all`; omit or `disabled` to disable) |
 | `chapters[].chapter_number` | Yes | Must be contiguous within range, no gaps |
 | `chapters[].synopsis` | Yes | Must match the persisted `plan_chapter` synopsis if one exists |
 | `chapters[].pov_character_id` | No | POV character for the chapter |
@@ -574,9 +578,9 @@ echo "--- Harness paused (checkpoint, error, or complete) ---"
 ```
 
 The loop exits when:
-- A checkpoint requires human review (exit code non-zero)
-- An error occurs (model failure, partial commit, etc.)
-- All chapters are complete
+- A checkpoint requires human review (exit code `1`)
+- An error or block occurs (exit code `1`)
+- All chapters are complete (`NextAction::Complete`, exit code `2`)
 
 ### For a 2-Chapter Batch With 3 Scenes
 
@@ -622,7 +626,7 @@ The report contains:
 - `consistency` — full output of `check_consistency`
 - `deep_consistency` — recorded output from the separate `check_consistency`
   call with `deep_check: true`
-- `sampled_reviews` — persisted `run_dual_persona_review` results for sampled scenes, filled when checkpoint review is closed
+- `sampled_reviews` — persisted `run_dual_persona_review` results for sampled scenes, filled by auto-checkpoint automation or when manual checkpoint review is closed
 - `pacing_overview` — current pacing state
 - `chapter_summaries` — summaries for the chapters in range
 - `narrative_promises` — promise tracking status
@@ -856,7 +860,7 @@ spindle-harness resume --state STATE_PATH [--writeback] [--execute-one] [transpo
 - Without `--execute-one`: dry run showing the next action
 - With `--execute-one`: executes exactly one step, re-verifies, saves state
 - `--writeback`: allows state updates from reconciliation
-- Exits non-zero at checkpoints, errors, or completion
+- Exit codes with `--execute-one`: `0` when a step executed and more work remains, `2` when the harness range is complete (`NextAction::Complete`), and `1` at checkpoints, blocks, or errors
 
 ### `review-checkpoint`
 

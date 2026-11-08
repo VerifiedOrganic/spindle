@@ -237,6 +237,10 @@ async fn resume(command: ResumeCommand) -> Result<()> {
     }
 
     if command.execute_one {
+        if let Some(code) = execute_one_completion_exit_code(&outcome.next_action) {
+            println!("Harness range is complete.");
+            std::process::exit(code);
+        }
         let execution = execute_one(
             &command.state,
             outcome.state,
@@ -324,4 +328,39 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
+}
+
+/// Distinct exit code returned by `resume --execute-one` when the run is
+/// already `Complete` (non-zero so `while ...; do` loops terminate, and
+/// distinct from `1` which signals a checkpoint/research block or error).
+const EXIT_CODE_COMPLETE: i32 = 2;
+
+fn execute_one_completion_exit_code(next_action: &NextAction) -> Option<i32> {
+    (*next_action == NextAction::Complete).then_some(EXIT_CODE_COMPLETE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execute_one_completion_exit_code_returns_distinct_non_zero_code_for_complete() {
+        assert_eq!(
+            execute_one_completion_exit_code(&NextAction::Complete),
+            Some(EXIT_CODE_COMPLETE)
+        );
+        assert_ne!(EXIT_CODE_COMPLETE, 0);
+        assert_ne!(EXIT_CODE_COMPLETE, 1);
+        assert_eq!(
+            execute_one_completion_exit_code(&NextAction::DraftScene {
+                chapter_number: 1,
+                scene_order: 1,
+            }),
+            None
+        );
+        assert_eq!(
+            execute_one_completion_exit_code(&NextAction::SaveChapterSummary { chapter_number: 1 }),
+            None
+        );
+    }
 }

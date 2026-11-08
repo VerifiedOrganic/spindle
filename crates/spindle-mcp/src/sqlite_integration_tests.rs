@@ -5405,6 +5405,28 @@ async fn auto_advisory_clean_range_self_clears_checkpoint() {
     );
     assert_eq!(cp["checkpoint_policy"].as_str(), Some("auto_advisory"));
     assert_eq!(cp["status"].as_str(), Some("reviewed"));
+    assert_eq!(cp["sampled_review_status"].as_str(), Some("complete"));
+    assert_eq!(cp["sampled_review_count"].as_u64(), Some(1));
+
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let report_path = fx.data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report_json["sampled_review_status"].as_str(),
+        Some("complete"),
+        "auto-checkpoint must persist sampled_review_status=complete into report artifact: {report_json:?}"
+    );
+    let persisted_reviews = report_json["sampled_reviews"]
+        .as_array()
+        .expect("sampled_reviews array in report artifact");
+    assert_eq!(
+        persisted_reviews.len(),
+        1,
+        "auto-checkpoint must persist dual-persona review outputs into report artifact: {report_json:?}"
+    );
+    assert_eq!(persisted_reviews[0]["status"].as_str(), Some("current"));
+    assert_eq!(persisted_reviews[0]["rounds_completed"].as_i64(), Some(2));
 
     let kinds = auto_run_events(&fx).await;
     let idx = |k: &str| kinds.iter().position(|x| x == k);
@@ -5944,6 +5966,25 @@ agent = "cli-agent-review"
         pending[0].as_str(),
         Some(general_scene_id.as_str()),
         "the general scene's review must have COMPLETED, not fallen back: {cp:?}"
+    );
+    assert_eq!(
+        cp["sampled_review_status"].as_str(),
+        Some("pending_manual_review")
+    );
+    assert_eq!(cp["sampled_review_count"].as_u64(), Some(1));
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let report_path = data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report_json["sampled_review_status"].as_str(),
+        Some("pending_manual_review")
+    );
+    let persisted_reviews = report_json["sampled_reviews"].as_array().unwrap();
+    assert_eq!(persisted_reviews.len(), 1);
+    assert_eq!(
+        persisted_reviews[0]["scene_id"].as_str(),
+        Some(general_scene_id.as_str())
     );
 
     ct.cancel();

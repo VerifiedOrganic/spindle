@@ -17,8 +17,8 @@ use spindle_core::models::{
     CheckConsistencyInput, CheckConsistencyOutput, CommitSceneChangesInput,
     CommitSceneChangesOutput, ContentRating, ContextFormat, ContinueGenerationInput,
     ContinueGenerationOutput, CreateSavePointInput, CreateSavePointOutput, GetChapterBriefingInput,
-    GetChapterBriefingOutput, GetSceneContextInput, ListAgentsOutput, ModelRouteSummary,
-    RunDualPersonaReviewInput, RunDualPersonaReviewOutput, SaveSceneDraftInput,
+    GetChapterBriefingOutput, GetSceneContextInput, HardConstraint, ListAgentsOutput,
+    ModelRouteSummary, RunDualPersonaReviewInput, RunDualPersonaReviewOutput, SaveSceneDraftInput,
     SaveSceneDraftOutput, SaveSummaryInput, SaveSummaryOutput, SceneContextBudgetMeta,
     SceneContextNovelLayer, SceneContextSceneLayer, TestAgentInput, TestAgentOutput,
 };
@@ -509,6 +509,19 @@ fn select_draft_route_binding(
             agent.status
         );
     }
+    if let Some(rating) = requested_rating.as_deref() {
+        let covered = agent
+            .ratings
+            .iter()
+            .any(|declared| declared.trim().eq_ignore_ascii_case(rating));
+        if !covered {
+            anyhow::bail!(
+                "route `draft` resolved to agent `{}`, which is not cleared for rating `{}`",
+                agent.id,
+                rating
+            );
+        }
+    }
     Ok(DraftRouteBinding {
         route_name: route.route_name.clone(),
         agent_id: agent.id.clone(),
@@ -549,6 +562,9 @@ fn workspace_root() -> &'static Path {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SceneContextEnvelope {
+    #[serde(default)]
+    pub hard_constraints: Vec<HardConstraint>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub standards: String,
     pub novel: SceneContextNovelLayer,
     pub scene: SceneContextSceneLayer,
@@ -645,6 +661,10 @@ mod tests {
     }
 
     fn agent(id: &str) -> AgentSummary {
+        agent_with_ratings(id, &["general", "teen", "mature", "explicit"])
+    }
+
+    fn agent_with_ratings(id: &str, ratings: &[&str]) -> AgentSummary {
         AgentSummary {
             id: id.to_string(),
             name: id.to_string(),
@@ -652,7 +672,7 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             model: id.to_string(),
             max_context: None,
-            ratings: Vec::new(),
+            ratings: ratings.iter().map(|r| (*r).to_string()).collect(),
             quality_tier: None,
             capabilities: Vec::new(),
             notes: None,
@@ -684,7 +704,10 @@ mod tests {
         let agents = ListAgentsOutput {
             source_path: None,
             health_checks_enabled: false,
-            agents: vec![agent("default-draft"), agent("explicit-draft")],
+            agents: vec![
+                agent_with_ratings("default-draft", &["general", "teen", "mature"]),
+                agent_with_ratings("explicit-draft", &["explicit"]),
+            ],
         };
 
         let binding =
@@ -706,7 +729,10 @@ mod tests {
         let agents = ListAgentsOutput {
             source_path: None,
             health_checks_enabled: false,
-            agents: vec![agent("default-draft")],
+            agents: vec![agent_with_ratings(
+                "default-draft",
+                &["general", "teen", "mature"],
+            )],
         };
 
         let binding =
@@ -715,6 +741,34 @@ mod tests {
 
         assert_eq!(binding.agent_id, "default-draft");
         assert_eq!(binding.rating.as_deref(), Some("mature"));
+    }
+
+    #[test]
+    fn select_draft_route_binding_rejects_uncleared_default_fallback() {
+        let routes = vec![route("draft", "default-model", None)];
+        let routing = AgentRoutingConfigOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            rules: vec![rule("default-draft", None)],
+        };
+        let agents = ListAgentsOutput {
+            source_path: None,
+            health_checks_enabled: false,
+            agents: vec![agent_with_ratings(
+                "default-draft",
+                &["general", "teen", "mature"],
+            )],
+        };
+
+        let err =
+            select_draft_route_binding(&routes, &routing, &agents, Some(ContentRating::Explicit))
+                .expect_err("uncleared default draft agent must be rejected for explicit rating");
+        assert!(
+            err.to_string().contains(
+                "resolved to agent `default-draft`, which is not cleared for rating `explicit`"
+            ),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

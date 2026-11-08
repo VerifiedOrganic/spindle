@@ -20664,25 +20664,31 @@ impl SqliteSpindleService {
         let prior_state = serde_json::to_string(&plan).context("snapshotting prior plan state")?;
         let next_revision = plan.plan_revision.unwrap_or(0) + 1;
 
-        // Rebuild the plan's scenes as PlanChapterSceneInput (the write DTO), so
-        // the amendment mutates the SAME shape the replay consumes.
-        let mut scenes: Vec<PlanChapterSceneInput> = plan
+        // Rebuild the plan's scenes as `(original_scene_order, PlanChapterSceneInput)`
+        // so the amendment mutates the SAME shape the replay consumes while keeping
+        // pre-amendment scene lineage for active authoring run re-seeding.
+        let mut scenes: Vec<(Option<i32>, PlanChapterSceneInput)> = plan
             .scenes
             .iter()
-            .map(|s| PlanChapterSceneInput {
-                scene_order: s.scene_order,
-                summary: s.summary.clone(),
-                beat_structure: s.beat_structure.clone(),
-                character_ids: s.character_ids.clone(),
-                location_id: s.location_id.clone(),
-                content_rating: s.content_rating.clone(),
-                purpose: s.purpose.clone(),
-                research_required: s.research_required,
-                research_tags: s.research_tags.clone(),
-                explicit_query: s.explicit_query.clone(),
+            .map(|s| {
+                (
+                    Some(s.scene_order),
+                    PlanChapterSceneInput {
+                        scene_order: s.scene_order,
+                        summary: s.summary.clone(),
+                        beat_structure: s.beat_structure.clone(),
+                        character_ids: s.character_ids.clone(),
+                        location_id: s.location_id.clone(),
+                        content_rating: s.content_rating.clone(),
+                        purpose: s.purpose.clone(),
+                        research_required: s.research_required,
+                        research_tags: s.research_tags.clone(),
+                        explicit_query: s.explicit_query.clone(),
+                    },
+                )
             })
             .collect();
-        scenes.sort_by_key(|s| s.scene_order);
+        scenes.sort_by_key(|(_, s)| s.scene_order);
 
         let mut synopsis = plan.synopsis.clone();
         let mut target_theme_ids = plan.target_theme_ids.clone();
@@ -20703,6 +20709,40 @@ impl SqliteSpindleService {
                     .and_then(|v| v.as_i64())
                     .context("scene_add missing insert_at")?
                     as usize;
+                // insert_at is 1-based; clamp into [0, len] for the Vec index.
+                let idx = insert_at.saturating_sub(1).min(scenes.len());
+                let neighbor = scenes
+                    .get(idx)
+                    .or_else(|| idx.checked_sub(1).and_then(|i| scenes.get(i)))
+                    .map(|(_, s)| s);
+                let mut character_ids: Vec<String> = payload
+                    .get("character_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if character_ids.is_empty() {
+                    if let Some(nb) = neighbor
+                        && !nb.character_ids.is_empty()
+                    {
+                        character_ids = nb.character_ids.clone();
+                    } else if let Some(pov) = plan.pov_character_id.as_ref() {
+                        character_ids = vec![pov.clone()];
+                    }
+                }
+                let location_id = payload
+                    .get("location_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+                    .or_else(|| neighbor.and_then(|nb| nb.location_id.clone()));
+                let content_rating = payload
+                    .get("content_rating")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .or_else(|| neighbor.and_then(|nb| nb.content_rating.clone()));
                 let new_scene = PlanChapterSceneInput {
                     scene_order: 0, // renumbered below
                     summary: payload
@@ -20719,22 +20759,9 @@ impl SqliteSpindleService {
                                 .collect()
                         })
                         .unwrap_or_default(),
-                    character_ids: payload
-                        .get("character_ids")
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str().map(str::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    location_id: payload
-                        .get("location_id")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
-                    content_rating: payload
-                        .get("content_rating")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                    character_ids,
+                    location_id,
+                    content_rating,
                     purpose: payload
                         .get("purpose")
                         .and_then(|v| v.as_str())
@@ -20744,16 +20771,14 @@ impl SqliteSpindleService {
                     research_tags: Vec::new(),
                     explicit_query: None,
                 };
-                // insert_at is 1-based; clamp into [0, len] for the Vec index.
-                let idx = insert_at.saturating_sub(1).min(scenes.len());
-                scenes.insert(idx, new_scene);
+                scenes.insert(idx, (None, new_scene));
             }
             "scene_drop" => {
                 let order = payload
                     .get("scene_order")
                     .and_then(|v| v.as_i64())
                     .context("scene_drop missing scene_order")? as i32;
-                scenes.retain(|s| s.scene_order != order);
+                scenes.retain(|(_, s)| s.scene_order != order);
             }
             "scene_replace" => {
                 let order = payload
@@ -20761,7 +20786,7 @@ impl SqliteSpindleService {
                     .and_then(|v| v.as_i64())
                     .context("scene_replace missing scene_order")?
                     as i32;
-                if let Some(target) = scenes.iter_mut().find(|s| s.scene_order == order) {
+                if let Some((_, target)) = scenes.iter_mut().find(|(_, s)| s.scene_order == order) {
                     target.summary = payload
                         .get("summary")
                         .and_then(|v| v.as_str())
@@ -20773,10 +20798,13 @@ impl SqliteSpindleService {
                         .unwrap_or(&target.purpose)
                         .to_string();
                     if let Some(ids) = payload.get("character_ids").and_then(|v| v.as_array()) {
-                        target.character_ids = ids
+                        let parsed: Vec<String> = ids
                             .iter()
                             .filter_map(|v| v.as_str().map(str::to_string))
                             .collect();
+                        if !parsed.is_empty() {
+                            target.character_ids = parsed;
+                        }
                     }
                     if let Some(loc) = payload.get("location_id").and_then(|v| v.as_str()) {
                         target.location_id = Some(loc.to_string());
@@ -20799,9 +20827,10 @@ impl SqliteSpindleService {
                     .collect();
                 // Reorder the scenes to follow new_order's sequence of original
                 // scene_orders; the renumber pass below assigns 1..n.
-                let mut reordered: Vec<PlanChapterSceneInput> = Vec::with_capacity(scenes.len());
+                let mut reordered: Vec<(Option<i32>, PlanChapterSceneInput)> =
+                    Vec::with_capacity(scenes.len());
                 for order in &new_order {
-                    if let Some(pos) = scenes.iter().position(|s| s.scene_order == *order) {
+                    if let Some(pos) = scenes.iter().position(|(_, s)| s.scene_order == *order) {
                         reordered.push(scenes.remove(pos));
                     }
                 }
@@ -20834,9 +20863,11 @@ impl SqliteSpindleService {
         }
 
         // Renumber the spine 1..n so orders stay dense after insert/drop/reorder.
-        for (index, scene) in scenes.iter_mut().enumerate() {
+        for (index, (_, scene)) in scenes.iter_mut().enumerate() {
             scene.scene_order = index as i32 + 1;
         }
+        let replay_scenes: Vec<PlanChapterSceneInput> =
+            scenes.iter().map(|(_, s)| s.clone()).collect();
 
         // Replay through the EXISTING plan write path (never a raw write).
         self.plan_chapter(PlanChapterInput {
@@ -20844,11 +20875,11 @@ impl SqliteSpindleService {
             book_number: amendment.book_number,
             chapter_number: target_chapter,
             pov_character_id: plan.pov_character_id.clone(),
-            synopsis,
+            synopsis: synopsis.clone(),
             target_theme_ids,
             target_conflict_ids,
             target_plot_line_ids,
-            scenes,
+            scenes: replay_scenes,
         })
         .await?;
 
@@ -20861,6 +20892,21 @@ impl SqliteSpindleService {
                 amendment.book_number,
                 target_chapter,
                 next_revision,
+            )
+            .await?;
+
+        // Keep any active/non-completed authoring run covering this undrafted
+        // chapter in sync with the amended chapter plan so reconcile_chapter_plan
+        // does not block the run on synopsis / scene_order / character_ids drift.
+        self.repository
+            .reseed_authoring_runs_for_chapter_plan(
+                &amendment.project_id,
+                branch_id,
+                amendment.book_number,
+                target_chapter,
+                &synopsis,
+                plan.pov_character_id.as_deref(),
+                &scenes,
             )
             .await?;
 
@@ -57978,6 +58024,248 @@ agent = "review-dead"
                 })
                 .await;
             assert!(err.is_err(), "lone book_number is rejected");
+        }
+
+        #[tokio::test]
+        async fn apply_amendments_reseeds_undrafted_chapter_in_active_authoring_run() {
+            use crate::sqlite::records::{AuthoringRun, AuthoringRunChapter, AuthoringRunScene};
+            use spindle_core::models::ContentRating;
+
+            let (_tmp, svc) = fresh_service_local().await;
+            let project = project_with_future_chapter(
+                &svc,
+                "PA active-run reseed",
+                2,
+                vec![
+                    PlanChapterSceneInput {
+                        scene_order: 1,
+                        summary: "scene one".to_string(),
+                        beat_structure: Vec::new(),
+                        character_ids: vec!["character:alice".to_string()],
+                        location_id: Some("location:hall".to_string()),
+                        content_rating: Some(ContentRating::General),
+                        purpose: "open".to_string(),
+                        research_required: None,
+                        research_tags: Vec::new(),
+                        explicit_query: None,
+                    },
+                    PlanChapterSceneInput {
+                        scene_order: 2,
+                        summary: "scene two".to_string(),
+                        beat_structure: Vec::new(),
+                        character_ids: vec!["character:bob".to_string()],
+                        location_id: Some("location:courtyard".to_string()),
+                        content_rating: Some(ContentRating::Teen),
+                        purpose: "turn".to_string(),
+                        research_required: None,
+                        research_tags: Vec::new(),
+                        explicit_query: None,
+                    },
+                ],
+                Vec::new(),
+            )
+            .await;
+            let branch = svc
+                .repository()
+                .get_active_branch(&project.project_id)
+                .await
+                .unwrap();
+
+            let run_id = "authoring_run:test-reseed".to_string();
+            let now = chrono::Utc::now();
+            svc.repository()
+                .save_authoring_run(
+                    AuthoringRun {
+                        id: run_id.clone(),
+                        project_id: project.project_id.clone(),
+                        active_branch_id: branch.id.clone(),
+                        book_number: 1,
+                        start_chapter: 1,
+                        end_chapter: 2,
+                        checkpoint_interval: 2,
+                        last_checkpoint_end_chapter: 0,
+                        artifacts_dir: "../artifacts".to_string(),
+                        editorial_directives: Vec::new(),
+                        status: "active".to_string(),
+                        created_at: now,
+                        updated_at: now,
+                        mining_policy: None,
+                        max_revise_attempts: None,
+                        checkpoint_policy: None,
+                        replan_policy: Some("propose_after_chapter".to_string()),
+                    },
+                    vec![AuthoringRunChapter {
+                        authoring_run_id: run_id.clone(),
+                        chapter_number: 2,
+                        planned: true,
+                        synopsis: "the planned future".to_string(),
+                        pov_character_id: None,
+                        status: "pending".to_string(),
+                        summary_saved: false,
+                        summary_artifact_path: None,
+                        replan_status: None,
+                        replan_detail: None,
+                    }],
+                    vec![
+                        AuthoringRunScene {
+                            authoring_run_id: run_id.clone(),
+                            chapter_number: 2,
+                            scene_order: 1,
+                            character_ids: vec!["character:alice".to_string()],
+                            location_id: "location:hall".to_string(),
+                            content_rating: "general".to_string(),
+                            tone: Some("wry".to_string()),
+                            source_path: None,
+                            phase: "pending".to_string(),
+                            scene_id: None,
+                            scene_artifact_path: None,
+                            draft_diagnostics: None,
+                            blocked_reason: None,
+                            research_required: None,
+                            research_tags: Vec::new(),
+                            explicit_query: None,
+                            mine_status: None,
+                            mine_detail: None,
+                            verify_status: None,
+                            verify_detail: None,
+                            revise_attempts: 0,
+                            last_finding_fingerprint: None,
+                        },
+                        AuthoringRunScene {
+                            authoring_run_id: run_id.clone(),
+                            chapter_number: 2,
+                            scene_order: 2,
+                            character_ids: vec!["character:bob".to_string()],
+                            location_id: "location:courtyard".to_string(),
+                            content_rating: "teen".to_string(),
+                            tone: Some("tense".to_string()),
+                            source_path: None,
+                            phase: "pending".to_string(),
+                            scene_id: None,
+                            scene_artifact_path: None,
+                            draft_diagnostics: None,
+                            blocked_reason: None,
+                            research_required: None,
+                            research_tags: Vec::new(),
+                            explicit_query: None,
+                            mine_status: None,
+                            mine_detail: None,
+                            verify_status: None,
+                            verify_detail: None,
+                            revise_attempts: 0,
+                            last_finding_fingerprint: None,
+                        },
+                    ],
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+
+            // 1. synopsis_update
+            let syn_id = stage(
+                &svc,
+                &project.project_id,
+                "synopsis_update",
+                Some(2),
+                serde_json::json!({"synopsis": "the updated future"}),
+            )
+            .await;
+            apply_one(&svc, &project.project_id, &syn_id).await;
+            let (_, chs, _, _) = svc
+                .repository()
+                .get_authoring_run(&run_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(chs[0].synopsis, "the updated future");
+
+            // 2. scene_add (omitting location_id and content_rating; inherits from neighbor)
+            let add_id = stage(
+                &svc,
+                &project.project_id,
+                "scene_add",
+                Some(2),
+                serde_json::json!({
+                    "scene_order": 2,
+                    "summary": "inserted bridge",
+                    "purpose": "bridge",
+                    "character_ids": ["character:carol"],
+                    "insert_at": 2
+                }),
+            )
+            .await;
+            apply_one(&svc, &project.project_id, &add_id).await;
+            let (_, _, scs, _) = svc
+                .repository()
+                .get_authoring_run(&run_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(scs.len(), 3);
+            assert_eq!(scs[0].scene_order, 1);
+            assert_eq!(scs[0].tone.as_deref(), Some("wry"));
+            assert_eq!(scs[1].scene_order, 2);
+            assert_eq!(scs[1].character_ids, vec!["character:carol".to_string()]);
+            assert!(!scs[1].location_id.is_empty());
+            assert_eq!(scs[2].scene_order, 3);
+            assert_eq!(scs[2].character_ids, vec!["character:bob".to_string()]);
+            assert_eq!(scs[2].tone.as_deref(), Some("tense"));
+
+            // 3. scene_reorder ([3, 1, 2])
+            let reorder_id = stage(
+                &svc,
+                &project.project_id,
+                "scene_reorder",
+                Some(2),
+                serde_json::json!({"new_order": [3, 1, 2]}),
+            )
+            .await;
+            apply_one(&svc, &project.project_id, &reorder_id).await;
+            let (_, _, scs, _) = svc
+                .repository()
+                .get_authoring_run(&run_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                scs.iter()
+                    .map(|s| (s.scene_order, s.character_ids.clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (1, vec!["character:bob".to_string()]),
+                    (2, vec!["character:alice".to_string()]),
+                    (3, vec!["character:carol".to_string()]),
+                ]
+            );
+            // Preserves lineage metadata (tone) across reorder
+            assert_eq!(scs[0].tone.as_deref(), Some("tense"));
+            assert_eq!(scs[1].tone.as_deref(), Some("wry"));
+
+            // 4. scene_drop (drop scene_order 2)
+            let drop_id = stage(
+                &svc,
+                &project.project_id,
+                "scene_drop",
+                Some(2),
+                serde_json::json!({"scene_order": 2}),
+            )
+            .await;
+            apply_one(&svc, &project.project_id, &drop_id).await;
+            let (_, _, scs, _) = svc
+                .repository()
+                .get_authoring_run(&run_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                scs.iter()
+                    .map(|s| (s.scene_order, s.character_ids.clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (1, vec!["character:bob".to_string()]),
+                    (2, vec!["character:carol".to_string()]),
+                ]
+            );
         }
     }
 
