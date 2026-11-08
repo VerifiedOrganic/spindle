@@ -1,6 +1,7 @@
-//! Initial planning service seam. No model calls or domain apply in Phase A.
+//! Initial planning staging and human ratification; no creative model dispatch.
 use super::*;
 use spindle_core::planning::*;
+mod apply;
 
 impl SqliteSpindleService {
     pub async fn begin_planning(&self, input: BeginPlanningInput) -> Result<PlanningSession> {
@@ -23,6 +24,15 @@ impl SqliteSpindleService {
         &self,
         input: DecidePlanningInput,
     ) -> Result<Vec<PlanningProposal>> {
+        if input.decision == PlanningDecision::Accept {
+            let report = self.apply_planning(input).await?;
+            if let Some(error) = report.error {
+                anyhow::bail!(
+                    "planning apply stopped: {error}; inspect planning_apply_status for durable progress"
+                );
+            }
+            return Ok(report.proposals);
+        }
         self.repository.decide_planning(input).await
     }
 }

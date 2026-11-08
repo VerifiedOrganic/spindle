@@ -90,7 +90,7 @@ impl Repository {
                 let rel_type = rel_type.clone();
                 let dynamics_json = dynamics_json.clone();
                 move |conn| {
-                    let tx = conn.transaction()?;
+                    let tx = conn.savepoint()?;
                     // Look for an existing row in either direction on this branch.
                     let mut find = tx.prepare_cached(
                         "SELECT in_id, out_id FROM relates_to \

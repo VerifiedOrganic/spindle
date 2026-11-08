@@ -363,7 +363,7 @@ impl Repository {
         self.inner
             .pool
             .write(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.savepoint()?;
                 tx.execute(
                     "INSERT INTO character (id, project_id, branch_id, name, normalized_name, \
                      summary, role, realm, appearance, notes, created_at, updated_at, aliases) \

@@ -59,7 +59,7 @@ impl Repository {
             .inner
             .pool
             .write(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.savepoint()?;
                 tx.execute(
                     "INSERT INTO project (id, name, project_type, genre, reader_contract, \
                      active_branch_id, notes, created_at, updated_at) \
@@ -199,7 +199,7 @@ impl Repository {
         self.inner
             .pool
             .write(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.savepoint()?;
                 let next_book_number: i64 = tx.query_row(
                     "SELECT COALESCE(MAX(book_number), 0) + 1 FROM book WHERE project_id = ?1",
                     [&project_id_owned],
