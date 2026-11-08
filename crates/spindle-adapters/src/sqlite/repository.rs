@@ -623,10 +623,121 @@ pub struct Repository {
     inner: Arc<Inner>,
 }
 
+type PlanningRetryLockMap =
+    std::sync::Mutex<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
+
+fn planning_attempt_lock_path(db_path: &Path, claim_token: &str) -> Option<PathBuf> {
+    if db_path.as_os_str().is_empty() || db_path == Path::new(":memory:") {
+        return None;
+    }
+    let sanitized: String = claim_token
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut os = db_path.as_os_str().to_os_string();
+    os.push(format!(".{sanitized}.lock"));
+    Some(PathBuf::from(os))
+}
+
+pub(crate) fn acquire_planning_attempt_lock(
+    db_path: &Path,
+    claim_token: &str,
+) -> Result<PlanningActiveAttemptGuard> {
+    let Some(lp) = planning_attempt_lock_path(db_path, claim_token) else {
+        anyhow::bail!(
+            "cannot coordinate planning attempt lock on an empty or in-memory database path"
+        );
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lp)
+        .with_context(|| {
+            format!(
+                "failed to open planning attempt lock file '{}'",
+                lp.display()
+            )
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(PlanningActiveAttemptGuard {
+            lock_file: Some(file),
+            lock_path: Some(lp),
+        }),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            anyhow::bail!("planning attempt lock '{}' is already held", lp.display())
+        }
+        Err(std::fs::TryLockError::Error(err)) => Err(anyhow::Error::new(err).context(format!(
+            "failed to lock planning attempt lock file '{}'",
+            lp.display()
+        ))),
+    }
+}
+
+pub(crate) fn is_planning_attempt_lock_held(
+    db_path: &Path,
+    claim_token: Option<&str>,
+) -> Result<bool> {
+    let Some(token) = claim_token.filter(|t| !t.trim().is_empty()) else {
+        return Ok(false);
+    };
+    let Some(lp) = planning_attempt_lock_path(db_path, token) else {
+        anyhow::bail!(
+            "cannot inspect planning attempt lock on an empty or in-memory database path"
+        );
+    };
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(&lp) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(anyhow::Error::new(err).context(format!(
+                "failed to open planning attempt lock file '{}'",
+                lp.display()
+            )));
+        }
+    };
+    match file.try_lock() {
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Ok(()) => {
+            let _ = file.unlock();
+            Ok(false)
+        }
+        Err(std::fs::TryLockError::Error(err)) => Err(anyhow::Error::new(err).context(format!(
+            "failed to probe planning attempt lock file '{}'",
+            lp.display()
+        ))),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PlanningActiveAttemptGuard {
+    lock_file: Option<std::fs::File>,
+    lock_path: Option<PathBuf>,
+}
+
+impl Drop for PlanningActiveAttemptGuard {
+    fn drop(&mut self) {
+        if let Some(file) = &self.lock_file {
+            let _ = file.unlock();
+        }
+        if let Some(path) = &self.lock_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 struct Inner {
     pool: SqlitePool,
     data_dir: PathBuf,
     model_router: ModelRouter,
+    planning_retry_locks: PlanningRetryLockMap,
 }
 
 mod authoring;
@@ -641,6 +752,10 @@ mod imports;
 mod narrative;
 mod planning;
 pub(crate) use planning::apply::resolve_operation as resolve_planning_operation;
+pub(crate) use planning::output_refs as planning_output_refs;
+pub(crate) use planning::{
+    PlanningAttemptClaim, PlanningSessionMetadataUpdate, PlanningStagedCommitCandidate,
+};
 mod plans;
 mod projects;
 mod quantity;
@@ -672,8 +787,25 @@ impl Repository {
                 pool,
                 data_dir,
                 model_router,
+                planning_retry_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             }),
         }
+    }
+
+    pub(crate) fn planning_retry_lock(
+        &self,
+        session_id: &str,
+        retry_key: &str,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self
+            .inner
+            .planning_retry_locks
+            .lock()
+            .expect("planning_retry_locks poisoned");
+        guard
+            .entry((session_id.to_owned(), retry_key.to_owned()))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn pool(&self) -> &SqlitePool {

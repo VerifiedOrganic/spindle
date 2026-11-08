@@ -43,6 +43,7 @@ impl std::fmt::Debug for SqlitePool {
 }
 
 struct Inner {
+    db_path: std::path::PathBuf,
     writer: AsyncConnection,
     application_gate: Arc<tokio::sync::Mutex<()>>,
     readers: Vec<AsyncConnection>,
@@ -86,14 +87,22 @@ impl SqlitePool {
             readers.push(reader);
         }
 
+        let db_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
         Ok(Self {
             inner: Arc::new(Inner {
+                db_path,
                 writer,
                 application_gate: Arc::new(tokio::sync::Mutex::new(())),
                 readers,
                 next_reader: AtomicUsize::new(0),
             }),
         })
+    }
+
+    /// Database file path this pool was opened against.
+    pub fn db_path(&self) -> &Path {
+        &self.inner.db_path
     }
 
     /// Run a closure with exclusive write access to the database. Closures

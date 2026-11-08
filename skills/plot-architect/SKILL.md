@@ -53,7 +53,7 @@ Every chapter should change the reader's understanding of the story. Specify cha
 
 ## Initial Planning Rollout Boundary
 
-Staged planning artifacts (ADR 0004) represent intent, not applied canon or a draftable-plan verdict. All initial gates default to human; only an explicit author delegation permits automated chapter/scene acceptance after approved roots, and in-run plan amendments always require human ratification.
+Staged planning artifacts and bounded `plan`/`outline` route proposals (ADR 0004, Phases A–C) represent intent, not applied canon or a draftable-plan verdict; new-book planning entry tools are not shipped yet. Route generation stages `PlanningArtifactV1` proposals with versioned prompt/schema hashes, pre-dispatch token/cost ceilings, at most one `planning_repair_v1` attempt, and host-fallback requests when routes are missing or rejected. All initial gates default to human; only an explicit author delegation permits automated chapter/scene acceptance after approved roots, and in-run plan amendments always require human ratification.
 
 <!-- tool: annotate_scene_beats -->
 <!-- tool: authoring_prepare_run -->

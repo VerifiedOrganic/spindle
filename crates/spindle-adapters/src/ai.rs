@@ -89,6 +89,14 @@ pub const STYLE_ANALYZE_PROMPT_VERSION: &str = "v1";
 pub const STYLE_REVISE_PROMPT_TEMPLATE_ID: &str = "style.revise";
 pub const STYLE_REVISE_PROMPT_VERSION: &str = "v1";
 
+pub const PLANNING_CONTRACT_PROMPT_TEMPLATE_ID: &str = "planning_contract_v1";
+pub const PLANNING_SEED_PROMPT_TEMPLATE_ID: &str = "planning_seed_v1";
+pub const PLANNING_SERIES_ARC_PROMPT_TEMPLATE_ID: &str = "planning_series_arc_v1";
+pub const OUTLINE_BOOK_PROMPT_TEMPLATE_ID: &str = "outline_book_v1";
+pub const OUTLINE_CHAPTERS_PROMPT_TEMPLATE_ID: &str = "outline_chapters_v1";
+pub const OUTLINE_MANIFEST_PROMPT_TEMPLATE_ID: &str = "outline_manifest_v1";
+pub const PLANNING_REPAIR_PROMPT_TEMPLATE_ID: &str = "planning_repair_v1";
+
 pub const ROUTE_DEFAULT_PROMPT_VERSION: &str = "v1";
 
 const EXPLICIT_DRAFT_SYSTEM_APPENDIX: &str = "\
@@ -462,6 +470,22 @@ pub fn infer_prompt_template(
             STYLE_REVISE_PROMPT_VERSION.to_string(),
         );
     }
+    for planning_id in [
+        PLANNING_REPAIR_PROMPT_TEMPLATE_ID,
+        PLANNING_CONTRACT_PROMPT_TEMPLATE_ID,
+        PLANNING_SEED_PROMPT_TEMPLATE_ID,
+        PLANNING_SERIES_ARC_PROMPT_TEMPLATE_ID,
+        OUTLINE_BOOK_PROMPT_TEMPLATE_ID,
+        OUTLINE_CHAPTERS_PROMPT_TEMPLATE_ID,
+        OUTLINE_MANIFEST_PROMPT_TEMPLATE_ID,
+    ] {
+        if prompt.contains(planning_id) {
+            return (
+                planning_id.to_string(),
+                ROUTE_DEFAULT_PROMPT_VERSION.to_string(),
+            );
+        }
+    }
     if matches!(adapter_kind, Some("grok" | "grok-cli")) {
         return (
             GROK_MCP_SYSTEM_PROMPT_TEMPLATE_ID.to_string(),
@@ -589,6 +613,16 @@ pub enum DraftRoutePreflightProblem {
     /// The resolved agent is configured but its declared `ratings` list does
     /// not contain the scene rating (ASCII-lowercase comparison).
     RatingNotCovered,
+}
+
+/// Resolved real backend for a creative planning/outlining task (`plan` or `outline`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningResolvedRoute {
+    pub route_task: String,
+    pub resolved_route: String,
+    pub agent_name: String,
+    pub adapter_kind: String,
+    pub model: String,
 }
 
 /// Result of verifying that the `draft` route can serve a specific content
@@ -911,6 +945,186 @@ impl ModelRouter {
             .read()
             .map_err(|_| poisoned_lock("model router read lock"))?;
         Ok(route_preflight(&runtime, "review", rating))
+    }
+
+    /// Verify — without network I/O — that creative planning can dispatch to a
+    /// real configured model for `route_task` (`"plan"` or `"outline"`).
+    ///
+    /// Rules (`docs/planning-engine-design.md` §3):
+    /// - Resolves `route_task` first; only falls back to `"review"` when
+    ///   `route_task` is unconfigured AND `allow_review_backend` is explicitly true.
+    /// - Rejects built-in defaults and local/stub adapters (`adapter_kind == "local"`).
+    /// - Rejects unset `api_key_env` (reporting only the variable name).
+    /// - When `rating_ceiling` is supplied, requires the agent's declared
+    ///   `ratings` list to cover that ceiling.
+    pub fn planning_route_preflight(
+        &self,
+        route_task: &str,
+        allow_review_backend: bool,
+        rating_ceiling: Option<spindle_core::models::ContentRating>,
+    ) -> anyhow::Result<Result<PlanningResolvedRoute, spindle_core::planning::PlanningRouteProblem>>
+    {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        let rating_str = rating_ceiling
+            .as_ref()
+            .map(spindle_core::models::ContentRating::as_str);
+        let candidate = if let Some(route) = resolve_route(&runtime, route_task, rating_str) {
+            Some(route)
+        } else if allow_review_backend {
+            resolve_route(&runtime, "review", rating_str)
+        } else {
+            None
+        };
+        let Some(route) = candidate else {
+            return Ok(Err(
+                spindle_core::planning::PlanningRouteProblem::MissingRoute {
+                    route_task: route_task.to_string(),
+                    allow_review_backend,
+                },
+            ));
+        };
+        if route.builtin_default || route.adapter_kind == "local" {
+            return Ok(Err(
+                spindle_core::planning::PlanningRouteProblem::LocalStubRejected {
+                    route_task: route_task.to_string(),
+                    resolved_route: route.route_name.clone(),
+                    agent_name: route.model_name.clone(),
+                    adapter_kind: route.adapter_kind.clone(),
+                    builtin_default: route.builtin_default,
+                },
+            ));
+        }
+        let Some(agent) = runtime.agents.get(&route.model_name) else {
+            return Ok(Err(
+                spindle_core::planning::PlanningRouteProblem::LocalStubRejected {
+                    route_task: route_task.to_string(),
+                    resolved_route: route.route_name.clone(),
+                    agent_name: route.model_name.clone(),
+                    adapter_kind: route.adapter_kind.clone(),
+                    builtin_default: route.builtin_default,
+                },
+            ));
+        };
+        if let Some(env_var) = agent.config.api_key_env.as_deref()
+            && agent.resolved_api_key.is_none()
+            && std::env::var(env_var).is_err()
+        {
+            return Ok(Err(
+                spindle_core::planning::PlanningRouteProblem::MissingApiKey {
+                    route_task: route_task.to_string(),
+                    resolved_route: route.route_name.clone(),
+                    agent_name: agent.config.id.clone(),
+                    env_var: env_var.to_string(),
+                },
+            ));
+        }
+        if let Some(ceiling) = rating_ceiling {
+            let rating_norm = ceiling.as_str();
+            let covered = agent
+                .config
+                .ratings
+                .iter()
+                .any(|declared| declared.trim().eq_ignore_ascii_case(rating_norm));
+            if !covered {
+                return Ok(Err(
+                    spindle_core::planning::PlanningRouteProblem::RatingNotCovered {
+                        route_task: route_task.to_string(),
+                        resolved_route: route.route_name.clone(),
+                        agent_name: agent.config.id.clone(),
+                        rating_ceiling: ceiling,
+                    },
+                ));
+            }
+        }
+        Ok(Ok(PlanningResolvedRoute {
+            route_task: route_task.to_string(),
+            resolved_route: route.route_name.clone(),
+            agent_name: agent.config.id.clone(),
+            adapter_kind: route.adapter_kind.clone(),
+            model: agent.config.model.clone(),
+        }))
+    }
+
+    pub async fn complete_planning(
+        &self,
+        resolved: &PlanningResolvedRoute,
+        rating_ceiling: Option<spindle_core::models::ContentRating>,
+        system_prompt: &str,
+        user_prompt: &str,
+        max_output_tokens: u32,
+        context: RequestContext,
+    ) -> anyhow::Result<ModelResponse> {
+        let start = std::time::Instant::now();
+        let rating_str = rating_ceiling
+            .as_ref()
+            .map(spindle_core::models::ContentRating::as_str);
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let base_route =
+            resolve_route(&runtime, &resolved.resolved_route, rating_str).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "planning route {} no longer resolves",
+                    resolved.resolved_route
+                )
+            })?;
+        if base_route.builtin_default || base_route.adapter_kind == "local" {
+            anyhow::bail!("planning route cannot dispatch to local/stub adapter");
+        }
+        let mut route_for_call = base_route.clone();
+        route_for_call.system_prompt = system_prompt.to_string();
+        route_for_call.max_tokens = Some(
+            route_for_call
+                .max_tokens
+                .map_or(max_output_tokens, |m| m.min(max_output_tokens)),
+        );
+        #[cfg(any(test, feature = "test-support"))]
+        self.record_dispatch(DispatchRecord::Dispatch {
+            route: resolved.resolved_route.clone(),
+            agent: dispatch_agent_label(&runtime, &route_for_call),
+            rating: rating_str.map(ToString::to_string),
+            prompt: user_prompt.to_string(),
+        })?;
+        let mut result = match route_for_call.adapter_kind.as_str() {
+            "http" => {
+                self.run_http(&runtime, &route_for_call, rating_str, user_prompt)
+                    .await
+            }
+            "cli" => {
+                let combined = format!("{system_prompt}\n\n{user_prompt}");
+                self.run_cli(&runtime, &route_for_call, &combined).await
+            }
+            "grok" => {
+                self.run_grok(
+                    &runtime,
+                    &route_for_call,
+                    rating_str,
+                    Some(&context),
+                    user_prompt,
+                )
+                .await
+            }
+            other => Err(anyhow::anyhow!(
+                "unsupported planning model adapter kind: {other}"
+            )),
+        };
+        self.record_usage(
+            &resolved.resolved_route,
+            rating_str,
+            Some(&context),
+            user_prompt,
+            false,
+            Some(&route_for_call),
+            start,
+            &mut result,
+        )
+        .await;
+        result
     }
 
     /// Verify — without network I/O — that canon mining can serve a scene of
@@ -3370,6 +3584,7 @@ fn local_completion(route: &ModelRoute, prompt: &str) -> Result<String, NoModelC
                 .to_string()
             }
         }
+        "plan" | "outline" => return Err(no_model()),
         _ => compact_prompt,
     };
     Ok(out)
