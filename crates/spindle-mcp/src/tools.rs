@@ -3437,16 +3437,16 @@ impl ToolRouter {
             },
             checkpoint_interval: input.checkpoint_interval,
             editorial_directives: input.editorial_directives.unwrap_or_default(),
+            mining_policy,
+            max_revise_attempts,
+            checkpoint_policy,
+            replan_policy,
             chapters: chapter_seeds,
         };
 
         let mut harness_state =
             spindle_harness::state::HarnessState::from_seed(seed, active_branch.id.clone());
         harness_state.artifacts_dir = "../artifacts".to_string();
-        harness_state.mining_policy = mining_policy;
-        harness_state.max_revise_attempts = max_revise_attempts;
-        harness_state.checkpoint_policy = checkpoint_policy;
-        harness_state.replan_policy = replan_policy;
 
         let run_id = format!(
             "authoring_run:{}",
@@ -3735,6 +3735,11 @@ impl ToolRouter {
                 .as_deref()
                 .map(|rel| read_reader_sim_engagement(&status_artifacts_root, rel))
                 .unwrap_or_default();
+            let (sampled_review_status, sampled_review_count) = cp
+                .report_artifact_path
+                .as_deref()
+                .and_then(|rel| read_checkpoint_sampled_review_summary(&status_artifacts_root, rel))
+                .unwrap_or((None, None));
             cp_reports.push(AuthoringStatusCheckpoint {
                 start_chapter: cp.start_chapter,
                 end_chapter: cp.end_chapter,
@@ -3749,6 +3754,8 @@ impl ToolRouter {
                 auto_outcome: cp.auto_outcome.clone(),
                 pending_manual_scene_ids: cp.pending_manual_scene_ids.clone(),
                 reader_sim_engagement,
+                sampled_review_status,
+                sampled_review_count,
             });
         }
 
@@ -5393,8 +5400,9 @@ impl ToolRouter {
         // ── Step 2: sampled dual-persona reviews (rounds=2) ──
         let sampled_scene_ids =
             authoring_sample_checkpoint_scene_ids(harness_state, start_chapter, end_chapter)?;
+        let mut sampled_reviews: Vec<serde_json::Value> = Vec::new();
         let mut pending_manual: Vec<String> = Vec::new();
-        for scene_id in &sampled_scene_ids {
+        for (idx, scene_id) in sampled_scene_ids.iter().enumerate() {
             match self
                 .service
                 .run_dual_persona_review(spindle_core::models::RunDualPersonaReviewInput {
@@ -5405,7 +5413,18 @@ impl ToolRouter {
                 })
                 .await
             {
-                Ok(_) => {}
+                Ok(review_output) => {
+                    let review_value = match self
+                        .service
+                        .repository()
+                        .get_dual_persona_review(&harness_state.active_branch_id, scene_id)
+                        .await?
+                    {
+                        Some(stored) => serde_json::to_value(stored)?,
+                        None => serde_json::to_value(&review_output)?,
+                    };
+                    sampled_reviews.push(review_value);
+                }
                 Err(error) => {
                     // Explicit-manual-fallback (I3): a RatingNotCovered rejection
                     // from the dispatch chokepoint means the `review` route's
@@ -5418,6 +5437,16 @@ impl ToolRouter {
                     if auto_checkpoint_error_is_rating_not_covered(&error) {
                         pending_manual.push(scene_id.clone());
                     } else {
+                        let mut unreviewed_scenes = pending_manual.clone();
+                        unreviewed_scenes.extend(sampled_scene_ids[idx..].iter().cloned());
+                        let _ = authoring_record_checkpoint_sampled_reviews_failed(
+                            harness_state,
+                            &state_path,
+                            start_chapter,
+                            end_chapter,
+                            sampled_reviews,
+                            &unreviewed_scenes,
+                        );
                         tracing::warn!(
                             run_id,
                             step = "dual_persona_review",
@@ -5430,11 +5459,33 @@ impl ToolRouter {
                             start_chapter,
                             end_chapter,
                             "review_dispatch_failed",
-                            Vec::new(),
+                            pending_manual,
                         ));
                     }
                 }
             }
+        }
+        if let Err(error) = authoring_record_checkpoint_sampled_reviews(
+            harness_state,
+            &state_path,
+            start_chapter,
+            end_chapter,
+            sampled_reviews,
+            &pending_manual,
+        ) {
+            tracing::warn!(
+                run_id,
+                step = "record_sampled_reviews",
+                error = format!("{error:#}"),
+                "auto-checkpoint sampled review record failed; blocking checkpoint (I8)"
+            );
+            return Ok(auto_checkpoint_block(
+                harness_state,
+                start_chapter,
+                end_chapter,
+                "record_sampled_reviews_failed",
+                pending_manual,
+            ));
         }
 
         // ── Step 2.5: cumulative reader-simulation pass (evolution §3.6) ──
@@ -6752,6 +6803,19 @@ fn read_reader_sim_engagement(
         .unwrap_or_default()
 }
 
+fn read_checkpoint_sampled_review_summary(
+    artifacts_root: &Path,
+    report_rel: &str,
+) -> Option<(Option<String>, Option<usize>)> {
+    let report_path = artifacts_root.join(report_rel);
+    let raw = std::fs::read_to_string(&report_path).ok()?;
+    let report = serde_json::from_str::<CheckpointReportArtifact>(&raw).ok()?;
+    Some((
+        Some(report.sampled_review_status),
+        Some(report.sampled_reviews.len()),
+    ))
+}
+
 /// Is `error` a rating-not-covered rejection from the dispatch chokepoint
 /// (evolution §4 rule 2)? The service surfaces the typed
 /// `RouteClearanceError::RatingNotCovered` through anyhow, so downcast to detect
@@ -6796,6 +6860,91 @@ fn authoring_record_checkpoint_deep_audit(
     report.deep_consistency_instruction =
         "Deep consistency audit recorded by the auto-checkpoint automation (evolution §3.3)."
             .to_string();
+    let report_json = serde_json::to_string_pretty(&report)?;
+    std::fs::write(&report_path, report_json).with_context(|| {
+        format!(
+            "failed to update checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn authoring_record_checkpoint_sampled_reviews(
+    harness_state: &spindle_harness::state::HarnessState,
+    state_path: &Path,
+    start_chapter: i32,
+    end_chapter: i32,
+    sampled_reviews: Vec<serde_json::Value>,
+    pending_manual: &[String],
+) -> anyhow::Result<()> {
+    let report_path =
+        checkpoint_report_path(harness_state, state_path, start_chapter, end_chapter)?;
+    let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+        format!(
+            "failed to read checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    let mut report: spindle_harness::artifacts::CheckpointReportArtifact =
+        serde_json::from_str(&raw_report).with_context(|| {
+            format!(
+                "failed to parse checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+    report.sampled_reviews = sampled_reviews;
+    if pending_manual.is_empty() {
+        report.sampled_review_status = "complete".to_string();
+        report.sampled_review_instruction =
+            "Sampled dual-persona reviews recorded by the auto-checkpoint automation (evolution §3.3)."
+                .to_string();
+    } else {
+        report.sampled_review_status = "pending_manual_review".to_string();
+        report.sampled_review_instruction = format!(
+            "Auto-checkpoint recorded completed sampled reviews; manual dual-persona review still required for: {}.",
+            pending_manual.join(", ")
+        );
+    }
+    let report_json = serde_json::to_string_pretty(&report)?;
+    std::fs::write(&report_path, report_json).with_context(|| {
+        format!(
+            "failed to update checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn authoring_record_checkpoint_sampled_reviews_failed(
+    harness_state: &spindle_harness::state::HarnessState,
+    state_path: &Path,
+    start_chapter: i32,
+    end_chapter: i32,
+    sampled_reviews: Vec<serde_json::Value>,
+    unreviewed_scenes: &[String],
+) -> anyhow::Result<()> {
+    let report_path =
+        checkpoint_report_path(harness_state, state_path, start_chapter, end_chapter)?;
+    let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+        format!(
+            "failed to read checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    let mut report: spindle_harness::artifacts::CheckpointReportArtifact =
+        serde_json::from_str(&raw_report).with_context(|| {
+            format!(
+                "failed to parse checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+    report.sampled_reviews = sampled_reviews;
+    report.sampled_review_status = "incomplete".to_string();
+    report.sampled_review_instruction = format!(
+        "Auto-checkpoint sampled dual-persona review failed during dispatch; unreviewed scenes: {}.",
+        unreviewed_scenes.join(", ")
+    );
     let report_json = serde_json::to_string_pretty(&report)?;
     std::fs::write(&report_path, report_json).with_context(|| {
         format!(
@@ -7872,6 +8021,10 @@ mod tests {
                 },
                 checkpoint_interval: 1,
                 editorial_directives: Vec::new(),
+                mining_policy: None,
+                max_revise_attempts: None,
+                checkpoint_policy: None,
+                replan_policy: None,
                 chapters: Vec::new(),
             },
             "bible_branch:x".into(),

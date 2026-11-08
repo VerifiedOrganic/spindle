@@ -5405,6 +5405,28 @@ async fn auto_advisory_clean_range_self_clears_checkpoint() {
     );
     assert_eq!(cp["checkpoint_policy"].as_str(), Some("auto_advisory"));
     assert_eq!(cp["status"].as_str(), Some("reviewed"));
+    assert_eq!(cp["sampled_review_status"].as_str(), Some("complete"));
+    assert_eq!(cp["sampled_review_count"].as_u64(), Some(1));
+
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let report_path = fx.data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report_json["sampled_review_status"].as_str(),
+        Some("complete"),
+        "auto-checkpoint must persist sampled_review_status=complete into report artifact: {report_json:?}"
+    );
+    let persisted_reviews = report_json["sampled_reviews"]
+        .as_array()
+        .expect("sampled_reviews array in report artifact");
+    assert_eq!(
+        persisted_reviews.len(),
+        1,
+        "auto-checkpoint must persist dual-persona review outputs into report artifact: {report_json:?}"
+    );
+    assert_eq!(persisted_reviews[0]["status"].as_str(), Some("current"));
+    assert_eq!(persisted_reviews[0]["rounds_completed"].as_i64(), Some(2));
 
     let kinds = auto_run_events(&fx).await;
     let idx = |k: &str| kinds.iter().position(|x| x == k);
@@ -5945,6 +5967,25 @@ agent = "cli-agent-review"
         Some(general_scene_id.as_str()),
         "the general scene's review must have COMPLETED, not fallen back: {cp:?}"
     );
+    assert_eq!(
+        cp["sampled_review_status"].as_str(),
+        Some("pending_manual_review")
+    );
+    assert_eq!(cp["sampled_review_count"].as_u64(), Some(1));
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let report_path = data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report_json["sampled_review_status"].as_str(),
+        Some("pending_manual_review")
+    );
+    let persisted_reviews = report_json["sampled_reviews"].as_array().unwrap();
+    assert_eq!(persisted_reviews.len(), 1);
+    assert_eq!(
+        persisted_reviews[0]["scene_id"].as_str(),
+        Some(general_scene_id.as_str())
+    );
 
     ct.cancel();
     server.await.unwrap();
@@ -6015,6 +6056,12 @@ async fn auto_advisory_transport_failure_blocks_without_crashing() {
         Some("blocked"),
         "transport failure records an auto-block outcome: {cp:?}"
     );
+    assert_eq!(
+        cp["sampled_review_status"].as_str(),
+        Some("incomplete"),
+        "transport failure during sampled review must record incomplete status: {cp:?}"
+    );
+    assert_eq!(cp["sampled_review_count"].as_u64(), Some(0));
 
     let kinds = auto_run_events(&fx).await;
     assert!(
@@ -8175,4 +8222,430 @@ async fn internal_listener_survives_sequential_sessions() {
     }
 
     crate::internal_listener::shutdown_lazy_listener(&data_dir).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_advisory_partial_sampled_review_failure_preserves_incomplete_status() {
+    // Regression test for partial sampled-review failure: chapter 1 (general)
+    // review succeeds via the CLI mock agent, then chapter 2 (explicit) review
+    // fails at transport via a dead HTTP endpoint. The completed review output
+    // for chapter 1 must be persisted in the checkpoint report artifact, while
+    // sampled_review_status must be "incomplete" (never "complete") and the
+    // instruction must identify the unreviewed chapter 2 scene.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_partial_review_fail.db");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let script_path = universal_mock_agent_path();
+
+    let config_path = tmp.path().join("config.toml");
+    let config_content = format!(
+        r#"
+[[agents]]
+id = "cli-agent-draft"
+name = "CLI Agent Draft"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general", "explicit"]
+
+[[agents]]
+id = "cli-agent-review-general"
+name = "CLI Agent Review General"
+provider = "cli"
+endpoint = "{script}"
+model = "default"
+ratings = ["general"]
+
+[[agents]]
+id = "dead-agent-review-explicit"
+name = "Dead Review Explicit"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:1/v1"
+model = "model"
+ratings = ["explicit"]
+
+[[routing]]
+route = "draft"
+agent = "cli-agent-draft"
+
+[[routing]]
+route = "review"
+agent = "cli-agent-review-general"
+
+[[routing]]
+route = "review"
+rating = "explicit"
+agent = "dead-agent-review-explicit"
+"#,
+        script = script_path.display(),
+    );
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let repo =
+        Repository::with_model_router(pool.clone(), data_dir.clone(), ModelRouter::local_only());
+    let svc = SqliteSpindleService::new(repo);
+    svc.configure_agents(spindle_core::models::ConfigureAgentsInput {
+        config_path: Some(config_path.to_string_lossy().to_string()),
+    })
+    .unwrap();
+
+    let project = svc
+        .create_project(CreateProjectInput {
+            name: "Partial Review Fail".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "Incomplete sampled reviews never report complete.".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let mara = svc
+        .create_character(CreateCharacterInput {
+            aliases: Vec::new(),
+            project_id: project.project_id.clone(),
+            name: "Mara".into(),
+            summary: "Warden.".into(),
+            role: "protagonist".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: Some("grim".into()),
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap();
+    let loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Ash Gate".into(),
+            kind: "fortress".into(),
+            realm: None,
+            summary: "Wall.".into(),
+            initial_state: WorldStateInput::default(),
+        })
+        .await
+        .unwrap();
+
+    for (chapter_number, rating, label) in [
+        (1, ContentRating::General, "General watch"),
+        (2, ContentRating::Explicit, "Explicit watch"),
+    ] {
+        svc.plan_chapter(PlanChapterInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number,
+            pov_character_id: Some(mara.character_id.clone()),
+            synopsis: format!("Chapter {chapter_number}."),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![PlanChapterSceneInput {
+                scene_order: 1,
+                summary: label.into(),
+                beat_structure: Vec::new(),
+                character_ids: vec![mara.character_id.clone()],
+                location_id: Some(loc.location_id.clone()),
+                content_rating: Some(rating),
+                purpose: "establishing".into(),
+                research_required: Some(false),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+    }
+
+    let router = crate::tools::ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        Some("write".to_string()),
+        crate::tools::ToolSerializationState::for_service(&svc),
+    );
+
+    let start_args = serde_json::json!({
+        "project_id": project.project_id,
+        "book_number": 1,
+        "start_chapter": 1,
+        "end_chapter": 2,
+        "checkpoint_interval": 2,
+        "checkpoint_policy": "auto_advisory",
+    });
+    let start_val = router
+        .call_tool("authoring_start_run", Some(start_args.as_object().unwrap()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(start_val["status"].as_str(), Some("active"));
+    let run_id = start_val["run_id"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    crate::write_addr_file(&data_dir, addr).unwrap();
+    let svc_clone = svc.clone();
+    let ct = tokio_util::sync::CancellationToken::new();
+    let ct1 = ct.clone();
+    let ct2 = ct.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, crate::http::mcp_router(svc_clone, ct1))
+            .with_graceful_shutdown(async move { ct2.cancelled_owned().await })
+            .await
+            .unwrap();
+    });
+
+    let exec_args =
+        serde_json::json!({ "project_id": project.project_id, "run_id": run_id, "mode": "agent" });
+    for _ in 0..40 {
+        let res = router
+            .call_tool(
+                "authoring_execute_next",
+                Some(exec_args.as_object().unwrap()),
+            )
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let status = res["status"].as_str().unwrap_or("");
+        let executed = res["executed_action"].as_str().unwrap_or("");
+        if status == "completed" || executed.contains("auto-checkpoint") {
+            break;
+        }
+    }
+
+    let st = router
+        .call_tool(
+            "authoring_status",
+            Some(
+                serde_json::json!({ "project_id": project.project_id, "run_id": run_id })
+                    .as_object()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let general_scene_id = st["chapters"][0]["scenes"][0]["scene_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let explicit_scene_id = st["chapters"][1]["scenes"][0]["scene_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let cp = &st["checkpoint_reports"][0];
+    assert_eq!(cp["status"].as_str(), Some("pending_review"));
+    assert_eq!(cp["auto_outcome"].as_str(), Some("blocked"));
+    assert_eq!(
+        cp["sampled_review_status"].as_str(),
+        Some("incomplete"),
+        "partial review failure must report incomplete, not complete: {cp:?}"
+    );
+    assert_eq!(
+        cp["sampled_review_count"].as_u64(),
+        Some(1),
+        "the 1 completed review before the transport error must still be counted: {cp:?}"
+    );
+
+    let report_rel = cp["report_artifact_path"].as_str().unwrap();
+    let report_path = data_dir.join("artifacts").join(report_rel);
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report_json["sampled_review_status"].as_str(),
+        Some("incomplete")
+    );
+    let persisted_reviews = report_json["sampled_reviews"].as_array().unwrap();
+    assert_eq!(persisted_reviews.len(), 1);
+    assert_eq!(
+        persisted_reviews[0]["scene_id"].as_str(),
+        Some(general_scene_id.as_str())
+    );
+    let instruction = report_json["sampled_review_instruction"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        instruction.contains(&explicit_scene_id),
+        "sampled_review_instruction must identify the unreviewed scene {explicit_scene_id}, got: {instruction}"
+    );
+
+    ct.cancel();
+    server.await.unwrap();
+    crate::remove_addr_file(&data_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replan_amendment_invalidates_pending_scene_artifact_before_next_draft() {
+    // Regression test for amendment artifact invalidation: a pending scene in an
+    // active authoring run already has a pre-amendment SceneGenerationArtifact on
+    // disk (e.g., generation finished before save_scene_draft failed). Applying a
+    // scene_replace amendment to that chapter must invalidate the pre-amendment
+    // artifact and assign a fresh revision-stamped artifact path so the next draft
+    // does not reuse the stale prose/package.
+    let fx = auto_checkpoint_fixture("manual", true, None, &["general"], false, true)
+        .await
+        .expect("run should start");
+
+    // Pre-populate a stale SceneGenerationArtifact at the deterministic path for
+    // chapter 1 scene 1 with a ready package containing stale prose.
+    let stale_rel = "scenes/chapter-0001/scene-001.json";
+    let stale_full_path = fx.data_dir.join("artifacts").join(stale_rel);
+    std::fs::create_dir_all(stale_full_path.parent().unwrap()).unwrap();
+    let stale_artifact = serde_json::json!({
+        "version": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "route_name": "draft",
+        "agent_id": "cli-agent-draft",
+        "rating": "general",
+        "prompt": "STALE_PRE_AMENDMENT_PROMPT",
+        "completion_fragments": ["STALE_PRE_AMENDMENT_PROSE"],
+        "truncated": false,
+        "package": {
+            "full_text": "STALE_PRE_AMENDMENT_PROSE",
+            "summary": "Stale summary",
+            "tone": "solemn",
+            "character_states": [],
+            "canonical_facts": [],
+            "relationship_updates": [],
+            "beats": [],
+            "continuity_notes": "none"
+        }
+    });
+    std::fs::write(
+        &stale_full_path,
+        serde_json::to_string_pretty(&stale_artifact).unwrap(),
+    )
+    .unwrap();
+    assert!(stale_full_path.exists());
+
+    // Stage and apply a scene_replace amendment on chapter 1 scene 1.
+    let branch = fx
+        .svc
+        .repository()
+        .get_active_branch(&fx.project_id)
+        .await
+        .unwrap();
+    let staged = fx
+        .svc
+        .repository()
+        .stage_plan_amendment(
+            spindle_adapters::sqlite::repository::StagePlanAmendmentParams {
+                project_id: fx.project_id.clone(),
+                branch_id: branch.id.clone(),
+                source_chapter: 0,
+                book_number: 1,
+                authoring_run_id: Some(fx.run_id.clone()),
+                amendment_class: "scene_replace".to_string(),
+                target_chapter: Some(1),
+                payload: serde_json::json!({
+                    "scene_order": 1,
+                    "summary": "Mara inspects the amended breach",
+                    "purpose": "amended_opening",
+                    "character_ids": []
+                }),
+                rationale: "Replace watch opening with amended scene".to_string(),
+                confidence: "high".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let decide_out = fx
+        .svc
+        .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+            project_id: fx.project_id.clone(),
+            decisions: vec![spindle_core::models::PlanAmendmentDecisionInput {
+                amendment_id: staged.id.clone(),
+                action: "apply".to_string(),
+                edit: None,
+                note: None,
+            }],
+            decided_by: Some("operator".to_string()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(decide_out.applied_count, 1);
+
+    // The run scene row points to the revision-stamped artifact path (-r1.json),
+    // so even when an unrecorded legacy file exists at scene-001.json it is left
+    // untouched and never reused by the next draft.
+    assert!(
+        stale_full_path.exists(),
+        "unrecorded legacy artifact file must not be deleted indiscriminately"
+    );
+    let (_, _, run_scenes, _) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run_scenes[0].scene_artifact_path.as_deref(),
+        Some("scenes/chapter-0001/scene-001-r1.json")
+    );
+
+    // Execute the draft step: it must draft fresh prose under the -r2.json path
+    // and never save STALE_PRE_AMENDMENT_PROSE.
+    let exec_args = serde_json::json!({
+        "project_id": fx.project_id,
+        "run_id": fx.run_id,
+        "mode": "agent"
+    });
+    let draft_res = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(exec_args.as_object().unwrap()),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        draft_res["status"].as_str(),
+        Some("active"),
+        "{draft_res:?}"
+    );
+
+    let r2_path = fx
+        .data_dir
+        .join("artifacts/scenes/chapter-0001/scene-001-r1.json");
+    assert!(
+        r2_path.exists(),
+        "fresh revision-stamped artifact must be written at {}",
+        r2_path.display()
+    );
+    let scenes = fx
+        .svc
+        .repository()
+        .list_scenes_by_project_and_branch(&fx.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert_eq!(scenes.len(), 1);
+    assert_ne!(
+        scenes[0].full_text, "STALE_PRE_AMENDMENT_PROSE",
+        "drafted scene must not reuse pre-amendment artifact package"
+    );
+
+    auto_shutdown(fx).await;
 }

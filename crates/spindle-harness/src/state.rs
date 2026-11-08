@@ -26,6 +26,14 @@ pub struct HarnessSeed {
     #[serde(default)]
     pub editorial_directives: Vec<String>,
     #[serde(default)]
+    pub mining_policy: Option<String>,
+    #[serde(default)]
+    pub max_revise_attempts: Option<i32>,
+    #[serde(default)]
+    pub checkpoint_policy: Option<String>,
+    #[serde(default)]
+    pub replan_policy: Option<String>,
+    #[serde(default)]
     pub chapters: Vec<ChapterSeed>,
 }
 
@@ -106,6 +114,18 @@ pub struct HarnessState {
 
 impl HarnessState {
     pub fn from_seed(seed: HarnessSeed, active_branch_id: String) -> Self {
+        let mining_policy =
+            spindle_core::models::validate_mining_policy(seed.mining_policy.as_deref())
+                .unwrap_or(seed.mining_policy);
+        let max_revise_attempts =
+            spindle_core::models::validate_max_revise_attempts(seed.max_revise_attempts)
+                .unwrap_or(seed.max_revise_attempts);
+        let checkpoint_policy =
+            spindle_core::models::validate_checkpoint_policy(seed.checkpoint_policy.as_deref())
+                .unwrap_or(seed.checkpoint_policy);
+        let replan_policy =
+            spindle_core::models::validate_replan_policy(seed.replan_policy.as_deref())
+                .unwrap_or(seed.replan_policy);
         let mut state = Self {
             project_id: seed.project_id,
             active_branch_id,
@@ -115,10 +135,10 @@ impl HarnessState {
             last_checkpoint_end_chapter: seed.range.start_chapter - 1,
             artifacts_dir: default_artifacts_dir(),
             editorial_directives: seed.editorial_directives,
-            mining_policy: None,
-            max_revise_attempts: None,
-            checkpoint_policy: None,
-            replan_policy: None,
+            mining_policy,
+            max_revise_attempts,
+            checkpoint_policy,
+            replan_policy,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -406,8 +426,52 @@ pub struct SceneDraftDiagnostics {
 pub fn load_seed(path: &Path) -> Result<HarnessSeed> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read harness seed {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse harness seed {}", path.display()))
+    let mut seed: HarnessSeed = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse harness seed {}", path.display()))?;
+    seed.mining_policy = spindle_core::models::validate_mining_policy(
+        seed.mining_policy.as_deref(),
+    )
+    .map_err(|rejected| {
+        anyhow::anyhow!(
+            "mining_policy in {} must be one of {:?}, got {:?}",
+            path.display(),
+            spindle_core::models::AUTHORING_MINING_POLICIES,
+            rejected
+        )
+    })?;
+    seed.max_revise_attempts = spindle_core::models::validate_max_revise_attempts(
+        seed.max_revise_attempts,
+    )
+    .map_err(|rejected| {
+        anyhow::anyhow!(
+            "max_revise_attempts in {} must be between 0 and {}, got {}",
+            path.display(),
+            spindle_core::models::MAX_REVISE_ATTEMPTS_UPPER_BOUND,
+            rejected
+        )
+    })?;
+    seed.checkpoint_policy =
+        spindle_core::models::validate_checkpoint_policy(seed.checkpoint_policy.as_deref())
+            .map_err(|rejected| {
+                anyhow::anyhow!(
+                    "checkpoint_policy in {} must be one of {:?}, got {:?}",
+                    path.display(),
+                    spindle_core::models::AUTHORING_CHECKPOINT_POLICIES,
+                    rejected
+                )
+            })?;
+    seed.replan_policy = spindle_core::models::validate_replan_policy(
+        seed.replan_policy.as_deref(),
+    )
+    .map_err(|rejected| {
+        anyhow::anyhow!(
+            "replan_policy in {} must be one of {:?}, got {:?}",
+            path.display(),
+            spindle_core::models::AUTHORING_REPLAN_POLICIES,
+            rejected
+        )
+    })?;
+    Ok(seed)
 }
 
 fn default_artifacts_dir() -> String {
@@ -526,5 +590,64 @@ mod tests {
         assert!(warning.evidence.is_empty());
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn from_seed_carries_and_canonicalizes_policy_fields() {
+        let seed = HarnessSeed {
+            project_id: "project:p1".to_string(),
+            book_number: 1,
+            range: ChapterRange {
+                start_chapter: 1,
+                end_chapter: 2,
+            },
+            checkpoint_interval: 2,
+            editorial_directives: vec!["Continuity first".to_string()],
+            mining_policy: Some("propose_all".to_string()),
+            max_revise_attempts: Some(2),
+            checkpoint_policy: Some("auto_advisory".to_string()),
+            replan_policy: Some("propose_all".to_string()),
+            chapters: Vec::new(),
+        };
+        let state = HarnessState::from_seed(seed, "bible_branch:main".to_string());
+        assert_eq!(state.mining_policy.as_deref(), Some("propose_all"));
+        assert_eq!(state.max_revise_attempts, Some(2));
+        assert_eq!(state.checkpoint_policy.as_deref(), Some("auto_advisory"));
+        assert_eq!(state.replan_policy.as_deref(), Some("propose_all"));
+
+        let default_seed = HarnessSeed {
+            project_id: "project:p1".to_string(),
+            book_number: 1,
+            range: ChapterRange {
+                start_chapter: 1,
+                end_chapter: 1,
+            },
+            checkpoint_interval: 1,
+            editorial_directives: Vec::new(),
+            mining_policy: Some("disabled".to_string()),
+            max_revise_attempts: Some(0),
+            checkpoint_policy: Some("manual".to_string()),
+            replan_policy: Some("disabled".to_string()),
+            chapters: Vec::new(),
+        };
+        let default_state = HarnessState::from_seed(default_seed, "bible_branch:main".to_string());
+        assert_eq!(default_state.mining_policy, None);
+        assert_eq!(default_state.max_revise_attempts, None);
+        assert_eq!(default_state.checkpoint_policy, None);
+        assert_eq!(default_state.replan_policy, None);
+    }
+
+    #[test]
+    fn example_seed_file_loads_and_validates() {
+        let example_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root")
+            .join("docs/spindle-harness-seed.example.json");
+        let seed = load_seed(&example_path).expect("example seed should parse and validate");
+        assert_eq!(seed.mining_policy, None);
+        assert_eq!(seed.max_revise_attempts, None);
+        assert_eq!(seed.checkpoint_policy, None);
+        assert_eq!(seed.replan_policy, None);
     }
 }

@@ -206,7 +206,9 @@ amendment against its `rationale` and the realized reality:
 The pre-flight enforces the **immutability guard**: an amendment whose target
 chapter already has drafted scenes is rejected at decision time (drafted reality
 is never rewritten). On apply, the amendment replays through `plan_chapter` (or
-`create_narrative_promise`), snapshots the prior plan into `prior_state`, and
+`create_narrative_promise`), re-seeds any active authoring run's chapter and
+scene rows for that undrafted chapter so run reconciliation stays in sync,
+snapshots the prior plan into `prior_state`, and
 bumps `plan_revision` — so the outline keeps recoverable history. Hand the staged
 queue to the **canon-steward** skill's outline-canon discipline; never bulk-apply.
 
