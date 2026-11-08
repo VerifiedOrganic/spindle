@@ -205,6 +205,39 @@
         "must_include": [],
         "must_exclude": ["bluf", "tech_buzzlist", "em_dash_gate", "flesch", "detector_percent", "faq_ending", "delve_as_tech_gate"]
       }
+    },
+    {
+      "id": "AS15",
+      "name": "literal mix, equal parts, and torn between do not trigger emotion_cocktail",
+      "prose": "He poured a mix of oats and barley into the trough. They split the money in equal parts on the table. His coat was torn between the shoulder blades, and she stood torn between the two roads.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [],
+        "must_exclude": ["emotion_cocktail"]
+      }
+    },
+    {
+      "id": "AS16",
+      "name": "ordinary dialogue and descriptive 'not X, but Y' do not trigger contrast_not_x_but_y",
+      "prose": "\"I'm not going, but I'll call,\" she said. \"It wasn't my idea. It was yours.\" The road was not long, but it was steep, and the horse was not young, but it was steady.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [],
+        "must_exclude": ["contrast_not_x_but_y"]
+      }
+    },
+    {
+      "id": "AS17",
+      "name": "grounded temporal transitions and literal weight do not trigger solitary_fade or naming_watchlist",
+      "prose": "Hours later, she was still at the kitchen table paring apples into the tin bowl. Two days passed in the saddle before they reached the ford. Later, at the station, he shifted the weight of the iron trunk and waited under the awning.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [],
+        "must_exclude": ["solitary_fade", "naming_watchlist"]
+      }
     }
   ]
 }

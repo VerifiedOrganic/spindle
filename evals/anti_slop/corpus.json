@@ -1,0 +1,2824 @@
+{
+  "schema_version": 1,
+  "pack_id": "fiction.default",
+  "domain": "fiction",
+  "hard_precision_gate": 0.9,
+  "min_negative_passages": 150,
+  "license_summary": "Negative passages are public-domain human fiction (published 1811-1927) sourced from Project Gutenberg; positive passages are CC0-1.0 synthetic LLM-style fixtures authored for Spindle scanner evaluation. See SOURCES.md.",
+  "shelf_ids": [
+    "contrast_not_x_but_y",
+    "emotion_cocktail",
+    "fishing_ending",
+    "said_bookism",
+    "body_reactions",
+    "eye_department",
+    "gesture_rack",
+    "atmosphere_prefabs",
+    "naming_watchlist",
+    "rhythm_cadence",
+    "triadic_listing",
+    "solitary_fade"
+  ],
+  "passages": [
+    {
+      "id": "NEG001",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Pride and Prejudice",
+        "year": 1813,
+        "repository": "Project Gutenberg (PG #1342)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife. However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families, that he is considered the rightful property of some one or other of their daughters.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG002",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Pride and Prejudice",
+        "year": 1813,
+        "repository": "Project Gutenberg (PG #1342)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"My dear Mr. Bennet,\" said his lady to him one day, \"have you heard that Netherfield Park is let at last?\" Mr. Bennet replied that he had not. \"But it is,\" returned she; \"for Mrs. Long has just been here, and she told me all about it.\" Mr. Bennet made no answer.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG003",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Pride and Prejudice",
+        "year": 1813,
+        "repository": "Project Gutenberg (PG #1342)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Elizabeth walked on in quest of the only partner who could satisfy her immediate curiosity, and was not long in discovering Mr. Wickham among the cluster of red coats there assembled. The road to the assembly room was not long, but it was steep and muddied by the morning rain.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG004",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Pride and Prejudice",
+        "year": 1813,
+        "repository": "Project Gutenberg (PG #1342)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "She could not help frequently glancing at Mr. Darcy, though every glance convinced her that she was not in his thoughts. Two days passed at Rosings without any fresh alarm from Lady Catherine, and Elizabeth spent her mornings walking the grove along the park paling.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG005",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Emma",
+        "year": 1815,
+        "repository": "Project Gutenberg (PG #158)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Emma Woodhouse, handsome, clever, and rich, with a comfortable home and happy disposition, seemed to unite some of the best blessings of existence; and had lived nearly twenty-one years in the world with very little to distress or vex her.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG006",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Emma",
+        "year": 1815,
+        "repository": "Project Gutenberg (PG #158)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"I am not going to Abbey-Mill, but I will call at Bates's before dinner,\" said Mr. Knightley, drawing on his gloves in the hall. \"The lane is not dry yet, but my boots are stout enough for the mire.\"",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG007",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Sense and Sensibility",
+        "year": 1811,
+        "repository": "Project Gutenberg (PG #161)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The family of Dashwood had long been settled in Sussex. Their estate was large, and their residence was at Norland Park, in the centre of their property, where, for many generations, they had lived in so respectable a manner as to engage the general good opinion of their surrounding acquaintance.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG008",
+      "kind": "negative",
+      "source": {
+        "author": "Jane Austen",
+        "title": "Sense and Sensibility",
+        "year": 1811,
+        "repository": "Project Gutenberg (PG #161)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Elinor agreed to it all, for she did not think he deserved the compliment of rational opposition. Hours later, when the carriage had been put up and the tea-things cleared from the parlour table, Marianne took her music book to the window seat.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG009",
+      "kind": "negative",
+      "source": {
+        "author": "Charles Dickens",
+        "title": "Great Expectations",
+        "year": 1861,
+        "repository": "Project Gutenberg (PG #1400)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "My father's family name being Pirrip, and my Christian name Philip, my infant tongue could make of both names nothing longer or more explicit than Pip. So, I called myself Pip, and came to be called Pip.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG010",
+      "kind": "negative",
+      "source": {
+        "author": "Charles Dickens",
+        "title": "Great Expectations",
+        "year": 1861,
+        "repository": "Project Gutenberg (PG #1400)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Joe was at the forge, blowing the fire with the great bellows, while a mix of coal-dust and iron-scale settled over the anvil block. He did not look round when I came in at the wicket, but kept his hand steady on the horn of the bellows.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG011",
+      "kind": "negative",
+      "source": {
+        "author": "Charles Dickens",
+        "title": "Great Expectations",
+        "year": 1861,
+        "repository": "Project Gutenberg (PG #1400)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The marshes were just a long black horizontal line then, as I stopped to look after him; and the river was just another horizontal line, not nearly so broad nor yet so black; and the sky was just a row of long angry red lines and dense black lines intermingled.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG012",
+      "kind": "negative",
+      "source": {
+        "author": "Charles Dickens",
+        "title": "Bleak House",
+        "year": 1853,
+        "repository": "Project Gutenberg (PG #1023)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Fog everywhere. Fog up the river, where it flows among green aits and meadows; fog down the river, where it rolls defiled among the tiers of shipping and the waterside pollutions of a great and dirty city.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG013",
+      "kind": "negative",
+      "source": {
+        "author": "Charles Dickens",
+        "title": "Bleak House",
+        "year": 1853,
+        "repository": "Project Gutenberg (PG #1023)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mr. Jarndyce divided the small bequest in equal parts among the three cousins before the clerk tied up the bundle with red tape. \"It is not a fortune, my dear,\" he said, \"but it will keep the wolf from the door until Michaelmas.\"",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG014",
+      "kind": "negative",
+      "source": {
+        "author": "Charles Dickens",
+        "title": "A Tale of Two Cities",
+        "year": 1859,
+        "repository": "Project Gutenberg (PG #98)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Dover mail was in its usual genial position that the guard suspected the passengers, the passengers suspected one another and the guard, they all suspected everybody else, and the coachman was sure of nothing but the horses.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG015",
+      "kind": "negative",
+      "source": {
+        "author": "Arthur Conan Doyle",
+        "title": "The Adventures of Sherlock Holmes",
+        "year": 1892,
+        "repository": "Project Gutenberg (PG #1661)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "To Sherlock Holmes she is always the woman. I have seldom heard him mention her under any other name. In his eyes she eclipses and predominates the whole of her sex. It was not that he felt any emotion akin to love for Irene Adler.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG016",
+      "kind": "negative",
+      "source": {
+        "author": "Arthur Conan Doyle",
+        "title": "The Adventures of Sherlock Holmes",
+        "year": 1892,
+        "repository": "Project Gutenberg (PG #1661)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I had seen little of Holmes lately. My marriage had drifted us away from each other. My own complete happiness, and the home-centred interests which rise up around the man who first finds himself master of his own establishment, were sufficient to absorb all my attention.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG017",
+      "kind": "negative",
+      "source": {
+        "author": "Arthur Conan Doyle",
+        "title": "The Adventures of Sherlock Holmes",
+        "year": 1892,
+        "repository": "Project Gutenberg (PG #1661)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"You see, but you do not observe,\" Holmes remarked from the armchair, tapping his pipe against the fender. \"The distinction is clear. For example, you have frequently seen the steps which lead up from the hall to this room.\"",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG018",
+      "kind": "negative",
+      "source": {
+        "author": "Arthur Conan Doyle",
+        "title": "The Hound of the Baskervilles",
+        "year": 1902,
+        "repository": "Project Gutenberg (PG #2852)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mr. Sherlock Holmes, who was usually very late in the mornings, save upon those not infrequent occasions when he was up all night, was seated at the breakfast table. I stood upon the hearth-rug and picked up the stick which our visitor had left behind him the night before.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG019",
+      "kind": "negative",
+      "source": {
+        "author": "Arthur Conan Doyle",
+        "title": "The Hound of the Baskervilles",
+        "year": 1902,
+        "repository": "Project Gutenberg (PG #2852)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Over the great Grimpen Mire a low curtain of mist was rising, and the path before us was torn between the granite boulders and the peat-bogs. We walked for a mile in silence before Stapleton pointed with his net toward the tors.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG020",
+      "kind": "negative",
+      "source": {
+        "author": "Arthur Conan Doyle",
+        "title": "The Sign of the Four",
+        "year": 1890,
+        "repository": "Project Gutenberg (PG #2097)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Later, at the Baker Street wharf, Toby strained at the leash while the waterman held the lantern above the oily tide. The weight of the iron-bound chest had left two deep ruts in the gravel beside the jetty.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG021",
+      "kind": "negative",
+      "source": {
+        "author": "Edith Wharton",
+        "title": "The Age of Innocence",
+        "year": 1920,
+        "repository": "Project Gutenberg (PG #541)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "On a January evening of the early seventies, Christine Nilsson was singing in Faust at the Academy of Music in New York. Though there was already talk of the erection, in remote metropolitan distances 'above the Forties,' of a new Opera House, the world of fashion was still content to reassemble every winter in the shabby red and gold boxes.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG022",
+      "kind": "negative",
+      "source": {
+        "author": "Edith Wharton",
+        "title": "The Age of Innocence",
+        "year": 1920,
+        "repository": "Project Gutenberg (PG #541)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Newland Archer lingered in the lobby while the carriages were called. The snow was not deep, but the wind off the river drove it under the awning in fine white eddies that powdered the footmen's capes.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG023",
+      "kind": "negative",
+      "source": {
+        "author": "Edith Wharton",
+        "title": "The House of Mirth",
+        "year": 1905,
+        "repository": "Project Gutenberg (PG #284)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Selden paused in surprise. In the afternoon rush of the Grand Central Station his eyes had been refreshed by the sight of Miss Lily Bart. It was a Monday in early September, and he was returning to his work from a hurried dip into the country.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG024",
+      "kind": "negative",
+      "source": {
+        "author": "Edith Wharton",
+        "title": "The House of Mirth",
+        "year": 1905,
+        "repository": "Project Gutenberg (PG #284)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "She took the tea-cup he handed her and stirred it slowly, looking down at the small blue pattern on the porcelain. \"I am not going on to Bellomont tonight, but I shall take the morning train,\" she said.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG025",
+      "kind": "negative",
+      "source": {
+        "author": "Edith Wharton",
+        "title": "Ethan Frome",
+        "year": 1911,
+        "repository": "Project Gutenberg (PG #4517)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I had the story, bit by bit, from various people, and, as generally happens in such cases, each time it was a different story. If you know Starkfield, Massachusetts, you know the post-office. If you know the post-office you must have seen Ethan Frome drive up to it, drop the reins on his hollow-backed bay and drag himself across the brick pavement.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG026",
+      "kind": "negative",
+      "source": {
+        "author": "Edith Wharton",
+        "title": "Ethan Frome",
+        "year": 1911,
+        "repository": "Project Gutenberg (PG #4517)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "He poured a mix of oats and bran into the bay's feed-box and hung the lantern on the peg above the stall. Outside, the hemlock boughs creaked under the weight of the crusted snow.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG027",
+      "kind": "negative",
+      "source": {
+        "author": "Thomas Hardy",
+        "title": "Tess of the d'Urbervilles",
+        "year": 1891,
+        "repository": "Project Gutenberg (PG #110)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "On an evening in the latter part of May a middle-aged man was walking homeward from Shaston to the village of Marlott, in the adjoining Vale of Blakemore or Blackmoor. The pair of legs that carried him were rickety, and there was a bias in his gait which inclined him somewhat to the left of a straight line.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG028",
+      "kind": "negative",
+      "source": {
+        "author": "Thomas Hardy",
+        "title": "Tess of the d'Urbervilles",
+        "year": 1891,
+        "repository": "Project Gutenberg (PG #110)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Three weeks passed at Talbothays Dairy before the hay-harvest began in the lower meads. At four o'clock every morning Tess heard the dairyman's boot on the stairs and rose to wash her face in the cold well-water.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG029",
+      "kind": "negative",
+      "source": {
+        "author": "Thomas Hardy",
+        "title": "Far from the Madding Crowd",
+        "year": 1874,
+        "repository": "Project Gutenberg (PG #107)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "When Farmer Oak smiled, the corners of his mouth spread till they were within an unimportant distance of his ears, his eyes were reduced to chinks, and diverging wrinkles appeared round them, extending upon his countenance like the rays in a rudimentary sketch of the rising sun.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG030",
+      "kind": "negative",
+      "source": {
+        "author": "Thomas Hardy",
+        "title": "Far from the Madding Crowd",
+        "year": 1874,
+        "repository": "Project Gutenberg (PG #107)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Gabriel sheared on through the afternoon heat, the fleece parting cleanly beneath the blades. The barn was not cool, but the open double doors admitted a steady draught from the rick-yard.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG031",
+      "kind": "negative",
+      "source": {
+        "author": "Thomas Hardy",
+        "title": "The Mayor of Casterbridge",
+        "year": 1886,
+        "repository": "Project Gutenberg (PG #143)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "One evening of late summer, before the nineteenth century had reached one-third of its span, a young man and woman, the latter carrying a child, were approaching the large village of Weydon-Priors, in Upper Wessex, on foot.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG032",
+      "kind": "negative",
+      "source": {
+        "author": "Thomas Hardy",
+        "title": "The Return of the Native",
+        "year": 1878,
+        "repository": "Project Gutenberg (PG #122)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "A Saturday afternoon in November was approaching the time of twilight, and the vast tract of unenclosed wild known as Egdon Heath embrowned itself moment by moment. Overhead the hollow stretch of whitish cloud shutting out the sky was as a tent which had the whole heath for its floor.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG033",
+      "kind": "negative",
+      "source": {
+        "author": "George Eliot",
+        "title": "Middlemarch",
+        "year": 1871,
+        "repository": "Project Gutenberg (PG #145)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Miss Brooke had that kind of beauty which seems to be thrown into relief by poor dress. Her hand and wrist were so finely formed that she could wear sleeves not less bare of style than those in which the Blessed Virgin appeared to Italian painters.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG034",
+      "kind": "negative",
+      "source": {
+        "author": "George Eliot",
+        "title": "Middlemarch",
+        "year": 1871,
+        "repository": "Project Gutenberg (PG #145)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Dorothea did not reply at once, but drew the plan of the cottages nearer to the lamp. \"The walls are not high, but the rooms will have the south light all morning,\" she said to Sir James.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG035",
+      "kind": "negative",
+      "source": {
+        "author": "George Eliot",
+        "title": "Middlemarch",
+        "year": 1871,
+        "repository": "Project Gutenberg (PG #145)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mr. Casaubon's notebooks lay in three neat piles beside the inkstand, tied with narrow green ribbon. Later, at the rectory gate, Lydgate mounted his mare and rode back toward the hospital through the drizzle.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG036",
+      "kind": "negative",
+      "source": {
+        "author": "George Eliot",
+        "title": "The Mill on the Floss",
+        "year": 1860,
+        "repository": "Project Gutenberg (PG #6688)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "A wide plain, where the broadening Floss hurries on between its green banks to the sea, and the loving tide, rushing to meet it, checks its passage with an impetuous embrace. On this mighty tide the black ships—laden with the fresh-scented fir-planks, with rounded sacks of oil-bearing seed, or with the dark glitter of coal—are driven to and fro.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG037",
+      "kind": "negative",
+      "source": {
+        "author": "George Eliot",
+        "title": "The Mill on the Floss",
+        "year": 1860,
+        "repository": "Project Gutenberg (PG #6688)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Maggie stood in the dusty loft watching the meal trickle from the hopper. A mix of barley-meal and coarse pollard filled the wooden bin beside the millstones.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG038",
+      "kind": "negative",
+      "source": {
+        "author": "George Eliot",
+        "title": "Silas Marner",
+        "year": 1861,
+        "repository": "Project Gutenberg (PG #550)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "In the days when the spinning-wheels hummed busily in the farmhouses—and even great ladies, clothed in silk and thread-lace, had their toy spinning-wheels of polished oak—there might be seen in districts far away among the lanes, or deep in the bosom of the hills, certain pallid undersized men.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG039",
+      "kind": "negative",
+      "source": {
+        "author": "Herman Melville",
+        "title": "Moby-Dick",
+        "year": 1851,
+        "repository": "Project Gutenberg (PG #2701)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG040",
+      "kind": "negative",
+      "source": {
+        "author": "Herman Melville",
+        "title": "Moby-Dick",
+        "year": 1851,
+        "repository": "Project Gutenberg (PG #2701)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Spouter-Inn stood on a bleak corner, where the wind off the harbour rattled the signboard all night. The chowder-kettle steamed on the hob, seasoned with salt pork and ship's biscuit broken in equal parts into the broth.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG041",
+      "kind": "negative",
+      "source": {
+        "author": "Herman Melville",
+        "title": "Moby-Dick",
+        "year": 1851,
+        "repository": "Project Gutenberg (PG #2701)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Topsail-sheet and halyard were taut with frost, and the oldforesail was torn between the reef-points where the gale had caught her off Nantucket. Starbuck stood by the weather rail with his glass tucked beneath his arm.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG042",
+      "kind": "negative",
+      "source": {
+        "author": "Herman Melville",
+        "title": "Bartleby, the Scrivener",
+        "year": 1853,
+        "repository": "Project Gutenberg (PG #11231)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I am a rather elderly man. The nature of my avocations for the last thirty years has brought me into more than ordinary contact with what would seem an interesting and somewhat singular set of men, of whom as yet nothing that I know of has ever been written:—I mean the law-copyists or scriveners.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG043",
+      "kind": "negative",
+      "source": {
+        "author": "Herman Melville",
+        "title": "Bartleby, the Scrivener",
+        "year": 1853,
+        "repository": "Project Gutenberg (PG #11231)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"I would prefer not to,\" he said, and gently disappeared behind his screen. He did not raise his voice, but returned immediately to his copying at the desk by the brick wall.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG044",
+      "kind": "negative",
+      "source": {
+        "author": "Herman Melville",
+        "title": "Billy Budd",
+        "year": 1924,
+        "repository": "Project Gutenberg (PG #13720)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Four days passed on the southward tack before the frigate sighted the Spanish coast. On the main-deck the gunner's crew were scraping salt from the carriages and coiling the fresh hemp.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG045",
+      "kind": "negative",
+      "source": {
+        "author": "Nathaniel Hawthorne",
+        "title": "The Scarlet Letter",
+        "year": 1850,
+        "repository": "Project Gutenberg (PG #25344)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "A throng of bearded men, in sad-colored garments, and gray, steeple-crowned hats, intermixed with women, some wearing hoods and others bareheaded, was assembled in front of a wooden edifice, the door of which was heavily timbered with oak, and studded with iron spikes.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG046",
+      "kind": "negative",
+      "source": {
+        "author": "Nathaniel Hawthorne",
+        "title": "The Scarlet Letter",
+        "year": 1850,
+        "repository": "Project Gutenberg (PG #25344)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Hester Prynne went back to her thatched cottage by the shore with her basket of coarse linen. The path was not wide, but it led clear of the town common and down toward the salt-meadow.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG047",
+      "kind": "negative",
+      "source": {
+        "author": "Nathaniel Hawthorne",
+        "title": "The House of the Seven Gables",
+        "year": 1851,
+        "repository": "Project Gutenberg (PG #77)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Half-way down a by-street of one of our New England towns stands a rusty wooden house, with seven acutely peaked gables, facing towards various points of the compass, and a huge, clustered chimney in the midst.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG048",
+      "kind": "negative",
+      "source": {
+        "author": "Nathaniel Hawthorne",
+        "title": "The House of the Seven Gables",
+        "year": 1851,
+        "repository": "Project Gutenberg (PG #77)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Hepzibah arranged the gingerbread elephants and sticks of peppermint in the cent-shop window while the town clock struck seven. The weight of the iron shutters taxed her wrists every morning when she took down the bar.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG049",
+      "kind": "negative",
+      "source": {
+        "author": "Nathaniel Hawthorne",
+        "title": "Young Goodman Brown",
+        "year": 1835,
+        "repository": "Project Gutenberg (PG #512)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Young Goodman Brown came forth at sunset into the street at Salem village; but put his head back, after crossing the threshold, to exchange a parting kiss with his young wife.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG050",
+      "kind": "negative",
+      "source": {
+        "author": "Nathaniel Hawthorne",
+        "title": "The Blithedale Romance",
+        "year": 1852,
+        "repository": "Project Gutenberg (PG #2081)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Hours later, when the birch logs had burned down to red embers on the hearth, Coverdale drew his chair nearer to the table and spread his wet cloak over the settle to dry.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG051",
+      "kind": "negative",
+      "source": {
+        "author": "Anton Chekhov",
+        "title": "The Lady with the Dog",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #13415)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "It was said that a new person had appeared on the sea-front: a lady with alittle white Pomeranian. Dmitri Dmitritch Gurov, who had been a fortnight at Yalta and had got used to the place, had also begun to take an interest in new arrivals.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG052",
+      "kind": "negative",
+      "source": {
+        "author": "Anton Chekhov",
+        "title": "The Lady with the Dog",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #13415)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "They walked toward the pier while the steamer came in from Feodosia, lit up by the sunset and trailing a long plume of brown smoke. The wind had dropped, and the scent of wet cypress came down from the gardens.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG053",
+      "kind": "negative",
+      "source": {
+        "author": "Anton Chekhov",
+        "title": "The Steppe",
+        "year": 1888,
+        "repository": "Project Gutenberg (PG #57333)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Early one morning in July a shabby covered chaise, one of those antediluvian springless vehicles in which no one travels in Russia nowadays except merchants' clerks, drovers, and the less opulent among priests, drove out of N., the principal town of the province of Z.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG054",
+      "kind": "negative",
+      "source": {
+        "author": "Anton Chekhov",
+        "title": "The Steppe",
+        "year": 1888,
+        "repository": "Project Gutenberg (PG #57333)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The carters boiled porridge in the iron cauldron over a fire of dry dung, stirring a mix of millet and salt pork with a charred stick. Yegorushka lay on his back on the wool-bales and counted the stars.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG055",
+      "kind": "negative",
+      "source": {
+        "author": "Anton Chekhov",
+        "title": "Ward No. 6",
+        "year": 1892,
+        "repository": "Project Gutenberg (PG #13414)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "In the hospital yard there stands a small lodge surrounded by a whole forest of burdocks, nettles, and wild hemp. Its roof is rusty, the chimney is tumbling down, the steps at the porch are rotting away and overgrown with grass.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG056",
+      "kind": "negative",
+      "source": {
+        "author": "Anton Chekhov",
+        "title": "The Darling",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #13416)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Olenka, the daughter of the retired collegiate assessor, Plemyanniakov, was sitting in her back porch, lost in thought. It was hot, the flies were persistent and teasing, and it was pleasant to reflect that it would soon be evening.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG057",
+      "kind": "negative",
+      "source": {
+        "author": "F. Scott Fitzgerald",
+        "title": "The Great Gatsby",
+        "year": 1925,
+        "repository": "Project Gutenberg (PG #64317)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since. \"Whenever you feel like criticizing any one,\" he told me, \"just remember that all the people in this world haven't had the advantages that you've had.\"",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG058",
+      "kind": "negative",
+      "source": {
+        "author": "F. Scott Fitzgerald",
+        "title": "The Great Gatsby",
+        "year": 1925,
+        "repository": "Project Gutenberg (PG #64317)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "There was music from my neighbor's house through the summer nights. In his blue gardens men and girls came and went like moths among the whisperings and the champagne and the stars. At high tide in the afternoon I watched his guests diving from the tower of his raft.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG059",
+      "kind": "negative",
+      "source": {
+        "author": "F. Scott Fitzgerald",
+        "title": "The Great Gatsby",
+        "year": 1925,
+        "repository": "Project Gutenberg (PG #64317)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"I'm not going into town before four, but I'll telephone Jordan from the club,\" Tom said, slamming the garage door shut. The gravel drive was hot under the noon sun, and a yellow dog trotted past the gasoline pumps.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG060",
+      "kind": "negative",
+      "source": {
+        "author": "F. Scott Fitzgerald",
+        "title": "This Side of Paradise",
+        "year": 1920,
+        "repository": "Project Gutenberg (PG #805)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Amory Blaine inherited from his mother every trait, except the stray inexpressible few, that made him worth while. His father, an ineffectual, inarticulate man with a taste for Byron and a habit of drowsing over the Encyclopedia Britannica, grew wealthy at thirty through the death of two elder brothers.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG061",
+      "kind": "negative",
+      "source": {
+        "author": "F. Scott Fitzgerald",
+        "title": "This Side of Paradise",
+        "year": 1920,
+        "repository": "Project Gutenberg (PG #805)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Later, at the Nassau Inn, they sat in the back booth carving their initials into the dark oak while a waiter brought coffee and toasted rolls.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG062",
+      "kind": "negative",
+      "source": {
+        "author": "F. Scott Fitzgerald",
+        "title": "Tales of the Jazz Age",
+        "year": 1922,
+        "repository": "Project Gutenberg (PG #6695)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The train slowed at the junction and let off three crates of peaches and a sleepy drummer in a linen duster. Two hours later, the local pulled in behind a switching engine and took on water from the wooden tank.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG063",
+      "kind": "negative",
+      "source": {
+        "author": "Virginia Woolf",
+        "title": "Mrs. Dalloway",
+        "year": 1925,
+        "repository": "Project Gutenberg (PG #71865)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mrs. Dalloway said she would buy the flowers herself. For Lucy had her work cut out for her. The doors would be taken off their hinges; Rumpelmayer's men were coming. And then, thought Clarissa Dalloway, what a morning—fresh as if issued to children on a beach.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG064",
+      "kind": "negative",
+      "source": {
+        "author": "Virginia Woolf",
+        "title": "Mrs. Dalloway",
+        "year": 1925,
+        "repository": "Project Gutenberg (PG #71865)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "She stiffened a little on the kerb, waiting for Durtnall's van to pass. A charming woman, Scrope Purvis thought her, knowing her as one does know people who live next door to one in Westminster; a touch of the bird about her, of the jay, blue-green, light, vivacious.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG065",
+      "kind": "negative",
+      "source": {
+        "author": "Virginia Woolf",
+        "title": "To the Lighthouse",
+        "year": 1927,
+        "repository": "Project Gutenberg (PG #64908)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"Yes, of course, if it's fine tomorrow,\" said Mrs. Ramsay. \"But you'll have to be up with the lark,\" she added. To her son these words conveyed an extraordinary joy, as if it were settled, the expedition were bound to take place.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG066",
+      "kind": "negative",
+      "source": {
+        "author": "Virginia Woolf",
+        "title": "To the Lighthouse",
+        "year": 1927,
+        "repository": "Project Gutenberg (PG #64908)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "James sat on the floor cutting pictures from the illustrated catalogue of the Army and Navy Stores. The scissors were not sharp, but he followed the black line around the refrigerator with extreme care.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG067",
+      "kind": "negative",
+      "source": {
+        "author": "Virginia Woolf",
+        "title": "Jacob's Room",
+        "year": 1922,
+        "repository": "Project Gutenberg (PG #5670)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"So of course,\" wrote Betty Flanders, pressing her heels rather deeper in the sand, \"there was nothing for it but to leave.\" Slowly welling from the point of her gold nib, pale blue ink dissolved the full stop; for there her pen stuck; her eyes fixed, and tears slowly filled them.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG068",
+      "kind": "negative",
+      "source": {
+        "author": "Virginia Woolf",
+        "title": "Night and Day",
+        "year": 1919,
+        "repository": "Project Gutenberg (PG #1245)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "It was a Sunday evening in October, and in common with many other young ladies of her class, Katharine Hilbery was pouring out tea. Perhaps a fifth part of her mind was thus occupied, and the remaining four-fifths were engaged in stubbing her toes against the fender.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG069",
+      "kind": "negative",
+      "source": {
+        "author": "Jack London",
+        "title": "The Call of the Wild",
+        "year": 1903,
+        "repository": "Project Gutenberg (PG #215)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Buck did not read the newspapers, or he would have known that trouble was brewing, not alone for himself, but for every tide-water dog, strong of muscle and with warm, long hair, from Puget Sound to San Diego.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG070",
+      "kind": "negative",
+      "source": {
+        "author": "Jack London",
+        "title": "The Call of the Wild",
+        "year": 1903,
+        "repository": "Project Gutenberg (PG #215)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Perrault divided the dried salmon in equal parts among the team and thawed a cake of ice over the sheet-iron stove. Buck dug his sleeping-hole in the drift beside the sled and curled his tail across his nose.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG071",
+      "kind": "negative",
+      "source": {
+        "author": "Jack London",
+        "title": "The Call of the Wild",
+        "year": 1903,
+        "repository": "Project Gutenberg (PG #215)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The trail was not broken, but the crust held the sled runners through the timber along the Thirty Mile River. By noon they made sixteen miles and halted under a leaning spruce to boil tea.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG072",
+      "kind": "negative",
+      "source": {
+        "author": "Jack London",
+        "title": "White Fang",
+        "year": 1906,
+        "repository": "Project Gutenberg (PG #910)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Dark spruce forest frowned on either side the frozen waterway. The trees had been stripped by a recent wind of their white covering of frost, and they seemed to lean towards each other, black and ominous, in the fading light.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG073",
+      "kind": "negative",
+      "source": {
+        "author": "Jack London",
+        "title": "White Fang",
+        "year": 1906,
+        "repository": "Project Gutenberg (PG #910)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The harness leather was torn between the trace-rings where the lead dog had lunged against the snag. Bill spliced the rawhide with numb fingers while Henry laid birch bark under the kettle.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG074",
+      "kind": "negative",
+      "source": {
+        "author": "Jack London",
+        "title": "The Sea-Wolf",
+        "year": 1904,
+        "repository": "Project Gutenberg (PG #1074)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I scarcely know where to begin, though I sometimes facetiously place the cause of it all to Charley Furuseth's credit. He kept a summer cottage in Mill Valley, under the shadow of Mount Tamalpais, and never occupied it except when he loafed through the winter months and read Nietzsche and Schopenhauer to rest his brain.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG075",
+      "kind": "negative",
+      "source": {
+        "author": "Willa Cather",
+        "title": "My Ántonia",
+        "year": 1918,
+        "repository": "Project Gutenberg (PG #242)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Last summer I happened to be crossing the plains of Iowa in a season of intense heat, and it was my good fortune to have for a traveling companion James Quayle Burden—Jim Burden, as we still call him in the West. He and I are old friends—we grew up together in the same Nebraska town.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG076",
+      "kind": "negative",
+      "source": {
+        "author": "Willa Cather",
+        "title": "My Ántonia",
+        "year": 1918,
+        "repository": "Project Gutenberg (PG #242)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Grandmother scooped a mix of cornmeal and scalded milk into the earthenware crock and set it behind the stove to rise. Outside, the red grass bent flat before the wind across the section line.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG077",
+      "kind": "negative",
+      "source": {
+        "author": "Willa Cather",
+        "title": "My Ántonia",
+        "year": 1918,
+        "repository": "Project Gutenberg (PG #242)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Two weeks passed before the threshing crew reached the Shimerdas' quarter-section. Jake rode over on the sorrel mule with a sack of seed potatoes tied behind the saddle.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG078",
+      "kind": "negative",
+      "source": {
+        "author": "Willa Cather",
+        "title": "O Pioneers!",
+        "year": 1913,
+        "repository": "Project Gutenberg (PG #24)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "One January day, thirty years ago, the little town of Hanover, anchored on a windy Nebraska tableland, was trying not to be blown away. A mist of fine snowflakes was curling and eddying about the cluster of low drab buildings huddled on the gray prairie, under a gray sky.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG079",
+      "kind": "negative",
+      "source": {
+        "author": "Willa Cather",
+        "title": "O Pioneers!",
+        "year": 1913,
+        "repository": "Project Gutenberg (PG #24)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Alexandra stood on the porch steps looking out toward the divide. \"We are not selling the upland eighty, Lou, but we will mortgage the creek pasture if the bank asks for security,\" she said.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG080",
+      "kind": "negative",
+      "source": {
+        "author": "Willa Cather",
+        "title": "The Song of the Lark",
+        "year": 1915,
+        "repository": "Project Gutenberg (PG #44)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Dr. Howard Archie had just come up from a game of pool with the tabular curator at the billiard parlor down the street. He climbed the wooden stairs to his office above the hardware store, unlocked the door, and turned up the student lamp on his desk.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG081",
+      "kind": "negative",
+      "source": {
+        "author": "E.M. Forster",
+        "title": "A Room with a View",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #2641)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"The Signora had no business to do it,\" said Miss Bartlett, \"no business at all. She promised us south rooms with a view close together, instead of which here are north rooms, looking into a courtyard, and a long way apart. Oh, Lucy!\"",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG082",
+      "kind": "negative",
+      "source": {
+        "author": "E.M. Forster",
+        "title": "A Room with a View",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #2641)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Lucy opened the wooden shutters and leaned out over the sill. The Arno was not clear, but the yellow water swirled briskly around the piers of the Ponte Alla Grazie in the morning sun.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG083",
+      "kind": "negative",
+      "source": {
+        "author": "E.M. Forster",
+        "title": "Howards End",
+        "year": 1910,
+        "repository": "Project Gutenberg (PG #2946)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "One may as well begin with Helen's letters to her sister. They were written from Howards End, in the first days of June, while the wych-elm was still in full leaf and the hay was uncut in the paddock.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG084",
+      "kind": "negative",
+      "source": {
+        "author": "E.M. Forster",
+        "title": "Howards End",
+        "year": 1910,
+        "repository": "Project Gutenberg (PG #2946)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Margaret set her umbrella in the stand and looked into the dining-room. \"Tibby is not up yet, but the kettle is boiling on the spirit-lamp,\" she told Aunt Juley.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG085",
+      "kind": "negative",
+      "source": {
+        "author": "E.M. Forster",
+        "title": "A Passage to India",
+        "year": 1924,
+        "repository": "Project Gutenberg (PG #68937)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Except for the Marabar Caves—and they are twenty miles off—the city of Chandrapore presents nothing extraordinary. Edged rather than washed by the river Ganges, it trails for a couple of miles along the bank, scarcely distinguishable from the rubbish it deposits so freely.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG086",
+      "kind": "negative",
+      "source": {
+        "author": "E.M. Forster",
+        "title": "Where Angels Fear to Tread",
+        "year": 1905,
+        "repository": "Project Gutenberg (PG #2891)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "They were all at Charing Cross to see Lilia off—Philip, Harriet, Irma, Mrs. Herriton herself. Even Mrs. Theobald, squired by Mr. Kingcroft, had braved the journey from Yorkshire to bid her only daughter Cranmer's blessing.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG087",
+      "kind": "negative",
+      "source": {
+        "author": "Joseph Conrad",
+        "title": "Heart of Darkness",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #219)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Nellie, a cruising yawl, swung to her anchor without a flutter of the sails, and was at rest. The flood had made, the wind was nearly calm, and being bound down the river, the only thing for it was to come to and wait for the turn of the tide.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG088",
+      "kind": "negative",
+      "source": {
+        "author": "Joseph Conrad",
+        "title": "Heart of Darkness",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #219)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Marlow sat cross-legged right aft, leaning against the mizzen-mast. He had sunken cheeks, a yellow complexion, a straight back, an ascetic aspect, and, with his arms dropped, the palms of hands outwards, resembled an idol.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG089",
+      "kind": "negative",
+      "source": {
+        "author": "Joseph Conrad",
+        "title": "Lord Jim",
+        "year": 1900,
+        "repository": "Project Gutenberg (PG #5658)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "He was an inch, perhaps two, under six feet, powerfully built, and he advanced straight at you with a slight stoop of the shoulders, head forward, and a fixed from-under stare which made you think of a charging bull.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG090",
+      "kind": "negative",
+      "source": {
+        "author": "Joseph Conrad",
+        "title": "Lord Jim",
+        "year": 1900,
+        "repository": "Project Gutenberg (PG #5658)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The steamer Patna was not fast, but she plowed across the flat sea under a sky of unclouded brass, leaving a greasy wake of soot and warm water.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG091",
+      "kind": "negative",
+      "source": {
+        "author": "Joseph Conrad",
+        "title": "The Secret Agent",
+        "year": 1907,
+        "repository": "Project Gutenberg (PG #974)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mr. Verloc, going out in the morning, left his shop nominally in charge of his brother-in-law. It could be done, because there was very little business at any time, and practically none at all before the evening.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG092",
+      "kind": "negative",
+      "source": {
+        "author": "Joseph Conrad",
+        "title": "Nostromo",
+        "year": 1904,
+        "repository": "Project Gutenberg (PG #2021)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "In the time of Spanish rule, and for many years afterwards, the town of Sulaco—the luxuriant beauty of the orange gardens bears witness to its antiquity—had never been commercially anything more important than a coasting port with a fairly large local trade in ox-hides and indigo.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG093",
+      "kind": "negative",
+      "source": {
+        "author": "Henry James",
+        "title": "The Portrait of a Lady",
+        "year": 1881,
+        "repository": "Project Gutenberg (PG #2833)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Under certain circumstances there are few hours in life more agreeable than the hour dedicated to the ceremony known as afternoon tea. There are circumstances in which, whether you partake of the tea or not—some people of course never do—the situation is in itself delightful.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG094",
+      "kind": "negative",
+      "source": {
+        "author": "Henry James",
+        "title": "The Portrait of a Lady",
+        "year": 1881,
+        "repository": "Project Gutenberg (PG #2833)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Isabel Archer walked across the lawn at Gardencourt with her hands in the pockets of her light jacket. Her cousin Ralph was not strong, but he paced beside her as far as the red brick wall by the river.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG095",
+      "kind": "negative",
+      "source": {
+        "author": "Henry James",
+        "title": "Daisy Miller",
+        "year": 1878,
+        "repository": "Project Gutenberg (PG #208)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "At the little town of Vevey, in Switzerland, there is a particularly comfortable hotel. There are, indeed, many hotels, for the entertainment of tourists is the business of the place, which, as many travelers will remember, is seated upon the edge of a remarkably blue lake.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG096",
+      "kind": "negative",
+      "source": {
+        "author": "Henry James",
+        "title": "The Turn of the Screw",
+        "year": 1898,
+        "repository": "Project Gutenberg (PG #209)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The story had held us, round the fire, sufficiently breathless, but except the obvious remark that it was gruesome, as on Christmas Eve in an old house a strange tale should essentially be, I remember no comment uttered till somebody happened to note it was the only case in which the visitation had come to a child.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG097",
+      "kind": "negative",
+      "source": {
+        "author": "Henry James",
+        "title": "The Ambassadors",
+        "year": 1903,
+        "repository": "Project Gutenberg (PG #432)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Strether's first question, when he reached the hotel, was about his friend; yet on his learning that Waymarsh was apparently not to arrive till evening he was not wholly disconcerted.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG098",
+      "kind": "negative",
+      "source": {
+        "author": "Henry James",
+        "title": "Washington Square",
+        "year": 1880,
+        "repository": "Project Gutenberg (PG #2870)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "During a portion of the first half of the present century, and more particularly during the latter part of it, there flourished and practiced in the city of New York a physician who enjoyed perhaps an exceptional share of the consideration which, in the United States, has always been bestowed upon distinguished members of the medical profession.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG099",
+      "kind": "negative",
+      "source": {
+        "author": "Mark Twain",
+        "title": "Adventures of Huckleberry Finn",
+        "year": 1884,
+        "repository": "Project Gutenberg (PG #76)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "You don't know about me without you have read a book by the name of The Adventures of Tom Sawyer; but that ain't no matter. That book was made by Mr. Mark Twain, and he told the truth, mainly. There was things which he stretched, but mainly he told the truth.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG100",
+      "kind": "negative",
+      "source": {
+        "author": "Mark Twain",
+        "title": "Adventures of Huckleberry Finn",
+        "year": 1884,
+        "repository": "Project Gutenberg (PG #76)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "We laid up under the willows on the Illinois bank all day and watched the steamboats go booming down the middle of the river. Jim fried a mix of cornmeal and catfish in the skillet while the fog lifted off the towhead.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG101",
+      "kind": "negative",
+      "source": {
+        "author": "Mark Twain",
+        "title": "Adventures of Huckleberry Finn",
+        "year": 1884,
+        "repository": "Project Gutenberg (PG #76)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The king and the duke counted the silver coins on the wigwam floor and divided the bag in equal parts before hiding it in the tick. \"It ain't a full haul, Bilgewater, but it'll carry us past Cairo,\" the king said.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG102",
+      "kind": "negative",
+      "source": {
+        "author": "Mark Twain",
+        "title": "The Adventures of Tom Sawyer",
+        "year": 1876,
+        "repository": "Project Gutenberg (PG #74)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Saturday morning was come, and all the summer world was bright and fresh, and brimming with life. There was a song in every heart; and if the heart was young the music issued at the lips. There was cheer in every face and a spring in every step.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG103",
+      "kind": "negative",
+      "source": {
+        "author": "Mark Twain",
+        "title": "Life on the Mississippi",
+        "year": 1883,
+        "repository": "Project Gutenberg (PG #245)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "When I was a boy, there was but one permanent ambition among my comrades in our village on the west bank of the Mississippi River. That was, to be a steamboatman. We had transient ambitions of other sorts, but they were only transient.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG104",
+      "kind": "negative",
+      "source": {
+        "author": "Mark Twain",
+        "title": "Pudd'nhead Wilson",
+        "year": 1894,
+        "repository": "Project Gutenberg (PG #102)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The scene of this chronicle is the town of Dawson's Landing, on the Missouri side of the Mississippi, half a day's journey, per steamboat, below St. Louis. In 1830 it was a snug little collection of modest one- and two-story frame dwellings whose whitewashed exteriors were almost concealed from sight by climbing tangles of rose-vines.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG105",
+      "kind": "negative",
+      "source": {
+        "author": "Robert Louis Stevenson",
+        "title": "Treasure Island",
+        "year": 1883,
+        "repository": "Project Gutenberg (PG #120)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Squire Trelawney, Dr. Livesey, and the rest of these gentlemen having asked me to write down the whole particulars about Treasure Island, from the beginning to the end, keeping nothing back but the bearings of the island, and that only because there is still treasure not yet lifted, I take up my pen in the year of grace 17—.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG106",
+      "kind": "negative",
+      "source": {
+        "author": "Robert Louis Stevenson",
+        "title": "Treasure Island",
+        "year": 1883,
+        "repository": "Project Gutenberg (PG #120)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I remember him as if it were yesterday, as he came plodding to the inn door, his sea-chest following behind him in a hand-barrow; a tall, strong, heavy, nut-brown man; his tarry pigtail falling over the shoulders of his soiled blue coat.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG107",
+      "kind": "negative",
+      "source": {
+        "author": "Robert Louis Stevenson",
+        "title": "Treasure Island",
+        "year": 1883,
+        "repository": "Project Gutenberg (PG #120)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Hispaniola rolled easily at her cable inside the anchorage. The stockade was not high, but it was built of stout uncut logs loop-holed on all four sides and banked with sand.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG108",
+      "kind": "negative",
+      "source": {
+        "author": "Robert Louis Stevenson",
+        "title": "Kidnapped",
+        "year": 1886,
+        "repository": "Project Gutenberg (PG #421)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I will begin the story of my adventures with a certain morning early in the month of June, the year of grace 1751, when I took the key for the last time out of the door of my father's house. The sun began to shine upon the summit of the hills as I went down the road.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG109",
+      "kind": "negative",
+      "source": {
+        "author": "Robert Louis Stevenson",
+        "title": "Kidnapped",
+        "year": 1886,
+        "repository": "Project Gutenberg (PG #421)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Alan Breck wiped his dirk on a tuft of heather and crouched behind the boulder. For three hours we lay in the bracken while the dragoons searched the ford below the waterfall.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG110",
+      "kind": "negative",
+      "source": {
+        "author": "Robert Louis Stevenson",
+        "title": "Strange Case of Dr Jekyll and Mr Hyde",
+        "year": 1886,
+        "repository": "Project Gutenberg (PG #43)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mr. Utterson the lawyer was a man of a rugged countenance that was never lighted by a smile; cold, scanty and embarrassed in discourse; backward in sentiment; lean, long, dusty, dreary and yet somehow lovable.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG111",
+      "kind": "negative",
+      "source": {
+        "author": "Louisa May Alcott",
+        "title": "Little Women",
+        "year": 1868,
+        "repository": "Project Gutenberg (PG #514)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "\"Christmas won't be Christmas without any presents,\" grumbled Jo, lying on the rug. \"It's so dreadful to be poor!\" sighed Meg, looking down at her old dress. \"I don't think it's fair for some girls to have plenty of pretty things, and other girls nothing at all,\" added little Amy, with an injured sniff.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG112",
+      "kind": "negative",
+      "source": {
+        "author": "Louisa May Alcott",
+        "title": "Little Women",
+        "year": 1868,
+        "repository": "Project Gutenberg (PG #514)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Hannah was in the kitchen stirring a mix of molasses and ginger into the pan while the flat-irons heated on the stove. Later, at the garret table, Jo dipped her pen and went back to her manuscript.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG113",
+      "kind": "negative",
+      "source": {
+        "author": "Edgar Allan Poe",
+        "title": "The Fall of the House of Usher",
+        "year": 1839,
+        "repository": "Project Gutenberg (PG #932)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "During the whole of a dull, dark, and soundless day in the autumn of the year, when the clouds hung oppressively low in the heavens, I had been passing alone, on horseback, through a singularly dreary tract of country; and at length found myself, as the shades of the evening drew on, within view of the melancholy House of Usher.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG114",
+      "kind": "negative",
+      "source": {
+        "author": "Edgar Allan Poe",
+        "title": "The Gold-Bug",
+        "year": 1843,
+        "repository": "Project Gutenberg (PG #2147)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Many years ago, I contracted an intimacy with a Mr. William Legrand. He was of an ancient Huguenot family, and had once been wealthy; but a series of misfortunes had reduced him to want. To avoid the mortification consequent upon his disasters, he left New Orleans, the city of his forefathers, and took up his residence at Sullivan's Island.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG115",
+      "kind": "negative",
+      "source": {
+        "author": "G.K. Chesterton",
+        "title": "The Innocence of Father Brown",
+        "year": 1911,
+        "repository": "Project Gutenberg (PG #204)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Between the silver ribbon of morning and the green glittering ribbon of sea, the boat touched Harwich and let loose a swarm of folk like flies, among whom the man we must follow was by no means conspicuous—nor wished to be.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG116",
+      "kind": "negative",
+      "source": {
+        "author": "G.K. Chesterton",
+        "title": "The Man Who Was Thursday",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #1695)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The suburb of Saffron Park lay on the sunset side of London, as red and ragged as a cloud of sunset. It was built of a bright brick throughout; its sky-line was fantastic, and even its ground plan was wild.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG117",
+      "kind": "negative",
+      "source": {
+        "author": "H.G. Wells",
+        "title": "The Time Machine",
+        "year": 1895,
+        "repository": "Project Gutenberg (PG #35)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Time Traveller (for so it will be convenient to speak of him) was expounding a recondite matter to us. His grey eyes shone and twinkled, and his usually pale face was flushed and animated. The fire burned brightly, and the soft radiance of the incandescent lights in the lilies of silver caught the bubbles that flashed and passed in our glasses.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG118",
+      "kind": "negative",
+      "source": {
+        "author": "H.G. Wells",
+        "title": "The War of the Worlds",
+        "year": 1898,
+        "repository": "Project Gutenberg (PG #36)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "No one would have believed in the last years of the nineteenth century that this world was being watched keenly and closely by intelligences greater than man's and yet as mortal as his own; that as men busied themselves about their various concerns they were scrutinised and studied.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG119",
+      "kind": "negative",
+      "source": {
+        "author": "Bram Stoker",
+        "title": "Dracula",
+        "year": 1897,
+        "repository": "Project Gutenberg (PG #345)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "3 May. Bistritz.—Left Munich at 8:35 P.M., on 1st May, arriving at Vienna early next morning; should have arrived at 6:46, but train was an hour late. Buda-Pesth seems a wonderful place, from the glimpse which I got of it from the train and the little I could walk through the streets.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG120",
+      "kind": "negative",
+      "source": {
+        "author": "Bram Stoker",
+        "title": "Dracula",
+        "year": 1897,
+        "repository": "Project Gutenberg (PG #345)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The innkeeper's wife brought a bowl of paprika hendl and a carafe of country wine to the oak table. Outside, the Borgo Pass was not yet dark, but the horses stamped uneasily in the courtyard traces.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG121",
+      "kind": "negative",
+      "source": {
+        "author": "Mary Shelley",
+        "title": "Frankenstein",
+        "year": 1818,
+        "repository": "Project Gutenberg (PG #84)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "You will rejoice to hear that no disaster has accompanied the commencement of an enterprise which you have regarded with such evil forebodings. I arrived here yesterday, and my first task is to assure my dear sister of my welfare and increasing confidence in the success of my undertaking.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG122",
+      "kind": "negative",
+      "source": {
+        "author": "Mary Shelley",
+        "title": "Frankenstein",
+        "year": 1818,
+        "repository": "Project Gutenberg (PG #84)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Six weeks passed in the laboratory at Ingolstadt while the autumn rains beat against the casement. I sorted the mineral salts and glass retorts on the workbench by the light of a single tallow candle.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG123",
+      "kind": "negative",
+      "source": {
+        "author": "Charlotte Brontë",
+        "title": "Jane Eyre",
+        "year": 1847,
+        "repository": "Project Gutenberg (PG #1260)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "There was no possibility of taking a walk that day. We had been wandering, indeed, in the leafless shrubbery an hour in the morning; but since dinner (Mrs. Reed, when there was no company, dined early) the cold winter wind had brought with it clouds so sombre, and a rain so penetrating, that further out-door exercise was now out of the question.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG124",
+      "kind": "negative",
+      "source": {
+        "author": "Charlotte Brontë",
+        "title": "Jane Eyre",
+        "year": 1847,
+        "repository": "Project Gutenberg (PG #1260)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "I mounted into the window-seat: gathering up my feet, I sat cross-legged, like a Turk; and, having drawn the red moreen curtain nearly close, I was shrined in double retirement. Folds of scarlet drapery shut in my view to the right hand; to the left were the clear panes of glass, protecting, but not separating me from the drear November day.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG125",
+      "kind": "negative",
+      "source": {
+        "author": "Emily Brontë",
+        "title": "Wuthering Heights",
+        "year": 1847,
+        "repository": "Project Gutenberg (PG #768)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "1801.—I have just returned from a visit to my landlord—the solitary neighbour that I shall be troubled with. This is certainly a beautiful country! In all England, I do not believe that I could have fixed on a situation so completely removed from the stir of society.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG126",
+      "kind": "negative",
+      "source": {
+        "author": "Emily Brontë",
+        "title": "Wuthering Heights",
+        "year": 1847,
+        "repository": "Project Gutenberg (PG #768)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Wuthering Heights is the name of Mr. Heathcliff's dwelling. 'Wuthering' being a significant provincial adjective, descriptive of the atmospheric tumult to which its station is exposed in stormy weather. Pure, bracing ventilation they must have up there at all times, indeed.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG127",
+      "kind": "negative",
+      "source": {
+        "author": "Oscar Wilde",
+        "title": "The Picture of Dorian Gray",
+        "year": 1890,
+        "repository": "Project Gutenberg (PG #174)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The studio was filled with the rich odour of roses, and when the light summer wind stirred amidst the trees of the garden, there came through the open door the heavy scent of the lilac, or the more delicate perfume of the pink-flowering thorn.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG128",
+      "kind": "negative",
+      "source": {
+        "author": "Oscar Wilde",
+        "title": "The Picture of Dorian Gray",
+        "year": 1890,
+        "repository": "Project Gutenberg (PG #174)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Lord Henry Wotton lay on the divan of Persian saddle-bags smoking one of his innumerable cigarettes. \"I am not going to Lady Agatha's luncheon, Basil, but I shall look in at the club before seven,\" he murmured.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG129",
+      "kind": "negative",
+      "source": {
+        "author": "Leo Tolstoy",
+        "title": "Anna Karenina",
+        "year": 1877,
+        "repository": "Project Gutenberg (PG #1399)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Happy families are all alike; every unhappy family is unhappy in its own way. Everything was in confusion in the Oblonskys' house. The wife had discovered that the husband was carrying on an intrigue with a French girl, who had been a governess in their family, and she had declared to her husband that she could not go on living in the same house with him.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG130",
+      "kind": "negative",
+      "source": {
+        "author": "Leo Tolstoy",
+        "title": "Anna Karenina",
+        "year": 1877,
+        "repository": "Project Gutenberg (PG #1399)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Levin walked down to the mash-tubs where the bailiff was measuring out a mix of rye-straw and clover chaff for the winter stalls. The frost had crusted the water-trough with thin glass that cracked beneath the heifers' muzzles.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG131",
+      "kind": "negative",
+      "source": {
+        "author": "Leo Tolstoy",
+        "title": "War and Peace",
+        "year": 1869,
+        "repository": "Project Gutenberg (PG #2600)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Prince Vasili always spoke languidly, like an actor repeating a stale part. Anna Pavlovna Scherer on the contrary, despite her forty years, overflowed with animation and impulsiveness. To be an enthusiast had become her social vocation and, sometimes even when she did not feel like it, she became enthusiastic in order not to disappoint the expectations of those who knew her.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG132",
+      "kind": "negative",
+      "source": {
+        "author": "Leo Tolstoy",
+        "title": "War and Peace",
+        "year": 1869,
+        "repository": "Project Gutenberg (PG #2600)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The squadron bivouacked beside the mill-dam near Braunau, splitting the remaining hardtack in equal parts among the troopers of the third platoon while the smith hammered a loose shoe on the sergeant's bay.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG133",
+      "kind": "negative",
+      "source": {
+        "author": "Fyodor Dostoevsky",
+        "title": "Crime and Punishment",
+        "year": 1866,
+        "repository": "Project Gutenberg (PG #2554)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "On an exceptionally hot evening early in July a young man came out of the garret in which he lodged in S. Place and walked slowly, as though in hesitation, towards K. bridge. He had successfully avoided meeting his landlady on the staircase.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG134",
+      "kind": "negative",
+      "source": {
+        "author": "Fyodor Dostoevsky",
+        "title": "The Brothers Karamazov",
+        "year": 1880,
+        "repository": "Project Gutenberg (PG #28054)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Alexey Fyodorovitch Karamazov was the third son of Fyodor Pavlovitch Karamazov, a landowner well known in our district in his own day, and still remembered among us owing to his gloomy and tragic death, which happened thirteen years ago, and which I shall describe in its proper place.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG135",
+      "kind": "negative",
+      "source": {
+        "author": "Alexandre Dumas",
+        "title": "The Count of Monte Cristo",
+        "year": 1844,
+        "repository": "Project Gutenberg (PG #1184)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "On the 24th of February, 1815, the look-out at Notre-Dame de la Garde signalled the three-master, the Pharaon, from Smyrna, Trieste, and Naples. As usual, a pilot put off immediately, and rounding the Château d'If, got on board the vessel between Cape Morgiou and Rion island.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG136",
+      "kind": "negative",
+      "source": {
+        "author": "Alexandre Dumas",
+        "title": "The Three Musketeers",
+        "year": 1844,
+        "repository": "Project Gutenberg (PG #1257)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "On the first Monday of the month of April, 1625, the market-town of Meung, in which the author of the Romance of the Rose was born, appeared to be in as perfect a state of revolution as if the Huguenots had just made a second La Rochelle of it.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG137",
+      "kind": "negative",
+      "source": {
+        "author": "Kenneth Grahame",
+        "title": "The Wind in the Willows",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #289)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Mole had been working very hard all the morning, spring-cleaning his little home. First with brooms, then with dusters; then on ladders and steps and chairs, with a brush and a pail of whitewash; till he had dust in his throat and eyes, and splashes of whitewash all over his black fur, and an aching back and weary arms.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG138",
+      "kind": "negative",
+      "source": {
+        "author": "Kenneth Grahame",
+        "title": "The Wind in the Willows",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #289)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Ratty packed the wicker luncheon-basket with cold chicken, pickled gherkins, French rolls, cress sandwiches, and four bottles of ginger-beer. \"The river is not high, Moley, but the current runs brisk past the weir,\" he said, shoving off with the sculls.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG139",
+      "kind": "negative",
+      "source": {
+        "author": "L.M. Montgomery",
+        "title": "Anne of Green Gables",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #45)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mrs. Rachel Lynde lived just where the Avonlea main road dipped down into a little hollow, fringed with alders and ladies' eardrops and traversed by a brook that had its source away back in the woods of the old Cuthbert place; it was reputed to be an intricate, headlong brook in its earlier course through those woods.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG140",
+      "kind": "negative",
+      "source": {
+        "author": "L.M. Montgomery",
+        "title": "Anne of Green Gables",
+        "year": 1908,
+        "repository": "Project Gutenberg (PG #45)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Matthew Cuthbert drove the sorrel mare slowly along the red road toward Bright River Station. He was not a man given to haste, and the afternoon sun lay warm on the spruces and newly plowed fields of Prince Edward Island.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG141",
+      "kind": "negative",
+      "source": {
+        "author": "Wilkie Collins",
+        "title": "The Woman in White",
+        "year": 1859,
+        "repository": "Project Gutenberg (PG #583)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "This is the story of what a Woman's patience can endure, and what a Man's resolution can achieve. If the machinery of the Law could be depended on to fathom every case of suspicion, and to conduct every process of inquiry, with moderate assistance only from the lubricating influences of oil of gold, the events which fill these pages might have claimed their share of the public attention in a Court of Justice.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG142",
+      "kind": "negative",
+      "source": {
+        "author": "Wilkie Collins",
+        "title": "The Moonstone",
+        "year": 1868,
+        "repository": "Project Gutenberg (PG #155)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Betteredge sat on the terrace with his pipe and his copy of Robinson Crusoe open on his knee. \"The sergeant is not talking, Mr. Franklin, but he has been measuring the paint-smudge on the door-frame since breakfast,\" he said.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG143",
+      "kind": "negative",
+      "source": {
+        "author": "Anthony Trollope",
+        "title": "Barchester Towers",
+        "year": 1857,
+        "repository": "Project Gutenberg (PG #3409)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "In the latter days of July in the year 185—, a most important question was for ten days hourly asked in the cathedral city of Barchester, and answered every hour in various ways—Who was to be the new Bishop?",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG144",
+      "kind": "negative",
+      "source": {
+        "author": "Anthony Trollope",
+        "title": "The Warden",
+        "year": 1855,
+        "repository": "Project Gutenberg (PG #619)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The Rev. Septimus Harding was, a few years since, a beneficed clergyman residing in the cathedral town of —; let us call it Barchester. Were we to name Wells or Salisbury, Exeter, Hereford, or Gloucester, it might be presumed that something personal was intended.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG145",
+      "kind": "negative",
+      "source": {
+        "author": "Rudyard Kipling",
+        "title": "Kim",
+        "year": 1901,
+        "repository": "Project Gutenberg (PG #2226)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "He sat, in defiance of municipal orders, astride the gun Zam-Zammeh on her brick platform opposite the old Ajaib-Gher—the Wonder House, as the natives call the Lahore Museum. Who hold Zam-Zammeh, that 'fire-breathing dragon,' hold the Punjab, for the great green-bronze piece is always first of the conqueror's loot.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG146",
+      "kind": "negative",
+      "source": {
+        "author": "Rudyard Kipling",
+        "title": "The Jungle Book",
+        "year": 1894,
+        "repository": "Project Gutenberg (PG #236)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "It was seven o'clock of a very warm evening in the Seeonee hills when Father Wolf woke up from his day's rest, scratched himself, yawned, and spread out his paws one after the other to get rid of the sleepy feeling in their tips.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG147",
+      "kind": "negative",
+      "source": {
+        "author": "Ambrose Bierce",
+        "title": "An Occurrence at Owl Creek Bridge",
+        "year": 1890,
+        "repository": "Project Gutenberg (PG #375)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "A man stood upon a railroad bridge in northern Alabama, looking down into the swift water twenty feet below. The man's hands were behind his back, the wrists bound with a cord. A rope closely encircled his neck. It was attached to a stout cross-timber above his head and the slack fell to the level of his knees.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG148",
+      "kind": "negative",
+      "source": {
+        "author": "Ambrose Bierce",
+        "title": "An Occurrence at Owl Creek Bridge",
+        "year": 1890,
+        "repository": "Project Gutenberg (PG #375)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The sergeant stepped aside from the plank and saluted the captain without a word. Far below, a piece of driftwood swirled in the eddy between the stone piers and drifted down toward the bend.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG149",
+      "kind": "negative",
+      "source": {
+        "author": "O. Henry",
+        "title": "The Gift of the Magi",
+        "year": 1905,
+        "repository": "Project Gutenberg (PG #7256)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "One dollar and eighty-seven cents. That was all. And sixty cents of it was in pennies. Pennies saved one and two at a time by bulldozing the grocer and the vegetable man and the butcher until one's cheeks burned with the silent imputation of parsimony that such close dealing implied.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG150",
+      "kind": "negative",
+      "source": {
+        "author": "O. Henry",
+        "title": "The Four Million",
+        "year": 1906,
+        "repository": "Project Gutenberg (PG #2776)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "At ten o'clock the night clerk at the Skylight Room turned down the gas-jet in the second-floor hall and sorted the evening mail into the pigeonholes behind the counter.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG151",
+      "kind": "negative",
+      "source": {
+        "author": "Kate Chopin",
+        "title": "The Awakening",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #160)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "A green and yellow parrot, which hung in a cage outside the door, kept repeating over and over: \"Allez vous-en! Allez vous-en! Sapristi! That's all right!\" He could speak a little Spanish, and also a language which nobody understood, unless it was the mocking-bird that hung on the other side of the door.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG152",
+      "kind": "negative",
+      "source": {
+        "author": "Kate Chopin",
+        "title": "The Awakening",
+        "year": 1899,
+        "repository": "Project Gutenberg (PG #160)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Edna Pontellier walked down the boardwalk toward the bath-houses with her parasol tilted against the glare off the Gulf. Robert was not waiting on the steps, but she saw his white straw hat down by the jetty.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG153",
+      "kind": "negative",
+      "source": {
+        "author": "Stephen Crane",
+        "title": "The Red Badge of Courage",
+        "year": 1895,
+        "repository": "Project Gutenberg (PG #73)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The cold passed reluctantly from the earth, and the retiring fogs revealed an army stretched out on the hills, resting. As the landscape changed from brown to green, the army awakened, and began to tremble with eagerness at the noise of rumors.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG154",
+      "kind": "negative",
+      "source": {
+        "author": "Stephen Crane",
+        "title": "The Open Boat",
+        "year": 1897,
+        "repository": "Project Gutenberg (PG #45524)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "None of them knew the color of the sky. Their eyes glanced level, and were fastened upon the waves that swept toward them. These waves were of the hue of slate, save for the tops, which were of foaming white, and all of the men knew the colors of the sea.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG155",
+      "kind": "negative",
+      "source": {
+        "author": "Stephen Crane",
+        "title": "The Open Boat",
+        "year": 1897,
+        "repository": "Project Gutenberg (PG #45524)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "The cook bailed the bilge with an empty tin while the oiler kept the bow toward the rollers. The sea was not breaking over the gunwale yet, but the wind off Mosquito Inlet carried spray across their shoulders.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG156",
+      "kind": "negative",
+      "source": {
+        "author": "Washington Irving",
+        "title": "The Sketch Book of Geoffrey Crayon",
+        "year": 1820,
+        "repository": "Project Gutenberg (PG #2048)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "In the bosom of one of those spacious coves which indent the eastern shore of the Hudson, at that broad expansion of the river denominated by the ancient Dutch navigators the Tappan Zee, and where they always prudently shortened sail, there lies a small market-town or rural port, which by some is called Greensburgh, but which is more generally and properly known by the name of Tarry Town.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG157",
+      "kind": "negative",
+      "source": {
+        "author": "Washington Irving",
+        "title": "Rip Van Winkle",
+        "year": 1819,
+        "repository": "Project Gutenberg (PG #2048)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Whoever has made a voyage up the Hudson must remember the Kaatskill mountains. They are a dismembered branch of the great Appalachian family, and are seen away to the west of the river, swelling up to a noble height, and lording it over the surrounding country.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG158",
+      "kind": "negative",
+      "source": {
+        "author": "Booth Tarkington",
+        "title": "The Magnificent Ambersons",
+        "year": 1918,
+        "repository": "Project Gutenberg (PG #8867)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Major Amberson had 'made a fortune' in 1873, when other people were losing fortunes, and the magnificence of the Ambersons began then. It lasted all through the years when sharp-waisted black frock-coats and tall silk hats were worn in the morning by elderly gentlemen in inland towns.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG159",
+      "kind": "negative",
+      "source": {
+        "author": "Sarah Orne Jewett",
+        "title": "The Country of the Pointed Firs",
+        "year": 1896,
+        "repository": "Project Gutenberg (PG #367)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "There was something about the coast town of Dunnet which made it seem more attractive than other maritime villages of eastern Maine. Perhaps it was the simple fact of acquaintance with that neighborhood which made it so attaching.",
+      "expected_shelves": []
+    },
+    {
+      "id": "NEG160",
+      "kind": "negative",
+      "source": {
+        "author": "Sarah Orne Jewett",
+        "title": "The Country of the Pointed Firs",
+        "year": 1896,
+        "repository": "Project Gutenberg (PG #367)",
+        "license": "Public Domain (pre-1929 published fiction)"
+      },
+      "prose": "Mrs. Todd tied a mix of pennyroyal and dried catnip into small linen packets on the kitchen table while the kettle steamed on the back of the range. Hours later, when the packet-boat whistle sounded off the ledges, she took her shawl from the peg behind the door.",
+      "expected_shelves": []
+    },
+    {
+      "id": "POS001",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (contrast_not_x_but_y)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "It wasn't anger. It was disappointment.\nThis wasn't a homecoming. It was a reckoning. He set the ledger down on the counter.",
+      "expected_shelves": [
+        "contrast_not_x_but_y"
+      ]
+    },
+    {
+      "id": "POS002",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (contrast_not_x_but_y)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "That wasn't fear. It was grief.\nIt wasn't a request. It was an order. She turned the key in the iron lock.",
+      "expected_shelves": [
+        "contrast_not_x_but_y"
+      ]
+    },
+    {
+      "id": "POS003",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (contrast_not_x_but_y)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "Not fear — something older, something that had no name.\nShe didn't run because she was brave. She ran because she was done.",
+      "expected_shelves": [
+        "contrast_not_x_but_y"
+      ]
+    },
+    {
+      "id": "POS004",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (contrast_not_x_but_y)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "This wasn't a truce. It was a trap.\nIt wasn't mercy. It was calculation. The guard stepped back from the grate.",
+      "expected_shelves": [
+        "contrast_not_x_but_y"
+      ]
+    },
+    {
+      "id": "POS005",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (emotion_cocktail)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She felt a mix of relief and dread when the courier handed her the wax-sealed envelope.",
+      "expected_shelves": [
+        "emotion_cocktail"
+      ]
+    },
+    {
+      "id": "POS006",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (emotion_cocktail)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He stood on the dock, equal parts hope and terror as the gangplank came down.",
+      "expected_shelves": [
+        "emotion_cocktail"
+      ]
+    },
+    {
+      "id": "POS007",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (emotion_cocktail)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "A confusing swirl of love and resentment rose in her chest while she read her brother's note.",
+      "expected_shelves": [
+        "emotion_cocktail"
+      ]
+    },
+    {
+      "id": "POS008",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (emotion_cocktail)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He was torn between pride and shame as the magistrate read the verdict aloud.",
+      "expected_shelves": [
+        "emotion_cocktail"
+      ]
+    },
+    {
+      "id": "POS009",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (fishing_ending)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She locked the till and stood in the doorway.\n\nShe didn't know what tomorrow would bring.",
+      "expected_shelves": [
+        "fishing_ending"
+      ]
+    },
+    {
+      "id": "POS010",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (fishing_ending)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He folded the map into his coat pocket and stepped out into the lane.\n\nOnly time would tell.",
+      "expected_shelves": [
+        "fishing_ending"
+      ]
+    },
+    {
+      "id": "POS011",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (fishing_ending)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "They watched the tail-lights vanish beyond the ridge.\n\nThe real journey was just beginning.",
+      "expected_shelves": [
+        "fishing_ending"
+      ]
+    },
+    {
+      "id": "POS012",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (fishing_ending)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She blew out the lantern and listened to the rain on the roof.\n\nNothing would ever be the same.",
+      "expected_shelves": [
+        "fishing_ending"
+      ]
+    },
+    {
+      "id": "POS013",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (said_bookism)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "\"Leave now,\" she hissed.\n\"Please listen,\" he breathed.\n\"Impossible,\" she gasped.\n",
+      "expected_shelves": [
+        "said_bookism"
+      ]
+    },
+    {
+      "id": "POS014",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (said_bookism)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "\"Hand it over,\" Marcus growled.\n\"Never,\" Elena snapped.\n\"You have no choice,\" he intoned.\n",
+      "expected_shelves": [
+        "said_bookism"
+      ]
+    },
+    {
+      "id": "POS015",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (said_bookism)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "\"What is that?\" she queried.\n\"The warrant,\" he interjected.\n\"Get out,\" she hissed.\n",
+      "expected_shelves": [
+        "said_bookism"
+      ]
+    },
+    {
+      "id": "POS016",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (said_bookism)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "\"Stand back!\" the clerk ejaculated.\n\"Not a chance,\" the guard growled.\n\"Look at the door,\" she gasped.\n",
+      "expected_shelves": [
+        "said_bookism"
+      ]
+    },
+    {
+      "id": "POS017",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (body_reactions)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "Her jaw tightened as she opened the lockbox. Her stomach dropped when she saw the slot was empty.",
+      "expected_shelves": [
+        "body_reactions"
+      ]
+    },
+    {
+      "id": "POS018",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (body_reactions)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "His heart hammered against his ribs as the footsteps neared. His blood ran cold at the knock.",
+      "expected_shelves": [
+        "body_reactions"
+      ]
+    },
+    {
+      "id": "POS019",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (body_reactions)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "Her knuckles whitened on the rail and she let out a breath she didn't know she was holding.",
+      "expected_shelves": [
+        "body_reactions"
+      ]
+    },
+    {
+      "id": "POS020",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (body_reactions)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "A lump in his throat stopped his reply, and the scrape of the bolt sent shivers down his spine.",
+      "expected_shelves": [
+        "body_reactions"
+      ]
+    },
+    {
+      "id": "POS021",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (eye_department)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "His gaze pierced her across the courtroom. Her eyes darkened with fury and she refused to sit.",
+      "expected_shelves": [
+        "eye_department"
+      ]
+    },
+    {
+      "id": "POS022",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (eye_department)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He turned with eyes that held a quiet sadness, and something flickered behind his eyes before he looked away.",
+      "expected_shelves": [
+        "eye_department"
+      ]
+    },
+    {
+      "id": "POS023",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (eye_department)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She looked into his eyes and saw the truth. His eyes darkened as the bell rang.",
+      "expected_shelves": [
+        "eye_department"
+      ]
+    },
+    {
+      "id": "POS024",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (eye_department)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "His eyes held grief as he read the tally, and his gaze pierced the clerk who had brought it.",
+      "expected_shelves": [
+        "eye_department"
+      ]
+    },
+    {
+      "id": "POS025",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (gesture_rack)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He shrugged and ran a hand through his hair. \"I don't know what you want me to say.\"",
+      "expected_shelves": [
+        "gesture_rack"
+      ]
+    },
+    {
+      "id": "POS026",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (gesture_rack)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She crossed her arms, sighed at the ceiling, and clenched her fists by her sides.",
+      "expected_shelves": [
+        "gesture_rack"
+      ]
+    },
+    {
+      "id": "POS027",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (gesture_rack)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He clenched his fists and crossed his arms while the foreman read the roster.",
+      "expected_shelves": [
+        "gesture_rack"
+      ]
+    },
+    {
+      "id": "POS028",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (gesture_rack)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He sighed, shrugged at the empty stall, and ran a hand through his hair.",
+      "expected_shelves": [
+        "gesture_rack"
+      ]
+    },
+    {
+      "id": "POS029",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (atmosphere_prefabs)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "The air crackled with unspoken tension. Silence hung heavy over the long oak table.",
+      "expected_shelves": [
+        "atmosphere_prefabs"
+      ]
+    },
+    {
+      "id": "POS030",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (atmosphere_prefabs)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "The room seemed to hold its breath as he entered, and something in the air shifted between them.",
+      "expected_shelves": [
+        "atmosphere_prefabs"
+      ]
+    },
+    {
+      "id": "POS031",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (atmosphere_prefabs)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "The ruined tower stood as a testament to the siege, bathed in a dance of shadow and flame.",
+      "expected_shelves": [
+        "atmosphere_prefabs"
+      ]
+    },
+    {
+      "id": "POS032",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (atmosphere_prefabs)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "Silence hung heavy in the corridor while the crowd seemed to hold its breath.",
+      "expected_shelves": [
+        "atmosphere_prefabs"
+      ]
+    },
+    {
+      "id": "POS033",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (naming_watchlist)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She suddenly reached for the latch. In that moment something shifted, and she wanted to delve into the cellar ledgers.",
+      "expected_shelves": [
+        "naming_watchlist"
+      ]
+    },
+    {
+      "id": "POS034",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (naming_watchlist)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He couldn't help but stare at the letter; it was as if the weight of regret had settled over the desk.",
+      "expected_shelves": [
+        "naming_watchlist"
+      ]
+    },
+    {
+      "id": "POS035",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (naming_watchlist)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She found herself stepping back with a sense of dread, and in that moment she knew the lock was sprung.",
+      "expected_shelves": [
+        "naming_watchlist"
+      ]
+    },
+    {
+      "id": "POS036",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (naming_watchlist)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "Somehow he couldn't help but hesitate on the threshold, as if something shifted in the quiet room.",
+      "expected_shelves": [
+        "naming_watchlist"
+      ]
+    },
+    {
+      "id": "POS037",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (rhythm_cadence)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He ran.\nHe fell.\nHe rose.\nThe kettle clicked.\nShe sat.\nShe stood.\nShe left.",
+      "expected_shelves": [
+        "rhythm_cadence"
+      ]
+    },
+    {
+      "id": "POS038",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (rhythm_cadence)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She looked.\nShe waited.\nShe turned.\nThe door stayed shut.\nHe knocked.\nHe paused.\nHe left.",
+      "expected_shelves": [
+        "rhythm_cadence"
+      ]
+    },
+    {
+      "id": "POS039",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (rhythm_cadence)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "They marched.\nThey halted.\nThey knelt.\nThe horn sounded.\nHe aimed.\nHe fired.\nHe missed.",
+      "expected_shelves": [
+        "rhythm_cadence"
+      ]
+    },
+    {
+      "id": "POS040",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (rhythm_cadence)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He spoke.\nHe stopped.\nHe frowned.\nThe candle guttered.\nShe laughed.\nShe rose.\nShe walked.",
+      "expected_shelves": [
+        "rhythm_cadence"
+      ]
+    },
+    {
+      "id": "POS041",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (triadic_listing)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He remembered the smell of rain, the taste of copper, the weight of regret. The alley held blood, ash, and memory.",
+      "expected_shelves": [
+        "triadic_listing"
+      ]
+    },
+    {
+      "id": "POS042",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (triadic_listing)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She carried the sound of iron, the scent of pine, and the shadow of grief. Behind her lay blood, ash, and ruin.",
+      "expected_shelves": [
+        "triadic_listing"
+      ]
+    },
+    {
+      "id": "POS043",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (triadic_listing)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "The hall echoed with the clink of glass, the murmur of voices, and the rustle of silk, while the courtyard smelled of the tang of smoke, the chill of stone, and the rot of leaves.",
+      "expected_shelves": [
+        "triadic_listing"
+      ]
+    },
+    {
+      "id": "POS044",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (triadic_listing)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "They marched through blood, ash, and dust, bound by the oath of steel, the law of winter, and the price of treason.",
+      "expected_shelves": [
+        "triadic_listing"
+      ]
+    },
+    {
+      "id": "POS045",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (solitary_fade)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She spent the afternoon thinking about what he'd said.\n\nHours passed.\n\nLater, at the meeting, she told him everything.",
+      "expected_shelves": [
+        "solitary_fade"
+      ]
+    },
+    {
+      "id": "POS046",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (solitary_fade)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He thought about the offer until morning.\n\nHours passed.",
+      "expected_shelves": [
+        "solitary_fade"
+      ]
+    },
+    {
+      "id": "POS047",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (solitary_fade)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "She left the kitchen and later told Marcus she would take the shift.",
+      "expected_shelves": [
+        "solitary_fade"
+      ]
+    },
+    {
+      "id": "POS048",
+      "kind": "positive",
+      "source": {
+        "author": "Spindle synthetic anti-slop fixture",
+        "title": "LLM-style positive example (solitary_fade)",
+        "year": 2026,
+        "repository": "spindle/evals/anti_slop",
+        "license": "CC0-1.0"
+      },
+      "prose": "He spent the evening thinking about the letter.\n\nLater, at the office, he told her everything.",
+      "expected_shelves": [
+        "solitary_fade"
+      ]
+    }
+  ]
+}
