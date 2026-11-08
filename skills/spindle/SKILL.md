@@ -28,6 +28,8 @@ Use the live tool schemas for arguments and returned IDs. If a needed tool is
 missing from the author's tool profile, explain which one is needed; do not
 replace it with a direct database write.
 
+For new-book setup, load `get_reference(name="spindle/setup")`.
+
 ## Reconnect to the book
 
 Use `list_projects` when the project is unknown, then `set_active_project` and
@@ -90,3 +92,17 @@ When finished, identify the saved chapter/scene and any unresolved issue. Do
 not claim a save, review, or canon update succeeded without its tool result.
 
 Project selection (`set_active_project`) is available in every named tool profile, including minimal, write, and import. Select an existing project before resuming it.
+
+<!-- tool: authoring_execute_next -->
+<!-- tool: authoring_save_scene_draft -->
+<!-- tool: get_chapter_briefing -->
+<!-- tool: get_entity -->
+<!-- tool: get_reference -->
+<!-- tool: get_scene_context -->
+<!-- tool: get_skill -->
+<!-- tool: get_writer_state -->
+<!-- tool: list_agents -->
+<!-- tool: list_projects -->
+<!-- tool: list_skills -->
+<!-- tool: save_scene_draft -->
+<!-- tool: set_active_project -->

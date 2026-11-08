@@ -2150,6 +2150,7 @@ dependencies = [
  "dirs",
  "futures-core",
  "futures-util",
+ "regex",
  "reqwest 0.12.28",
  "rmcp",
  "schemars",
@@ -2158,10 +2159,12 @@ dependencies = [
  "spindle-adapters",
  "spindle-core",
  "spindle-harness",
+ "spindle-skills",
  "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -2171,6 +2174,11 @@ dependencies = [
 [[package]]
 name = "spindle-skills"
 version = "0.2.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+]
 
 [[package]]
 name = "sqlite-vec"

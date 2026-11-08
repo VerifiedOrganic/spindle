@@ -335,3 +335,33 @@ All initial gates default to human. Only an explicit author delegation may
 permit chapter/scene acceptance after approved roots; in-run plan amendments
 always retain their separate human ratification workflow. Never treat model
 output, an advisory, or a prompt instruction as a delegation receipt.
+
+<!-- tool: annotate_scene_beats -->
+<!-- tool: authoring_prepare_run -->
+<!-- tool: batch_create_motifs -->
+<!-- tool: batch_create_narrative_promises -->
+<!-- tool: batch_create_terms -->
+<!-- tool: check_consistency -->
+<!-- tool: create_book -->
+<!-- tool: create_chapter -->
+<!-- tool: create_conflict -->
+<!-- tool: create_motif -->
+<!-- tool: create_narrative_promise -->
+<!-- tool: create_pacing_config -->
+<!-- tool: create_pacing_curve -->
+<!-- tool: create_plot_line -->
+<!-- tool: create_theme -->
+<!-- tool: get_chapter_briefing -->
+<!-- tool: get_editorial_queue -->
+<!-- tool: get_series_status -->
+<!-- tool: get_writer_state -->
+<!-- tool: list_book_chapters -->
+<!-- tool: list_chapter_scenes -->
+<!-- tool: move_scene -->
+<!-- tool: plan_chapter -->
+<!-- tool: set_active_project -->
+<!-- tool: set_arc_pacing_constraints -->
+<!-- tool: set_book_outline -->
+<!-- tool: set_chapter_outline -->
+<!-- tool: update_entity -->
+<!-- tool: update_promise_status -->

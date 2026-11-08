@@ -431,3 +431,53 @@ call stays in the main context, where the host decides and writes. Consult the
 individual skill for its specific fan-out (per-scene review, per-dimension
 editorial passes with adversarial verification, per-chapter continuity sweeps,
 per-alternative revision assessments, pre-draft canon recon).
+
+<!-- tool: compile_manuscript -->
+<!-- tool: create_branch -->
+<!-- tool: create_character -->
+<!-- tool: create_character_arc -->
+<!-- tool: create_conflict -->
+<!-- tool: create_economy -->
+<!-- tool: create_faction -->
+<!-- tool: create_future_knowledge -->
+<!-- tool: create_location -->
+<!-- tool: create_motif -->
+<!-- tool: create_narrative_promise -->
+<!-- tool: create_pacing_config -->
+<!-- tool: create_plot_line -->
+<!-- tool: create_relationship -->
+<!-- tool: create_religion -->
+<!-- tool: create_system_overlay -->
+<!-- tool: create_temporal_intervention -->
+<!-- tool: create_term -->
+<!-- tool: create_theme -->
+<!-- tool: create_timeline_event -->
+<!-- tool: create_world_rule -->
+<!-- tool: export_recap -->
+<!-- tool: export_series_bible -->
+<!-- tool: find_entity -->
+<!-- tool: find_scenes_referencing -->
+<!-- tool: get_chapter_briefing -->
+<!-- tool: get_character_snapshot -->
+<!-- tool: get_entity -->
+<!-- tool: get_scene_context -->
+<!-- tool: get_writer_state -->
+<!-- tool: import_manuscript -->
+<!-- tool: list_agents -->
+<!-- tool: list_book_chapters -->
+<!-- tool: list_chapter_scenes -->
+<!-- tool: list_projects -->
+<!-- tool: list_revision_markers -->
+<!-- tool: record_knowledge -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: research_add_claim -->
+<!-- tool: research_add_note -->
+<!-- tool: research_add_source -->
+<!-- tool: research_pack_for_scene -->
+<!-- tool: research_search -->
+<!-- tool: save_summary -->
+<!-- tool: search_bible -->
+<!-- tool: set_active_project -->
+<!-- tool: set_arc_pacing_constraints -->
+<!-- tool: switch_branch -->
+<!-- tool: update_promise_status -->

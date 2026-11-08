@@ -71,7 +71,9 @@ not own story business rules, persistence query details, or public story DTOs.
 `spindle-harness` is another inbound adapter, but as an operator/client over
 the public MCP surface. It should not reach into repositories or SQLite.
 
-`spindle-skills` is static embedded asset packaging only.
+`spindle-skills` is static embedded asset packaging only. Versioned skill
+manifests and nested references are embedded at build time;
+`docs/skill-manifests.md` describes dependency and profile-alignment guards.
 
 ## Boundary Audit
 

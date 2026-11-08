@@ -1,0 +1,12 @@
+version = 1
+name = "editor"
+profiles = ["default"]
+requires_skills = ["spindle"]
+tools = ["get_reference", "check_consistency", "export_bible", "export_epub", "extract_canonical_facts_from_scene", "find_scenes_referencing", "get_scene_context", "list_book_chapters", "list_chapter_scenes", "preflight_book_export", "pull_chapter_from_file", "push_chapter_to_file", "record_note", "register_canonical_fact", "research_query", "run_dual_persona_review", "save_summary", "search_bible", "set_active_project"]
+
+[[references]]
+name = "style"
+path = "references/style.md"
+trigger = "Load for style-profile editing and recovery."
+profiles = ["default"]
+tools = ["apply_style_profile", "apply_style_revision_patch", "archive_style_profile", "check_style_against_profile", "check_style_profile_sources", "compare_style_profiles", "create_style_profile_from_markdown", "evaluate_style_revision_patch", "get_style_profile", "list_style_profile_applications", "list_style_profiles", "list_style_revision_patch_audits", "plan_style_revision", "preview_apply_style_profile", "preview_refresh_style_profile", "preview_style_revision_patch", "refresh_style_profile", "rollback_style_profile_application", "rollback_style_revision_patch"]

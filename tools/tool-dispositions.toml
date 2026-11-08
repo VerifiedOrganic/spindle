@@ -1,0 +1,1192 @@
+version = 1
+# Current shipped dispositions; this is not a ledger of implemented alias adapters.
+
+[[tools]]
+name = "annotate_scene_beats"
+classification = "retained"
+owner = "continuity-editor, plot-architect, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "apply_style_profile"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "apply_style_revision_patch"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "archive_entity"
+classification = "compatibility"
+owner = "P4"
+review_by = "R"
+reason = "Existing tool awaits a dedicated canonical workflow; preserve current semantics."
+
+[[tools]]
+name = "archive_style_profile"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_cancel_run"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_execute_next"
+classification = "retained"
+owner = "authoring-supervisor, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_prepare_run"
+classification = "retained"
+owner = "authoring-supervisor, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_record_checkpoint_audit"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_resolve_block"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_review_checkpoint"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_save_scene_draft"
+classification = "retained"
+owner = "authoring-supervisor, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_start_run"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "authoring_status"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "backfill_scene_source_offsets"
+classification = "operator"
+owner = "P4"
+review_by = "R"
+reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+
+[[tools]]
+name = "batch_create_motifs"
+classification = "retained"
+owner = "plot-architect, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "batch_create_narrative_promises"
+classification = "retained"
+owner = "plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "batch_create_terms"
+classification = "retained"
+owner = "plot-architect, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "batch_set_character_voice_profiles"
+classification = "retained"
+owner = "character-creator"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "bind_canonical_fact_to_scene"
+classification = "retained"
+owner = "continuity-editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "check_consistency"
+classification = "retained"
+owner = "authoring-supervisor, character-creator, continuity-editor, editor, plot-architect, revision-manager, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "check_style_against_profile"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "check_style_profile_sources"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "commit_character_state"
+classification = "retained"
+owner = "canon-steward, character-creator, continuity-editor, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "commit_quantity_state"
+classification = "retained"
+owner = "continuity-editor, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "commit_scene_changes"
+classification = "retained"
+owner = "authoring-supervisor, continuity-editor, revision-manager, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "compare_alternatives"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "compare_style_profiles"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "compile_manuscript"
+classification = "retained"
+owner = "bible-librarian"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "configure_agents"
+classification = "operator"
+owner = "P4"
+review_by = "R"
+reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+
+[[tools]]
+name = "continue_generation"
+classification = "retained"
+owner = "scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_book"
+classification = "retained"
+owner = "plot-architect, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_branch"
+classification = "retained"
+owner = "bible-librarian, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_chapter"
+classification = "retained"
+owner = "plot-architect, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_character"
+classification = "retained"
+owner = "bible-librarian, character-creator, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_character_arc"
+classification = "retained"
+owner = "bible-librarian, character-creator"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_conflict"
+classification = "retained"
+owner = "bible-librarian, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_economy"
+classification = "retained"
+owner = "bible-librarian, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_faction"
+classification = "retained"
+owner = "bible-librarian, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_future_knowledge"
+classification = "retained"
+owner = "bible-librarian, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_location"
+classification = "retained"
+owner = "bible-librarian, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_motif"
+classification = "retained"
+owner = "bible-librarian, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_narrative_promise"
+classification = "retained"
+owner = "authoring-supervisor, bible-librarian, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_pacing_config"
+classification = "retained"
+owner = "bible-librarian, plot-architect, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_pacing_curve"
+classification = "retained"
+owner = "plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_plot_line"
+classification = "retained"
+owner = "bible-librarian, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_project"
+classification = "retained"
+owner = "spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_relationship"
+classification = "retained"
+owner = "bible-librarian, character-creator, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_religion"
+classification = "retained"
+owner = "bible-librarian, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_save_point"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_style_profile_from_markdown"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_system_overlay"
+classification = "retained"
+owner = "bible-librarian, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_temporal_intervention"
+classification = "retained"
+owner = "bible-librarian"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_term"
+classification = "retained"
+owner = "bible-librarian, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_theme"
+classification = "retained"
+owner = "bible-librarian, character-creator, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_timeline_event"
+classification = "retained"
+owner = "bible-librarian"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "create_world_rule"
+classification = "retained"
+owner = "bible-librarian, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "decide_canon_deltas"
+classification = "retained"
+owner = "authoring-supervisor, canon-steward"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "decide_editorial_item"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "decide_plan_amendments"
+classification = "retained"
+owner = "authoring-supervisor, canon-steward"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "delete_scene"
+classification = "compatibility"
+owner = "P4"
+review_by = "R"
+reason = "Existing tool awaits a dedicated canonical workflow; preserve current semantics."
+
+[[tools]]
+name = "derive_quantity_scheme_from_system_overlay"
+classification = "retained"
+owner = "continuity-editor, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "diff_branches"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "evaluate_style_revision_patch"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "export_bible"
+classification = "retained"
+owner = "editor, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "export_epub"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "export_recap"
+classification = "retained"
+owner = "bible-librarian"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "export_series_bible"
+classification = "retained"
+owner = "bible-librarian"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "extract_canonical_facts_from_scene"
+classification = "retained"
+owner = "continuity-editor, editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "find_entity"
+classification = "retained"
+owner = "bible-librarian, character-creator, continuity-editor, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "find_scenes_referencing"
+classification = "retained"
+owner = "bible-librarian, canon-steward, continuity-editor, editor, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "generate_alternatives"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_chapter_briefing"
+classification = "retained"
+owner = "authoring-supervisor, bible-librarian, continuity-editor, plot-architect, scene-writer, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_character_snapshot"
+classification = "retained"
+owner = "bible-librarian, character-creator, continuity-editor, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_editorial_queue"
+classification = "retained"
+owner = "authoring-supervisor, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_entity"
+classification = "retained"
+owner = "bible-librarian, canon-steward, character-creator, continuity-editor, scene-writer, spindle, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_episode_release"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_model_usage"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_reference"
+classification = "retained"
+owner = "editor, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_scene_context"
+classification = "retained"
+owner = "authoring-supervisor, bible-librarian, canon-steward, character-creator, continuity-editor, editor, revision-manager, scene-writer, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_series_status"
+classification = "retained"
+owner = "authoring-supervisor, plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_skill"
+classification = "retained"
+owner = "spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_style_profile"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "get_writer_state"
+classification = "retained"
+owner = "bible-librarian, continuity-editor, plot-architect, revision-manager, scene-writer, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_analyze_character"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_analyze_narrative"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_apply_review_decisions"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_compute_final_state"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_consolidate_entities"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_extract_entities"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_extract_world"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_hydrate_bible"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_manuscript"
+classification = "retained"
+owner = "bible-librarian, manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "import_status"
+classification = "retained"
+owner = "manuscript-importer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "init_grok_skills"
+classification = "operator"
+owner = "P4"
+review_by = "R"
+reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+
+[[tools]]
+name = "list_agents"
+classification = "retained"
+owner = "bible-librarian, scene-writer, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_book_chapters"
+classification = "retained"
+owner = "bible-librarian, editor, plot-architect, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_canon_deltas"
+classification = "retained"
+owner = "authoring-supervisor, canon-steward"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_chapter_scenes"
+classification = "retained"
+owner = "bible-librarian, editor, plot-architect, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_plan_amendments"
+classification = "retained"
+owner = "authoring-supervisor, canon-steward"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_projects"
+classification = "retained"
+owner = "bible-librarian, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_revision_markers"
+classification = "retained"
+owner = "bible-librarian, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_scene_versions"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_skills"
+classification = "retained"
+owner = "spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_style_profile_applications"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_style_profiles"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "list_style_revision_patch_audits"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "merge_branch"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "migrate_canonical_fact"
+classification = "retained"
+owner = "continuity-editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "mine_scene_canon"
+classification = "retained"
+owner = "authoring-supervisor, canon-steward"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "move_scene"
+classification = "retained"
+owner = "plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "operator_delete_scene"
+classification = "operator"
+owner = "P4"
+review_by = "R"
+reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+
+[[tools]]
+name = "plan_chapter"
+classification = "retained"
+owner = "authoring-supervisor, continuity-editor, plot-architect, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "plan_style_revision"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "preflight_book_export"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "prepare_episode_release"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "preview_apply_style_profile"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "preview_refresh_style_profile"
+classification = "retained"
+owner = "authoring-supervisor, editor, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "preview_style_revision_patch"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "pull_chapter_from_file"
+classification = "retained"
+owner = "editor, manuscript-importer, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "push_chapter_to_file"
+classification = "retained"
+owner = "editor, manuscript-importer, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "read_episode"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "rebuild_search_index"
+classification = "operator"
+owner = "P4"
+review_by = "R"
+reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+
+[[tools]]
+name = "record_knowledge"
+classification = "retained"
+owner = "authoring-supervisor, bible-librarian, continuity-editor, manuscript-importer, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "record_note"
+classification = "retained"
+owner = "canon-steward, editor, revision-manager, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "refresh_style_profile"
+classification = "retained"
+owner = "authoring-supervisor, editor, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "register_canonical_fact"
+classification = "retained"
+owner = "bible-librarian, canon-steward, character-creator, continuity-editor, editor, manuscript-importer, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "release_episode"
+classification = "retained"
+owner = "authoring-supervisor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "replan_chapter"
+classification = "retained"
+owner = "authoring-supervisor, canon-steward"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_add_claim"
+classification = "retained"
+owner = "bible-librarian, researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_add_note"
+classification = "retained"
+owner = "bible-librarian, researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_add_source"
+classification = "retained"
+owner = "bible-librarian, researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_ingest_report"
+classification = "retained"
+owner = "researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_pack_for_scene"
+classification = "retained"
+owner = "bible-librarian, researcher, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_plan_for_scene"
+classification = "retained"
+owner = "researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_query"
+classification = "retained"
+owner = "editor, researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_search"
+classification = "retained"
+owner = "bible-librarian, researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "research_usage_for_scene"
+classification = "retained"
+owner = "researcher"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "resolve_revision_marker"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "restore_save_point"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "restore_scene_version"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "revise_generation"
+classification = "retained"
+owner = "scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "revise_scene"
+classification = "retained"
+owner = "continuity-editor, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "rollback_style_profile_application"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "rollback_style_revision_patch"
+classification = "retained"
+owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "run_dual_persona_review"
+classification = "retained"
+owner = "authoring-supervisor, editor, revision-manager, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "save_scene_draft"
+classification = "retained"
+owner = "authoring-supervisor, continuity-editor, scene-writer, spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "save_summary"
+classification = "retained"
+owner = "bible-librarian, editor, revision-manager, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "scan_scene_prices"
+classification = "retained"
+owner = "continuity-editor, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "search_bible"
+classification = "retained"
+owner = "authoring-supervisor, bible-librarian, canon-steward, editor, revision-manager, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "select_alternative"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_active_project"
+classification = "retained"
+owner = "bible-librarian, canon-steward, character-creator, continuity-editor, editor, plot-architect, revision-manager, scene-writer, spindle, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_arc_pacing_constraints"
+classification = "retained"
+owner = "bible-librarian, continuity-editor, plot-architect, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_book_outline"
+classification = "retained"
+owner = "plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_chapter_outline"
+classification = "retained"
+owner = "plot-architect"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_character_birth"
+classification = "retained"
+owner = "worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_character_voice_profile"
+classification = "retained"
+owner = "character-creator"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_narrator_voice"
+classification = "compatibility"
+owner = "P4"
+review_by = "R"
+reason = "Existing tool awaits a dedicated canonical workflow; preserve current semantics."
+
+[[tools]]
+name = "set_project_calendar"
+classification = "retained"
+owner = "authoring-supervisor, continuity-editor, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_project_quantity_scheme"
+classification = "retained"
+owner = "continuity-editor, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_scene_clock"
+classification = "retained"
+owner = "authoring-supervisor, continuity-editor, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "set_timeline_event_clock"
+classification = "retained"
+owner = "worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "switch_branch"
+classification = "retained"
+owner = "bible-librarian, revision-manager"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "test_agent"
+classification = "operator"
+owner = "P4"
+review_by = "R"
+reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+
+[[tools]]
+name = "update_arc_milestone"
+classification = "retained"
+owner = "continuity-editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "update_entity"
+classification = "retained"
+owner = "authoring-supervisor, continuity-editor, plot-architect, revision-manager, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "update_promise_status"
+classification = "retained"
+owner = "bible-librarian, continuity-editor, plot-architect, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "update_relationship"
+classification = "retained"
+owner = "canon-steward, character-creator, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "update_world_rule"
+classification = "retained"
+owner = "scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "update_writer_position"
+classification = "retained"
+owner = "revision-manager, scene-writer"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."

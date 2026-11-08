@@ -291,3 +291,25 @@ The shipped craft references most relevant to editorial work:
   pacing or emotional rhythm is off.
 - `bible://references/mru-guide` — MRU-level diagnosis when prose feels
   jumpy or telegraphs.
+
+<!-- tool: check_consistency -->
+<!-- tool: export_bible -->
+<!-- tool: export_epub -->
+<!-- tool: extract_canonical_facts_from_scene -->
+<!-- tool: find_scenes_referencing -->
+<!-- tool: get_scene_context -->
+<!-- tool: list_book_chapters -->
+<!-- tool: list_chapter_scenes -->
+<!-- tool: preflight_book_export -->
+<!-- tool: pull_chapter_from_file -->
+<!-- tool: push_chapter_to_file -->
+<!-- tool: record_note -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: research_query -->
+<!-- tool: run_dual_persona_review -->
+<!-- tool: save_summary -->
+<!-- tool: search_bible -->
+<!-- tool: set_active_project -->
+
+For style-profile work, load `get_reference(name="editor/style")`; use its declared preview and recovery workflow.
+<!-- tool: get_reference -->

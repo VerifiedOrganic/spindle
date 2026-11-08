@@ -42,11 +42,24 @@ pub fn standards_text() -> &'static str {
 }
 
 pub fn list_references() -> &'static [EmbeddedReference] {
-    EMBEDDED_REFERENCES
+    static REFERENCES: std::sync::OnceLock<Vec<EmbeddedReference>> = std::sync::OnceLock::new();
+    REFERENCES.get_or_init(|| {
+        let mut references = EMBEDDED_REFERENCES.to_vec();
+        references.extend(
+            embedded_list_skills()
+                .iter()
+                .flat_map(|s| s.manifest.references)
+                .map(|r| EmbeddedReference {
+                    name: r.name,
+                    markdown: r.markdown,
+                }),
+        );
+        references
+    })
 }
 
 pub fn get_reference(name: &str) -> Option<EmbeddedReference> {
-    EMBEDDED_REFERENCES
+    list_references()
         .iter()
         .copied()
         .find(|reference| reference.name == name)

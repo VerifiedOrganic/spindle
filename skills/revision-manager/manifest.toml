@@ -1,0 +1,5 @@
+version = 1
+name = "revision-manager"
+profiles = ["default"]
+requires_skills = ["spindle"]
+tools = ["check_consistency", "commit_scene_changes", "compare_alternatives", "create_branch", "create_save_point", "diff_branches", "export_bible", "generate_alternatives", "get_scene_context", "get_writer_state", "list_revision_markers", "list_scene_versions", "merge_branch", "preview_refresh_style_profile", "record_note", "refresh_style_profile", "resolve_revision_marker", "restore_save_point", "restore_scene_version", "revise_scene", "run_dual_persona_review", "save_summary", "search_bible", "select_alternative", "set_active_project", "switch_branch", "update_entity", "update_writer_position"]
