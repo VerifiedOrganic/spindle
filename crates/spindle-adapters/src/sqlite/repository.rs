@@ -632,6 +632,7 @@ struct Inner {
 mod authoring;
 mod branches;
 mod canon;
+mod canon_events;
 mod characters;
 mod entities;
 mod export;

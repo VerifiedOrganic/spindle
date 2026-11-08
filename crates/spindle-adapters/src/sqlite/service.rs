@@ -440,6 +440,7 @@ struct ResearchQueryOutputJson {
 mod agents;
 mod branch_snapshots;
 mod branches;
+mod canon_events;
 mod canon_mining;
 mod canon_ratification;
 mod consistency;

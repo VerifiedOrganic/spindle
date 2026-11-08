@@ -484,3 +484,2016 @@ fn ambiguous_legacy_values_are_gaps_and_typed_boolean_is_preserved() {
     ));
     assert_eq!(normalized.unsupported_fields.len(), 2);
 }
+
+#[allow(clippy::too_many_arguments)]
+fn make_test_event(
+    event_id: &str,
+    branch_id: &str,
+    decision_seq: i64,
+    append_seq: i64,
+    subject_id: &str,
+    payload: CanonEventPayloadV1,
+    position: Option<CanonPositionV1>,
+    within_scene_order: Option<u32>,
+    scene_id: Option<&str>,
+    source_revision_id: &str,
+) -> CanonEventV1 {
+    let subject = ClaimEntity::Resolved {
+        id: subject_id.into(),
+    };
+    let (predicate, operation) = payload.predicate_and_operation();
+    let predicate_family = payload.family();
+    let sem_fp =
+        semantic_event_fingerprint(&subject, &payload, position, within_scene_order, &None);
+    let idem = compute_idempotency_key(
+        branch_id,
+        source_revision_id,
+        &sem_fp,
+        CanonPolicyAction::Ratify,
+    );
+    CanonEventV1 {
+        event_id: event_id.into(),
+        schema_version: CANON_EVENT_SCHEMA_VERSION,
+        project_id: "project:p".into(),
+        branch_id: branch_id.into(),
+        decision_id: format!("canon_decision:{decision_seq}"),
+        decision_seq,
+        append_seq,
+        tier: CanonTier::Ratified,
+        policy_action: CanonPolicyAction::Ratify,
+        subject,
+        predicate_family,
+        predicate: predicate.into(),
+        operation: operation.into(),
+        payload,
+        effective_position: position,
+        within_scene_order,
+        in_world_time: None,
+        scene_id: scene_id.map(str::to_owned),
+        source_revision_id: source_revision_id.into(),
+        source_claim_ids: vec![format!("claim:{event_id}")],
+        semantic_fingerprint: sem_fp,
+        idempotency_key: idem,
+        evidence_sha256: exact_text_sha256(event_id),
+        provenance: CanonProvenanceKind::Extracted,
+        supersedes_event_id: None,
+        withdraws_event_id: None,
+        legacy_record_scope: None,
+        merge_provenance: None,
+        created_at_micros: decision_seq * 1_000,
+    }
+}
+
+fn narration_assertion(assertion: ClaimAssertion) -> CanonEventPayloadV1 {
+    CanonEventPayloadV1::Assertion {
+        assertion,
+        modality: ClaimModality::Narration,
+        temporal_scope: TemporalScope::Current,
+        speaker: None,
+        experiencer: None,
+    }
+}
+
+#[test]
+fn missing_state_stays_unknown_and_injury_persists_through_unrelated_changes() {
+    let lineage = vec!["branch:main".to_string()];
+    let empty_view = state_at(
+        "branch:main",
+        &lineage,
+        &[],
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    // Missing state is unknown, never alive, uninjured, or zero.
+    assert_eq!(
+        empty_view.life_status("character:veyra"),
+        LifeStatus::Unknown
+    );
+    assert_eq!(empty_view.location("character:veyra"), None);
+    assert_eq!(
+        empty_view.quantity_balance("character:veyra", "wealth"),
+        None
+    );
+    assert!(
+        empty_view
+            .relationship("character:veyra", "character:bram")
+            .is_none()
+    );
+    assert_eq!(
+        empty_view.knowledge_status("character:veyra", "fact:secret"),
+        KnowledgeStatus::Unknown
+    );
+
+    let p1 = CanonPositionV1::new(1, 1, 1).unwrap();
+    let p2 = CanonPositionV1::new(1, 1, 2).unwrap();
+    let p3 = CanonPositionV1::new(1, 2, 1).unwrap();
+    let p4 = CanonPositionV1::new(1, 2, 2).unwrap();
+
+    let events = vec![
+        // Scene 1: Veyra suffers a broken rib and acquires a dagger.
+        make_test_event(
+            "canon_event:1",
+            "branch:main",
+            1,
+            1,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Add,
+                injury_id: "broken_rib".into(),
+                body_site: "left ribs".into(),
+                severity: InjurySeverity::Moderate,
+            }),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:1",
+        ),
+        make_test_event(
+            "canon_event:2",
+            "branch:main",
+            1,
+            2,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Possession {
+                operation: PossessionOperation::Acquire,
+                item: ClaimEntity::Resolved {
+                    id: "item:dagger".into(),
+                },
+                counterparty: None,
+                custody: CustodyKind::Owner,
+            }),
+            Some(p1),
+            Some(2),
+            Some("scene:1"),
+            "rev:1",
+        ),
+        // Scene 2: Unrelated changes (location move, status attribute, mood, second injury added and healed).
+        make_test_event(
+            "canon_event:3",
+            "branch:main",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:harbor".into(),
+                },
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:2",
+        ),
+        make_test_event(
+            "canon_event:4",
+            "branch:main",
+            2,
+            4,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "status".into(),
+                value: ClaimScalar::Text {
+                    value: "exhausted".into(),
+                },
+                nature: AttributeNature::Evolving,
+            }),
+            Some(p2),
+            Some(2),
+            Some("scene:2"),
+            "rev:2",
+        ),
+        make_test_event(
+            "canon_event:5",
+            "branch:main",
+            2,
+            5,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Add,
+                injury_id: "cut_palm".into(),
+                body_site: "right palm".into(),
+                severity: InjurySeverity::Minor,
+            }),
+            Some(p2),
+            Some(3),
+            Some("scene:2"),
+            "rev:2",
+        ),
+        // Scene 3: Heal cut_palm, move location, update coat attribute; broken_rib must persist!
+        make_test_event(
+            "canon_event:6",
+            "branch:main",
+            3,
+            6,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Heal,
+                injury_id: "cut_palm".into(),
+                body_site: "right palm".into(),
+                severity: InjurySeverity::Minor,
+            }),
+            Some(p3),
+            Some(1),
+            Some("scene:3"),
+            "rev:3",
+        ),
+        make_test_event(
+            "canon_event:7",
+            "branch:main",
+            3,
+            7,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Move {
+                from: ClaimEntity::Resolved {
+                    id: "location:harbor".into(),
+                },
+                to: ClaimEntity::Resolved {
+                    id: "location:citadel".into(),
+                },
+            }),
+            Some(p3),
+            Some(2),
+            Some("scene:3"),
+            "rev:3",
+        ),
+        // Scene 4: Explicitly heal broken_rib.
+        make_test_event(
+            "canon_event:8",
+            "branch:main",
+            4,
+            8,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Heal,
+                injury_id: "broken_rib".into(),
+                body_site: "left ribs".into(),
+                severity: InjurySeverity::Moderate,
+            }),
+            Some(p4),
+            Some(1),
+            Some("scene:4"),
+            "rev:4",
+        ),
+    ];
+
+    let view_at_p3 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::at_scene(p3),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    let active_p3 = view_at_p3.active_injuries("character:veyra");
+    assert_eq!(active_p3.len(), 1);
+    assert!(active_p3.contains_key("broken_rib"));
+    assert_eq!(active_p3["broken_rib"].body_site, "left ribs");
+    assert_eq!(active_p3["broken_rib"].severity, InjurySeverity::Moderate);
+    assert_eq!(
+        active_p3["broken_rib"].source_event_ids,
+        vec!["canon_event:1".to_string()]
+    );
+    assert_eq!(
+        view_at_p3.location("character:veyra"),
+        Some("location:citadel")
+    );
+    assert_eq!(
+        view_at_p3.holds_item("character:veyra", "item:dagger", CustodyKind::Owner),
+        Some(true)
+    );
+
+    let view_at_p4 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::at_scene(p4),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert!(view_at_p4.active_injuries("character:veyra").is_empty());
+}
+
+#[test]
+fn transfers_conserve_quantities_and_deltas_require_opening_balances() {
+    let lineage = vec!["branch:main".to_string()];
+    let p1 = CanonPositionV1::new(1, 1, 1).unwrap();
+    let p2 = CanonPositionV1::new(1, 1, 2).unwrap();
+
+    let empty_view = state_at(
+        "branch:main",
+        &lineage,
+        &[],
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+
+    // 1. Delta without opening balance is rejected by batch precondition check.
+    let delta_without_opening = make_test_event(
+        "canon_event:no_open",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(1),
+        Some("scene:1"),
+        "rev:1",
+    );
+    assert_eq!(
+        validate_event_batch_preconditions(
+            "author:op",
+            CanonPolicyAction::Ratify,
+            std::slice::from_ref(&delta_without_opening),
+            &empty_view,
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+    // And if fed directly to the reducer, it never invents a zero balance.
+    let reduced_no_open = state_at(
+        "branch:main",
+        &lineage,
+        &[delta_without_opening],
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        reduced_no_open.quantity_balance("character:veyra", "wealth"),
+        None
+    );
+    assert_eq!(reduced_no_open.precondition_anomalies.len(), 1);
+
+    // 2. Establish opening balances for Veyra (100.50 gold) and Bram (20.25 gold).
+    let open_events = vec![
+        make_test_event(
+            "canon_event:open_v",
+            "branch:main",
+            1,
+            1,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Set,
+                measure: "wealth".into(),
+                amount: "100.50".into(),
+                unit: "gold".into(),
+                transaction_id: None,
+            }),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:1",
+        ),
+        make_test_event(
+            "canon_event:open_b",
+            "branch:main",
+            1,
+            2,
+            "character:bram",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Set,
+                measure: "wealth".into(),
+                amount: "20.25".into(),
+                unit: "gold".into(),
+                transaction_id: None,
+            }),
+            Some(p1),
+            Some(2),
+            Some("scene:1"),
+            "rev:1",
+        ),
+    ];
+    validate_event_batch_preconditions(
+        "author:op",
+        CanonPolicyAction::Ratify,
+        &open_events,
+        &empty_view,
+    )
+    .unwrap();
+    let after_open = state_at(
+        "branch:main",
+        &lineage,
+        &open_events,
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+
+    // 3. Unbalanced transfer (-35.50 and +30.00) fails conservation check.
+    let bad_transfer = vec![
+        make_test_event(
+            "canon_event:bad_1",
+            "branch:main",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "-35.50".into(),
+                unit: "gold".into(),
+                transaction_id: Some("tx:1".into()),
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:2",
+        ),
+        make_test_event(
+            "canon_event:bad_2",
+            "branch:main",
+            2,
+            4,
+            "character:bram",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "30.00".into(),
+                unit: "gold".into(),
+                transaction_id: Some("tx:1".into()),
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:2",
+        ),
+    ];
+    assert_eq!(
+        validate_event_batch_preconditions(
+            "author:op",
+            CanonPolicyAction::Ratify,
+            &bad_transfer,
+            &after_open,
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Conservation
+    );
+
+    // 4. Balanced paired transfer (-35.50 and +35.50) passes and conserves total quantity.
+    let good_transfer = vec![
+        make_test_event(
+            "canon_event:tx_1",
+            "branch:main",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "-35.50".into(),
+                unit: "gold".into(),
+                transaction_id: Some("tx:1".into()),
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:2",
+        ),
+        make_test_event(
+            "canon_event:tx_2",
+            "branch:main",
+            2,
+            4,
+            "character:bram",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "35.50".into(),
+                unit: "gold".into(),
+                transaction_id: Some("tx:1".into()),
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:2",
+        ),
+    ];
+    validate_event_batch_preconditions(
+        "author:op",
+        CanonPolicyAction::Ratify,
+        &good_transfer,
+        &after_open,
+    )
+    .unwrap();
+
+    let mut all_events = open_events;
+    all_events.extend(good_transfer);
+    let after_tx = state_at(
+        "branch:main",
+        &lineage,
+        &all_events,
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        after_tx.quantity_balance("character:veyra", "wealth"),
+        Some("65")
+    );
+    assert_eq!(
+        after_tx.quantity_balance("character:bram", "wealth"),
+        Some("55.75")
+    );
+    let total_before = ExactDecimal::parse("100.50")
+        .unwrap()
+        .checked_add(ExactDecimal::parse("20.25").unwrap())
+        .unwrap();
+    let total_after = ExactDecimal::parse(
+        after_tx
+            .quantity_balance("character:veyra", "wealth")
+            .unwrap(),
+    )
+    .unwrap()
+    .checked_add(
+        ExactDecimal::parse(
+            after_tx
+                .quantity_balance("character:bram", "wealth")
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(total_before, total_after);
+}
+
+#[test]
+fn deterministic_replay_across_cursors_watermarks_within_scene_order_and_rollback() {
+    let lineage = vec!["branch:main".to_string()];
+    let ch1 = CanonPositionV1::new(1, 1, 1).unwrap();
+    let ch2 = CanonPositionV1::new(1, 2, 1).unwrap();
+    let ch3 = CanonPositionV1::new(1, 3, 1).unwrap();
+
+    let mut events = vec![
+        // Decision 1 (Ch 1): Learn proposition at step 1, use at step 2.
+        make_test_event(
+            "canon_event:k_learn",
+            "branch:main",
+            1,
+            1,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Knowledge {
+                operation: KnowledgeOperation::Learn,
+                proposition: ClaimEntity::Resolved {
+                    id: "fact:cipher".into(),
+                },
+                audience: Vec::new(),
+                source: None,
+            }),
+            Some(ch1),
+            Some(1),
+            Some("scene:1"),
+            "rev:1",
+        ),
+        make_test_event(
+            "canon_event:k_use",
+            "branch:main",
+            1,
+            2,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Knowledge {
+                operation: KnowledgeOperation::Use,
+                proposition: ClaimEntity::Resolved {
+                    id: "fact:cipher".into(),
+                },
+                audience: Vec::new(),
+                source: None,
+            }),
+            Some(ch1),
+            Some(2),
+            Some("scene:1"),
+            "rev:1",
+        ),
+        // Decision 2 (Ch 2): Eye color initially recorded as blue.
+        make_test_event(
+            "canon_event:eye_blue",
+            "branch:main",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "eye_color".into(),
+                value: ClaimScalar::Text {
+                    value: "blue".into(),
+                },
+                nature: AttributeNature::Invariant,
+            }),
+            Some(ch2),
+            Some(1),
+            Some("scene:2"),
+            "rev:2",
+        ),
+        // Decision 3 (Ch 3): Veyra moves to tower.
+        make_test_event(
+            "canon_event:loc_tower",
+            "branch:main",
+            3,
+            4,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:tower".into(),
+                },
+            }),
+            Some(ch3),
+            Some(1),
+            Some("scene:3"),
+            "rev:3",
+        ),
+    ];
+
+    // Correction Decision 4: effective in Ch 2, supersedes canon_event:eye_blue with green.
+    let mut correction = make_test_event(
+        "canon_event:eye_green",
+        "branch:main",
+        4,
+        5,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Attribute {
+            operation: AttributeOperation::Set,
+            key: "eye_color".into(),
+            value: ClaimScalar::Text {
+                value: "green".into(),
+            },
+            nature: AttributeNature::Invariant,
+        }),
+        Some(ch2),
+        Some(1),
+        Some("scene:2"),
+        "rev:2_corrected",
+    );
+    correction.supersedes_event_id = Some("canon_event:eye_blue".into());
+    events.push(correction);
+
+    // Decision 5: Rollback / restore watermark to decision 3 (before the Ch 2 correction).
+    let restore_ev = make_test_event(
+        "canon_event:restore_to_3",
+        "branch:main",
+        5,
+        6,
+        "branch:main",
+        CanonEventPayloadV1::WatermarkRestore {
+            restore: WatermarkRestoreV1 {
+                save_point_id: Some("save_point:sp3".into()),
+                target_decision_seq: 3,
+                target_event_seq: 4,
+            },
+        },
+        None,
+        None,
+        None,
+        "restore:sp3",
+    );
+    events.push(restore_ev);
+
+    // 1. Within-scene ordering in Ch 1:
+    let view_ch1_step1 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::at_within_scene(ch1, 1),
+        CanonTier::Ratified,
+        Some(1),
+    )
+    .unwrap();
+    let edge_step1 = &view_ch1_step1.knowledge["fact:cipher"].knowers["character:veyra"];
+    assert_eq!(edge_step1.status, KnowledgeStatus::Known);
+    assert!(edge_step1.uses.is_empty());
+
+    let view_ch1_step2 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::at_within_scene(ch1, 2),
+        CanonTier::Ratified,
+        Some(1),
+    )
+    .unwrap();
+    let edge_step2 = &view_ch1_step2.knowledge["fact:cipher"].knowers["character:veyra"];
+    assert_eq!(edge_step2.uses.len(), 1);
+    assert_eq!(edge_step2.uses[0].status_at_use, KnowledgeStatus::Known);
+    assert!(!edge_step2.uses[0].ordering_uncertain);
+
+    // 2. Historical watermark 3 vs corrected watermark 4 at Ch 2:
+    let ch2_at_wm3 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::at_scene(ch2),
+        CanonTier::Ratified,
+        Some(3),
+    )
+    .unwrap();
+    assert_eq!(
+        ch2_at_wm3.entities["character:veyra"].attributes["eye_color"].scalar_value,
+        Some(ClaimScalar::Text {
+            value: "blue".into()
+        })
+    );
+
+    let ch2_at_wm4 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::at_scene(ch2),
+        CanonTier::Ratified,
+        Some(4),
+    )
+    .unwrap();
+    assert_eq!(
+        ch2_at_wm4.entities["character:veyra"].attributes["eye_color"].scalar_value,
+        Some(ClaimScalar::Text {
+            value: "green".into()
+        })
+    );
+
+    // 3. Rollback at watermark 5 restores the exact watermark-3 view:
+    let view_at_wm3 = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        Some(3),
+    )
+    .unwrap();
+    let view_after_rollback = state_at(
+        "branch:main",
+        &lineage,
+        &events,
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        Some(5),
+    )
+    .unwrap();
+    assert_eq!(view_after_rollback.entities, view_at_wm3.entities);
+    assert_eq!(
+        view_after_rollback.visible_event_ids,
+        view_at_wm3.visible_event_ids
+    );
+
+    // 4. Shuffled input event slice replays identically at every watermark.
+    let mut reversed = events.clone();
+    reversed.reverse();
+    for wm in 1..=5 {
+        let a = state_at(
+            "branch:main",
+            &lineage,
+            &events,
+            &CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            Some(wm),
+        )
+        .unwrap();
+        let b = state_at(
+            "branch:main",
+            &lineage,
+            &reversed,
+            &CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            Some(wm),
+        )
+        .unwrap();
+        assert_eq!(a, b, "replay must be deterministic at watermark {wm}");
+    }
+}
+
+#[test]
+fn parent_chain_inheritance_coverage_masks_legacy_whole_record_and_siblings() {
+    let p1 = CanonPositionV1::new(1, 1, 1).unwrap();
+    let p2 = CanonPositionV1::new(1, 2, 1).unwrap();
+    let p3 = CanonPositionV1::new(1, 3, 1).unwrap();
+
+    let events = vec![
+        // Main Ch 1: Veyra at harbor, hair black, coat leather, wealth opening 100, +10 at Ch 2.
+        make_test_event(
+            "canon_event:m_loc1",
+            "branch:main",
+            1,
+            1,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:harbor".into(),
+                },
+            }),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:m1",
+        ),
+        make_test_event(
+            "canon_event:m_hair",
+            "branch:main",
+            1,
+            2,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "hair".into(),
+                value: ClaimScalar::Text {
+                    value: "black".into(),
+                },
+                nature: AttributeNature::Invariant,
+            }),
+            Some(p1),
+            Some(2),
+            Some("scene:1"),
+            "rev:m1",
+        ),
+        make_test_event(
+            "canon_event:m_coat",
+            "branch:main",
+            1,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "coat".into(),
+                value: ClaimScalar::Text {
+                    value: "leather".into(),
+                },
+                nature: AttributeNature::Evolving,
+            }),
+            Some(p1),
+            Some(3),
+            Some("scene:1"),
+            "rev:m1",
+        ),
+        make_test_event(
+            "canon_event:m_q_open",
+            "branch:main",
+            1,
+            4,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Set,
+                measure: "wealth".into(),
+                amount: "100".into(),
+                unit: "gold".into(),
+                transaction_id: None,
+            }),
+            Some(p1),
+            Some(4),
+            Some("scene:1"),
+            "rev:m1",
+        ),
+        // Main Ch 2: Moves to market, earns +20 gold.
+        make_test_event(
+            "canon_event:m_loc2",
+            "branch:main",
+            2,
+            5,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:market".into(),
+                },
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:m2",
+        ),
+        make_test_event(
+            "canon_event:m_q_delta2",
+            "branch:main",
+            2,
+            6,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "20".into(),
+                unit: "gold".into(),
+                transaction_id: None,
+            }),
+            Some(p2),
+            Some(2),
+            Some("scene:2"),
+            "rev:m2",
+        ),
+        // Main Ch 3 (live ancestor edit after fork!): Moves to citadel.
+        make_test_event(
+            "canon_event:m_loc3",
+            "branch:main",
+            3,
+            7,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:citadel".into(),
+                },
+            }),
+            Some(p3),
+            Some(1),
+            Some("scene:3"),
+            "rev:m3",
+        ),
+        // Sibling branch: sets location to dungeon (must never leak to child or grandchild).
+        make_test_event(
+            "canon_event:sib_loc",
+            "branch:sibling",
+            4,
+            8,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:dungeon".into(),
+                },
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:sib",
+        ),
+        // Child branch: declares bounded location coverage interval [p2, p2] -> catacombs,
+        // and masks ancestor quantity delta event `canon_event:m_q_delta2` replacing it with +50.
+        make_test_event(
+            "canon_event:c_mask_loc",
+            "branch:child",
+            5,
+            9,
+            "character:veyra",
+            CanonEventPayloadV1::CoverageMask {
+                mask: StreamCoverageMaskV1 {
+                    target: CoverageMaskTargetV1::Stream {
+                        stream: SemanticStreamKeyV1::Location {
+                            subject_id: "character:veyra".into(),
+                        },
+                    },
+                    start_position: Some(p2),
+                    end_position: Some(p2),
+                    tombstone: false,
+                },
+            },
+            Some(p2),
+            Some(0),
+            Some("scene:2"),
+            "rev:c2",
+        ),
+        make_test_event(
+            "canon_event:c_loc2",
+            "branch:child",
+            5,
+            10,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:catacombs".into(),
+                },
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:c2",
+        ),
+        make_test_event(
+            "canon_event:c_mask_q",
+            "branch:child",
+            5,
+            11,
+            "character:veyra",
+            CanonEventPayloadV1::CoverageMask {
+                mask: StreamCoverageMaskV1 {
+                    target: CoverageMaskTargetV1::AncestorEvent {
+                        event_id: "canon_event:m_q_delta2".into(),
+                    },
+                    start_position: None,
+                    end_position: None,
+                    tombstone: false,
+                },
+            },
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:c2",
+        ),
+        make_test_event(
+            "canon_event:c_q_delta2",
+            "branch:child",
+            5,
+            12,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "50".into(),
+                unit: "gold".into(),
+                transaction_id: None,
+            }),
+            Some(p2),
+            Some(2),
+            Some("scene:2"),
+            "rev:c2",
+        ),
+        // Grandchild branch: tombstones `coat` attribute from p2 onward.
+        make_test_event(
+            "canon_event:gc_tombstone_coat",
+            "branch:grandchild",
+            6,
+            13,
+            "character:veyra",
+            CanonEventPayloadV1::CoverageMask {
+                mask: StreamCoverageMaskV1 {
+                    target: CoverageMaskTargetV1::Stream {
+                        stream: SemanticStreamKeyV1::AttributeScalar {
+                            subject_id: "character:veyra".into(),
+                            key: "coat".into(),
+                        },
+                    },
+                    start_position: Some(p2),
+                    end_position: None,
+                    tombstone: true,
+                },
+            },
+            Some(p2),
+            Some(0),
+            Some("scene:2"),
+            "rev:gc2",
+        ),
+    ];
+
+    let gc_lineage = vec![
+        "branch:grandchild".to_string(),
+        "branch:child".to_string(),
+        "branch:main".to_string(),
+    ];
+
+    // 1. Before coverage interval (at p1): ancestor state is visible.
+    let at_p1 = state_at(
+        "branch:grandchild",
+        &gc_lineage,
+        &events,
+        &CanonCursorV1::at_scene(p1),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(at_p1.location("character:veyra"), Some("location:harbor"));
+    assert!(
+        at_p1.entities["character:veyra"]
+            .attributes
+            .contains_key("coat")
+    );
+
+    // 2. During coverage interval (at p2): child location shadows main, coat is tombstoned,
+    //    hair remains inherited, and quantity uses child's +50 instead of main's masked +20!
+    let at_p2 = state_at(
+        "branch:grandchild",
+        &gc_lineage,
+        &events,
+        &CanonCursorV1::at_scene(p2),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        at_p2.location("character:veyra"),
+        Some("location:catacombs")
+    );
+    assert!(
+        !at_p2.entities["character:veyra"]
+            .attributes
+            .contains_key("coat")
+    );
+    assert_eq!(
+        at_p2.entities["character:veyra"].attributes["hair"].scalar_value,
+        Some(ClaimScalar::Text {
+            value: "black".into()
+        })
+    );
+    assert_eq!(
+        at_p2.quantity_balance("character:veyra", "wealth"),
+        Some("150")
+    );
+
+    // 3. After bounded location coverage interval (at p3): inheritance from main resumes!
+    let at_p3 = state_at(
+        "branch:grandchild",
+        &gc_lineage,
+        &events,
+        &CanonCursorV1::at_scene(p3),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(at_p3.location("character:veyra"), Some("location:citadel"));
+
+    // 4. Parent branch itself is never mutated by child/grandchild masks:
+    let main_at_p2 = state_at(
+        "branch:main",
+        &["branch:main".into()],
+        &events,
+        &CanonCursorV1::at_scene(p2),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        main_at_p2.location("character:veyra"),
+        Some("location:market")
+    );
+    assert_eq!(
+        main_at_p2.quantity_balance("character:veyra", "wealth"),
+        Some("120")
+    );
+
+    // 5. LegacyWholeRecord mask shadows all character_state fields together.
+    let mut legacy_events = events.clone();
+    legacy_events.push(make_test_event(
+        "canon_event:legacy_whole_mask",
+        "branch:legacy_child",
+        7,
+        14,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::LegacyWholeRecord {
+                    record_kind: "character_state".into(),
+                    subject_id: "character:veyra".into(),
+                    natural_key: "character:veyra".into(),
+                },
+                start_position: Some(p1),
+                end_position: None,
+                tombstone: true,
+            },
+        },
+        Some(p1),
+        Some(0),
+        Some("scene:1"),
+        "rev:leg",
+    ));
+    let leg_view = state_at(
+        "branch:legacy_child",
+        &["branch:legacy_child".into(), "branch:main".into()],
+        &legacy_events,
+        &CanonCursorV1::at_scene(p2),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(leg_view.location("character:veyra"), None);
+    assert!(
+        leg_view
+            .entities
+            .get("character:veyra")
+            .is_none_or(|e| e.attributes.is_empty())
+    );
+}
+
+#[test]
+fn v1_policy_guard_and_three_way_branch_merge_conflicts() {
+    let p1 = CanonPositionV1::new(1, 1, 1).unwrap();
+    let p2 = CanonPositionV1::new(1, 2, 1).unwrap();
+    let empty_view = state_at(
+        "branch:main",
+        &["branch:main".into()],
+        &[],
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+
+    // 1. Deaths, secret disclosures, and promise payoffs never auto-ratify in v1.
+    for (idx, forbidden) in [
+        ClaimAssertion::LifeStatus {
+            status: LifeStatus::Dead,
+        },
+        ClaimAssertion::Knowledge {
+            operation: KnowledgeOperation::Disclose,
+            proposition: ClaimEntity::Resolved {
+                id: "fact:secret".into(),
+            },
+            audience: vec![ClaimEntity::Resolved {
+                id: "character:bram".into(),
+            }],
+            source: None,
+        },
+        ClaimAssertion::Promise {
+            operation: PromiseOperation::Payoff,
+            thread: ClaimEntity::Resolved {
+                id: "promise:oath".into(),
+            },
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ev = make_test_event(
+            &format!("canon_event:forbid_{idx}"),
+            "branch:main",
+            1,
+            1,
+            "character:veyra",
+            narration_assertion(forbidden),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:1",
+        );
+        assert_eq!(
+            validate_event_batch_preconditions(
+                "policy:canon-v1",
+                CanonPolicyAction::Ratify,
+                std::slice::from_ref(&ev),
+                &empty_view,
+            )
+            .unwrap_err()
+            .code,
+            CanonAppendErrorCode::PolicyGuard
+        );
+        // Human ratification is permitted.
+        assert!(
+            validate_event_batch_preconditions(
+                "author:human",
+                CanonPolicyAction::Ratify,
+                std::slice::from_ref(&ev),
+                &empty_view,
+            )
+            .is_ok()
+        );
+    }
+
+    // 2. 3-way merge conflict detection (divergent scalar set, removal conflict, duplicate transfer).
+    let merge_events = vec![
+        make_test_event(
+            "canon_event:anc_inj",
+            "branch:main",
+            1,
+            1,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Add,
+                injury_id: "scar".into(),
+                body_site: "cheek".into(),
+                severity: InjurySeverity::Minor,
+            }),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:m1",
+        ),
+        // Target sets location to harbor, heals scar, and records tx:dup.
+        make_test_event(
+            "canon_event:tgt_loc",
+            "branch:target",
+            2,
+            2,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:harbor".into(),
+                },
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:t2",
+        ),
+        make_test_event(
+            "canon_event:tgt_heal",
+            "branch:target",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Heal,
+                injury_id: "scar".into(),
+                body_site: "cheek".into(),
+                severity: InjurySeverity::Minor,
+            }),
+            Some(p2),
+            Some(2),
+            Some("scene:2"),
+            "rev:t2",
+        ),
+        make_test_event(
+            "canon_event:tgt_tx",
+            "branch:target",
+            2,
+            4,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "-10".into(),
+                unit: "gold".into(),
+                transaction_id: Some("tx:dup".into()),
+            }),
+            Some(p2),
+            Some(3),
+            Some("scene:2"),
+            "rev:t2",
+        ),
+        // Source sets location to citadel (divergent scalar), escalates scar to Severe (removal/modify conflict),
+        // reuses tx:dup (duplicate transfer), and adds a clean non-conflicting attribute `title`.
+        make_test_event(
+            "canon_event:src_loc",
+            "branch:source",
+            3,
+            5,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::LocatedAt {
+                location: ClaimEntity::Resolved {
+                    id: "location:citadel".into(),
+                },
+            }),
+            Some(p2),
+            Some(1),
+            Some("scene:2"),
+            "rev:s2",
+        ),
+        make_test_event(
+            "canon_event:src_inj_mod",
+            "branch:source",
+            3,
+            6,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Injury {
+                operation: InjuryOperation::Add,
+                injury_id: "scar".into(),
+                body_site: "cheek".into(),
+                severity: InjurySeverity::Severe,
+            }),
+            Some(p2),
+            Some(2),
+            Some("scene:2"),
+            "rev:s2",
+        ),
+        make_test_event(
+            "canon_event:src_tx",
+            "branch:source",
+            3,
+            7,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Quantity {
+                operation: QuantityOperation::Delta,
+                measure: "wealth".into(),
+                amount: "-25".into(),
+                unit: "gold".into(),
+                transaction_id: Some("tx:dup".into()),
+            }),
+            Some(p2),
+            Some(3),
+            Some("scene:2"),
+            "rev:s2",
+        ),
+        make_test_event(
+            "canon_event:src_title",
+            "branch:source",
+            3,
+            8,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "title".into(),
+                value: ClaimScalar::Text {
+                    value: "Captain".into(),
+                },
+                nature: AttributeNature::Evolving,
+            }),
+            Some(p2),
+            Some(4),
+            Some("scene:2"),
+            "rev:s2",
+        ),
+    ];
+
+    let plan = plan_canon_branch_merge(
+        "branch:main",
+        &["branch:main".into()],
+        "branch:target",
+        &["branch:target".into(), "branch:main".into()],
+        "branch:source",
+        &["branch:source".into(), "branch:main".into()],
+        &merge_events,
+        None,
+    )
+    .unwrap();
+
+    let kinds: BTreeSet<CanonMergeConflictKind> = plan.conflicts.iter().map(|c| c.kind).collect();
+    assert!(kinds.contains(&CanonMergeConflictKind::DivergentScalarSet));
+    assert!(kinds.contains(&CanonMergeConflictKind::RemovalConflict));
+    assert!(kinds.contains(&CanonMergeConflictKind::DuplicateTransfer));
+    assert_eq!(plan.accepted_source_events.len(), 1);
+    assert_eq!(
+        plan.accepted_source_events[0].event_id,
+        "canon_event:src_title"
+    );
+
+    // 7. Source-only removals (scene hiding, source invalidation, withdrawal, tombstone)
+    //    are carried by `plan_canon_branch_merge` when target is unchanged.
+    let anc_loc = make_test_event(
+        "canon_event:anc_scene1_loc",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::LocatedAt {
+            location: ClaimEntity::Resolved {
+                id: "location:harbor".into(),
+            },
+        }),
+        Some(p1),
+        Some(1),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let src_hide = make_test_event(
+        "canon_event:src_hide_scene1",
+        "branch:source",
+        2,
+        2,
+        "scene:1",
+        CanonEventPayloadV1::SceneVisibility {
+            visibility: ScenePlacementVisibilityV1 {
+                scene_id: "scene:1".into(),
+                visible: false,
+                position_override: None,
+                invalidated_from: p1,
+            },
+        },
+        Some(p1),
+        None,
+        Some("scene:1"),
+        "rev:s_hide",
+    );
+    let removal_plan = plan_canon_branch_merge(
+        "branch:main",
+        &["branch:main".into()],
+        "branch:main",
+        &["branch:main".into()],
+        "branch:source",
+        &["branch:source".into(), "branch:main".into()],
+        &[anc_loc.clone(), src_hide.clone()],
+        None,
+    )
+    .unwrap();
+    assert!(removal_plan.conflicts.is_empty());
+    assert_eq!(removal_plan.accepted_source_events.len(), 1);
+    assert_eq!(
+        removal_plan.accepted_source_events[0].event_id,
+        "canon_event:src_hide_scene1"
+    );
+
+    // 8. Preconditions are evaluated in reducer order (within-scene step bounds and
+    //    intervening history across multi-position batches): a later opening balance
+    //    or acquisition cannot satisfy an earlier delta or drop.
+    let open_at_step_10 = make_test_event(
+        "canon_event:open_step10",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Set,
+            measure: "wealth".into(),
+            amount: "100".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(10),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let delta_at_step_5 = make_test_event(
+        "canon_event:delta_step5",
+        "branch:main",
+        2,
+        2,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(5),
+        Some("scene:1"),
+        "rev:m2",
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:main",
+            &["branch:main".into()],
+            std::slice::from_ref(&open_at_step_10),
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&delta_at_step_5),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+
+    let acquire_at_step_10 = make_test_event(
+        "canon_event:acq_step10",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Acquire,
+            item: ClaimEntity::Resolved {
+                id: "item:key".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p1),
+        Some(10),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let drop_at_step_5 = make_test_event(
+        "canon_event:drop_step5",
+        "branch:main",
+        2,
+        2,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:key".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p1),
+        Some(5),
+        Some("scene:1"),
+        "rev:m2",
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:main",
+            &["branch:main".into()],
+            std::slice::from_ref(&acquire_at_step_10),
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&drop_at_step_5),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+
+    // Intervening history across a multi-position batch: Acquire at p1 and Transfer at p3
+    // in one batch fails when existing history has a Lose at p2.
+    let p3 = CanonPositionV1::new(1, 3, 1).unwrap();
+    let lose_at_p2 = make_test_event(
+        "canon_event:lose_p2",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:key".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p2),
+        Some(1),
+        Some("scene:2"),
+        "rev:m_p2",
+    );
+    let multi_pos_batch = vec![
+        make_test_event(
+            "canon_event:acq_p1",
+            "branch:main",
+            2,
+            2,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Possession {
+                operation: PossessionOperation::Acquire,
+                item: ClaimEntity::Resolved {
+                    id: "item:key".into(),
+                },
+                counterparty: None,
+                custody: CustodyKind::Custodian,
+            }),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:m_multi",
+        ),
+        make_test_event(
+            "canon_event:xfer_p3",
+            "branch:main",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Possession {
+                operation: PossessionOperation::Transfer,
+                item: ClaimEntity::Resolved {
+                    id: "item:key".into(),
+                },
+                counterparty: Some(ClaimEntity::Resolved {
+                    id: "character:bram".into(),
+                }),
+                custody: CustodyKind::Custodian,
+            }),
+            Some(p3),
+            Some(1),
+            Some("scene:3"),
+            "rev:m_multi",
+        ),
+    ];
+    let multi_err = validate_event_batch_in_history(
+        "branch:main",
+        &["branch:main".into()],
+        std::slice::from_ref(&lose_at_p2),
+        "author:op",
+        CanonPolicyAction::Ratify,
+        CanonTier::Ratified,
+        &multi_pos_batch,
+    )
+    .unwrap_err();
+    assert_eq!(multi_err.code, CanonAppendErrorCode::Precondition);
+    assert_eq!(multi_err.event_index, Some(1));
+
+    // 9. Coverage bounds are evaluated at each candidate's cursor during validation
+    //    (matching `state_at` before, within, and after a mask interval).
+    let p5 = CanonPositionV1::new(1, 5, 1).unwrap();
+    let p6 = CanonPositionV1::new(1, 6, 1).unwrap();
+    let p7 = CanonPositionV1::new(1, 7, 1).unwrap();
+    let p8 = CanonPositionV1::new(1, 8, 1).unwrap();
+    let p10 = CanonPositionV1::new(1, 10, 1).unwrap();
+    let p12 = CanonPositionV1::new(1, 12, 1).unwrap();
+
+    let parent_open_p1 = make_test_event(
+        "canon_event:parent_open_p1",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Set,
+            measure: "wealth".into(),
+            amount: "100".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(1),
+        Some("scene:1"),
+        "rev:m_open",
+    );
+    let child_unbounded_mask_from_p10 = make_test_event(
+        "canon_event:child_mask_p10_onward",
+        "branch:child",
+        2,
+        2,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::QuantityMeasure {
+                        subject_id: "character:veyra".into(),
+                        measure: "wealth".into(),
+                        unit: "gold".into(),
+                    },
+                },
+                start_position: Some(p10),
+                end_position: None,
+                tombstone: false,
+            },
+        },
+        Some(p10),
+        None,
+        Some("scene:10"),
+        "rev:c_mask10",
+    );
+    let child_delta_p5 = make_test_event(
+        "canon_event:child_delta_p5",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-15".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p5),
+        Some(1),
+        Some("scene:5"),
+        "rev:c_p5",
+    );
+    let child_delta_p10 = make_test_event(
+        "canon_event:child_delta_p10",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-15".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p10),
+        Some(1),
+        Some("scene:10"),
+        "rev:c_p10",
+    );
+
+    // Before the unbounded mask `[p10, None)` starts, child delta at `p5` inherits the
+    // parent opening balance at `p1` and validates cleanly.
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[
+                parent_open_p1.clone(),
+                child_unbounded_mask_from_p10.clone()
+            ],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p5),
+        )
+        .is_ok()
+    );
+    // Within `[p10, None)`, the parent opening is masked and child delta at `p10` fails
+    // without a child opening balance.
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1.clone(), child_unbounded_mask_from_p10],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p10),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+
+    // Bounded tombstone mask `[p5, p10]`: candidate before (`p3`) passes, candidate
+    // within (`p7`) fails, and candidate after (`p12`) passes once inheritance resumes.
+    let bounded_tombstone_p5_p10 = make_test_event(
+        "canon_event:child_tombstone_p5_p10",
+        "branch:child",
+        2,
+        2,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::QuantityMeasure {
+                        subject_id: "character:veyra".into(),
+                        measure: "wealth".into(),
+                        unit: "gold".into(),
+                    },
+                },
+                start_position: Some(p5),
+                end_position: Some(p10),
+                tombstone: true,
+            },
+        },
+        Some(p5),
+        None,
+        Some("scene:5"),
+        "rev:c_tomb",
+    );
+    let child_delta_p3 = make_test_event(
+        "canon_event:child_delta_p3",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p3),
+        Some(1),
+        Some("scene:3"),
+        "rev:c_p3",
+    );
+    let child_delta_p7 = make_test_event(
+        "canon_event:child_delta_p7",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p7),
+        Some(1),
+        Some("scene:7"),
+        "rev:c_p7",
+    );
+    let child_delta_p12 = make_test_event(
+        "canon_event:child_delta_p12",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p12),
+        Some(1),
+        Some("scene:12"),
+        "rev:c_p12",
+    );
+
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1.clone(), bounded_tombstone_p5_p10.clone()],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p3),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1.clone(), bounded_tombstone_p5_p10.clone()],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p7),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1, bounded_tombstone_p5_p10],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p12),
+        )
+        .is_ok()
+    );
+
+    // Bounded child override `[p5, p10]` without parent possession: child acquisition at `p6`
+    // satisfies a drop within the interval (`p8`), but expires after `p10` so a drop at `p12` fails.
+    let bounded_item_mask_p5_p10 = make_test_event(
+        "canon_event:child_item_mask_p5_p10",
+        "branch:child",
+        1,
+        1,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::PossessionItem {
+                        subject_id: "character:veyra".into(),
+                        item_id: "item:badge".into(),
+                        custody: CustodyKind::Custodian,
+                    },
+                },
+                start_position: Some(p5),
+                end_position: Some(p10),
+                tombstone: false,
+            },
+        },
+        Some(p5),
+        None,
+        Some("scene:5"),
+        "rev:c_item_mask",
+    );
+    let child_acq_p6 = make_test_event(
+        "canon_event:child_acq_p6",
+        "branch:child",
+        2,
+        2,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Acquire,
+            item: ClaimEntity::Resolved {
+                id: "item:badge".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p6),
+        Some(1),
+        Some("scene:6"),
+        "rev:c_acq6",
+    );
+    let child_drop_p8 = make_test_event(
+        "canon_event:child_drop_p8",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:badge".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p8),
+        Some(1),
+        Some("scene:8"),
+        "rev:c_drop8",
+    );
+    let child_drop_p12 = make_test_event(
+        "canon_event:child_drop_p12",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:badge".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p12),
+        Some(1),
+        Some("scene:12"),
+        "rev:c_drop12",
+    );
+
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[bounded_item_mask_p5_p10.clone(), child_acq_p6.clone()],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_drop_p8),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[bounded_item_mask_p5_p10, child_acq_p6],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_drop_p12),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+}

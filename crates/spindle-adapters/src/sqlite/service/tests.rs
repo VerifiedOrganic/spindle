@@ -1885,6 +1885,8 @@ fn poison_mutex<T: Send + 'static>(lock: std::sync::Arc<std::sync::Mutex<T>>) {
 
 #[path = "branch_snapshots/tests.rs"]
 mod branch_snapshots;
+#[path = "canon_events/tests.rs"]
+mod canon_events;
 #[path = "canon_mining/tests.rs"]
 mod canon_mining;
 #[path = "canon_ratification/tests.rs"]

@@ -231,13 +231,13 @@ pub fn normalize_drafter_package(
     }
     out
 }
-fn key_text(text: &str) -> String {
+pub(super) fn key_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join("_")
         .to_lowercase()
 }
-fn normalized_decimal(text: &str) -> String {
+pub(super) fn normalized_decimal(text: &str) -> String {
     let negative = text.starts_with('-');
     let (whole, fraction) = text
         .trim_start_matches('-')
@@ -257,7 +257,7 @@ fn normalized_decimal(text: &str) -> String {
         fraction
     )
 }
-fn normalized_assertion(assertion: &ClaimAssertion) -> ClaimAssertion {
+pub(super) fn normalized_assertion(assertion: &ClaimAssertion) -> ClaimAssertion {
     let mut value = assertion.clone();
     match &mut value {
         ClaimAssertion::Action { verb, .. } => *verb = key_text(verb),
