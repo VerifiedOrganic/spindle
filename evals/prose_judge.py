@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import concurrent.futures
 import hashlib
 import itertools
 import json
@@ -27,6 +28,7 @@ from pathlib import Path
 import random
 import re
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -224,6 +226,8 @@ def check_keys(judges_path: Path | str = JUDGES_PATH, variants_path: Path | str 
 def extract_json_object(raw_text: str) -> dict:
     """Extract and parse a JSON object from model output, stripping <think> blocks and fences."""
     cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.S | re.I).strip()
+    if "</think>" in cleaned.lower():
+        cleaned = re.split(r"</think>", cleaned, flags=re.I)[-1].strip()
     fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.S | re.I)
     if fence_match:
         cleaned = fence_match.group(1).strip()
@@ -263,12 +267,30 @@ def validate_judge_response(payload: dict) -> dict:
         entry = raw_rubric[dim]
         if not isinstance(entry, dict):
             raise ValueError(f"Rubric dimension {dim!r} must be an object")
-        s1 = entry.get("passage_1_score")
-        s2 = entry.get("passage_2_score")
-        if isinstance(s1, bool) or not isinstance(s1, int) or not (1 <= s1 <= 5):
-            raise ValueError(f"{dim}.passage_1_score must be an integer 1..5, got {s1!r}")
-        if isinstance(s2, bool) or not isinstance(s2, int) or not (1 <= s2 <= 5):
-            raise ValueError(f"{dim}.passage_2_score must be an integer 1..5, got {s2!r}")
+        def _coerce_score(val, field_label: str) -> int:
+            if val is None or (isinstance(val, str) and val.strip().upper() in ("N/A", "NA", "NONE")):
+                if dim == "dialogue":
+                    return 3
+                raise ValueError(f"{field_label} must be a number 1..5, got {val!r}")
+            if isinstance(val, bool):
+                raise ValueError(f"{field_label} must be a number 1..5, got {val!r}")
+            if isinstance(val, str):
+                try:
+                    val = float(val.strip())
+                except ValueError:
+                    raise ValueError(f"{field_label} must be a number 1..5, got {val!r}") from None
+            if not isinstance(val, (int, float)) or not (0 <= float(val) <= 5):
+                raise ValueError(f"{field_label} must be a number 1..5, got {val!r}")
+            return max(1, min(5, int(round(float(val)))))
+
+        s1 = _coerce_score(
+            entry.get("passage_1_score", entry.get("score_1")),
+            f"{dim}.passage_1_score",
+        )
+        s2 = _coerce_score(
+            entry.get("passage_2_score", entry.get("score_2")),
+            f"{dim}.passage_2_score",
+        )
         winner_raw = entry.get("winner")
         if winner_raw is None:
             winner = "passage_1" if s1 > s2 else ("passage_2" if s2 > s1 else "tie")
@@ -311,7 +333,9 @@ def build_judge_prompts(brief: dict, passage_1_text: str, passage_2_text: str) -
         "'didn't know what tomorrow would bring', 'hours passed', said-bookism clusters like "
         "'hissed/gasped/breathed'), POV violations, future-knowledge leaks, and broken world rules.\n"
         "Return ONLY a single valid JSON object matching the exact schema requested, with no "
-        "markdown commentary outside the JSON."
+        "markdown commentary outside the JSON. Every rubric dimension MUST include integer "
+        "passage_1_score and passage_2_score in 1..5 (never null or N/A; if a brief forbids "
+        "spoken dialogue, score dialogue 5 when silence is respected and 1 when violated)."
     )
     ctx_md = brief.get("drafter_context", {}).get("context_markdown", "")
     criteria_lines = "\n".join(f"- {c}" for c in brief.get("criteria", []))
@@ -493,22 +517,31 @@ def run_fake_judge(
 
 def _http_post_json(url: str, payload: dict, headers: dict, timeout: int, key_env: str | None) -> dict:
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw)
-    except urllib.error.HTTPError as exc:
-        err_body = ""
+    last_err: str | None = None
+    for attempt in range(4):
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            err_body = exc.read().decode("utf-8", errors="replace")[:600]
-        except Exception:
-            pass
-        safe_err = redact_secrets(f"HTTP {exc.code} from {url}: {err_body}", [key_env] if key_env else [])
-        raise RuntimeError(safe_err) from None
-    except Exception as exc:
-        safe_err = redact_secrets(f"Request failed for {url}: {exc}", [key_env] if key_env else [])
-        raise RuntimeError(safe_err) from None
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            err_body = ""
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")[:600]
+            except Exception:
+                pass
+            last_err = redact_secrets(f"HTTP {exc.code} from {url}: {err_body}", [key_env] if key_env else [])
+            if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
+                time.sleep(1.5 * (2 ** attempt))
+                continue
+            raise RuntimeError(last_err) from None
+        except Exception as exc:
+            last_err = redact_secrets(f"Request failed for {url}: {exc}", [key_env] if key_env else [])
+            if attempt < 3:
+                time.sleep(1.5 * (2 ** attempt))
+                continue
+            raise RuntimeError(last_err) from None
+    raise RuntimeError(last_err or f"Request failed for {url}")
 
 
 def call_model_provider(
@@ -562,6 +595,12 @@ def call_model_provider(
             mode = "ollama_native"
 
         if mode == "ollama_native":
+            options = {
+                "temperature": temperature,
+                "num_predict": max(max_tokens, 12288 if agent_cfg.get("json_mode", True) else 4096),
+            }
+            if agent_cfg.get("seed") is not None:
+                options["seed"] = int(agent_cfg["seed"])
             payload = {
                 "model": model,
                 "stream": False,
@@ -571,10 +610,7 @@ def call_model_provider(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": max(max_tokens, 4096),
-                },
+                "options": options,
             }
             payload = {k: v for k, v in payload.items() if v is not None}
             try:
@@ -689,8 +725,482 @@ def call_model_provider(
 
 
 # =============================================================================
-# Generation Adapter (Saved files OR model + prompt-variant)
+# Generation Adapter (Saved files, model + prompt-variant, OR Rust bridge)
 # =============================================================================
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_") or "item"
+
+
+def brief_to_drafting_packet_v1(brief: dict) -> dict:
+    """Convert an eval brief from briefs.json into a valid DraftingPacketV1 JSON object."""
+    bid = str(brief["id"])
+    raw_pid = str(brief["project_id"])
+    project_id = raw_pid if raw_pid.startswith("project:") else f"project:{raw_pid}"
+    branch_id = f"bible_branch:{project_id}:main"
+    scene_id = f"scene:{bid}"
+    run_id = f"run:{bid}"
+    packet_id = f"packet:{bid}"
+
+    pov = brief.get("pov") or {}
+    pov_name = str(pov.get("character", "Protagonist"))
+    pov_char_id = f"character:{bid}:pov:{_slug(pov_name)}"
+    persp = str(pov.get("perspective", "third_limited")).lower()
+    person = "first" if "first" in persp else "third"
+    tense = "present" if "present" in persp else "past"
+
+    target = brief.get("target") or []
+    episodes = brief.get("episodes") or []
+    if len(target) >= 3:
+        book_num = max(1, int(target[0]))
+        chapter_num = max(1, int(target[1]))
+        scene_num = max(1, int(target[2]))
+    elif episodes:
+        latest_ep = episodes[-1]
+        book_num = max(1, int(latest_ep.get("book", 1)))
+        chapter_num = max(1, int(latest_ep.get("chapter", 1)))
+        scene_num = 1
+    else:
+        book_num = 1
+        chapter_num = 1
+        scene_num = 1
+
+    ctx = brief.get("drafter_context") or {}
+    loc = ctx.get("location") or {}
+    raw_hc = ctx.get("hard_constraints") or []
+    chars_present = ctx.get("characters_present") or []
+    iwt = ctx.get("in_world_time") or {}
+
+    source_versions: list[dict] = []
+    seen_sources: set[tuple[str, str, str]] = set()
+
+    def _make_source(source_id: str, payload_for_hash) -> dict:
+        rev_hash = digest({"brief_id": bid, "source_id": source_id, "payload": payload_for_hash})[:16]
+        src = {
+            "branch_id": branch_id,
+            "source_id": source_id,
+            "revision_hash": rev_hash,
+        }
+        key = (src["branch_id"], src["source_id"], src["revision_hash"])
+        if key not in seen_sources:
+            seen_sources.add(key)
+            source_versions.append(src)
+        return src
+
+    def _make_item(source_id: str, proposition_id: str, text: str, relevance: int = 100, recency: int = 1) -> dict:
+        src = _make_source(source_id, text)
+        return {
+            "source": src,
+            "proposition_id": proposition_id,
+            "text": text,
+            "relevance": int(relevance),
+            "recency": int(recency),
+        }
+
+    if isinstance(iwt, dict):
+        day_index = int(iwt["day"]) if isinstance(iwt.get("day"), int) else None
+        tod = str(iwt.get("time_of_day", "")).strip()
+        anchor = str(iwt.get("anchor_note", "")).strip()
+        story_clock = f"Day {day_index}, {tod}" if day_index is not None else tod
+        if anchor:
+            story_clock = f"{story_clock} ({anchor})" if story_clock else anchor
+    else:
+        story_clock = str(iwt).strip() or "Day 1"
+
+    participants = []
+    character_states = []
+    knowledge_boundaries = []
+    voice_rules = [
+        _make_item(
+            f"voice:pov:{bid}",
+            f"prop:voice:pov:{bid}",
+            f"POV character & perspective: {pov_name} ({persp}) — {pov.get('voice_profile', '')}",
+            relevance=100,
+            recency=10,
+        ),
+        _make_item(
+            f"voice:antislop:{bid}",
+            f"prop:voice:antislop:{bid}",
+            "Avoid prefab AI prose cliches ('It wasn't X, it was Y' contrast hinges, 'a mix/cocktail of X and Y', 'didn't know what tomorrow would bring', 'hours passed', and said-bookism clusters like 'hissed/gasped/breathed').",
+            relevance=95,
+            recency=9,
+        ),
+    ]
+    withheld_constraints: list[tuple[str, str]] = []
+    kb_counter = 0
+
+    for idx, cp in enumerate(chars_present, start=1):
+        cname = str(cp.get("name", f"Participant {idx}"))
+        cid = pov_char_id if cname == pov_name else f"character:{bid}:{idx}:{_slug(cname)}"
+        role = str(cp.get("role", "participant"))
+        cstate = str(cp.get("current_state", "")).strip()
+        speech = str(cp.get("voice") or cp.get("speech_style") or "").strip()
+        knows_list = [str(x).strip() for x in (cp.get("knows") or []) if str(x).strip()]
+        dnk_list = [str(x).strip() for x in (cp.get("does_not_know") or []) if str(x).strip()]
+
+        participants.append({
+            "id": cid,
+            "display_name": cname,
+            "role": role,
+        })
+        if speech:
+            voice_rules.append(
+                _make_item(
+                    f"voice:char:{bid}:{idx}",
+                    f"prop:voice:char:{bid}:{idx}",
+                    f"{cname} ({role}) voice: {speech}",
+                    relevance=90 - idx,
+                    recency=8,
+                )
+            )
+
+        state_parts = [f"{cname} ({role}): {cstate}"]
+        if speech:
+            state_parts.append(f"Voice: {speech}")
+        if knows_list:
+            state_parts.append(f"Knows: {'; '.join(knows_list)}")
+        if dnk_list:
+            state_parts.append(f"Withheld/Does NOT know: {'; '.join(dnk_list)}")
+        character_states.append(
+            _make_item(
+                f"character_state:{bid}:{idx}",
+                f"prop:char_state:{bid}:{idx}",
+                " | ".join(state_parts),
+                relevance=100 - idx,
+                recency=10,
+            )
+        )
+
+        for k_item in knows_list:
+            kb_counter += 1
+            knowledge_boundaries.append(
+                _make_item(
+                    f"knowledge:{bid}:{kb_counter}",
+                    f"prop:kb:{bid}:{kb_counter}",
+                    f"{cname} knows: {k_item}",
+                    relevance=100 - kb_counter,
+                    recency=10,
+                )
+            )
+        for dnk_item in dnk_list:
+            kb_counter += 1
+            knowledge_boundaries.append(
+                _make_item(
+                    f"knowledge:{bid}:{kb_counter}",
+                    f"prop:kb:{bid}:{kb_counter}",
+                    f"{cname} does NOT know (withheld): {dnk_item}",
+                    relevance=100 - kb_counter,
+                    recency=10,
+                )
+            )
+            withheld_constraints.append((cname, dnk_item))
+
+    if not any(p["id"] == pov_char_id for p in participants):
+        participants.insert(0, {
+            "id": pov_char_id,
+            "display_name": pov_name,
+            "role": "protagonist",
+        })
+
+    promises_due = [
+        f"Reader contract ({brief['genre']}): {brief['contract']}",
+    ]
+    for prom in brief.get("promises") or []:
+        if isinstance(prom, dict) and prom.get("description"):
+            planted = prom.get("planted") or []
+            planted_tag = f" (planted B{planted[0]}C{planted[1]})" if len(planted) >= 2 else ""
+            promises_due.append(f"{prom['description']}{planted_tag}")
+
+    criteria = [str(c).strip() for c in (brief.get("criteria") or []) if str(c).strip()]
+    prohibited_outcomes = [
+        "Do not use prefab AI prose cliches ('It wasn't X, it was Y', 'a mix/cocktail of X and Y', 'didn't know what tomorrow would bring', 'hours passed', or said-bookism clusters like 'hissed/gasped/breathed').",
+    ]
+    for crit in criteria:
+        if re.search(r"\b(?:do not|don't|never|must not|without)\b", crit, re.I):
+            prohibited_outcomes.append(crit)
+
+    def _map_constraint_kind(raw_label: str) -> str:
+        low = raw_label.lower()
+        if "time" in low or "clock" in low:
+            return "time"
+        if "loc" in low:
+            return "location"
+        if "know" in low or "secret" in low or "gate" in low:
+            return "knowledge"
+        if "lock" in low and "author" in low:
+            return "author_lock"
+        return "canon"
+
+    hard_constraints = []
+    facts = []
+    fact_counter = 0
+
+    if isinstance(raw_hc, list):
+        for hc_idx, entry in enumerate(raw_hc, start=1):
+            if isinstance(entry, dict):
+                raw_id = str(entry.get("id") or f"constraint_{hc_idx}").strip()
+                stmt = str(entry.get("statement") or "").strip()
+            else:
+                raw_id = f"constraint_{hc_idx}"
+                stmt = str(entry).strip()
+            if stmt:
+                full_stmt = f"[{raw_id}] {stmt}"
+                hc_src = _make_source(f"constraint:{bid}:{hc_idx}", full_stmt)
+                hard_constraints.append({
+                    "id": f"hc:{bid}:{hc_idx}:{_slug(raw_id)}",
+                    "kind": _map_constraint_kind(raw_id),
+                    "statement": full_stmt,
+                    "source": hc_src,
+                    "scope": "scene",
+                })
+                fact_counter += 1
+                facts.append(
+                    _make_item(
+                        f"fact:{bid}:{fact_counter}",
+                        f"prop:fact:{bid}:{fact_counter}",
+                        full_stmt,
+                        relevance=100 - fact_counter,
+                        recency=10,
+                    )
+                )
+
+    loc_name = str(loc.get("name", "Scene Location")).strip()
+    loc_summary = str(loc.get("summary", "")).strip()
+    loc_kind = str(loc.get("kind", "")).strip()
+    if loc_name:
+        loc_stmt = f"[LOCATION] {loc_name}" + (f" ({loc_kind})" if loc_kind else "") + (f" — {loc_summary}" if loc_summary else "")
+        loc_src = _make_source(f"location:{bid}:primary", loc_stmt)
+        hard_constraints.append({
+            "id": f"hc:{bid}:location",
+            "kind": "location",
+            "statement": loc_stmt,
+            "source": loc_src,
+            "scope": "scene",
+        })
+        fact_counter += 1
+        facts.append(
+            _make_item(
+                f"fact:{bid}:location",
+                f"prop:fact:{bid}:location",
+                loc_stmt,
+                relevance=95,
+                recency=10,
+            )
+        )
+
+    for r_idx, rule_pair in enumerate(brief.get("rules") or [], start=1):
+        if isinstance(rule_pair, (list, tuple)) and len(rule_pair) >= 2:
+            r_name, r_stmt = str(rule_pair[0]).strip(), str(rule_pair[1]).strip()
+            if r_stmt:
+                full_rule = f"[WORLD RULE: {r_name}] {r_stmt}"
+                r_src = _make_source(f"world_rule:{bid}:{r_idx}", full_rule)
+                hard_constraints.append({
+                    "id": f"hc:{bid}:rule:{r_idx}",
+                    "kind": "canon",
+                    "statement": full_rule,
+                    "source": r_src,
+                    "scope": "project",
+                })
+                fact_counter += 1
+                facts.append(
+                    _make_item(
+                        f"fact:{bid}:rule:{r_idx}",
+                        f"prop:fact:{bid}:rule:{r_idx}",
+                        full_rule,
+                        relevance=98,
+                        recency=10,
+                    )
+                )
+
+    for w_idx, (cname, dnk_stmt) in enumerate(withheld_constraints, start=1):
+        w_text = f"[KNOWLEDGE GATE] {cname} does NOT know: {dnk_stmt}"
+        w_src = _make_source(f"withheld:{bid}:{w_idx}", w_text)
+        hard_constraints.append({
+            "id": f"hc:{bid}:withheld:{w_idx}",
+            "kind": "knowledge",
+            "statement": w_text,
+            "source": w_src,
+            "scope": "scene",
+        })
+
+    prior_tail_text = str(ctx.get("previous_scene_tail") or "").strip()
+    prior_scene_tail = (
+        _make_item(
+            f"prior_scene_tail:{bid}",
+            f"prop:tail:{bid}",
+            prior_tail_text,
+            relevance=100,
+            recency=10,
+        )
+        if prior_tail_text
+        else None
+    )
+
+    story_so_far = []
+    for ep_idx, ep in enumerate(episodes, start=1):
+        ep_summary = str(ep.get("summary") or "").strip()
+        if ep_summary:
+            story_so_far.append(
+                _make_item(
+                    f"episode:{bid}:{ep_idx}",
+                    f"prop:episode:{bid}:{ep_idx}",
+                    f"Book {ep.get('book', 1)} Ch {ep.get('chapter', ep_idx)}: {ep_summary}",
+                    relevance=80 + ep_idx,
+                    recency=ep_idx,
+                )
+            )
+
+    open_threads = [
+        _make_item(
+            f"thread:{bid}:task",
+            f"prop:thread:{bid}:task",
+            f"Drafting task ({brief['scene_type']}): {brief['task']}",
+            relevance=100,
+            recency=10,
+        )
+    ]
+
+    scene_card_src = _make_source(f"scene_card:{bid}", brief["scene_purpose"])
+    pov_src = _make_source(f"pov:{bid}", pov)
+
+    scene_card = {
+        "source": scene_card_src,
+        "pov": {
+            "character_id": pov_char_id,
+            "display_name": pov_name,
+            "person": person,
+            "tense": tense,
+            "source": pov_src,
+        },
+        "goal": str(brief["scene_purpose"]),
+        "opposition": f"Reader contract ({brief['genre']}): {brief['contract']}",
+        "turn": str(brief["tension_turn"]),
+        "intended_outcome": str(brief["task"]),
+        "value_shift": {
+            "axis": str(brief["scene_type"]),
+            "before": "opening equilibrium under constraint",
+            "after": str(brief["tension_turn"]),
+        },
+        "emotion": {
+            "entry": "tense focus on immediate objective",
+            "exit": "consequence of the dramatic turn",
+        },
+        "chapter": {
+            "book_number": book_num,
+            "number": chapter_num,
+            "scene_index": scene_num,
+            "planned_scene_count": max(scene_num, 1),
+            "is_closer": bool(brief.get("scene_type") == "chapter-closer"),
+        },
+        "target_words": {
+            "min": 350,
+            "preferred": 450,
+            "max": 550,
+        },
+        "location": {
+            "id": f"location:{bid}:primary",
+            "name": loc_name,
+        },
+        "story_clock": story_clock,
+        "rating": "general",
+        "tone": str(brief["contract"]),
+        "participants": participants,
+        "required_beats": criteria,
+        "promises_due": promises_due,
+        "prohibited_outcomes": prohibited_outcomes,
+    }
+
+    canon_hash = digest({"brief_id": bid, "hard_constraints": hard_constraints, "facts": facts})[:16]
+    plan_rev = digest({"brief_id": bid, "scene_card": scene_card})[:16]
+
+    return {
+        "schema_version": "drafting_packet_v1",
+        "packet_id": packet_id,
+        "project_id": project_id,
+        "branch_id": branch_id,
+        "run_id": run_id,
+        "scene_id": scene_id,
+        "scene_revision": "rev-1",
+        "canon_snapshot_hash": canon_hash,
+        "plan_revision": plan_rev,
+        "source_versions": source_versions,
+        "scene_card": scene_card,
+        "hard_constraints": hard_constraints,
+        "continuity": {
+            "character_states": character_states,
+            "knowledge_boundaries": knowledge_boundaries,
+            "facts": facts,
+            "prior_scene_tail": prior_scene_tail,
+            "story_so_far": story_so_far,
+            "open_threads": open_threads,
+        },
+        "voice": {
+            "rules": voice_rules,
+            "exemplars": [],
+        },
+        "editorial_memory": {
+            "recent_openings": [],
+            "recent_endings": [],
+            "recurring_images": [],
+            "repeated_phrases": [],
+            "pacing_history": [],
+        },
+        "craft_rubric": {
+            "version": "scene-craft-v1",
+            "text": "",
+        },
+        "research_evidence": [],
+        "assembly": None,
+    }
+
+
+def resolve_tokenizer_binary(explicit: Path | str | None = None) -> Path:
+    """Resolve the spindle-tokenizer Rust binary path for the generation bridge."""
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit))
+    env_bin = os.environ.get("SPINDLE_TOKENIZER_BINARY")
+    if env_bin:
+        candidates.append(Path(env_bin))
+    cargo_target = os.environ.get("CARGO_TARGET_DIR")
+    if cargo_target:
+        candidates.append(Path(cargo_target) / "debug" / "spindle-tokenizer")
+        candidates.append(Path(cargo_target) / "release" / "spindle-tokenizer")
+    candidates.extend([
+        Path("/tmp/spindle-34-target/debug/spindle-tokenizer"),
+        Path("/tmp/spindle-34-target/release/spindle-tokenizer"),
+        REPO / "target" / "debug" / "spindle-tokenizer",
+        REPO / "target" / "release" / "spindle-tokenizer",
+    ])
+    for cand in candidates:
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return cand
+    raise RuntimeError(
+        "spindle-tokenizer binary not found. Build it with "
+        "`cargo build -p spindle-adapters --bin spindle-tokenizer` or pass --tokenizer-binary."
+    )
+
+
+def parse_generation_seeds(
+    seed: int | None = None,
+    seeds_csv: str | list[int] | tuple[int, ...] | None = None,
+) -> list[int | None]:
+    """Parse single or comma-separated generation seeds, preserving order and deduplicating."""
+    if seeds_csv is not None:
+        if isinstance(seeds_csv, (list, tuple)):
+            raw_items = [int(x) for x in seeds_csv if x is not None]
+        else:
+            raw_items = [int(part.strip()) for part in str(seeds_csv).split(",") if part.strip()]
+        deduped: list[int | None] = []
+        for item in raw_items:
+            if item not in deduped:
+                deduped.append(item)
+        if deduped:
+            return deduped
+    if seed is not None:
+        return [int(seed)]
+    return [None]
+
 
 def render_variant_prompt(brief: dict, variant_cfg: dict) -> tuple[str, str]:
     """Render system and user prompts for a drafter prompt variant."""
@@ -718,25 +1228,180 @@ def render_variant_prompt(brief: dict, variant_cfg: dict) -> tuple[str, str]:
     return sys_prompt, user_prompt
 
 
+def call_rust_bridge_for_brief(
+    brief: dict,
+    variant_cfg: dict,
+    generator_cfg: dict,
+    condition_label: str = "candidate",
+    generation_seed: int | None = None,
+) -> dict:
+    """Invoke the Rust ModelRouter / SqliteSpindleService bridge via spindle-tokenizer."""
+    rust_config = generator_cfg.get("rust_config")
+    rust_db = generator_cfg.get("rust_db")
+    if not rust_config or not rust_db:
+        raise ValueError(
+            "Rust generation bridge requires both 'rust_config' (--rust-config) and 'rust_db' (--rust-db)"
+        )
+    bin_path = resolve_tokenizer_binary(generator_cfg.get("tokenizer_binary"))
+    route = str(generator_cfg.get("route") or "draft")
+    rating = str(generator_cfg.get("rating") or "general")
+    variant_id = str(variant_cfg.get("id", "custom_variant"))
+    context_mode = str(variant_cfg.get("context_mode", "full_drafter_context"))
+    artifact_root = Path(
+        generator_cfg.get("artifact_dir")
+        or (Path(rust_db).resolve().parent / "prose_judge_bridge_artifacts")
+    )
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    seed_tag = f"seed_{generation_seed}" if generation_seed is not None else "seed_none"
+
+    max_attempts = 3
+    proc = None
+    elapsed = 0.0
+    for attempt in range(max_attempts):
+        if context_mode == "drafting_packet_v1":
+            packet = brief_to_drafting_packet_v1(brief)
+            packet_path = artifact_root / "packets" / f"{brief['id']}.packet.json"
+            # Preserve any existing recovery .lock files untouched; if a previous attempt left a
+            # recovery lock on the primary artifact path, use a fresh attempt-scoped artifact path.
+            candidate_art_path = artifact_root / "artifacts" / f"{brief['id']}_{seed_tag}.artifact.json"
+            attempt_idx = attempt
+            while Path(f"{candidate_art_path}.lock").exists() and not candidate_art_path.exists():
+                attempt_idx += 1
+                candidate_art_path = (
+                    artifact_root / "artifacts" / f"{brief['id']}_{seed_tag}_attempt{attempt_idx}.artifact.json"
+                )
+            artifact_path = candidate_art_path
+            write_json(packet_path, packet)
+            cmd = [
+                str(bin_path),
+                "draft-packet",
+                str(rust_config),
+                str(rust_db),
+                str(packet_path),
+                str(artifact_path),
+            ]
+            if generation_seed is not None:
+                cmd.append(str(generation_seed))
+        else:
+            sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
+            messages_path = artifact_root / "messages" / f"{brief['id']}_{variant_id}.messages.json"
+            write_json(messages_path, {"system": sys_prompt, "user": user_prompt})
+            cmd = [
+                str(bin_path),
+                "draft-messages",
+                str(rust_config),
+                str(rust_db),
+                route,
+                rating,
+                str(messages_path),
+            ]
+            if generation_seed is not None:
+                cmd.append(str(generation_seed))
+
+        t0 = time.monotonic()
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        elapsed = round(time.monotonic() - t0, 3)
+        if proc.returncode == 0:
+            break
+        if attempt + 1 < max_attempts:
+            time.sleep(2.5 * (attempt + 1))
+    assert proc is not None
+    if proc.returncode != 0:
+        err_msg = redact_secrets((proc.stderr or proc.stdout or "").strip())
+        raise RuntimeError(
+            f"spindle-tokenizer bridge failed (exit {proc.returncode}) for {brief['id']} ({variant_id}, seed={generation_seed}): {err_msg}"
+        )
+    try:
+        bridge_out = json.loads(proc.stdout)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to parse spindle-tokenizer JSON output for {brief['id']} ({variant_id}): {exc}"
+        ) from None
+
+    settings = bridge_out.get("settings") or {}
+    receipt = bridge_out.get("receipt") or {}
+    model_name = (
+        bridge_out.get("model")
+        or receipt.get("model")
+        or settings.get("model")
+        or generator_cfg.get("model", "unknown")
+    )
+    model_rev = settings.get("model_revision") or "unpinned"
+    text = bridge_out.get("text") or bridge_out.get("accepted_text") or ""
+    text_sha = bridge_out.get("accepted_text_sha256") or bridge_out.get("text_sha256") or digest(text)
+    raw_text_sha = bridge_out.get("text_sha256") or bridge_out.get("raw_text_sha256") or text_sha
+    model_call_id = (
+        bridge_out.get("model_call_id")
+        or receipt.get("generation_id")
+        or receipt.get("call_id")
+    )
+
+    return {
+        "case_id": brief["id"],
+        "brief_id": brief["id"],
+        "condition": condition_label,
+        "prompt_variant": variant_id,
+        "generation_seed": bridge_out.get("generation_seed", generation_seed),
+        "model": model_name,
+        "model_version": f"rust-bridge:{model_name}@{model_rev}",
+        "text": text,
+        "text_sha256": text_sha,
+        "raw_text_sha256": raw_text_sha,
+        "accepted_text_sha256": bridge_out.get("accepted_text_sha256"),
+        "packet_hash": bridge_out.get("packet_hash"),
+        "source_packet_sha256": bridge_out.get("source_packet_sha256"),
+        "prompt_hash": bridge_out.get("prompt_hash"),
+        "tokenizer_id": bridge_out.get("tokenizer_id") or settings.get("tokenizer_id"),
+        "tokenizer_version": bridge_out.get("tokenizer_version") or settings.get("tokenizer_version"),
+        "settings": settings,
+        "artifact_id": bridge_out.get("artifact_id"),
+        "artifact_path": bridge_out.get("artifact_path"),
+        "model_call_id": model_call_id,
+        "input_tokens": bridge_out.get("input_tokens"),
+        "output_tokens": bridge_out.get("output_tokens"),
+        "elapsed_seconds": elapsed,
+    }
+
+
 def generate_candidate_for_brief(
     brief: dict,
     variant_cfg: dict,
     generator_cfg: dict,
     condition_label: str = "candidate",
+    generation_seed: int | None = None,
 ) -> dict:
-    """Produce a single candidate output for a brief via fake or live model adapter."""
-    sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
+    """Produce a single candidate output for a brief via fake, Rust bridge, or live model adapter."""
+    effective_seed = (
+        generation_seed
+        if generation_seed is not None
+        else (int(generator_cfg["seed"]) if generator_cfg.get("seed") is not None else None)
+    )
     provider = str(generator_cfg.get("provider", "fake")).lower()
+    if provider == "rust-bridge" or (provider != "fake" and generator_cfg.get("rust_config")):
+        return call_rust_bridge_for_brief(
+            brief,
+            variant_cfg,
+            generator_cfg,
+            condition_label=condition_label,
+            generation_seed=effective_seed,
+        )
+
+    sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
     variant_id = variant_cfg.get("id", "custom_variant")
+    context_mode = variant_cfg.get("context_mode", "full_drafter_context")
+    packet_obj = brief_to_drafting_packet_v1(brief) if context_mode == "drafting_packet_v1" else None
+    source_packet_sha256 = digest(packet_obj) if packet_obj is not None else None
+    prompt_hash = digest({"system": sys_prompt, "user": json.dumps(packet_obj, sort_keys=True) if packet_obj else user_prompt})
+    packet_hash = prompt_hash if packet_obj is not None else None
 
     if provider == "fake":
-        # Offline deterministic generator: full_drafter_context honors all brief constraints;
+        # Offline deterministic generator: full_drafter_context and drafting_packet_v1 honor all brief constraints;
         # compact mode produces a shorter, slop-prone draft.
         loc_name = brief.get("drafter_context", {}).get("location", {}).get("name", "the room")
         pov_char = brief.get("pov", {}).get("character", "The protagonist")
         persp = brief.get("pov", {}).get("perspective", "third_limited")
         subj = "I" if persp == "first_person" else pov_char
-        if variant_cfg.get("context_mode") == "compact":
+        if context_mode == "compact":
             text = (
                 f"{subj} stood in {loc_name}. It wasn't fear. It was determination. "
                 f"A mix of relief and dread washed over the moment.\n\n"
@@ -745,35 +1410,64 @@ def generate_candidate_for_brief(
         else:
             crit_summary = " ".join(brief.get("criteria", []))
             tail = brief.get("drafter_context", {}).get("previous_scene_tail", "")
+            seed_note = f" [seed={effective_seed}]" if effective_seed is not None else ""
             text = (
                 f"{tail}\n\n"
-                f"At {loc_name}, {subj} acted on the immediate constraint: {brief.get('scene_purpose', '')}\n\n"
+                f"At {loc_name}, {subj} acted on the immediate constraint: {brief.get('scene_purpose', '')}{seed_note}\n\n"
                 f"'Hold the line steady,' {subj} said, keeping to the terms of the brief ({crit_summary}).\n\n"
                 f"The turn completed cleanly as {brief.get('tension_turn', '')}"
             )
+        clean_text = text.strip()
+        text_sha = digest(clean_text)
         return {
             "case_id": brief["id"],
             "brief_id": brief["id"],
             "condition": condition_label,
             "prompt_variant": variant_id,
+            "generation_seed": effective_seed,
             "model": generator_cfg.get("model", "spindle-fake-drafter-v1"),
             "model_version": "offline-v1",
-            "text": text.strip(),
+            "text": clean_text,
+            "text_sha256": text_sha,
+            "accepted_text_sha256": text_sha if packet_obj is not None else None,
+            "packet_hash": packet_hash,
+            "source_packet_sha256": source_packet_sha256,
+            "prompt_hash": prompt_hash,
+            "settings": {
+                "transport": "fake",
+                "temperature": float(generator_cfg.get("temperature", 0.4)),
+                "max_tokens": int(generator_cfg.get("max_tokens", 1200)),
+                "seed": effective_seed,
+            },
             "input_tokens": len(user_prompt.split()),
-            "output_tokens": len(text.split()),
+            "output_tokens": len(clean_text.split()),
             "elapsed_seconds": 0.001,
         }
 
     gen_call_cfg = {**generator_cfg, "json_mode": False}
+    if effective_seed is not None:
+        gen_call_cfg["seed"] = effective_seed
     resp = call_model_provider(gen_call_cfg, sys_prompt, user_prompt)
+    text_sha = digest(resp["text"])
     return {
         "case_id": brief["id"],
         "brief_id": brief["id"],
         "condition": condition_label,
         "prompt_variant": variant_id,
+        "generation_seed": effective_seed,
         "model": resp.get("model", generator_cfg.get("model", "unknown")),
         "model_version": f"{provider}:{generator_cfg.get('model', 'unknown')}",
         "text": resp["text"],
+        "text_sha256": text_sha,
+        "packet_hash": packet_hash,
+        "source_packet_sha256": source_packet_sha256,
+        "prompt_hash": prompt_hash,
+        "settings": {
+            "transport": provider,
+            "temperature": float(generator_cfg.get("temperature", 0.4)),
+            "max_tokens": int(generator_cfg.get("max_tokens", 1200)),
+            "seed": effective_seed,
+        },
         "input_tokens": resp.get("input_tokens"),
         "output_tokens": resp.get("output_tokens"),
         "elapsed_seconds": resp.get("elapsed_seconds"),
@@ -790,10 +1484,13 @@ def load_or_generate_pairs(
     variants_file: Path | str = VARIANTS_PATH,
     generator_override: dict | None = None,
     limit: int | None = None,
+    generation_seeds: list[int | None] | None = None,
 ) -> list[dict]:
     """Load candidate pairs from saved files OR generate them from two prompt variants."""
     selected_briefs = briefs[:limit] if limit else briefs
     brief_map = {b["id"]: b for b in selected_briefs}
+    seeds = generation_seeds if generation_seeds else [None]
+    multi_seed_mode = len(seeds) > 1 or seeds[0] is not None
 
     if variant_a and variant_b:
         vfile = read_json(variants_file)
@@ -805,17 +1502,32 @@ def load_or_generate_pairs(
             gen_cfg.update(generator_override)
         pairs = []
         for idx, b in enumerate(selected_briefs, start=1):
-            base_cand = generate_candidate_for_brief(b, variants[variant_a], gen_cfg, condition_label="baseline")
-            cand_cand = generate_candidate_for_brief(b, variants[variant_b], gen_cfg, condition_label="candidate")
-            pairs.append({
-                "pair_id": f"P{idx:03d}",
-                "case_id": b["id"],
-                "brief_id": b["id"],
-                "scene_type": b["scene_type"],
-                "genre": b["genre"],
-                "baseline": base_cand,
-                "candidate": cand_cand,
-            })
+            for gseed in seeds:
+                base_cand = generate_candidate_for_brief(
+                    b,
+                    variants[variant_a],
+                    gen_cfg,
+                    condition_label="baseline",
+                    generation_seed=gseed,
+                )
+                cand_cand = generate_candidate_for_brief(
+                    b,
+                    variants[variant_b],
+                    gen_cfg,
+                    condition_label="candidate",
+                    generation_seed=gseed,
+                )
+                pid = f"P{idx:03d}-S{gseed}" if multi_seed_mode else f"P{idx:03d}"
+                pairs.append({
+                    "pair_id": pid,
+                    "case_id": b["id"],
+                    "brief_id": b["id"],
+                    "generation_seed": gseed,
+                    "scene_type": b["scene_type"],
+                    "genre": b["genre"],
+                    "baseline": base_cand,
+                    "candidate": cand_cand,
+                })
         return pairs
 
     if baseline_path and candidate_path:
@@ -823,22 +1535,41 @@ def load_or_generate_pairs(
         cand_raw = read_json(candidate_path)
         base_list = base_raw.get("candidates", base_raw) if isinstance(base_raw, dict) else base_raw
         cand_list = cand_raw.get("candidates", cand_raw) if isinstance(cand_raw, dict) else cand_raw
-        base_by_id = {(r.get("case_id") or r.get("brief_id")): r for r in base_list}
-        cand_by_id = {(r.get("case_id") or r.get("brief_id")): r for r in cand_list}
+
+        base_by_id_seed: dict[tuple[str, int | None], dict] = {}
+        cand_by_id_seed: dict[tuple[str, int | None], dict] = {}
+        seeds_by_brief: dict[str, list[int | None]] = {}
+        for r in base_list:
+            bid = r.get("case_id") or r.get("brief_id")
+            gseed = r.get("generation_seed")
+            base_by_id_seed[(bid, gseed)] = r
+            seeds_by_brief.setdefault(bid, [])
+            if gseed not in seeds_by_brief[bid]:
+                seeds_by_brief[bid].append(gseed)
+        for r in cand_list:
+            bid = r.get("case_id") or r.get("brief_id")
+            gseed = r.get("generation_seed")
+            cand_by_id_seed[(bid, gseed)] = r
+
         pairs = []
         for idx, b in enumerate(selected_briefs, start=1):
             bid = b["id"]
-            if bid not in base_by_id or bid not in cand_by_id:
-                raise ValueError(f"Missing brief {bid} in baseline or candidate file")
-            pairs.append({
-                "pair_id": f"P{idx:03d}",
-                "case_id": bid,
-                "brief_id": bid,
-                "scene_type": b["scene_type"],
-                "genre": b["genre"],
-                "baseline": base_by_id[bid],
-                "candidate": cand_by_id[bid],
-            })
+            brief_seeds = seeds if multi_seed_mode else (seeds_by_brief.get(bid) or [None])
+            use_seed_suffix = multi_seed_mode or len(brief_seeds) > 1 or (brief_seeds and brief_seeds[0] is not None)
+            for gseed in brief_seeds:
+                if (bid, gseed) not in base_by_id_seed or (bid, gseed) not in cand_by_id_seed:
+                    raise ValueError(f"Missing brief {bid} (seed={gseed}) in baseline or candidate file")
+                pid = f"P{idx:03d}-S{gseed}" if use_seed_suffix else f"P{idx:03d}"
+                pairs.append({
+                    "pair_id": pid,
+                    "case_id": bid,
+                    "brief_id": bid,
+                    "generation_seed": gseed,
+                    "scene_type": b["scene_type"],
+                    "genre": b["genre"],
+                    "baseline": base_by_id_seed[(bid, gseed)],
+                    "candidate": cand_by_id_seed[(bid, gseed)],
+                })
         return pairs
 
     source_path = pairs_path or FIXTURE_PAIRS_PATH
@@ -933,22 +1664,45 @@ def judge_pair_double(
     initial_order = ("baseline", "candidate") if rng.random() < 0.5 else ("candidate", "baseline")
     swapped_order = (initial_order[1], initial_order[0])
 
-    pass_1 = evaluate_single_pass(
-        judge_cfg,
-        brief,
-        initial_order[0],
-        initial_order[1],
-        pair[initial_order[0]]["text"],
-        pair[initial_order[1]]["text"],
-    )
-    pass_2 = evaluate_single_pass(
-        judge_cfg,
-        brief,
-        swapped_order[0],
-        swapped_order[1],
-        pair[swapped_order[0]]["text"],
-        pair[swapped_order[1]]["text"],
-    )
+    if str(judge_cfg.get("provider", "fake")).lower() != "fake":
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(
+                evaluate_single_pass,
+                judge_cfg,
+                brief,
+                initial_order[0],
+                initial_order[1],
+                pair[initial_order[0]]["text"],
+                pair[initial_order[1]]["text"],
+            )
+            f2 = pool.submit(
+                evaluate_single_pass,
+                judge_cfg,
+                brief,
+                swapped_order[0],
+                swapped_order[1],
+                pair[swapped_order[0]]["text"],
+                pair[swapped_order[1]]["text"],
+            )
+            pass_1 = f1.result()
+            pass_2 = f2.result()
+    else:
+        pass_1 = evaluate_single_pass(
+            judge_cfg,
+            brief,
+            initial_order[0],
+            initial_order[1],
+            pair[initial_order[0]]["text"],
+            pair[initial_order[1]]["text"],
+        )
+        pass_2 = evaluate_single_pass(
+            judge_cfg,
+            brief,
+            swapped_order[0],
+            swapped_order[1],
+            pair[swapped_order[0]]["text"],
+            pair[swapped_order[1]]["text"],
+        )
 
     w1 = pass_1["deblinded_preference"]
     w2 = pass_2["deblinded_preference"]
@@ -1036,6 +1790,73 @@ def bootstrap_ci(
     }
 
 
+def cluster_bootstrap_ci(
+    values: list[float],
+    cluster_ids: list[str] | None = None,
+    seed: int = 20261107,
+    n_resamples: int = 2000,
+    alpha: float = 0.05,
+) -> dict:
+    """Compute cluster-bootstrap mean and (1-alpha) CI resampled by cluster (brief_id) across seeds."""
+    n = len(values)
+    if n == 0:
+        return {
+            "estimate": None,
+            "ci95_low": None,
+            "ci95_high": None,
+            "n": 0,
+            "n_clusters": 0,
+            "clustered_by": "brief_id",
+            "n_resamples": 0,
+        }
+    if not cluster_ids or len(cluster_ids) != n:
+        base = bootstrap_ci(values, seed=seed, n_resamples=n_resamples, alpha=alpha)
+        return {**base, "n_clusters": n, "clustered_by": "pair"}
+
+    unique_clusters = list(dict.fromkeys(cluster_ids))
+    k = len(unique_clusters)
+    if k == n:
+        base = bootstrap_ci(values, seed=seed, n_resamples=n_resamples, alpha=alpha)
+        return {**base, "n_clusters": k, "clustered_by": "brief_id"}
+
+    estimate = statistics.mean(values)
+    if k <= 1 or len(set(values)) == 1:
+        val = round(estimate, 4)
+        return {
+            "estimate": val,
+            "ci95_low": val,
+            "ci95_high": val,
+            "n": n,
+            "n_clusters": k,
+            "clustered_by": "brief_id",
+            "n_resamples": n_resamples,
+        }
+
+    by_cluster: dict[str, list[float]] = {cid: [] for cid in unique_clusters}
+    for val, cid in zip(values, cluster_ids):
+        by_cluster[cid].append(val)
+
+    rng = random.Random(seed)
+    means = []
+    for _ in range(n_resamples):
+        sampled_vals: list[float] = []
+        for _ in range(k):
+            sampled_vals.extend(by_cluster[unique_clusters[rng.randrange(k)]])
+        means.append(sum(sampled_vals) / len(sampled_vals))
+    means.sort()
+    low_idx = max(0, int(math.floor((alpha / 2.0) * n_resamples)))
+    high_idx = min(n_resamples - 1, int(math.ceil((1.0 - alpha / 2.0) * n_resamples)) - 1)
+    return {
+        "estimate": round(estimate, 4),
+        "ci95_low": round(means[low_idx], 4),
+        "ci95_high": round(means[high_idx], 4),
+        "n": n,
+        "n_clusters": k,
+        "clustered_by": "brief_id",
+        "n_resamples": n_resamples,
+    }
+
+
 def cohens_kappa(labels_a: list[str], labels_b: list[str], categories: tuple[str, ...] = VERDICT_LABELS) -> float | None:
     """Compute Cohen's kappa for two raters over fixed categories."""
     if len(labels_a) != len(labels_b) or not labels_a:
@@ -1084,8 +1905,12 @@ def panel_consensus(verdicts: list[str]) -> str:
     return "tie"
 
 
-def summarize_verdicts(verdicts: list[str], seed: int = 20261107) -> dict:
-    """Compute win rates and 95% bootstrap confidence intervals from a list of verdicts."""
+def summarize_verdicts(
+    verdicts: list[str],
+    seed: int = 20261107,
+    cluster_ids: list[str] | None = None,
+) -> dict:
+    """Compute win rates and 95% (cluster) bootstrap confidence intervals from a list of verdicts."""
     n = len(verdicts)
     c_wins = sum(1 for v in verdicts if v == "candidate")
     b_wins = sum(1 for v in verdicts if v == "baseline")
@@ -1094,15 +1919,17 @@ def summarize_verdicts(verdicts: list[str], seed: int = 20261107) -> dict:
     tie_half_scores = [1.0 if v == "candidate" else (0.5 if v == "tie" else 0.0) for v in verdicts]
     c_outright_scores = [1.0 if v == "candidate" else 0.0 for v in verdicts]
     b_outright_scores = [1.0 if v == "baseline" else 0.0 for v in verdicts]
+    n_clusters = len(dict.fromkeys(cluster_ids)) if cluster_ids else n
 
     return {
         "n_pairs": n,
+        "n_clusters": n_clusters,
         "candidate_wins": c_wins,
         "baseline_wins": b_wins,
         "ties": ties,
-        "candidate_win_rate_tie_half": bootstrap_ci(tie_half_scores, seed=seed),
-        "candidate_outright_win_rate": bootstrap_ci(c_outright_scores, seed=seed + 1),
-        "baseline_outright_win_rate": bootstrap_ci(b_outright_scores, seed=seed + 2),
+        "candidate_win_rate_tie_half": cluster_bootstrap_ci(tie_half_scores, cluster_ids=cluster_ids, seed=seed),
+        "candidate_outright_win_rate": cluster_bootstrap_ci(c_outright_scores, cluster_ids=cluster_ids, seed=seed + 1),
+        "baseline_outright_win_rate": cluster_bootstrap_ci(b_outright_scores, cluster_ids=cluster_ids, seed=seed + 2),
         "tie_rate": round(ties / n, 4) if n else None,
     }
 
@@ -1389,6 +2216,7 @@ def run_evaluation(
     seed: int = 20261107,
     calibration_key: Path | str | None = None,
     calibration_ratings: Path | str | None = None,
+    checkpoint_path: Path | str | None = None,
 ) -> dict:
     """Execute full randomized + swapped-order double judging across the judge panel."""
     if not judges:
@@ -1404,32 +2232,94 @@ def run_evaluation(
     consensus_verdicts: list[str] = []
     pair_reports: list[dict] = []
 
+    cached_pairs: dict[str, dict] = {}
+    ckpt_file = Path(checkpoint_path) if checkpoint_path else None
+    if ckpt_file and ckpt_file.exists():
+        try:
+            raw_ckpt = read_json(ckpt_file)
+            if isinstance(raw_ckpt, list):
+                for row in raw_ckpt:
+                    if isinstance(row, dict) and row.get("pair_id") and len(row.get("judge_evaluations", [])) == len(judges):
+                        cached_pairs[str(row["pair_id"])] = row
+        except Exception:
+            pass
+
+    use_parallel_judges = any(str(j.get("provider", "fake")).lower() != "fake" for j in judges) and len(judges) > 1
+
     for pair in pairs:
         bid = pair.get("brief_id") or pair["case_id"]
         brief = brief_map[bid]
-        evals_for_pair = []
-        for judge_cfg in judges:
-            dj = judge_pair_double(judge_cfg, brief, pair, seed=seed)
-            evals_for_pair.append(dj)
+        pid_str = str(pair["pair_id"])
+        base_hash = digest(pair["baseline"]["text"])
+        cand_hash = digest(pair["candidate"]["text"])
+        cached_row = cached_pairs.get(pid_str)
+        if (
+            cached_row
+            and cached_row.get("baseline_text_hash") == base_hash
+            and cached_row.get("candidate_text_hash") == cand_hash
+        ):
+            evals_for_pair = cached_row["judge_evaluations"]
+            for judge_cfg, dj in zip(judges, evals_for_pair):
+                all_double_judgments.append(dj)
+                by_judge_judgments[judge_cfg["id"]].append(dj)
+                by_judge_verdicts[judge_cfg["id"]].append(dj["verdict"])
+            consensus_verdicts.append(cached_row["panel_consensus"])
+            pair_reports.append(cached_row)
+            continue
+
+        if use_parallel_judges:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(judges)) as pool:
+                futures = [
+                    pool.submit(judge_pair_double, judge_cfg, brief, pair, seed)
+                    for judge_cfg in judges
+                ]
+                evals_for_pair = [f.result() for f in futures]
+        else:
+            evals_for_pair = [
+                judge_pair_double(judge_cfg, brief, pair, seed=seed)
+                for judge_cfg in judges
+            ]
+        for judge_cfg, dj in zip(judges, evals_for_pair):
             all_double_judgments.append(dj)
             by_judge_judgments[judge_cfg["id"]].append(dj)
             by_judge_verdicts[judge_cfg["id"]].append(dj["verdict"])
 
         consensus = panel_consensus([e["verdict"] for e in evals_for_pair])
         consensus_verdicts.append(consensus)
-        base_hash = digest(pair["baseline"]["text"])
-        cand_hash = digest(pair["candidate"]["text"])
-        pid_str = str(pair["pair_id"])
         existing_spid = pair.get("source_pair_id")
         source_pid = (
             str(existing_spid)
             if (existing_spid and pid_str.startswith(f"{existing_spid}#cal"))
             else pid_str
         )
+        gseed = pair.get("generation_seed")
+        if gseed is None:
+            gseed = pair["candidate"].get("generation_seed", pair["baseline"].get("generation_seed"))
+
+        def _extract_meta(arm: dict) -> dict:
+            meta = {
+                "model": arm.get("model"),
+                "model_version": arm.get("model_version"),
+                "prompt_variant": arm.get("prompt_variant"),
+                "generation_seed": arm.get("generation_seed", gseed),
+                "packet_hash": arm.get("packet_hash"),
+                "source_packet_sha256": arm.get("source_packet_sha256"),
+                "prompt_hash": arm.get("prompt_hash"),
+                "tokenizer_id": arm.get("tokenizer_id"),
+                "tokenizer_version": arm.get("tokenizer_version"),
+                "settings": arm.get("settings"),
+                "artifact_id": arm.get("artifact_id"),
+                "artifact_path": arm.get("artifact_path"),
+                "input_tokens": arm.get("input_tokens"),
+                "output_tokens": arm.get("output_tokens"),
+            }
+            return {k: v for k, v in meta.items() if v is not None}
+
         pair_reports.append({
             "pair_id": pair["pair_id"],
             "source_pair_id": source_pid,
             "brief_id": bid,
+            "generation_seed": gseed,
             "name": brief["name"],
             "project_id": brief["project_id"],
             "genre": brief["genre"],
@@ -1437,19 +2327,15 @@ def run_evaluation(
             "pov": brief["pov"],
             "baseline_text_hash": base_hash,
             "candidate_text_hash": cand_hash,
-            "baseline_meta": {
-                "model": pair["baseline"].get("model"),
-                "model_version": pair["baseline"].get("model_version"),
-                "prompt_variant": pair["baseline"].get("prompt_variant"),
-            },
-            "candidate_meta": {
-                "model": pair["candidate"].get("model"),
-                "model_version": pair["candidate"].get("model_version"),
-                "prompt_variant": pair["candidate"].get("prompt_variant"),
-            },
+            "baseline_meta": _extract_meta(pair["baseline"]),
+            "candidate_meta": _extract_meta(pair["candidate"]),
             "panel_consensus": consensus,
             "judge_evaluations": evals_for_pair,
         })
+        if ckpt_file:
+            write_json(ckpt_file, pair_reports)
+
+    all_cluster_ids = [pr["brief_id"] for pr in pair_reports]
 
     # Rubric dimension aggregation
     rubric_summary = {}
@@ -1472,17 +2358,35 @@ def run_evaluation(
             "ties": ties,
         }
 
-    # Breakdown by scene_type and genre
+    # Breakdown by scene_type, genre, and generation_seed
     by_scene_type = {}
     for stype in SCENE_TYPES:
-        st_verdicts = [pr["panel_consensus"] for pr in pair_reports if pr["scene_type"] == stype]
-        if st_verdicts:
-            by_scene_type[stype] = summarize_verdicts(st_verdicts, seed=seed)
+        st_rows = [pr for pr in pair_reports if pr["scene_type"] == stype]
+        if st_rows:
+            by_scene_type[stype] = summarize_verdicts(
+                [pr["panel_consensus"] for pr in st_rows],
+                seed=seed,
+                cluster_ids=[pr["brief_id"] for pr in st_rows],
+            )
 
     by_genre = {}
     for genre in sorted({pr["genre"] for pr in pair_reports}):
-        g_verdicts = [pr["panel_consensus"] for pr in pair_reports if pr["genre"] == genre]
-        by_genre[genre] = summarize_verdicts(g_verdicts, seed=seed)
+        g_rows = [pr for pr in pair_reports if pr["genre"] == genre]
+        by_genre[genre] = summarize_verdicts(
+            [pr["panel_consensus"] for pr in g_rows],
+            seed=seed,
+            cluster_ids=[pr["brief_id"] for pr in g_rows],
+        )
+
+    by_generation_seed = {}
+    present_seeds = [s for s in dict.fromkeys(pr.get("generation_seed") for pr in pair_reports) if s is not None]
+    for gseed in present_seeds:
+        s_rows = [pr for pr in pair_reports if pr.get("generation_seed") == gseed]
+        by_generation_seed[str(gseed)] = summarize_verdicts(
+            [pr["panel_consensus"] for pr in s_rows],
+            seed=seed + int(gseed),
+            cluster_ids=[pr["brief_id"] for pr in s_rows],
+        )
 
     per_judge_summary = {}
     for j in judges:
@@ -1491,7 +2395,7 @@ def run_evaluation(
             "family": j.get("family", "unknown"),
             "provider": j.get("provider", "fake"),
             "model": j.get("model", "unknown"),
-            "win_rates": summarize_verdicts(by_judge_verdicts[jid], seed=seed),
+            "win_rates": summarize_verdicts(by_judge_verdicts[jid], seed=seed, cluster_ids=all_cluster_ids),
             "position_bias": summarize_position_bias(by_judge_judgments[jid]),
         }
 
@@ -1499,7 +2403,9 @@ def run_evaluation(
         "schema_version": 1,
         "suite_id": "spindle.prose_judge.v1",
         "seed": seed,
+        "generation_seeds": present_seeds,
         "n_briefs_evaluated": len(pair_reports),
+        "n_unique_briefs": len(dict.fromkeys(all_cluster_ids)),
         "judges": [
             {
                 "id": j["id"],
@@ -1509,18 +2415,20 @@ def run_evaluation(
             }
             for j in judges
         ],
-        "panel_summary": summarize_verdicts(consensus_verdicts, seed=seed),
+        "panel_summary": summarize_verdicts(consensus_verdicts, seed=seed, cluster_ids=all_cluster_ids),
         "position_bias": summarize_position_bias(all_double_judgments),
         "inter_judge_agreement": compute_inter_judge_agreement([j["id"] for j in judges], by_judge_verdicts),
         "rubric_summary": rubric_summary,
         "by_scene_type": by_scene_type,
         "by_genre": by_genre,
+        "by_generation_seed": by_generation_seed,
         "per_judge": per_judge_summary,
         "calibration": None,
         "pairs": pair_reports,
         "interpretation": (
             "Pairwise LLM-judge evaluation with randomized initial order and swapped-order double judging. "
             "Order-inconsistent pairs are recorded as position-biased ties rather than awarded as wins. "
+            "Confidence intervals are cluster-bootstrapped by brief_id across generation seeds. "
             "LLM-judge win rates are an automated proxy and do not establish human author preference "
             "without blinded human calibration (`prose_judge.py blind` / `calibrate`)."
         ),
@@ -1752,6 +2660,152 @@ def self_test() -> None:
         except ValueError:
             pass
 
+        # 4d. Verify DraftingPacketV1 conversion across all 30 briefs, multi-seed pairing,
+        # cluster bootstrap CI, and Rust bridge adapter (draft-packet & draft-messages).
+        for b in briefs:
+            pkt = brief_to_drafting_packet_v1(b)
+            assert pkt["schema_version"] == "drafting_packet_v1"
+            assert pkt["project_id"].startswith("project:"), pkt["project_id"]
+            assert pkt["branch_id"].startswith("bible_branch:"), pkt["branch_id"]
+            assert len(pkt["scene_card"]["required_beats"]) >= 3
+            assert len(pkt["hard_constraints"]) >= 2
+            assert len(pkt["source_versions"]) >= 6
+            assert pkt["scene_card"]["chapter"]["is_closer"] is (b["scene_type"] == "chapter-closer")
+
+        multi_seed_pairs = load_or_generate_pairs(
+            briefs,
+            variant_a="compact_baseline",
+            variant_b="drafting_packet_v1",
+            generator_override={"provider": "fake", "model": "fake-drafter-test"},
+            generation_seeds=[101, 202, 303],
+        )
+        assert len(multi_seed_pairs) == 90
+        assert multi_seed_pairs[0]["pair_id"] == "P001-S101"
+        assert multi_seed_pairs[1]["pair_id"] == "P001-S202"
+        assert multi_seed_pairs[2]["pair_id"] == "P001-S303"
+        assert multi_seed_pairs[-1]["pair_id"] == "P030-S303"
+        assert multi_seed_pairs[0]["candidate"]["packet_hash"] is not None
+        assert multi_seed_pairs[0]["candidate"]["source_packet_sha256"] is not None
+        assert (
+            multi_seed_pairs[0]["candidate"]["source_packet_sha256"]
+            == multi_seed_pairs[1]["candidate"]["source_packet_sha256"]
+        )
+
+        # Save and reload multi-seed baseline/candidate files
+        ms_base_file = root / "ms_baseline.json"
+        ms_cand_file = root / "ms_candidate.json"
+        write_json(ms_base_file, [p["baseline"] for p in multi_seed_pairs[:6]])
+        write_json(ms_cand_file, [p["candidate"] for p in multi_seed_pairs[:6]])
+        reloaded_ms = load_or_generate_pairs(
+            briefs[:2],
+            baseline_path=ms_base_file,
+            candidate_path=ms_cand_file,
+        )
+        assert len(reloaded_ms) == 6
+        assert [p["pair_id"] for p in reloaded_ms] == [
+            "P001-S101",
+            "P001-S202",
+            "P001-S303",
+            "P002-S101",
+            "P002-S202",
+            "P002-S303",
+        ]
+
+        ms_report = run_evaluation(briefs[:6], multi_seed_pairs[:18], offline_judges, seed=20261107)
+        assert ms_report["n_briefs_evaluated"] == 18
+        assert ms_report["n_unique_briefs"] == 6
+        assert ms_report["panel_summary"]["n_pairs"] == 18
+        assert ms_report["panel_summary"]["n_clusters"] == 6
+        assert ms_report["panel_summary"]["candidate_win_rate_tie_half"]["clustered_by"] == "brief_id"
+        assert set(ms_report["by_generation_seed"].keys()) == {"101", "202", "303"}
+        assert ms_report["pairs"][0]["candidate_meta"]["generation_seed"] == 101
+        assert ms_report["pairs"][0]["candidate_meta"]["source_packet_sha256"] is not None
+
+        # Verify mock Rust bridge executable for both draft-packet and draft-messages
+        mock_bin = root / "mock-spindle-tokenizer"
+        mock_bin.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "args = sys.argv[1:]\n"
+            "cmd = args[0]\n"
+            "if cmd == 'draft-packet':\n"
+            "    cfg, db, pkt_path, art_path = args[1:5]\n"
+            "    seed = int(args[5]) if len(args) > 5 else None\n"
+            "    pkt = json.loads(open(pkt_path, encoding='utf-8').read())\n"
+            "    text = f\"Packet prose for {pkt['scene_id']} seed={seed}\"\n"
+            "    print(json.dumps({\n"
+            "        'mode': 'draft_packet',\n"
+            "        'artifact_id': 'draft_artifact:test',\n"
+            "        'artifact_path': art_path,\n"
+            "        'packet_hash': 'pkt_hash_123',\n"
+            "        'source_packet_sha256': 'src_pkt_456',\n"
+            "        'prompt_hash': 'pkt_hash_123',\n"
+            "        'generation_seed': seed,\n"
+            "        'model': 'gemma4:31b',\n"
+            "        'model_call_id': 'call_pkt_1',\n"
+            "        'tokenizer_id': 'hf_json',\n"
+            "        'tokenizer_version': 'gemma4',\n"
+            "        'input_tokens': 512,\n"
+            "        'output_tokens': 410,\n"
+            "        'text_sha256': 'sha_pkt',\n"
+            "        'accepted_text_sha256': 'sha_pkt',\n"
+            "        'text': text,\n"
+            "        'settings': {'transport': 'ollama_native_chat', 'context_window': 32768, 'max_tokens': 1200, 'temperature': 0.4, 'seed': seed, 'model_revision': 'rev1'}\n"
+            "    }))\n"
+            "elif cmd == 'draft-messages':\n"
+            "    cfg, db, route, rating, msg_path = args[1:6]\n"
+            "    seed = int(args[6]) if len(args) > 6 else None\n"
+            "    msg = json.loads(open(msg_path, encoding='utf-8').read())\n"
+            "    text = f\"Legacy prose len={len(msg['user'])} seed={seed}\"\n"
+            "    print(json.dumps({\n"
+            "        'mode': 'draft_messages',\n"
+            "        'prompt_hash': 'msg_hash_789',\n"
+            "        'generation_seed': seed,\n"
+            "        'model': 'gemma4:31b',\n"
+            "        'model_call_id': 'call_msg_1',\n"
+            "        'tokenizer_id': 'hf_json',\n"
+            "        'tokenizer_version': 'gemma4',\n"
+            "        'input_tokens': 480,\n"
+            "        'output_tokens': 395,\n"
+            "        'text_sha256': 'sha_msg',\n"
+            "        'text': text,\n"
+            "        'settings': {'transport': 'ollama_native_chat', 'context_window': 32768, 'max_tokens': 1200, 'temperature': 0.4, 'seed': seed, 'model_revision': 'rev1'}\n"
+            "    }))\n",
+            encoding="utf-8",
+        )
+        mock_bin.chmod(0o755)
+        variants = read_json(VARIANTS_PATH)["variants"]
+        bridge_cfg = {
+            "provider": "rust-bridge",
+            "rust_config": str(root / "agents.toml"),
+            "rust_db": str(root / "usage.db"),
+            "artifact_dir": str(root / "bridge_out"),
+            "tokenizer_binary": str(mock_bin),
+        }
+        bridge_pkt_cand = generate_candidate_for_brief(
+            briefs[0],
+            variants["drafting_packet_v1"],
+            bridge_cfg,
+            condition_label="candidate",
+            generation_seed=101,
+        )
+        assert bridge_pkt_cand["packet_hash"] == "pkt_hash_123"
+        assert bridge_pkt_cand["source_packet_sha256"] == "src_pkt_456"
+        assert bridge_pkt_cand["generation_seed"] == 101
+        assert bridge_pkt_cand["settings"]["context_window"] == 32768
+        assert "seed=101" in bridge_pkt_cand["text"]
+
+        bridge_msg_cand = generate_candidate_for_brief(
+            briefs[0],
+            variants["spindle_full_context"],
+            bridge_cfg,
+            condition_label="baseline",
+            generation_seed=101,
+        )
+        assert bridge_msg_cand["prompt_hash"] == "msg_hash_789"
+        assert bridge_msg_cand["generation_seed"] == 101
+        assert bridge_msg_cand["settings"]["context_window"] == 32768
+
     # 5. Verify secret redaction & key check safety
     os.environ["SPINDLE_TEST_FAKE_SECRET_KEY"] = "super-secret-value-12345"
     try:
@@ -1773,8 +2827,8 @@ def self_test() -> None:
             assert val not in serialized_keys, "check_keys must never include secret values"
 
     print(
-        "30-brief suite, swapped-order double judging, position-bias guard, bootstrap CIs, "
-        "inter-judge kappa, generation adapter, 100-pair calibration workflow, and key safety passed."
+        "30-brief suite, swapped-order double judging, position-bias guard, cluster bootstrap CIs, "
+        "inter-judge kappa, Rust packet/message generation bridge, 100-pair calibration workflow, and key safety passed."
     )
 
 
@@ -1787,15 +2841,23 @@ def main() -> None:
     ck = sub.add_parser("check-keys", help="Check which provider API keys are set in the environment")
     ck.add_argument("--judges", default=str(JUDGES_PATH))
 
-    gen = sub.add_parser("generate", help="Generate candidate outputs from saved files or a model prompt variant")
+    gen = sub.add_parser("generate", help="Generate candidate outputs from saved files, a model prompt variant, or the Rust bridge")
     gen.add_argument("--briefs", default=str(BRIEFS_PATH))
     gen.add_argument("--variants-file", default=str(VARIANTS_PATH))
-    gen.add_argument("--variant", required=True, help="Variant id in prompt_variants.json (e.g. compact_baseline or spindle_full_context)")
+    gen.add_argument("--variant", required=True, help="Variant id in prompt_variants.json (e.g. compact_baseline, spindle_full_context, drafting_packet_v1)")
     gen.add_argument("--condition", default="candidate", choices=["baseline", "candidate"])
-    gen.add_argument("--provider", default=None, help="Override provider (ollama, anthropic, openai-compatible, fake)")
+    gen.add_argument("--provider", default=None, help="Override provider (rust-bridge, ollama, anthropic, openai-compatible, fake)")
     gen.add_argument("--endpoint", default=None)
     gen.add_argument("--model", default=None)
     gen.add_argument("--api-key-env", default=None)
+    gen.add_argument("--rust-config", default=None, help="Agents TOML config path for rust-bridge generation")
+    gen.add_argument("--rust-db", default=None, help="SQLite DB path for rust-bridge usage/probe/project state")
+    gen.add_argument("--artifact-dir", default=None, help="Directory to store DraftingPacketV1 and PlainTextDraftArtifactV1 files")
+    gen.add_argument("--tokenizer-binary", default=None, help="Optional explicit path to spindle-tokenizer binary")
+    gen.add_argument("--route", default="draft", help="ModelRouter route name for rust-bridge (default: draft)")
+    gen.add_argument("--rating", default="general", help="Content rating for rust-bridge route clearance (default: general)")
+    gen.add_argument("--generation-seed", type=int, default=None, help="Single generation seed for model sampling")
+    gen.add_argument("--generation-seeds", default=None, help="Comma-separated list of generation seeds (e.g. 101,202,303)")
     gen.add_argument("--limit", type=int, default=None, help="Optional cap on number of briefs to generate")
     gen.add_argument("--out", required=True, help="Output JSON file path")
 
@@ -1806,6 +2868,15 @@ def main() -> None:
     jdg.add_argument("--candidate", default=None, help="Saved candidate list JSON")
     jdg.add_argument("--variant-a", default=None, help="Generate baseline end-to-end from variant A")
     jdg.add_argument("--variant-b", default=None, help="Generate candidate end-to-end from variant B")
+    jdg.add_argument("--provider", default=None, help="Override generator provider when using --variant-a/--variant-b")
+    jdg.add_argument("--rust-config", default=None, help="Agents TOML config path for rust-bridge generation")
+    jdg.add_argument("--rust-db", default=None, help="SQLite DB path for rust-bridge generation")
+    jdg.add_argument("--artifact-dir", default=None, help="Artifact output directory for rust-bridge generation")
+    jdg.add_argument("--tokenizer-binary", default=None, help="Optional explicit path to spindle-tokenizer binary")
+    jdg.add_argument("--route", default="draft", help="ModelRouter route name for rust-bridge (default: draft)")
+    jdg.add_argument("--rating", default="general", help="Content rating for rust-bridge route clearance (default: general)")
+    jdg.add_argument("--generation-seed", type=int, default=None, help="Single generation seed for variant generation/filtering")
+    jdg.add_argument("--generation-seeds", default=None, help="Comma-separated list of generation seeds (e.g. 101,202,303)")
     jdg.add_argument("--judges", default=str(JUDGES_PATH), help="Judges config JSON path")
     jdg.add_argument("--live", action="store_true", help="Use live_judges panel instead of offline_judges")
     jdg.add_argument("--limit", type=int, default=None, help="Evaluate first N briefs (useful for smoke tests)")
@@ -1856,12 +2927,55 @@ def main() -> None:
             gen_cfg["model"] = args.model
         if args.api_key_env is not None:
             gen_cfg["api_key_env"] = args.api_key_env
-        outputs = [
-            generate_candidate_for_brief(b, variants[args.variant], gen_cfg, condition_label=args.condition)
-            for b in briefs
-        ]
+        if args.rust_config:
+            gen_cfg["rust_config"] = args.rust_config
+            if not args.provider:
+                gen_cfg["provider"] = "rust-bridge"
+        if args.rust_db:
+            gen_cfg["rust_db"] = args.rust_db
+        if args.artifact_dir:
+            gen_cfg["artifact_dir"] = args.artifact_dir
+        if args.tokenizer_binary:
+            gen_cfg["tokenizer_binary"] = args.tokenizer_binary
+        if args.route:
+            gen_cfg["route"] = args.route
+        if args.rating:
+            gen_cfg["rating"] = args.rating
+
+        seeds = parse_generation_seeds(args.generation_seed, args.generation_seeds)
+        # Incremental checkpoint support: if args.out already exists and is a JSON list, reuse completed (brief_id, generation_seed) items
+        existing_by_key: dict[tuple[str, int | None], dict] = {}
+        out_path = Path(args.out)
+        if out_path.exists():
+            try:
+                prev = read_json(out_path)
+                prev_list = prev.get("candidates", prev) if isinstance(prev, dict) else prev
+                if isinstance(prev_list, list):
+                    for item in prev_list:
+                        if isinstance(item, dict) and item.get("text"):
+                            bid = item.get("case_id") or item.get("brief_id")
+                            existing_by_key[(bid, item.get("generation_seed"))] = item
+            except Exception:
+                pass
+
+        outputs = []
+        for b in briefs:
+            for gseed in seeds:
+                key = (b["id"], gseed)
+                if key in existing_by_key:
+                    outputs.append(existing_by_key[key])
+                    continue
+                cand = generate_candidate_for_brief(
+                    b,
+                    variants[args.variant],
+                    gen_cfg,
+                    condition_label=args.condition,
+                    generation_seed=gseed,
+                )
+                outputs.append(cand)
+                write_json(args.out, outputs)
         write_json(args.out, outputs)
-        print(f"Wrote {len(outputs)} generated candidates ({args.variant}) to {args.out}")
+        print(f"Wrote {len(outputs)} generated candidates ({args.variant}, seeds={seeds}) to {args.out}")
         return
 
     if args.command == "judge":
@@ -1881,7 +2995,29 @@ def main() -> None:
         else:
             judges = jcfg["offline_judges"]
 
-        gen_override = None if args.live else {"provider": "fake", "model": "spindle-fake-drafter-v1"}
+        gen_override: dict = {} if args.live else {"provider": "fake", "model": "spindle-fake-drafter-v1"}
+        if args.provider:
+            gen_override["provider"] = args.provider
+        if args.rust_config:
+            gen_override["rust_config"] = args.rust_config
+            if not args.provider:
+                gen_override["provider"] = "rust-bridge"
+        if args.rust_db:
+            gen_override["rust_db"] = args.rust_db
+        if args.artifact_dir:
+            gen_override["artifact_dir"] = args.artifact_dir
+        if args.tokenizer_binary:
+            gen_override["tokenizer_binary"] = args.tokenizer_binary
+        if args.route:
+            gen_override["route"] = args.route
+        if args.rating:
+            gen_override["rating"] = args.rating
+
+        seeds = (
+            parse_generation_seeds(args.generation_seed, args.generation_seeds)
+            if (args.generation_seed is not None or args.generation_seeds is not None)
+            else None
+        )
         pairs = load_or_generate_pairs(
             briefs,
             pairs_path=args.pairs,
@@ -1889,8 +3025,9 @@ def main() -> None:
             candidate_path=args.candidate,
             variant_a=args.variant_a,
             variant_b=args.variant_b,
-            generator_override=gen_override,
+            generator_override=gen_override or None,
             limit=args.limit,
+            generation_seeds=seeds,
         )
         result = run_evaluation(
             briefs,
@@ -1899,11 +3036,13 @@ def main() -> None:
             seed=args.seed,
             calibration_key=args.calibration_key,
             calibration_ratings=args.calibration_ratings,
+            checkpoint_path=f"{args.out}.checkpoint.json" if args.live else None,
         )
         write_json(args.out, result)
         ps = result["panel_summary"]
         print(
-            f"Evaluated {result['n_briefs_evaluated']} briefs across {len(judges)} judges -> "
+            f"Evaluated {result['n_briefs_evaluated']} pairs ({result.get('n_unique_briefs', ps['n_clusters'])} briefs) "
+            f"across {len(judges)} judges -> "
             f"candidate_wins={ps['candidate_wins']}, baseline_wins={ps['baseline_wins']}, ties={ps['ties']}, "
             f"win_rate_tie_half={ps['candidate_win_rate_tie_half']['estimate']} "
             f"[{ps['candidate_win_rate_tie_half']['ci95_low']}, {ps['candidate_win_rate_tie_half']['ci95_high']}], "

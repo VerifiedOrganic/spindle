@@ -23,6 +23,13 @@
       "context_mode": "full_drafter_context",
       "system_prompt": "You are Spindle's scene-writing agent. Honor every hard constraint ([IN-WORLD TIME], [WORLD RULE], [SECRETS IN PLAY], [WEALTH/STATE], [KNOWLEDGE GATE]), maintain strict POV discipline and distinct character voice, fulfill the scene purpose with a concrete dramatic turn, and avoid prefab AI prose cliches ('not X, but Y' contrast hinges, emotion cocktails, fishing-for-significance endings, and said-bookism clusters). Return story prose only.",
       "user_template": "Write 350-550 words for this scene.\n\n{context_markdown}\n\n## Drafting Task\n- Scene Type: {scene_type}\n- Scene Purpose: {scene_purpose}\n- Required Turn: {tension_turn}\n- Task: {task}\n\nOutput prose only."
+    },
+    "drafting_packet_v1": {
+      "id": "drafting_packet_v1",
+      "label": "Typed DraftingPacketV1 (tokenizer-budgeted plain-text packet + artifact acceptance)",
+      "context_mode": "drafting_packet_v1",
+      "system_prompt": "You are Spindle's scene-writing agent. Draft the requested scene from the supplied drafting packet. Honor every hard constraint, maintain strict POV and voice discipline, fulfill the scene purpose and required beats, and return story prose only without JSON, markdown headers, or commentary.",
+      "user_template": "{context_markdown}\n\nTask: {task}"
     }
   }
 }

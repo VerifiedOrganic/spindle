@@ -245,6 +245,42 @@ You can also compare saved candidate files directly via
 prompt variants from `evals/prose_judge/prompt_variants.json` in one step with
 `--variant-a compact_baseline --variant-b spindle_full_context`.
 
+### Rust packet generation bridge & multi-seed release gate G
+
+To evaluate internal Rust `DraftingPacketV1` / `PlainTextDraftArtifactV1`
+generation against the frozen legacy prompt under the same calibrated tokenizer
+and native Ollama `/api/chat` context/sampling policy across multiple generation
+seeds (`101,202,303`):
+
+```sh
+cargo build -p spindle-adapters --bin spindle-tokenizer -p spindle-mcp
+
+# Generate 90 packet candidates (30 briefs × 3 seeds) via SqliteSpindleService::draft_packet_to_artifact:
+ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py generate \
+  --variant drafting_packet_v1 --condition candidate --provider rust-bridge \
+  --rust-config /path/to/agents.toml --rust-db /tmp/spindle-g/eval.db \
+  --artifact-dir /tmp/spindle-g/artifacts --generation-seeds 101,202,303 \
+  --out /tmp/spindle-g/candidates_packet_v1.json
+
+# Generate 90 frozen legacy baseline candidates via ModelRouter::draft_eval_messages:
+ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py generate \
+  --variant spindle_full_context --condition baseline --provider rust-bridge \
+  --rust-config /path/to/agents.toml --rust-db /tmp/spindle-g/eval_legacy.db \
+  --artifact-dir /tmp/spindle-g/artifacts_legacy --generation-seeds 101,202,303 \
+  --out /tmp/spindle-g/candidates_legacy_full_context.json
+
+# Run multi-family swapped-order double judging with 95% cluster-bootstrap CIs by brief:
+ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py judge \
+  --live --baseline /tmp/spindle-g/candidates_legacy_full_context.json \
+  --candidate /tmp/spindle-g/candidates_packet_v1.json \
+  --out evals/results/prose_judge_packet_v1_g_live.json
+
+# Verify continuity recall (C) + generated-accepted-prose continuity fixture across all 90 artifacts:
+python3 evals/continuity_recall.py \
+  --accepted-artifacts-dir /tmp/spindle-g/artifacts/artifacts \
+  --output /tmp/spindle-g/continuity_recall_with_accepted_prose.json
+```
+
 ## Human calibration (~100 pairs)
 
 `prose_judge.py` reuses and extends `serial_fiction.py blind` (`--pairwise`) so
