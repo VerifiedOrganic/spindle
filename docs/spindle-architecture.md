@@ -528,7 +528,12 @@ Use this map when you need to patch behavior quickly.
 - Add or modify MCP session/defaulting/schema behavior:
   `crates/spindle-mcp/src/tools.rs`.
 - Change repository persistence/query behavior:
-  `crates/spindle-adapters/src/sqlite/repository.rs`.
+  `crates/spindle-adapters/src/sqlite/repository/` by aggregate (`projects.rs`,
+  `scenes.rs`, `characters.rs`, `canon.rs`, `relationships.rs`, `branches.rs`,
+  `plans.rs`, `authoring.rs`, `style.rs`, `imports.rs`, or `search.rs`). Shared
+  parameter types, transaction primitives, and snapshot helpers remain in
+  `crates/spindle-adapters/src/sqlite/repository.rs`; aggregate tests live in
+  each family's `tests.rs`, with shared fixtures in `repository/tests.rs`.
 - Change business logic or tool orchestration:
   `crates/spindle-adapters/src/sqlite/service/` (choose the corresponding
   family module; for example `context.rs`, `consistency.rs`,
