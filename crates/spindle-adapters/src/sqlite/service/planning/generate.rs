@@ -572,7 +572,61 @@ impl SqliteSpindleService {
             .advance_planning_claimed(input, session, attempt_id.clone(), claim_token.clone(), now)
             .await
         {
-            Ok(report) => Ok(report),
+            Ok(mut report) => {
+                if report.outcome == PlanningSessionOutcome::Staged
+                    && report.author_questions.is_empty()
+                    && matches!(report.level, PlanningLevel::Chapter | PlanningLevel::Scene)
+                    && let Some(ref prop) = report.proposal
+                {
+                    let live_session = self.get_planning_session(&report.session_id).await?;
+                    let gate = live_session
+                        .policy
+                        .gates
+                        .get(&report.level)
+                        .copied()
+                        .unwrap_or_default();
+                    let adv_count = report
+                        .findings
+                        .iter()
+                        .filter(|f| f.severity == PlanningFindingSeverity::Advisory)
+                        .count();
+                    let within_adv_cap = live_session
+                        .policy
+                        .max_advisory_findings
+                        .is_none_or(|max_adv| adv_count <= max_adv);
+                    if gate == PlanningGate::DelegateIfValid
+                        && within_adv_cap
+                        && !live_session.projection_stale
+                        && live_session.scope.is_some()
+                        && let Some(delegated_actor) = live_session.policy.delegated_actor()
+                    {
+                        let prop_id = prop.id.clone();
+                        let prop_hash = prop.payload_hash.clone();
+                        if let Ok(apply_rep) = self
+                            .apply_planning(DecidePlanningInput {
+                                session_id: report.session_id.clone(),
+                                scope: live_session.scope.clone(),
+                                expected_hashes: BTreeMap::from([(prop_id.clone(), prop_hash)]),
+                                decision: PlanningDecision::Accept,
+                                actor: delegated_actor.clone(),
+                                note: format!(
+                                    "Auto-applied under delegated gate policy {delegated_actor}"
+                                ),
+                            })
+                            .await
+                            && apply_rep.complete
+                            && apply_rep.error.is_none()
+                        {
+                            report.proposal = apply_rep
+                                .proposals
+                                .into_iter()
+                                .find(|p| p.id == prop_id)
+                                .or(report.proposal);
+                        }
+                    }
+                }
+                Ok(report)
+            }
             Err(err) => {
                 let _ = self
                     .repository
@@ -1453,6 +1507,9 @@ impl SqliteSpindleService {
                 });
             }
         }
+        let has_explicit_target_range = val
+            .as_object()
+            .is_some_and(|m| m.get("target_range").is_some_and(|v| !v.is_null()));
         let stage_input = StagePlanningInput {
             session_id: session.id.clone(),
             scope: session.scope.clone(),
@@ -1462,10 +1519,10 @@ impl SqliteSpindleService {
             parents: parents.clone(),
             operations: artifact.operations,
             rationale: artifact.rationale,
-            target_range: if artifact.target_range.is_default() {
-                None
-            } else {
+            target_range: if has_explicit_target_range || !artifact.target_range.is_default() {
                 Some(artifact.target_range)
+            } else {
+                None
             },
             schedule: artifact.schedule,
             assumptions: artifact.assumptions,

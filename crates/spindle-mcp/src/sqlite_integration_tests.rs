@@ -8649,3 +8649,538 @@ async fn replan_amendment_invalidates_pending_scene_artifact_before_next_draft()
 
     auto_shutdown(fx).await;
 }
+
+#[tokio::test]
+async fn host_draft_handoff_rejects_save_against_superseded_plan_revision_until_re_executed() {
+    let fx = auto_checkpoint_fixture(
+        "manual",
+        true,
+        Some(2),
+        &["general", "general"],
+        false,
+        true,
+    )
+    .await
+    .expect("run should start");
+
+    let branch = fx
+        .svc
+        .repository()
+        .get_active_branch(&fx.project_id)
+        .await
+        .unwrap();
+
+    // 1. Interleave a plan amendment during DraftScene handoff issuance:
+    //    `handle_authoring_execute_next_with_seam` loads the initial snapshot (plan_revision 0),
+    //    then `before_handoff_persist` applies a scene_replace amendment (bumping plan_revision to 1
+    //    and reseeding chapter 1 scene 1 to `scene-001-r1.json`).
+    //    `try_save_authoring_run_handoff` must reject the stale pre-amendment snapshot, reload and
+    //    reconcile the reseeded run, preserve `scene-001-r1.json`, and bind `handoff_plan_revision = Some(1)`.
+    let handoff_res = fx
+        .router
+        .handle_authoring_execute_next_with_seam(
+            spindle_core::models::AuthoringExecuteNextInput {
+                project_id: fx.project_id.clone(),
+                run_id: Some(fx.run_id.clone()),
+                mode: None,
+            },
+            || async {
+                let staged = fx
+                    .svc
+                    .repository()
+                    .stage_plan_amendment(
+                        spindle_adapters::sqlite::repository::StagePlanAmendmentParams {
+                            project_id: fx.project_id.clone(),
+                            branch_id: branch.id.clone(),
+                            source_chapter: 0,
+                            book_number: 1,
+                            authoring_run_id: Some(fx.run_id.clone()),
+                            amendment_class: "scene_replace".to_string(),
+                            target_chapter: Some(1),
+                            payload: serde_json::json!({
+                                "scene_order": 1,
+                                "summary": "Mara inspects the amended signal tower",
+                                "purpose": "amended_signal_opening",
+                                "character_ids": []
+                            }),
+                            rationale: "Interleave amendment during DraftScene handoff issuance"
+                                .to_string(),
+                            confidence: "high".to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let decide_out = fx
+                    .svc
+                    .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+                        project_id: fx.project_id.clone(),
+                        decisions: vec![spindle_core::models::PlanAmendmentDecisionInput {
+                            amendment_id: staged.id,
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        }],
+                        decided_by: Some("operator".to_string()),
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(decide_out.applied_count, 1);
+            },
+        )
+        .await
+        .expect("DraftScene handoff should reload and succeed after concurrent amendment");
+    assert_eq!(handoff_res.executed_action, "none");
+    assert!(
+        handoff_res
+            .message
+            .contains("Host draft required for non-explicit scene 1.1"),
+        "{handoff_res:?}"
+    );
+
+    let (_, _, scenes_after_interleaved_handoff, _) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ch1_sc1 = scenes_after_interleaved_handoff
+        .iter()
+        .find(|sc| sc.chapter_number == 1 && sc.scene_order == 1)
+        .expect("chapter 1 scene 1 should exist");
+    assert_eq!(
+        ch1_sc1.scene_artifact_path.as_deref(),
+        Some("scenes/chapter-0001/scene-001-r1.json"),
+        "reseeded scene manifest path must not be overwritten by the pre-amendment snapshot"
+    );
+    assert_eq!(
+        ch1_sc1
+            .draft_diagnostics
+            .as_ref()
+            .and_then(|d| d.get("handoff_plan_revision"))
+            .and_then(|v| v.as_i64()),
+        Some(1),
+        "reloaded handoff must bind to the post-amendment plan_revision (1)"
+    );
+    assert_eq!(
+        ch1_sc1
+            .draft_diagnostics
+            .as_ref()
+            .and_then(|d| d.get("superseded_handoff_plan_revision"))
+            .and_then(|v| v.as_i64()),
+        None
+    );
+
+    // 2. Controlled check-to-write interleaving during draft save:
+    //    The pre-flight check sees matching `handoff_plan_revision = 1`, then `before_scene_write`
+    //    applies a second amendment (bumping `plan_revision` to 2 and marking the handoff superseded)
+    //    immediately before `persist_scene` executes. The in-transaction check inside `persist_scene`
+    //    must reject the write and leave zero scene rows in SQLite.
+    let interleaved_save_err = fx
+        .router
+        .handle_authoring_save_scene_draft_with_seam(
+            spindle_core::models::AuthoringSaveSceneDraftInput {
+                project_id: fx.project_id.clone(),
+                run_id: Some(fx.run_id.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Stale host draft racing an amendment between preflight and write."
+                    .to_string(),
+                authorship: spindle_core::models::DraftAuthorship::Assistant,
+                summary: "Stale racing summary".to_string(),
+                content_rating: spindle_core::models::ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                location_id: None,
+                character_states: vec![],
+                canonical_facts: vec![],
+                relationship_updates: vec![],
+                beats: vec![],
+                continuity_notes: vec!["No durable canon changes.".to_string()],
+                research_source_ids: vec![],
+                research_note_ids: vec![],
+                research_claim_ids: vec![],
+                research_query_pack_input: None,
+                research_context_hash: None,
+                knowledge_learned: vec![],
+            },
+            || async {
+                let staged = fx
+                    .svc
+                    .repository()
+                    .stage_plan_amendment(
+                        spindle_adapters::sqlite::repository::StagePlanAmendmentParams {
+                            project_id: fx.project_id.clone(),
+                            branch_id: branch.id.clone(),
+                            source_chapter: 0,
+                            book_number: 1,
+                            authoring_run_id: Some(fx.run_id.clone()),
+                            amendment_class: "scene_replace".to_string(),
+                            target_chapter: Some(1),
+                            payload: serde_json::json!({
+                                "scene_order": 1,
+                                "summary": "Mara inspects the twice-amended signal tower",
+                                "purpose": "twice_amended_signal_opening",
+                                "character_ids": []
+                            }),
+                            rationale:
+                                "Amend chapter 1 scene 1 between pre-flight check and scene write"
+                                    .to_string(),
+                            confidence: "high".to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let decide_out = fx
+                    .svc
+                    .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+                        project_id: fx.project_id.clone(),
+                        decisions: vec![spindle_core::models::PlanAmendmentDecisionInput {
+                            amendment_id: staged.id,
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        }],
+                        decided_by: Some("operator".to_string()),
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(decide_out.applied_count, 1);
+            },
+        )
+        .await
+        .expect_err(
+            "amendment committed between pre-flight check and persist_scene must abort scene write",
+        );
+    assert!(
+        format!("{interleaved_save_err:#}").contains("stale host draft handoff"),
+        "expected stale host draft handoff error, got: {interleaved_save_err:#}"
+    );
+    let scenes_after_interleaved_save = fx
+        .svc
+        .repository()
+        .list_scenes_by_project_and_branch(&fx.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert!(
+        scenes_after_interleaved_save.is_empty(),
+        "check-to-write interleaved amendment must leave zero scene rows in SQLite"
+    );
+
+    // 3. Subsequent ordinary saves (via authoring_save_scene_draft OR save_scene_draft)
+    //    before re-calling authoring_execute_next remain rejected with zero prose persisted in SQLite.
+    let stale_authoring_save = fx
+        .router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id,
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "scene_order": 1,
+                    "content_rating": "general",
+                    "full_text": "Stale host draft against old plan_revision.",
+                    "summary": "Stale summary",
+                    "continuity_notes": ["No durable canon changes."]
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stale_authoring_save.is_error,
+        Some(true),
+        "stale host draft save through authoring_save_scene_draft must be rejected: {stale_authoring_save:?}"
+    );
+    let stale_err_json = serde_json::to_string(&stale_authoring_save).unwrap();
+    assert!(
+        stale_err_json.contains("stale host draft handoff"),
+        "{stale_err_json}"
+    );
+
+    let stale_direct_save = fx
+        .svc
+        .save_scene_draft(spindle_core::models::SaveSceneDraftInput {
+            project_id: fx.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Stale direct save against old plan_revision.".into(),
+            authorship: spindle_core::models::DraftAuthorship::Assistant,
+            summary: "Stale direct summary".into(),
+            content_rating: spindle_core::models::ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            location_id: None,
+            research_source_ids: vec![],
+            research_note_ids: vec![],
+            research_claim_ids: vec![],
+            research_query_pack_input: None,
+            research_context_hash: None,
+            knowledge_learned: vec![],
+        })
+        .await;
+    assert!(
+        stale_direct_save.is_err(),
+        "stale host draft save through save_scene_draft must be rejected"
+    );
+
+    let scenes_after_rejection = fx
+        .svc
+        .repository()
+        .list_scenes_by_project_and_branch(&fx.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert!(
+        scenes_after_rejection.is_empty(),
+        "rejected stale draft save must not create any scene rows in SQLite"
+    );
+
+    // 4. Calling authoring_execute_next again refreshes the handoff to the current plan_revision (2),
+    //    after which authoring_save_scene_draft succeeds.
+    let refreshed_handoff = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(refreshed_handoff["executed_action"].as_str(), Some("none"));
+
+    let fresh_save_res = fx
+        .router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id,
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "scene_order": 1,
+                    "content_rating": "general",
+                    "full_text": "Fresh host draft written against plan_revision 2.",
+                    "summary": "Mara inspects the twice-amended signal tower.",
+                    "continuity_notes": ["No durable canon changes."]
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("fresh host draft save after re-handoff should succeed");
+    assert_ne!(
+        fresh_save_res.is_error,
+        Some(true),
+        "fresh host draft save must succeed: {fresh_save_res:?}"
+    );
+    let fresh_save = fresh_save_res.structured_content.unwrap();
+    assert!(
+        !fresh_save["scene_id"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+
+    // 5. Interleave a plan amendment during ReviseScene handoff issuance:
+    //    Mark chapter 1 scene 1 as having verify findings (`verify_status = "findings"`), so the
+    //    next action in hybrid mode is `ReviseScene`. In `before_handoff_persist`, apply a
+    //    `scene_replace` amendment to undrafted chapter 2 (bumping chapter 2's plan_revision to 1
+    //    and reseeding chapter 2 scene 1 to `chapters/chapter-002/scene-001-r1.json`).
+    //    `try_save_authoring_run_handoff` must reject the stale pre-amendment snapshot, reload and
+    //    reconcile, preserve chapter 2's reseeded manifest, and stamp `handoff_plan_revision = Some(2)`
+    //    on chapter 1 scene 1.
+    let (mut run_rec, mut ch_recs, mut sc_recs, cp_recs) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ch1_pov = ch_recs[0].pov_character_id.clone();
+    let ch1_loc = sc_recs[0].location_id.clone();
+    fx.svc
+        .plan_chapter(spindle_core::models::PlanChapterInput {
+            project_id: fx.project_id.clone(),
+            book_number: 1,
+            chapter_number: 2,
+            pov_character_id: ch1_pov.clone(),
+            synopsis: "Second watch.".into(),
+            target_theme_ids: Vec::new(),
+            target_conflict_ids: Vec::new(),
+            target_plot_line_ids: Vec::new(),
+            scenes: vec![spindle_core::models::PlanChapterSceneInput {
+                scene_order: 1,
+                summary: "Mara reaches the relay bunker".into(),
+                beat_structure: Vec::new(),
+                character_ids: ch1_pov.iter().cloned().collect(),
+                location_id: Some(ch1_loc.clone()),
+                content_rating: Some(spindle_core::models::ContentRating::General),
+                purpose: "continuation".into(),
+                research_required: Some(false),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+    run_rec.end_chapter = 2;
+    ch_recs.push(spindle_adapters::sqlite::records::AuthoringRunChapter {
+        authoring_run_id: fx.run_id.clone(),
+        chapter_number: 2,
+        planned: true,
+        synopsis: "Second watch.".to_string(),
+        pov_character_id: ch1_pov.clone(),
+        status: "pending".to_string(),
+        summary_saved: false,
+        summary_artifact_path: None,
+        replan_status: None,
+        replan_detail: None,
+    });
+    for sc in &mut sc_recs {
+        if sc.chapter_number == 1 && sc.scene_order == 1 {
+            sc.verify_status = Some("findings".to_string());
+            sc.verify_detail = Some("scene check tripped".to_string());
+        }
+    }
+    sc_recs.push(spindle_adapters::sqlite::records::AuthoringRunScene {
+        authoring_run_id: fx.run_id.clone(),
+        chapter_number: 2,
+        scene_order: 1,
+        character_ids: ch1_pov.into_iter().collect(),
+        location_id: ch1_loc,
+        content_rating: "general".to_string(),
+        tone: None,
+        source_path: None,
+        phase: "pending".to_string(),
+        scene_id: None,
+        scene_artifact_path: None,
+        draft_diagnostics: None,
+        blocked_reason: None,
+        research_required: Some(false),
+        research_tags: Vec::new(),
+        explicit_query: None,
+        mine_status: None,
+        mine_detail: None,
+        verify_status: None,
+        verify_detail: None,
+        revise_attempts: 0,
+        last_finding_fingerprint: None,
+    });
+    fx.svc
+        .repository()
+        .save_authoring_run(run_rec, ch_recs, sc_recs, cp_recs)
+        .await
+        .unwrap();
+
+    let revise_handoff_res = fx
+        .router
+        .handle_authoring_execute_next_with_seam(
+            spindle_core::models::AuthoringExecuteNextInput {
+                project_id: fx.project_id.clone(),
+                run_id: Some(fx.run_id.clone()),
+                mode: None,
+            },
+            || async {
+                let staged = fx
+                    .svc
+                    .repository()
+                    .stage_plan_amendment(
+                        spindle_adapters::sqlite::repository::StagePlanAmendmentParams {
+                            project_id: fx.project_id.clone(),
+                            branch_id: branch.id.clone(),
+                            source_chapter: 1,
+                            book_number: 1,
+                            authoring_run_id: Some(fx.run_id.clone()),
+                            amendment_class: "scene_replace".to_string(),
+                            target_chapter: Some(2),
+                            payload: serde_json::json!({
+                                "scene_order": 1,
+                                "summary": "Mara reaches the amended relay bunker in chapter 2",
+                                "purpose": "amended_chapter_two_opening",
+                                "character_ids": []
+                            }),
+                            rationale: "Interleave amendment during ReviseScene handoff issuance"
+                                .to_string(),
+                            confidence: "high".to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let decide_out = fx
+                    .svc
+                    .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+                        project_id: fx.project_id.clone(),
+                        decisions: vec![spindle_core::models::PlanAmendmentDecisionInput {
+                            amendment_id: staged.id,
+                            action: "apply".to_string(),
+                            edit: None,
+                            note: None,
+                        }],
+                        decided_by: Some("operator".to_string()),
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(decide_out.applied_count, 1);
+            },
+        )
+        .await
+        .expect("ReviseScene handoff should reload and succeed after concurrent amendment");
+    assert_eq!(revise_handoff_res.executed_action, "none");
+    assert!(
+        revise_handoff_res
+            .message
+            .contains("Host revision required for scene 1.1"),
+        "{revise_handoff_res:?}"
+    );
+
+    let (_, _, scenes_after_revise_handoff, _) = fx
+        .svc
+        .repository()
+        .get_authoring_run(&fx.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ch1_sc1_revise = scenes_after_revise_handoff
+        .iter()
+        .find(|sc| sc.chapter_number == 1 && sc.scene_order == 1)
+        .unwrap();
+    assert_eq!(
+        ch1_sc1_revise
+            .draft_diagnostics
+            .as_ref()
+            .and_then(|d| d.get("handoff_plan_revision"))
+            .and_then(|v| v.as_i64()),
+        Some(2),
+        "ReviseScene handoff must stamp current chapter 1 plan_revision (2)"
+    );
+    let ch2_sc1_after_revise = scenes_after_revise_handoff
+        .iter()
+        .find(|sc| sc.chapter_number == 2 && sc.scene_order == 1)
+        .unwrap();
+    assert_eq!(
+        ch2_sc1_after_revise.scene_artifact_path.as_deref(),
+        Some("scenes/chapter-0002/scene-001-r1.json"),
+        "ReviseScene handoff must reload snapshot and preserve concurrently reseeded chapter 2 manifest"
+    );
+
+    auto_shutdown(fx).await;
+}

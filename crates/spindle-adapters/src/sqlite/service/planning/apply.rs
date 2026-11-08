@@ -76,10 +76,8 @@ impl SqliteSpindleService {
         );
         anyhow::ensure!(!input.expected_hashes.is_empty(), "empty planning decision");
         anyhow::ensure!(
-            !input.actor.trim().is_empty()
-                && input.actor.len() <= 256
-                && !input.actor.trim_start().starts_with("policy:"),
-            "human decision actor required; initial delegation is not enabled"
+            !input.actor.trim().is_empty() && input.actor.len() <= 256,
+            "human or delegated policy decision actor required"
         );
         anyhow::ensure!(
             !input.note.trim().is_empty() && input.note.len() <= 8000,
@@ -88,6 +86,31 @@ impl SqliteSpindleService {
         let s = self.get_planning_session(&input.session_id).await?;
         anyhow::ensure!(s.scope == input.scope, "planning scope mismatch");
         let all = self.list_planning_proposals(&s.id, s.scope.clone()).await?;
+        let is_policy_actor = input.actor.trim_start().starts_with("policy:");
+        if is_policy_actor {
+            anyhow::ensure!(
+                s.scope.is_some(),
+                "human decision actor required before project root attachment"
+            );
+            anyhow::ensure!(
+                !s.projection_stale,
+                "human decision actor required while planning projection is stale"
+            );
+            let unaccepted_root = all.iter().any(|p| {
+                p.status == PlanningProposalStatus::Staged
+                    && matches!(
+                        p.artifact.level,
+                        PlanningLevel::Contract
+                            | PlanningLevel::CastWorld
+                            | PlanningLevel::SeriesArc
+                            | PlanningLevel::Book
+                    )
+            });
+            anyhow::ensure!(
+                !unaccepted_root,
+                "human decision actor required while upstream root proposals remain unaccepted"
+            );
+        }
         let mut pending = Vec::new();
         for (id, expected) in &input.expected_hashes {
             let p = all
@@ -109,15 +132,80 @@ impl SqliteSpindleService {
                 p.artifact.intent_hash == s.intent_hash,
                 "stale planning intent"
             );
+            let current_findings = if p.status == PlanningProposalStatus::Staged {
+                self.repository
+                    .revalidate_staged_planning_proposal(&s.id, &p.id)
+                    .await?
+            } else {
+                p.findings.clone()
+            };
             anyhow::ensure!(
-                s.policy
-                    .gates
-                    .get(&p.artifact.level)
-                    .copied()
-                    .unwrap_or_default()
-                    == PlanningGate::Human,
-                "planning gate requires human acceptance"
+                !p.findings
+                    .iter()
+                    .chain(current_findings.iter())
+                    .any(|f| f.severity == PlanningFindingSeverity::Blocking),
+                "cannot accept planning proposal with blocking validation findings"
             );
+            let effective_gate = s
+                .policy
+                .gates
+                .get(&p.artifact.level)
+                .copied()
+                .unwrap_or_default();
+            if is_policy_actor {
+                anyhow::ensure!(
+                    matches!(
+                        p.artifact.level,
+                        PlanningLevel::Chapter | PlanningLevel::Scene
+                    ),
+                    "human decision actor required for root planning levels"
+                );
+                anyhow::ensure!(
+                    effective_gate == PlanningGate::DelegateIfValid,
+                    "human decision actor required when delegate_if_valid is not active"
+                );
+                anyhow::ensure!(
+                    s.policy.delegated_actor().as_deref() == Some(input.actor.trim()),
+                    "policy actor '{}' does not match active session policy ({:?})",
+                    input.actor,
+                    s.policy.delegated_actor()
+                );
+                anyhow::ensure!(
+                    p.policy_snapshot == s.policy,
+                    "delegated policy cannot accept proposal with stale policy_snapshot"
+                );
+                anyhow::ensure!(
+                    p.artifact.author_questions.is_empty(),
+                    "delegated policy cannot accept proposal with unresolved author_questions"
+                );
+                let stored_adv_count = p
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity == PlanningFindingSeverity::Advisory)
+                    .count();
+                let current_adv_count = current_findings
+                    .iter()
+                    .filter(|f| f.severity == PlanningFindingSeverity::Advisory)
+                    .count();
+                let adv_count = stored_adv_count.max(current_adv_count);
+                anyhow::ensure!(
+                    s.policy
+                        .max_advisory_findings
+                        .is_none_or(|max_adv| adv_count <= max_adv),
+                    "delegated policy cannot accept proposal exceeding max_advisory_findings"
+                );
+            } else {
+                anyhow::ensure!(
+                    !matches!(
+                        p.artifact.level,
+                        PlanningLevel::Contract
+                            | PlanningLevel::CastWorld
+                            | PlanningLevel::SeriesArc
+                            | PlanningLevel::Book
+                    ) || effective_gate != PlanningGate::DelegateIfValid,
+                    "root planning levels cannot use delegate_if_valid"
+                );
+            }
             if p.artifact.level == PlanningLevel::Contract {
                 anyhow::ensure!(
                     p.artifact.operations.len() == 1,
@@ -536,7 +624,86 @@ impl SqliteSpindleService {
                 CreateChapter,
                 chapter_id
             ),
-            PlanChapter(_) => invoke!(plan_chapter, PlanChapterInput, PlanChapter, chapter_plan_id),
+            PlanChapter(_) => {
+                let plan_input: PlanChapterInput = serde_json::from_value(input)?;
+                let book_number = plan_input.book_number;
+                let chapter_number = plan_input.chapter_number;
+                let prior_rev = if let Some(scope) = scope {
+                    let project_id = scope.project_id.clone();
+                    let branch_id = scope.branch_id.clone();
+                    self.repository
+                        .pool()
+                        .read(move |conn| {
+                            let drafted: bool = conn.query_row(
+                                "WITH RECURSIVE lineage(id,parent_branch_id) AS (SELECT id,parent_branch_id FROM bible_branch WHERE id=?1 AND project_id=?2 UNION SELECT b.id,b.parent_branch_id FROM bible_branch b JOIN lineage l ON b.id=l.parent_branch_id WHERE b.project_id=?2) SELECT EXISTS(SELECT 1 FROM scene WHERE project_id=?2 AND branch_id IN (SELECT id FROM lineage) AND book_number=?3 AND chapter_number=?4)",
+                                rusqlite::params![branch_id, project_id, book_number, chapter_number],
+                                |r| r.get(0),
+                            )?;
+                            if drafted {
+                                return Err(rusqlite::Error::ToSqlConversionFailure(
+                                    anyhow::anyhow!(
+                                        "planning cannot overwrite a chapter with persisted prose"
+                                    )
+                                    .into(),
+                                ));
+                            }
+                            let active_run_exists: bool = conn.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM authoring_run WHERE project_id=?1 AND active_branch_id=?2 AND book_number=?3 AND start_chapter<=?4 AND end_chapter>=?4 AND status NOT IN ('completed','cancelled','abandoned'))",
+                                rusqlite::params![project_id, branch_id, book_number, chapter_number],
+                                |r| r.get(0),
+                            )?;
+                            if !active_run_exists {
+                                return Ok(None);
+                            }
+                            let prev: i64 = conn
+                                .query_row(
+                                    "SELECT plan_revision FROM chapter_plan WHERE project_id=?1 AND branch_id=?2 AND book_number=?3 AND chapter_number=?4",
+                                    rusqlite::params![project_id, branch_id, book_number, chapter_number],
+                                    |r| r.get(0),
+                                )
+                                .unwrap_or(1);
+                            Ok(Some(prev))
+                        })
+                        .await?
+                } else {
+                    None
+                };
+                let synopsis = plan_input.synopsis.clone();
+                let pov_character_id = plan_input.pov_character_id.clone();
+                let reseed_scenes: Vec<(Option<i32>, spindle_core::models::PlanChapterSceneInput)> =
+                    plan_input
+                        .scenes
+                        .iter()
+                        .map(|sc| (Some(sc.scene_order), sc.clone()))
+                        .collect();
+                let out = self.plan_chapter(plan_input).await?;
+                ids.insert(item.output_ref.clone(), out.chapter_plan_id.clone());
+                if let (Some(scope), Some(prev_rev)) = (scope, prior_rev) {
+                    let next_revision = prev_rev.max(1) + 1;
+                    self.repository
+                        .set_chapter_plan_revision(
+                            &scope.project_id,
+                            &scope.branch_id,
+                            book_number,
+                            chapter_number,
+                            next_revision,
+                        )
+                        .await?;
+                    self.repository
+                        .reseed_authoring_runs_for_chapter_plan(
+                            &scope.project_id,
+                            &scope.branch_id,
+                            book_number,
+                            chapter_number,
+                            &synopsis,
+                            pov_character_id.as_deref(),
+                            &reseed_scenes,
+                            next_revision,
+                        )
+                        .await?;
+                }
+                PlanningAppliedOutput::PlanChapter(Box::new(out))
+            }
             SetBookOutline(_) => {
                 let out = self
                     .set_book_outline(serde_json::from_value(input)?)
