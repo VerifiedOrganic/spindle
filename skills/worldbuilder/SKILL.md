@@ -1,540 +1,107 @@
 ---
 name: worldbuilder
-description: >
-  Use when building or expanding any aspect of the story's world. This includes creating realms,
-  locations, factions, religions, economies, technologies, magic systems, power systems, game
-  mechanics (LitRPG/cultivation), world rules, glossary terms, and establishing the physical/social
-  laws of the setting. Also triggers when the user says "build a magic system", "create a city",
-  "I need factions", "what's the political structure", "how does magic work in this world",
-  "design the economy", or any request about the setting, lore, or world logic. If anything
-  about the world feels thin, inconsistent, or undefined, this skill fixes that.
+description: Builds coherent fictional worlds that generate story pressure — locations, factions, economies, religions, magic/tech systems, calendars, and quantity schemes. Use when establishing settings, designing rules with costs, or expanding the world bible.
 ---
 
 # Worldbuilder
 
-A world is not a backdrop — it's a character. The best settings shape conflict, constrain choices,
-and make the impossible feel inevitable. This skill guides you through building worlds that serve
-the story rather than existing as decoration.
+You build settings, institutions, and systems that generate story pressure. Every element you create must make a character's life harder, force a choice, or define what something costs.
 
-## Tool workflow
+## Core Principles
 
-Use this workflow to keep world updates traceable and enforceable:
-
-1. Call `set_active_project` once per session so subsequent tool calls inherit
-   the project (and active branch) without re-passing `project_id`.
-2. Call `find_entity` and `get_entity` before creating rules, factions, or
-   locations to avoid duplicate canon.
-3. Persist constraints with `create_world_rule` (and `create_system_overlay`
-   when applicable) before scenes rely on them. Set `scan_pattern` on every
-   rule whose violation should be detectable in prose — the
-   `world_rule_semantic_drift` validator scans scene text for this anchor.
-4. Edit existing rules with `update_world_rule { world_rule_id, changes }`,
-   not the generic `update_entity` tool.
-5. Use `record_knowledge` for canonical world facts that don't fit the
-   `world_rule` shape (e.g. "the moon gate is sealed at dawn").
-6. Use the batch creators when seeding glossary or motif content:
-   `batch_create_terms`, `batch_create_motifs`.
-7. Call `find_scenes_referencing` on the affected subject after major world
-   changes to identify prose likely to drift.
-8. Call `check_consistency` to validate world-rule compliance after updates.
-   The `world_rule_semantic_drift` validator runs by default.
-9. If prose and canon diverge, hand off scene updates to scene-writer or
-   revision-manager and re-run checks.
-
-When the story tracks in-world time (long durations, time-skips, flashbacks, or
-an invented calendar), declare the calendar early — see *Establishing in-world
-time* below.
-
-## Establishing in-world time (calendar, clocks, character ages)
-
-This is the foundation the chronology and knowledge-timing checks build on. It
-is **optional**: a project that never declares a calendar is unaffected and the
-timeline checks stay dormant. But for a story that spans hundreds of chapters,
-multiple books, or hinges on when things happen, anchoring it on the in-world
-clock is what makes timing enforceable rather than vibes.
-
-1. **Declare the calendar once** with `set_project_calendar`. Define
-   `days_per_week`, `hours_per_day` (24 for an Earth-like world; any value for
-   an invented calendar — the total-order index honors it so non-24h time still
-   sorts correctly), `days_per_year`, the `months` (each with a name + length),
-   optional `week_day_names`, and an `epoch_label`. The calendar is validated
-   for internal consistency on write, and it switches on the `chronology` check
-   and the in-world-time hard constraint that scene context surfaces to the
-   drafting model.
-2. **Anchor births** with `set_character_birth` — a `StoryClock` with a
-   `day_index` measured from the epoch. With a calendar in place, a character's
-   age is then derivable at any story moment, so age drift across a long
-   timeline becomes catchable instead of silent.
-3. **Orient out-of-manuscript events** with `set_timeline_event_clock`: the
-   in-world time an event *occurred* is distinct from where it is *narrated*, so
-   flashbacks and time-skips stay oriented by story time.
-
-A `StoryClock` is `{ day_index (from the epoch, monotonic, spans books),
-time_of_day (minutes from midnight), duration_days, precision:
-minute|hour|day|week|month|year }`. Scene-level clocks (`set_scene_clock`) are
-owned by **scene-writer**, stamped as each scene is drafted, but they read
-against the calendar you declare here.
-
-## Sanderson's Laws of Magic (Applied to All Worldbuilding)
-
-These three laws apply to EVERY system in your world — not just magic. Technology, politics,
-economics, religions, and social structures all follow the same principles.
-
-### Law 1: Transparency Determines Utility
-
-An author's ability to solve conflict with a world system is directly proportional to how
-well the reader understands that system.
-
-- **Hard systems** (reader understands the rules): Magic, technology, or social structures
-  can be used to solve problems. The reader feels clever, not cheated.
-- **Soft systems** (reader doesn't understand the rules): Systems create wonder and atmosphere
-  but CANNOT be used to solve the climax. Using unexplained power to resolve conflict
-  is deus ex machina.
-- **Most systems are mixed**: Some rules are explicit (hard), others mysterious (soft).
-  The reader understands ENOUGH to follow the logic but not enough to predict everything.
-
-**For every world system you build, decide: is this hard, soft, or mixed?** This determines
-how the scene-writer skill can use it in the narrative.
-
-### Law 2: Limitations > Powers
-
-What the system CANNOT do is more interesting than what it can. Limitations create:
-- **Struggle**: Characters must work around constraints, making them cleverer
-- **Stakes**: If magic has a cost, every use is a choice with consequences
-- **Tension**: Limitations create situations where the system can't save you
-
-For every power, ability, or advantage in your world, define:
-- **Costs**: What does using it consume? (Energy, lifespan, sanity, resources, time)
-- **Limitations**: What can't it do? (Range, target type, duration, frequency)
-- **Weaknesses**: What neutralizes or counters it? (Not just "kryptonite" — something organic)
-- **Side effects**: What unintended consequences does it produce?
-
-### Law 3: Expand Before You Add
-
-Before inventing a new power, species, or system, ask whether you can expand or
-recontextualize what you already have. A single magic system interpreted differently
-by three cultures is richer than three separate magic systems.
-
-**The Iceberg Method**: Only 10-20% of your worldbuilding appears on the page. The rest
-exists in the Bible so you can maintain consistency and depth. The reader senses the
-depth without being burdened by exposition.
+1. **Everything has a cost** — Magic, technology, political favors, and religious blessings require sacrifice or create debt.
+2. **Concrete before abstract** — Start with what a character smells, pays, and fears on the street before explaining high theology or macroeconomics.
+3. **Institutions want things** — Factions and religions have conflicting factions inside them, scarce resources, and immediate goals.
+4. **Consistency is dramatic pressure** — If a rule or travel time can be ignored when convenient, stakes evaporate.
 
 ---
 
-## Building a Realm
+## Step 1: Audit Existing World State
 
-A realm is a self-contained world with its own physics, magic, and rules.
-Spindle does not ship a `realm` entity — instead, "realm" is an optional
-string field on `create_location`, `create_faction`, `create_economy`, etc.,
-and realm-level constraints are encoded as `world_rule` entries that all
-subsequent locations and factions in that realm must respect.
-
-### Step 1: Define the Realm
-
-Pick a realm name and decide what makes it distinct. There is no separate
-`create_realm` call — for each distinguishing property, create a `world_rule`
-entry whose `rule_type` describes the kind of constraint:
-
-- "Gravity is 1.5x Earth" → `physical_law`
-- "Night lasts 18 hours" → `physical_law`
-- "Travel between realms requires a moon-bound key" → `magic_limitation`
-- "Time runs at 1/3 speed compared to the Mortal Realm" → `time_constraint`
-
-Then pass the realm string to every location, faction, religion, and economy
-you create in that realm so they're filterable.
-
-### Step 2: Establish the Rule Set
-
-For EVERY rule, limitation, or cost in the realm, call `create_world_rule`
-with the typed input:
-
-```
-rule_name: "Magic requires physical contact"
-rule_type: "magic_limitation"
-description: "All magical effects require the caster to touch the target.
-              Ranged magic is impossible. This forces mages into melee range."
-scan_pattern: "magic"          // anchor the validator scans for in scene prose
-relevance_tags: ["magic", "combat"]
-established_in: { book_number: 1, chapter_number: 2 }
-```
-
-The `scan_pattern` field is what makes a world rule enforceable: the
-`world_rule_semantic_drift` validator scans every scene for this term within
-80 characters of "violate", "break", "ignore", or "without", and flags
-violations in `check_consistency`. Without a `scan_pattern`, the validator
-silently skips the rule.
-
-Patterns match **whole words**, not raw substrings: `stat` matches the
-standalone word but not "statement", "station", or "status". Multi-word
-phrases work the same way (`the system`). The pattern is a regex (invalid
-regexes fall back to literal matching), so stem matching is opt-in — write
-`resurrect\w*` if you want "resurrect", "resurrected", and "resurrection"
-from one rule.
-
-**Secrecy-class rules are scoped to dialogue.** A rule about non-disclosure
-("Nate must never disclose the N.A.I.P.") is violated by characters TALKING,
-not by narration or interface readouts mentioning the secret. When the
-`rule_type` or `rule_name` says "secrecy"/"secret", or the description uses
-non-disclosure phrasing ("disclose", "never reveal", "keep secret", …), the
-validator only flags `scan_pattern` hits inside quoted dialogue — interior
-narration and bracketed HUD blocks like `*[The system notes: …]*` stay
-silent. Use `rule_type: "secrecy"` for these.
-
-**Critical rule types to define:**
-- **magic_limitation**: What magic can't do, or the constraints on how it works
-- **power_cost**: What using power consumes (health, time, resources, sanity)
-- **ability_prerequisite**: What you need before you can use a power (training, bloodline, item)
-- **technology_constraint**: What technology can or can't do in this world
-- **physical_law**: Gravity, light, sound, time — anything that differs from Earth
-- **social_law**: Enforced social contracts, laws, taboos that shape behavior
-- **resource_scarcity**: What's rare, what's abundant, what's fought over
-- **time_constraint**: How long things take (travel, healing, communication, construction)
-
-**For each rule, plan when to DEMONSTRATE it on page.** A rule that's stated but
-never shown is an empty decoration. The first time magic costs the caster something
-real, the reader believes it. Capture that proof in later scene summaries,
-annotations, and consistency review.
-
-### Step 3: Create a System Overlay (if applicable)
-
-For LitRPG, cultivation, or game-mechanic worlds, call `create_system_overlay`
-to record the mechanical layer (system_name, system_type, rules, visibility,
-etc.).
-
-Then create `world_rule` entries for each system constraint so the consistency
-validators can enforce them:
-- Level caps per tier
-- Experience diminishing returns
-- Class restrictions
-- Skill prerequisites
-- Stat point allocation rules
-
-For per-character or per-arc progression budgets, use `create_pacing_config`
-and `set_arc_pacing_constraints` (covered in the plot-architect skill). There
-is no `character_system_state` or `system_pacing_constraint` tool — those
-concepts are expressed via pacing config + world rules + canonical facts
-recorded with `register_canonical_fact` (predicate names like
-`progression.level`, `progression.xp`).
+Read the bible before inventing new elements:
+- Confirm project context (`set_active_project` if needed)
+- Read `bible://world/overview`, `bible://locations`, `bible://factions`, `bible://rules`, and `bible://terms`
+- Use `find_entity` and `get_entity` to inspect related locations, factions, or rules
+- Use `find_scenes_referencing` to see how an element has already been portrayed on the page
 
 ---
 
-## Building Locations
+## Step 2: Locations & Sensory Geography
 
-Every location should be a PLACE, not a label. A good location constrains action,
-creates atmosphere, and tells you something about who lives there.
-
-### Step 1: Create the Location
-
-Call `create_location` with the typed input:
-- **project_id** (required)
-- **name** (required)
-- **summary** (required)
-- **kind** (defaults to inferred best-effort if omitted; accepts `type` as
-  serde alias). Typical kinds: city, village, fortress, wilderness, ruin,
-  ship, dungeon, market, gym.
-- **realm** (`Option<String>`)
-- **initial_state** (`WorldStateInput`, optional — see Step 2)
-
-### Step 2: Establish Initial State
-
-The `initial_state` field on `create_location` is a `WorldStateInput`
-container with these fields:
-- **controlling_faction** (`Option<String>`): Free-form name of the faction in
-  control. This does NOT auto-create a `controls` edge — it's just text the
-  scene context renders.
-- **status** (`Option<String>`): "thriving", "occupied", "besieged",
-  "abandoned", "contested"
-- **prosperity** (`Option<String>`): Free-form descriptor (e.g. "thriving",
-  "subsistence", "collapsed"). Not a numeric scale.
-- **stability** (`Option<String>`): Same shape as prosperity.
-- **threat_level** (`Option<String>`): "safe", "uneasy", "dangerous", "deadly"
-- **sensory_details** (`Vec<String>`): Smells, sounds, light quality, texture,
-  temperature. The scene-writer reads these to ground prose in physical
-  reality.
-
-### Step 3: Connect to Other Locations
-
-`create_relationship` is character-to-character only. There is no shipped
-tool for `borders`, `trades_with`, or other location-location edges. Encode
-geographic adjacency and trade ties as `world_rule` entries with appropriate
-`relevance_tags`, or as canonical facts via `register_canonical_fact`. For
-travel time, use a `time_constraint` world rule — this prevents characters
-from teleporting between cities and is enforced by the world-rule validator
-when the rule has a `scan_pattern`.
-
-### Sensory Design
-
-When defining a location, include sensory details in the summary that the
-scene-writer skill will draw on:
-- What does it SMELL like? (smoke, salt air, rotting vegetation, baking bread)
-- What does it SOUND like? (hammering, waves, silence, distant drums)
-- What's the LIGHT quality? (torchlit, sun-bleached, overcast, bioluminescent)
-- What's the dominant TEXTURE? (rough stone, slick metal, soft earth, crumbling brick)
-- What's the TEMPERATURE? (stifling, chilly, bone-cold, uncomfortably warm)
-
-These ground the reader in physical reality and prevent "white room syndrome."
+Create locations with `create_location` (and refine with `update_entity`):
+- **Hierarchy**: Link rooms, districts, cities, and regions via `parent_id`
+- **Sensory signature**: 2–3 specific sensory details (sound, smell, light, texture) rather than generic adjectives
+- **Social friction**: Who controls the space, who is unwelcome, and what happens if a rule is broken here
+- **Travel and distance**: Record realistic transit constraints between connected locations so scene clocks stay honest
 
 ---
 
-## Building Factions
+## Step 3: Factions, Religions & Relationships
 
-Factions drive political conflict. Every faction needs:
+### Factions (`create_faction`)
+Define:
+- **Public mission vs. actual priority**
+- **Resources & leverage**: What they monopolize or control
+- **Internal fault line**: Two competing wings or leaders inside the group
+- **Signature mark**: Uniform, slang, architecture, or ritual
 
-### Step 1: Create the Faction
+### Religions (`create_religion`)
+Define:
+- **Everyday practice**: What ordinary believers actually do at meals, funerals, or oaths
+- **Orthodoxy vs. folk belief**: Where street practice diverges from priesthood doctrine
+- **Taboos & social cost**: What crossing the faith costs a character in status or safety
 
-Call `create_faction` with the typed input:
-- **project_id** (required)
-- **name** (required)
-- **faction_type** (required) — examples: military, political, religious,
-  criminal, merchant, revolutionary, secret_society
-- **realm** (`Option<String>`)
-- **summary** (required)
-- **tags** (`Vec<String>`, defaults empty)
-
-### Step 2: Define State and Relationships
-
-Capture faction state in the summary and related world entities. There is no
-dedicated `update_faction` tool — use the generic `update_entity` to amend a
-faction's fields after creation.
-
-There is no shipped tool for `controls`, `allied_with`, or `trades_with`
-edges between factions and other entities. Encode these relationships as:
-- Canonical facts (`register_canonical_fact` with predicate names like
-  `faction.controls_location`, `faction.allied_with`)
-- World rules (`create_world_rule` for political constraints like "House
-  Vossal cannot enter the Free Cities without losing protection")
-
-### Step 3: Faction Conflict Design
-
-Every faction should have:
-- **A goal** that conflicts with at least one other faction's goal
-- **A method** that reveals their character (diplomacy, violence, manipulation, commerce)
-- **A weakness** that can be exploited
-- **Internal tension** — factions aren't monolithic. There should be moderates vs extremists,
-  old guard vs reformers, loyal vs corruptible
+### Institutional Web (`create_relationship`)
+Link factions, leaders, and territories using `create_relationship` so political shifts ripple across the cast.
 
 ---
 
-## Building Magic / Power Systems
+## Step 4: World Rules, Magic/Tech & System Overlays
 
-This is where Sanderson's Laws matter most.
+### World Rules (`create_world_rule`, `update_world_rule`)
+Every supernatural, technological, or legal rule needs:
+- **Statement & scope**: What works and where
+- **Hard limitation & cost**: What it cannot do and what price it exacts
+- **Exceptions**: Rare, costly, and story-critical
 
-### Step 1: Core Concept
-
-What is the ONE interesting thing about this magic? Start with the most exciting idea
-(Sanderson's Zeroth Law: err on the side of awesome).
-
-Examples:
-- "You can only use magic by consuming memories — the more powerful the spell, the more
-  precious the memory you lose"
-- "Magic is performed by singing, but the same song can never be sung twice"
-- "Power comes from emotional bonds — the stronger the bond, the stronger the magic.
-  But if the bond breaks, the backlash is devastating"
-
-### Step 2: Define Limitations (More Important Than Powers)
-
-For each power, create `world_rule` entries:
-
-```
-Costs:
-  - "Healing magic accelerates the caster's aging. Heal a mortal wound, age 5 years."
-    → rule_type: power_cost
-  
-Limitations:
-  - "Magic cannot affect anything the caster cannot see."
-    → rule_type: magic_limitation
-  
-  - "No spell can bring back the dead. Anyone who tries creates an undying abomination."
-    → rule_type: magic_limitation
-    
-Weaknesses:
-  - "Iron disrupts magical fields. A mage holding iron cannot cast."
-    → rule_type: magic_limitation
-
-Prerequisites:
-  - "Only those with the Singing Voice (genetic trait, 1 in 1000) can use magic."
-    → rule_type: ability_prerequisite
-```
-
-### Step 3: Extrapolate Consequences
-
-Ask "What happens when...?" for every rule:
-- If magic consumes memories, what does a powerful mage look like? (Someone who has
-  sacrificed their identity for power. Terrifying AND sympathetic.)
-- If iron blocks magic, what does warfare look like? (Iron-clad anti-mage soldiers.
-  Mages avoid cities with iron infrastructure.)
-- If power comes from bonds, what happens to a hermit? (Powerless. What happens to
-  someone who forms bonds purely for power? Do fake bonds work? That's a plot.)
-
-These extrapolations create `world_rule` entries AND plot hooks AND character motivations.
-
-When updating an existing `world_rule` later, use the dedicated
-`update_world_rule { world_rule_id, changes }` tool (not `update_entity`):
-- use `description` for the main rule text
-- use `relevance_tags` for context targeting
-- use `scan_pattern` to give the validator something to scan prose for
-
-### Step 4: Connect to LitRPG / Cultivation (if applicable)
-
-If the world has a game-like system on top of the magic:
-- Create the `system_overlay` for the mechanical layer.
-- Create `world_rule` entries for each progression constraint (level caps,
-  cooldowns, prerequisites). Set `scan_pattern` so the consistency validator
-  can flag scenes that violate the constraint.
-- For per-arc progression budgets, use `create_pacing_config` and
-  `set_arc_pacing_constraints` (covered in plot-architect).
-- Record per-character progression state via `register_canonical_fact` with
-  typed payloads (predicate `progression.level`, value_kind `number`,
-  value_number 12, value_unit "tier").
+### System Overlays (`create_system_overlay`)
+For LitRPG, progression, or structured power systems, define attributes, ranks, and constraints with `create_system_overlay`.
 
 ---
 
-## Building Religions
+## Step 5: Economies, Calendars, Clocks & Quantities
 
-Religions provide moral frameworks, social control, and plot conflict.
+### Economies (`create_economy`, `scan_scene_prices`)
+Establish currency tiers, daily wages, and staple prices (`create_economy`). Audit manuscript scenes against those benchmarks with `scan_scene_prices`.
 
-Call `create_religion` with the typed input:
-- **project_id** (required)
-- **name** (required)
-- **deity_or_principle** (required): What they worship or follow.
-- **summary** (required): Beliefs, practices, social structure.
-- **tags** (`Vec<String>`, defaults empty)
+### Quantity Schemes (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`, `commit_quantity_state`)
+Track scarce resources (ammunition, mana, rations, debt, corruption):
+- Define or derive tracked counters with `set_project_quantity_scheme` or `derive_quantity_scheme_from_system_overlay`
+- Record scene-by-scene ledger updates with `commit_quantity_state`
 
-Then create:
-- `world_rule` entries for religious laws and taboos (with `scan_pattern` so
-  the validator can flag scenes that violate them).
-- Canonical facts (`register_canonical_fact` with predicates like
-  `religion.observances`, `religion.taboos`) for character-specific religious
-  positions.
-
-There is no shipped tool for `worships_at` or other religion-character
-edges; encode those relationships as canonical facts.
+### Calendars & Clocks (`set_project_calendar`, `set_character_birth`, `set_scene_clock`, `set_timeline_event_clock`)
+Anchor seasons, festivals, ages, and elapsed time:
+- Configure custom or historical calendars with `set_project_calendar`
+- Anchor character ages with `set_character_birth`
+- Stamp scenes and historical events with `set_scene_clock` and `set_timeline_event_clock`
 
 ---
 
-## Building Economies
+## Step 6: Terminology, Motifs, Pacing & Canon Registration
 
-Economies create stakes around resources, trade, and power.
-
-Call `create_economy` with the typed input:
-- **project_id** (required)
-- **name** (required)
-- **realm** (`Option<String>`)
-- **summary** (required)
-- **scarce_resources** (`Vec<String>`)
-- **trade_goods** (`Vec<String>`)
-- **currency** (`Option<String>`)
-- **notes** (`Vec<String>`)
-
-Then:
-- Define what's scarce (scarcity drives conflict). Encode trade routes as
-  `world_rule` entries with `relevance_tags: ["trade", "economy"]` since
-  there is no shipped trades_with edge for economies.
-- Create `world_rule` entries for economic constraints
-  ("Only the guild can mine spiritstone" → `resource_scarcity`,
-  scan_pattern: "spiritstone").
-- **Pin recurring prices as numeric canonical facts** — a named price is typed
-  data, not lore prose. Call `register_canonical_fact` with
-  `subject_table: "economy"`, `subject_id: <economy_id>`,
-  `predicate: "bread_price"`, `value_kind: "number"`, `value_number: 5`,
-  `value_unit: "silver"`, `aliases: ["loaf", "bread"]`, and a `valid_from`
-  placement. The economy and its active price facts now surface in scene
-  context (the "Economies in play" briefing plus a never-trimmed hard
-  constraint per price), so the drafting model can't silently contradict a
-  price established earlier, and `check_consistency` flags prose that does.
-- **Change a price by superseding, never editing.** When a price moves (famine,
-  a new tax), register the new fact with `supersedes_fact_id` pointing at the
-  old one and a `valid_from` at the change point, and set the old fact's
-  `valid_until` to just before it. The validity windows keep each price correct
-  for its own stretch of the book.
-
-### Tracked quantities (wealth, currency, progression)
-
-Prices are canon *facts*; *amounts that evolve* — a party's wealth, a cultivator's
-realm, a faction's treasury — are a **quantity scheme** plus stamped readings.
-
-- **Declare a scheme** with `set_project_quantity_scheme`: a `measure` (e.g.
-  `"wealth"`), ordered `denominations` (`gold` = 100, `silver` = 10, `copper` = 1
-  base), and ordered `bands` (`destitute < comfortable < wealthy`), plus an
-  optional `max_band_jump` (default 1). Fully opt-in — a project that declares no
-  scheme is unaffected.
-- **Reuse a system overlay** instead of hand-writing bands: call
-  `derive_quantity_scheme_from_system_overlay` and the overlay's
-  `advancement_tiers` become the scheme's bands (LitRPG levels, cultivation
-  realms). The same band-monotonicity check then guards progression.
-- **Record readings** with `commit_quantity_state` — `band` is the primary signal;
-  `amount`/`unit` are optional. A band not in the scheme is rejected; a jump beyond
-  `max_band_jump` without a `change_reason` comes back as a warning. The current
-  band/amount and the per-book trajectory surface in scene context as a
-  `[WEALTH/STATE]` hard constraint.
-- **Seed prices from prose** with `scan_scene_prices`, which returns
-  `<number> <unit>` mentions for review — register the real ones as price facts.
-- The continuity editor's `quantity_drift`, `currency_consistency`, and
-  `affordability` checks watch these for drift.
+- **Terms (`create_term`, `batch_create_terms`)**: Register in-world vocabulary, titles, and slang with pronunciation/usage notes.
+- **Motifs (`batch_create_motifs`)**: Seed recurring cultural or environmental motifs tied to world themes.
+- **Pacing (`create_pacing_config`, `set_arc_pacing_constraints`)**: Set world-reveal and tension budgets so lore never stalls the narrative.
+- **Knowledge & Canon (`record_knowledge`, `register_canonical_fact`, `check_consistency`)**: Record who knows which world secrets (`record_knowledge`), lock load-bearing world truths (`register_canonical_fact`), and run `check_consistency` after major updates.
 
 ---
 
-## Glossary
+## Quality Checklist
 
-For every fictional term, call `create_term` with the typed input:
-- **project_id** (required)
-- **term_text** (required): The word itself
-- **definition** (required): What it means in this world
-- **pronunciation** (`Option<String>`): How to say it (important for audiobook
-  consistency)
-- **usage_context** (`Option<String>`): When would a character use this word?
-- **origin** (`Option<String>`): Where did this word come from in-world?
-
-Use `batch_create_terms` to seed an entire glossary in one call rather than
-many.
-
-Terms appear in the context package when relevant, helping the scene-writer
-use them correctly and consistently.
-
----
-
-## The Worldbuilder's Checklist
-
-Before declaring a world "ready for writing," verify:
-
-| Check | Tool | Why It Matters |
-|-------|------|----------------|
-| Every power has a cost | `check_consistency` | No deus ex machina |
-| Every rule will be demonstrated | consistency review + scene evidence | No empty rules |
-| Travel times are defined | `world_rule` (time_constraint) | Characters can't teleport |
-| Factions have conflicting goals | Manual check | No conflict = no plot |
-| Locations have sensory details | Location summaries | Grounds the reader |
-| The magic system position (hard/soft) is decided | `system_overlay.visibility` | Determines how scenes can use it |
-| Glossary covers all invented terms | `create_term` for each | Consistency |
-| The economy creates scarcity | `world_rule` (resource_scarcity) | Stakes |
-
----
-
-## Skill Chains
-
-- **→ character-creator**: After building the world, create characters who are SHAPED by it.
-  A character from a memory-magic world will have a very different relationship with their
-  past than one from a mundane world.
-- **→ plot-architect**: World rules create plot constraints. A magic system with costs
-  creates natural try-fail cycles (the cost escalates each attempt).
-- **→ scene-writer**: The scene-writer reads world_rules from context and never violates them.
-  If a rule hasn't been demonstrated yet, the scene-writer will prioritize showing it.
-- **→ continuity-editor**: Checks world rules for violations across all written scenes.
-
----
-
-## References
-
-The four embedded craft references most relevant to worldbuilders are
-exposed as `bible://references/<name>` resources:
-
-- `bible://references/anti-slop` — Fiction shelf catalog for generic prose
-  when describing locations, magic, and world atmosphere.
-- `bible://references/voice-differentiation` — Useful when writing dialogue
-  that reflects faction, cultural, or class differences.
-- `bible://references/swain-scene-sequel` and `bible://references/mru-guide`
-  — Craft references the scene-writer skill draws from when realizing
-  worldbuilding on the page.
+- [ ] New world elements connect to at least one character goal, obstacle, or scene conflict
+- [ ] Rules specify hard limits and costs (`create_world_rule` / `update_world_rule`)
+- [ ] Locations include sensory specifics and hierarchy (`create_location`)
+- [ ] Prices, quantities, and clocks align across scenes (`scan_scene_prices`, `check_consistency`)
 
 <!-- tool: batch_create_motifs -->
 <!-- tool: batch_create_terms -->

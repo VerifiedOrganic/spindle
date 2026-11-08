@@ -704,10 +704,7 @@ impl ToolRouter {
             }),
             "get_skill" => match parse_arguments::<GetSkillInput>(arguments) {
                 Ok(input) => match spindle_adapters::get_skill(&input.name) {
-                    Some(skill) => structured_result(&GetSkillOutput {
-                        name: skill.name.to_string(),
-                        markdown: skill.markdown.to_string(),
-                    }),
+                    Some(skill) => structured_result(&self.resolve_skill_output(skill)),
                     None => Ok(structured_error_result(&anyhow::anyhow!(
                         "unknown skill: {} (use list_skills to see available skills)",
                         input.name
@@ -717,16 +714,13 @@ impl ToolRouter {
             },
             "get_reference" => match parse_arguments::<GetReferenceInput>(arguments) {
                 Ok(input) if input.name.starts_with("contracts/") => {
-                    match response_contract_reference(&input.name) {
+                    match response_contract_reference(self, &input.name) {
                         Ok(output) => structured_result(&output),
                         Err(error) => Ok(structured_error_result(&error)),
                     }
                 }
                 Ok(input) => match spindle_adapters::get_reference(&input.name) {
-                    Some(reference) => structured_result(&GetReferenceOutput {
-                        name: reference.name.to_string(),
-                        markdown: reference.markdown.to_string(),
-                    }),
+                    Some(reference) => structured_result(&self.resolve_reference_output(reference)),
                     None => Ok(structured_error_result(&anyhow::anyhow!(
                         "unknown reference: {} (use list_skills to see available references)",
                         input.name

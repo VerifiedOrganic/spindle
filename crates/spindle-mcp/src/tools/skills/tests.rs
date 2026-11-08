@@ -150,3 +150,121 @@ async fn nested_skill_references_load_through_tools_and_resources() {
         assert_eq!(result.is_error, Some(true));
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_skill_and_get_reference_enforce_profile_coverage_without_mutating_profile() {
+    let mut router = router().await;
+    router.tool_profile = Some("workflow-write".to_owned());
+
+    // Covered skill in workflow-write returns full workflow instructions.
+    let writer_skill = structured_json(
+        router
+            .call_tool(
+                "get_skill",
+                serde_json::json!({"name": "scene-writer"}).as_object(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(writer_skill["covered"], true);
+    assert_eq!(writer_skill["required_profile"], "workflow-write");
+    assert_eq!(writer_skill["missing_capabilities"], serde_json::json!([]));
+    assert_eq!(
+        writer_skill["markdown"],
+        spindle_adapters::get_skill("scene-writer")
+            .unwrap()
+            .markdown
+    );
+
+    // Covered reference in workflow-write returns full reference markdown.
+    let craft_ref = structured_json(
+        router
+            .call_tool(
+                "get_reference",
+                serde_json::json!({"name": "scene-writer/craft-and-voice"}).as_object(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(craft_ref["covered"], true);
+    assert_eq!(craft_ref["required_profile"], "workflow-write");
+    assert_eq!(craft_ref["missing_capabilities"], serde_json::json!([]));
+    assert_eq!(
+        craft_ref["markdown"],
+        spindle_adapters::get_reference("scene-writer/craft-and-voice")
+            .unwrap()
+            .markdown
+    );
+
+    // Uncovered reference in workflow-write returns profile-selection message and metadata.
+    let offloaded_ref = structured_json(
+        router
+            .call_tool(
+                "get_reference",
+                serde_json::json!({"name": "scene-writer/offloaded-generation"}).as_object(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(offloaded_ref["covered"], false);
+    assert_eq!(offloaded_ref["required_profile"], "workflow-authoring");
+    let missing: Vec<&str> = offloaded_ref["missing_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        missing,
+        vec!["continue_generation", "list_agents", "revise_generation",]
+    );
+    let available: Vec<&str> = offloaded_ref["available_units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(available.contains(&"scene-writer"));
+    assert!(available.contains(&"scene-writer/craft-and-voice"));
+    assert!(!available.contains(&"scene-writer/offloaded-generation"));
+    let msg = offloaded_ref["markdown"].as_str().unwrap();
+    assert!(msg.contains("SPINDLE_TOOL_PROFILE=workflow-authoring"));
+    assert!(
+        !msg.contains("## Step 3: Revise Offloaded Output"),
+        "uncovered reference must not return actionable offloaded instructions"
+    );
+    assert_eq!(router.tool_profile.as_deref(), Some("workflow-write"));
+    assert!(!router.has_tool("continue_generation"));
+
+    // Minimal profile covers spindle entry and global craft references, but not spindle/setup or scene-writer.
+    router.tool_profile = Some("minimal".to_owned());
+    let spindle_entry = structured_json(
+        router
+            .call_tool(
+                "get_skill",
+                serde_json::json!({"name": "spindle"}).as_object(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(spindle_entry["covered"], true);
+    assert_eq!(spindle_entry["required_profile"], "minimal");
+
+    let setup_ref = structured_json(
+        router
+            .call_tool(
+                "get_reference",
+                serde_json::json!({"name": "spindle/setup"}).as_object(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(setup_ref["covered"], false);
+    assert_eq!(setup_ref["required_profile"], "setup");
+    assert_eq!(
+        setup_ref["missing_capabilities"],
+        serde_json::json!(["create_book", "create_chapter"])
+    );
+    assert_eq!(router.tool_profile.as_deref(), Some("minimal"));
+    assert!(!router.has_tool("create_book"));
+}
