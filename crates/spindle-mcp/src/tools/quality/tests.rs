@@ -494,3 +494,84 @@ fn schema_lint_checks_tool_descriptions_and_escapes_pointer_names() {
             .any(|i| i.pointer == "/inputSchema/properties/a~1b~0c")
     );
 }
+
+#[test]
+fn skill_load_budgets() {
+    let spindle = spindle_adapters::get_skill("spindle").expect("spindle skill");
+    let spindle_bytes = spindle.markdown.len();
+    let spindle_tokens = spindle_bytes.div_ceil(4);
+    assert!(
+        spindle_bytes <= 4_000 && spindle_tokens <= 1_000,
+        "spindle entry skill exceeded budget: {spindle_bytes} bytes ({spindle_tokens} proxy tokens)"
+    );
+    for forbidden in ["Codex", "GPT-6", "Grok"] {
+        assert!(
+            !spindle.markdown.contains(forbidden),
+            "spindle entry skill must stay host-neutral, found {forbidden:?}"
+        );
+    }
+
+    let scene_writer = spindle_adapters::get_skill("scene-writer").expect("scene-writer skill");
+    let scene_writer_bytes = scene_writer.markdown.len();
+    let scene_writer_tokens = scene_writer_bytes.div_ceil(4);
+    assert!(
+        scene_writer_bytes <= 10_000 && scene_writer_tokens <= 2_500,
+        "scene-writer core exceeded budget: {scene_writer_bytes} bytes ({scene_writer_tokens} proxy tokens)"
+    );
+    assert!(
+        !scene_writer
+            .markdown
+            .to_ascii_lowercase()
+            .contains("read everything before drafting"),
+        "scene-writer core must not instruct reading everything before drafting"
+    );
+
+    let combined_bytes = spindle_bytes + scene_writer_bytes;
+    let combined_tokens = combined_bytes.div_ceil(4);
+    assert!(
+        combined_bytes <= 16_000 && combined_tokens <= 4_000,
+        "spindle + scene-writer core exceeded budget: {combined_bytes} bytes ({combined_tokens} proxy tokens)"
+    );
+
+    let scene_writer_refs: Vec<&str> = scene_writer
+        .manifest
+        .references
+        .iter()
+        .map(|r| r.name)
+        .collect();
+    for expected_ref in [
+        "scene-writer/authoring-runs",
+        "scene-writer/craft-and-voice",
+        "scene-writer/drafting-packets",
+        "scene-writer/offloaded-generation",
+        "scene-writer/research-and-sources",
+    ] {
+        assert!(
+            scene_writer_refs.contains(&expected_ref),
+            "missing scene-writer reference {expected_ref} in {scene_writer_refs:?}"
+        );
+    }
+
+    for skill in spindle_adapters::list_skills() {
+        if skill.name == "spindle" || skill.name == "scene-writer" {
+            continue;
+        }
+        let bytes = skill.markdown.len();
+        let tokens = bytes.div_ceil(4);
+        assert!(
+            bytes <= 12_000 && tokens <= 3_000,
+            "skill {} core exceeded budget: {bytes} bytes ({tokens} proxy tokens)",
+            skill.name
+        );
+    }
+
+    for reference in spindle_adapters::list_references() {
+        let bytes = reference.markdown.len();
+        let tokens = bytes.div_ceil(4);
+        assert!(
+            bytes <= 12_000 && tokens <= 3_000,
+            "reference {} exceeded budget: {bytes} bytes ({tokens} proxy tokens)",
+            reference.name
+        );
+    }
+}

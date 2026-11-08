@@ -53,7 +53,10 @@ pub(crate) fn response_contract_index() -> ResponseContractIndex {
     }
 }
 
-pub(super) fn response_contract_reference(name: &str) -> anyhow::Result<GetReferenceOutput> {
+pub(super) fn response_contract_reference(
+    router: &ToolRouter,
+    name: &str,
+) -> anyhow::Result<GetReferenceOutput> {
     let markdown = if name == "contracts/tools/v1" {
         let mut text = String::from(
             "# Full response contracts v1\n\nThese schemas document existing result shapes. Reading one does not enable its tool or run a workflow. Use the resource URI or load the reference name with get_reference.\n\n",
@@ -80,6 +83,10 @@ pub(super) fn response_contract_reference(name: &str) -> anyhow::Result<GetRefer
     Ok(GetReferenceOutput {
         name: name.to_owned(),
         markdown,
+        covered: true,
+        required_profile: Some("minimal".to_owned()),
+        available_units: router.covered_units(),
+        missing_capabilities: Vec::new(),
     })
 }
 
