@@ -1091,7 +1091,7 @@ impl Repository {
                 let project_id = project_id.clone();
                 let branch_id = branch_id.clone();
                 move |conn| {
-                    let tx = conn.transaction()?;
+                    let tx = conn.savepoint()?;
                     // Upsert the chapter_plan row keyed by (project, branch,
                     // book#, chapter#) — the schema's UNIQUE index.
                     tx.execute(

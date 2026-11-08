@@ -179,14 +179,31 @@ async fn tool_schema_lint() {
         serde_json::from_str(include_str!("closed-fields.json")).unwrap();
     let mut report: BTreeMap<String, Vec<Issue>> = BTreeMap::new();
     let mut router = router().await;
-    let mut all = BTreeMap::new();
+    let all: BTreeMap<_, _> = router
+        .list_tools()
+        .into_iter()
+        .map(|tool| (tool.name.to_string(), serde_json::to_value(tool).unwrap()))
+        .collect();
     for profile in budgets().compatibility.keys() {
         router.tool_profile = (profile != "default").then(|| profile.clone());
         for tool in router.list_tools() {
-            let tool = serde_json::to_value(tool).unwrap();
-            let name = tool["name"].as_str().unwrap().to_owned();
-            if let Some(previous) = all.insert(name.clone(), tool.clone()) {
-                assert_eq!(previous, tool, "profile schema drift: {name}");
+            let original = all_tool_schemas()
+                .iter()
+                .find(|original| original.name == tool.name)
+                .unwrap()
+                .clone();
+            let expected = project_tool_discovery(router.tool_profile.as_deref(), original);
+            assert_eq!(
+                tool, expected,
+                "unexpected discovery drift in {profile}/{}",
+                tool.name
+            );
+            let value = serde_json::to_value(tool).unwrap();
+            for key in ["inputSchema", "outputSchema"] {
+                if let Some(schema) = value.get(key) {
+                    jsonschema::meta::validate(schema)
+                        .unwrap_or_else(|error| panic!("{profile}/{key}: {error}"));
+                }
             }
         }
     }

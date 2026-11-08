@@ -647,3 +647,10 @@ transitional caps. Unset/four existing profiles remain byte-identical and explic
 `legacy-all` preserves the full catalog. Unknown startup names are rejected;
 routers and secondary proxies fail closed/filter calls. See [profile catalog](tool-profiles.md).
 Canonical target reductions and loader/skill/schema cleanup are not claimed yet.
+
+Generated profiles now omit 19 explicitly selected large output schemas and link
+optional v1 full-response contracts through resources and get_reference. Actual
+results and input validation remain unchanged; compatibility discovery remains
+byte-identical. Full generated discovery falls 45–71% in this slice. Canonical
+input/receipt cleanup, lint completion and target byte ceilings remain pending.
+See [response contract loading](tool-response-contracts.md).

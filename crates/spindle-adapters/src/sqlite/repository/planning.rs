@@ -1,7 +1,8 @@
-//! Staging-only persistence. Domain application is deliberately unavailable.
+//! Planning staging, dependency guards and durable application persistence.
 use super::*;
 use sha2::{Digest, Sha256};
 use spindle_core::planning::*;
+pub(super) mod apply;
 
 fn hash<T: serde::Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
@@ -115,8 +116,8 @@ impl Repository {
             .await?
     }
 
-    /// Acceptance is fail-closed until domain writes and receipts can commit
-    /// together. Rejection/supersession never mutates bible tables.
+    /// Reject/supersede staging only; acceptance must use the service's atomic
+    /// domain-write/receipt path. These decisions never mutate bible tables.
     pub async fn decide_planning(
         &self,
         input: DecidePlanningInput,
@@ -125,7 +126,7 @@ impl Repository {
         anyhow::ensure!(
             !input.actor.trim().is_empty()
                 && input.actor.len() <= 256
-                && !input.actor.starts_with("policy:"),
+                && !input.actor.trim_start().starts_with("policy:"),
             "human decision actor required"
         );
         anyhow::ensure!(
@@ -134,7 +135,7 @@ impl Repository {
         );
         anyhow::ensure!(
             input.decision != PlanningDecision::Accept,
-            "planning acceptance unavailable until atomic apply/receipt support ships"
+            "planning acceptance requires the service-level atomic apply path"
         );
         self.pool()
             .write(move |conn| {
@@ -168,6 +169,10 @@ impl Repository {
                         if invalid.len() == before {
                             break;
                         }
+                    }
+                    for id in &invalid {
+                        let applied:i64=tx.query_row("SELECT COUNT(*) FROM planning_operation_receipt WHERE proposal_id=?1 AND outcome='applied'",[id],|r|r.get(0))?;
+                        anyhow::ensure!(applied==0,"partially applied planning intent must be resumed or corrected by a new proposal, never rejected as unwritten");
                     }
                     let now = timestamp_to_micros(chrono::Utc::now());
                     let mut changed = Vec::new();
@@ -407,9 +412,11 @@ fn stage_in_transaction(
             PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
         ) {
             for op in &p.artifact.operations {
-                reserved.insert(op.output_ref.clone());
+                for (key, _) in output_refs(op) {
+                    reserved.insert(key);
+                }
                 if input.parents.contains_key(&p.id) {
-                    available.insert(op.output_ref.clone(), output_type(&op.operation));
+                    available.extend(output_refs(op));
                 }
             }
         }
@@ -428,6 +435,12 @@ fn stage_in_transaction(
             !reserved.contains(&item.output_ref) && !available.contains_key(&item.output_ref),
             "duplicate output reference"
         );
+        for (key, _) in output_refs(item) {
+            anyhow::ensure!(
+                !reserved.contains(&key) && !available.contains_key(&key),
+                "duplicate output reference or root alias"
+            );
+        }
         check_level(input.level, &item.operation, s.scope.is_some())?;
         check_refs(
             &tx,
@@ -436,14 +449,16 @@ fn stage_in_transaction(
             &s.scope,
             None,
         )?;
-        available.insert(item.output_ref.clone(), output_type(&item.operation));
+        available.extend(output_refs(item));
     }
+    let captured_base_state = apply::base_state(&tx, &s.scope, &input)?;
     let p = PlanningProposal {
         id: mint_id("planning_proposal"),
         payload_hash: hash(&input)?,
         artifact: input,
         status: PlanningProposalStatus::Staged,
         policy_snapshot: s.policy,
+        base_state: captured_base_state,
         decided_by: None,
         decision_note: None,
         decided_at: None,
@@ -463,4 +478,24 @@ fn begin_in_transaction(
     tx.execute("INSERT INTO planning_session(id,project_id,branch_id,data,created_at) VALUES(?1,?2,?3,?4,?5)",rusqlite::params![s.id,s.scope.as_ref().map(|x| &x.project_id),s.scope.as_ref().map(|x| &x.branch_id),serde_json::to_string(&s)?,s.created_at])?;
     tx.commit()?;
     Ok(s)
+}
+
+fn output_refs(item: &PlanningOperationItem) -> Vec<(String, &'static str)> {
+    let mut out = vec![(item.output_ref.clone(), output_type(&item.operation))];
+    if matches!(item.operation, PlanningOperation::CreateProject(_)) {
+        for (suffix, kind) in [
+            ("book", "book"),
+            ("chapter", "chapter"),
+            ("branch", "bible_branch"),
+        ] {
+            out.push((format!("{}:{suffix}", item.output_ref), kind));
+        }
+    }
+    if matches!(item.operation, PlanningOperation::CreateCharacterArc(_)) {
+        out.push((
+            format!("{}:pacing_tracker", item.output_ref),
+            "pacing_tracker",
+        ));
+    }
+    out
 }

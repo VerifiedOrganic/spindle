@@ -65,7 +65,7 @@ impl Repository {
         self.inner
             .pool
             .write(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.savepoint()?;
                 tx.execute(
                     "INSERT INTO location (id, project_id, branch_id, name, normalized_name, \
                      kind, realm, summary, notes, created_at, updated_at) \

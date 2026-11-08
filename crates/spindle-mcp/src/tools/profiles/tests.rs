@@ -87,6 +87,17 @@ async fn secondary_proxy_keeps_its_profile_and_denies_mutations_by_name() {
         .unwrap();
     let names: std::collections::BTreeSet<_> = actual.iter().map(|t| t.name.as_ref()).collect();
     assert_eq!(names, expected.tools.iter().copied().collect());
+    let projected: Vec<_> = registry
+        .list_tools()
+        .into_iter()
+        .filter(|t| expected.tools.contains(&t.name.as_ref()))
+        .map(|t| crate::tools::project_tool_discovery(Some("research"), t))
+        .collect();
+    assert_eq!(
+        actual, projected,
+        "proxy must project output policy as well as names"
+    );
+
     let args = serde_json::json!({"name":"Must not exist", "project_type":"novel", "genre":"fantasy", "reader_contract":{"promise":"A test", "style_notes":[], "boundaries":[]}});
     let result = timeout(
         Duration::from_secs(20),

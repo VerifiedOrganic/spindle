@@ -172,6 +172,9 @@ mod journal;
 use journal::*;
 mod authoring_checkpoint;
 use authoring_checkpoint::*;
+mod discovery;
+use discovery::*;
+pub(crate) use discovery::{project_tool_discovery, response_contract, response_contract_index};
 mod schema;
 mod skills;
 use schema::*;
@@ -284,7 +287,15 @@ impl ToolRouter {
         let Some(allowed) = profile_allowed_tool_names(profile) else {
             return Vec::new();
         };
-        all.iter()
+        let view = if spindle_adapters::guidance::list_profiles()
+            .iter()
+            .any(|p| p.name == profile)
+        {
+            generated_tool_schemas()
+        } else {
+            all
+        };
+        view.iter()
             .filter(|t| allowed.contains(&t.name.as_ref()))
             .cloned()
             .collect()
