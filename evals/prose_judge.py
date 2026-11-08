@@ -2748,6 +2748,455 @@ def run_evaluation(
 
 
 # =============================================================================
+# Shadow Critique Parity & Blinded Directive-Usefulness Calibration (PR 5)
+# =============================================================================
+
+CRITIC_DIMENSIONS_10 = (
+    "scene_purpose",
+    "tension_turn",
+    "pov",
+    "voice",
+    "dialogue",
+    "freshness",
+    "continuity",
+    "length",
+    "entry_exit_emotion",
+    "chapter_role",
+)
+
+
+def validate_critique_anchor_utf8(
+    base_text: str,
+    anchor: dict,
+    *,
+    expected_base_text_hash: str | None = None,
+) -> None:
+    """Validate a CritiqueAnchor against base_text using half-open UTF-8 byte offsets."""
+    raw = base_text.encode("utf-8")
+    if expected_base_text_hash is not None and anchor.get("base_text_hash"):
+        if anchor["base_text_hash"] != expected_base_text_hash:
+            raise ValueError(
+                f"stale_anchor_hash: anchor base_text_hash {anchor['base_text_hash']} != {expected_base_text_hash}"
+            )
+    start_byte = int(anchor["start_byte"] if "start_byte" in anchor else anchor["byte_start"])
+    end_byte = int(anchor["end_byte"] if "end_byte" in anchor else anchor["byte_end"])
+    exact_quote = str(anchor.get("exact_quote", anchor.get("quote", "")))
+    context_before = anchor.get("context_before")
+    context_after = anchor.get("context_after")
+    surrounding = anchor.get("surrounding_context_quote")
+    if start_byte < 0 or end_byte < start_byte or end_byte > len(raw):
+        raise ValueError(
+            f"invalid_anchor_span: [{start_byte}..{end_byte}) out of bounds for len={len(raw)}"
+        )
+    try:
+        before_text = raw[:start_byte].decode("utf-8")
+        sliced = raw[start_byte:end_byte].decode("utf-8")
+        after_text = raw[end_byte:].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"invalid_anchor_span: [{start_byte}..{end_byte}) is not on UTF-8 char boundaries"
+        ) from exc
+
+    if start_byte == end_byte:
+        if exact_quote != "":
+            raise ValueError(
+                f"anchor_quote_mismatch: zero-width insertion at {start_byte} must have empty exact_quote"
+            )
+        cb = (context_before or "").strip()
+        ca = (context_after or "").strip()
+        sc = (surrounding or "").strip()
+        if not cb and not ca and not sc:
+            raise ValueError(
+                f"unanchored_insertion: zero-width insertion at {start_byte} requires context_before or context_after"
+            )
+        if cb and not before_text.endswith(context_before):
+            raise ValueError(
+                f"anchor_quote_mismatch: context_before {context_before!r} does not match preceding text at {start_byte}"
+            )
+        if ca and not after_text.startswith(context_after):
+            raise ValueError(
+                f"anchor_quote_mismatch: context_after {context_after!r} does not match following text at {start_byte}"
+            )
+        if sc and not cb and not ca:
+            win_start = max(0, start_byte - 96)
+            win_end = min(len(raw), end_byte + 96)
+            while win_start > 0:
+                try:
+                    raw[win_start:].decode("utf-8")
+                    break
+                except UnicodeDecodeError:
+                    win_start -= 1
+            while win_end < len(raw):
+                try:
+                    raw[:win_end].decode("utf-8")
+                    break
+                except UnicodeDecodeError:
+                    win_end += 1
+            if sc not in raw[win_start:win_end].decode("utf-8"):
+                raise ValueError(
+                    f"anchor_quote_mismatch: surrounding_context_quote {sc!r} not found near offset {start_byte}"
+                )
+    else:
+        if not exact_quote:
+            raise ValueError(
+                f"anchor_quote_mismatch: non-empty span [{start_byte}..{end_byte}) must have non-empty exact_quote"
+            )
+        if sliced != exact_quote:
+            raise ValueError(
+                f"anchor_quote_mismatch: span [{start_byte}..{end_byte}) is {sliced!r}, expected {exact_quote!r}"
+            )
+
+
+def verify_shadow_critique_parity(
+    draft_artifact_paths: list[str | Path],
+    critique_artifact_paths: list[str | Path] | None = None,
+    *,
+    rust_config: str | Path | None = None,
+    rust_db: str | Path | None = None,
+    tokenizer_binary: str | Path | None = None,
+    findings_path: str | Path | None = None,
+    generation_seed: int | None = None,
+) -> dict:
+    """
+    Verify shadow-mode critique immutability and parity across a set of
+    PlainTextDraftArtifactV1 files. Confirms that shadow critique never mutates
+    the base draft text or SHA-256 hashes (so shadow candidate vs un-critiqued
+    draft has 0 mutations and exact 0.50 tie-half parity) and validates every
+    CritiqueV1 anchor and directive cap.
+    """
+    if not draft_artifact_paths:
+        raise ValueError("verify_shadow_critique_parity requires at least one draft artifact path")
+    if critique_artifact_paths is not None and len(critique_artifact_paths) != len(draft_artifact_paths):
+        raise ValueError("critique_artifact_paths length must match draft_artifact_paths length")
+
+    records: list[dict] = []
+    mutated_count = 0
+    critiqued_count = 0
+    critic_invalid_count = 0
+
+    for idx, d_path_raw in enumerate(draft_artifact_paths):
+        d_path = Path(d_path_raw)
+        before_bytes = d_path.read_bytes()
+        before_art = json.loads(before_bytes.decode("utf-8"))
+        base_text = before_art["text"]
+        base_sha = hashlib.sha256(base_text.encode("utf-8")).hexdigest()
+        if before_art.get("text_sha256") != base_sha:
+            raise ValueError(f"Draft artifact {d_path} text_sha256 mismatch before shadow critique")
+
+        if critique_artifact_paths is not None:
+            c_path = Path(critique_artifact_paths[idx])
+        else:
+            c_path = d_path.with_suffix(".shadow_critique.json")
+
+        if rust_config and rust_db:
+            bin_path = resolve_tokenizer_binary(str(tokenizer_binary) if tokenizer_binary else None)
+            cmd = [
+                str(bin_path),
+                "critique-artifact",
+                str(rust_config),
+                str(rust_db),
+                str(d_path),
+                str(c_path),
+                str(findings_path) if findings_path else "-",
+            ]
+            if generation_seed is not None:
+                cmd.append(str(generation_seed))
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"spindle-tokenizer critique-artifact failed (exit {proc.returncode}): {proc.stderr.strip()}"
+                )
+
+        shadow_art = read_json(c_path)
+        if shadow_art.get("schema_version") != "shadow_critique_artifact_v1":
+            raise ValueError(f"Unexpected shadow critique schema_version in {c_path}")
+        if shadow_art.get("base_text_hash") != base_sha:
+            raise ValueError(
+                f"stale_anchor_hash: shadow critique base_text_hash {shadow_art.get('base_text_hash')} != {base_sha}"
+            )
+
+        after_bytes = d_path.read_bytes()
+        after_art = json.loads(after_bytes.decode("utf-8"))
+        unchanged = (
+            after_bytes == before_bytes
+            and after_art.get("text") == base_text
+            and after_art.get("text_sha256") == base_sha
+            and after_art.get("accepted_text_sha256") == before_art.get("accepted_text_sha256")
+        )
+        if not unchanged:
+            mutated_count += 1
+
+        outcome = shadow_art.get("outcome") or {}
+        status = outcome.get("status")
+        directive_count = 0
+        quarantined_count = 0
+        if status == "critiqued":
+            critiqued_count += 1
+            critique = outcome["critique"]
+            if critique.get("schema_version") != "critique_v1":
+                raise ValueError(f"Invalid critique schema_version in {c_path}")
+            if critique.get("base_text_hash") != base_sha:
+                raise ValueError(f"Critique base_text_hash mismatch in {c_path}")
+            dims = critique.get("dimensions") or []
+            dim_names = {d.get("dimension") for d in dims}
+            if dim_names != set(CRITIC_DIMENSIONS_10):
+                raise ValueError(f"Critique dimensions {sorted(dim_names)} != {sorted(CRITIC_DIMENSIONS_10)}")
+            directives = critique.get("directives") or []
+            if len(directives) > 5:
+                raise ValueError(f"Critique directives count {len(directives)} exceeds cap 5")
+            for directive in directives:
+                if directive.get("scope") == "chapter":
+                    raise ValueError("chapter-scoped directive must be quarantined in requires_author_decision")
+                validate_critique_anchor_utf8(
+                    base_text,
+                    directive["anchor"],
+                    expected_base_text_hash=base_sha,
+                )
+            directive_count = len(directives)
+            quarantined_count = len(critique.get("requires_author_decision") or [])
+        elif status == "critic_invalid":
+            critic_invalid_count += 1
+        else:
+            raise ValueError(f"Unknown shadow critique outcome status {status!r} in {c_path}")
+
+        records.append({
+            "draft_artifact_path": str(d_path),
+            "critique_artifact_path": str(c_path),
+            "draft_artifact_id": before_art.get("artifact_id"),
+            "critique_artifact_id": shadow_art.get("artifact_id"),
+            "base_text_hash": base_sha,
+            "base_text_unchanged": unchanged,
+            "status": status,
+            "directive_count": directive_count,
+            "requires_author_decision_count": quarantined_count,
+            "ingested_finding_count": len(shadow_art.get("ingested_findings") or []),
+            "deduplicated_finding_ids": shadow_art.get("deduplicated_finding_ids") or [],
+        })
+
+    verdicts = ["tie" if r["base_text_unchanged"] else "baseline" for r in records]
+    parity_summary = summarize_verdicts(verdicts, seed=20261108)
+    return {
+        "schema_version": "shadow_critique_parity_v1",
+        "total_artifacts": len(records),
+        "mutated_count": mutated_count,
+        "all_drafts_unchanged": mutated_count == 0,
+        "critiqued_count": critiqued_count,
+        "critic_invalid_count": critic_invalid_count,
+        "parity_win_rate_tie_half": parity_summary["candidate_win_rate_tie_half"],
+        "artifacts": records,
+    }
+
+
+def build_blinded_directive_usefulness_packet(
+    critique_artifact_paths: list[str | Path],
+    out_dir: str | Path,
+    *,
+    draft_artifact_paths: list[str | Path] | None = None,
+    briefs_by_id: dict[str, dict] | None = None,
+    target_count: int | None = None,
+    seed: int = 20261108,
+) -> dict:
+    """
+    Create a blinded human calibration packet for sampling critic directives
+    and scoring whether each directive is actionable, accurate to the brief,
+    and worth revising before critic-driven revision is enabled by default.
+    """
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    if draft_artifact_paths is not None and len(draft_artifact_paths) != len(critique_artifact_paths):
+        raise ValueError("draft_artifact_paths length must match critique_artifact_paths length")
+
+    raw_items: list[dict] = []
+    for idx, c_path_raw in enumerate(critique_artifact_paths):
+        c_path = Path(c_path_raw)
+        shadow_art = read_json(c_path)
+        outcome = shadow_art.get("outcome") or {}
+        if outcome.get("status") != "critiqued":
+            continue
+        critique = outcome["critique"]
+        base_text = ""
+        brief_meta: dict = {}
+        if draft_artifact_paths is not None:
+            d_art = read_json(draft_artifact_paths[idx])
+            base_text = d_art.get("text", "")
+            pkt = (d_art.get("prepared_packet") or {}).get("packet") or {}
+            sc = pkt.get("scene_card") or {}
+            brief_meta = {
+                "scene_purpose": sc.get("scene_goal") or "",
+                "tension_turn": sc.get("dramatic_turn") or "",
+            }
+        scene_id = shadow_art.get("scene_id") or critique.get("scene_id") or f"scene_{idx + 1}"
+        if briefs_by_id and scene_id in briefs_by_id:
+            b = briefs_by_id[scene_id]
+            brief_meta = {
+                "scene_purpose": b.get("scene_purpose", brief_meta.get("scene_purpose", "")),
+                "tension_turn": b.get("tension_turn", brief_meta.get("tension_turn", "")),
+            }
+        for directive in critique.get("directives") or []:
+            if base_text:
+                validate_critique_anchor_utf8(base_text, directive["anchor"])
+            raw_items.append({
+                "critique_artifact_id": shadow_art.get("artifact_id"),
+                "draft_artifact_id": shadow_art.get("draft_artifact_id"),
+                "scene_id": scene_id,
+                "base_text_hash": critique.get("base_text_hash"),
+                "packet_hash": critique.get("packet_hash"),
+                "rubric_version": critique.get("rubric_version"),
+                "base_text": base_text,
+                "scene_purpose": brief_meta.get("scene_purpose", ""),
+                "tension_turn": brief_meta.get("tension_turn", ""),
+                "directive": directive,
+            })
+
+    rng = random.Random(seed)
+    shuffled = list(raw_items)
+    rng.shuffle(shuffled)
+    if target_count is not None:
+        shuffled = shuffled[:target_count]
+
+    reviewer_items: list[dict] = []
+    ratings_template: list[dict] = []
+    key_mapping: list[dict] = []
+
+    for i, item in enumerate(shuffled, start=1):
+        blind_id = f"D{i:03d}"
+        d = item["directive"]
+        directive_id = d.get("id") or d.get("directive_id")
+        diagnosis = d.get("diagnosis") or d.get("problem", "")
+        requested_change = d.get("requested_change") or d.get("instruction", "")
+        source_finding_ids = d.get("source_finding_ids") or d.get("linked_finding_ids") or []
+        reviewer_items.append({
+            "blind_id": blind_id,
+            "scene_id": item["scene_id"],
+            "scene_purpose": item["scene_purpose"],
+            "tension_turn": item["tension_turn"],
+            "base_text": item["base_text"],
+            "dimension": d["dimension"],
+            "severity": d["severity"],
+            "priority": d.get("priority", 1),
+            "scope": d["scope"],
+            "anchor": d["anchor"],
+            "diagnosis": diagnosis,
+            "requested_change": requested_change,
+            "preserve": d.get("preserve") or [],
+            "success_test": d.get("success_test", ""),
+        })
+        ratings_template.append({
+            "blind_id": blind_id,
+            "actionable": None,
+            "accurate_to_brief": None,
+            "worth_revising": None,
+            "notes": "",
+        })
+        key_mapping.append({
+            "blind_id": blind_id,
+            "scene_id": item["scene_id"],
+            "critique_artifact_id": item["critique_artifact_id"],
+            "draft_artifact_id": item["draft_artifact_id"],
+            "directive_id": directive_id,
+            "dimension": d["dimension"],
+            "severity": d["severity"],
+            "priority": d.get("priority", 1),
+            "scope": d["scope"],
+            "source_finding_ids": source_finding_ids,
+            "base_text_hash": item["base_text_hash"],
+            "packet_hash": item["packet_hash"],
+            "rubric_version": item["rubric_version"],
+        })
+
+    packet_obj = {
+        "schema_version": "directive_usefulness_packet_v1",
+        "seed": seed,
+        "total_directives": len(reviewer_items),
+        "instructions": (
+            "For each blinded critic directive, inspect the base scene draft, the UTF-8 span quote, "
+            "and the scene brief, then rate actionable (bool), accurate_to_brief (bool), and worth_revising (bool)."
+        ),
+        "directives": reviewer_items,
+    }
+    key_obj = {
+        "schema_version": "directive_usefulness_key_v1",
+        "seed": seed,
+        "mapping": key_mapping,
+    }
+    write_json(out_path / "reviewer-packet.json", packet_obj)
+    write_json(out_path / "ratings.json", ratings_template)
+    write_json(out_path / "private-key.json", key_obj)
+    return {
+        "out_dir": str(out_path),
+        "total_directives": len(reviewer_items),
+        "seed": seed,
+    }
+
+
+def score_directive_usefulness_packet(
+    key_path: str | Path,
+    ratings_path: str | Path,
+    *,
+    seed: int = 20261108,
+) -> dict:
+    """
+    Score a human-completed blinded directive usefulness rating packet and compute
+    cluster-bootstrapped usefulness rates (actionable, accurate_to_brief,
+    worth_revising, and all_three_useful).
+    """
+    key_data = read_json(key_path)
+    ratings_data = read_json(ratings_path)
+    map_by_id = {m["blind_id"]: m for m in key_data.get("mapping") or []}
+
+    actionable_vals: list[float] = []
+    accurate_vals: list[float] = []
+    worth_vals: list[float] = []
+    all_three_vals: list[float] = []
+    cluster_ids: list[str] = []
+    by_dimension: dict[str, list[float]] = {}
+    by_severity: dict[str, list[float]] = {}
+    unrated = 0
+
+    for row in ratings_data:
+        bid = row.get("blind_id")
+        if bid not in map_by_id:
+            continue
+        act = row.get("actionable")
+        acc = row.get("accurate_to_brief")
+        wor = row.get("worth_revising")
+        if act is None or acc is None or wor is None:
+            unrated += 1
+            continue
+        meta = map_by_id[bid]
+        a_f = 1.0 if bool(act) else 0.0
+        c_f = 1.0 if bool(acc) else 0.0
+        w_f = 1.0 if bool(wor) else 0.0
+        u_f = 1.0 if (bool(act) and bool(acc) and bool(wor)) else 0.0
+        actionable_vals.append(a_f)
+        accurate_vals.append(c_f)
+        worth_vals.append(w_f)
+        all_three_vals.append(u_f)
+        cluster_ids.append(str(meta.get("scene_id") or bid))
+        dim = str(meta.get("dimension") or "unknown")
+        sev = str(meta.get("severity") or "unknown")
+        by_dimension.setdefault(dim, []).append(u_f)
+        by_severity.setdefault(sev, []).append(u_f)
+
+    return {
+        "schema_version": "directive_usefulness_report_v1",
+        "total_directives": len(map_by_id),
+        "directives_rated": len(all_three_vals),
+        "directives_unrated": unrated,
+        "actionable_rate": cluster_bootstrap_ci(actionable_vals, cluster_ids=cluster_ids, seed=seed),
+        "accurate_to_brief_rate": cluster_bootstrap_ci(accurate_vals, cluster_ids=cluster_ids, seed=seed + 1),
+        "worth_revising_rate": cluster_bootstrap_ci(worth_vals, cluster_ids=cluster_ids, seed=seed + 2),
+        "all_three_useful_rate": cluster_bootstrap_ci(all_three_vals, cluster_ids=cluster_ids, seed=seed + 3),
+        "by_dimension": {
+            dim: round(statistics.mean(vals), 4) for dim, vals in sorted(by_dimension.items()) if vals
+        },
+        "by_severity": {
+            sev: round(statistics.mean(vals), 4) for sev, vals in sorted(by_severity.items()) if vals
+        },
+    }
+
+
+# =============================================================================
 # Offline Self-Test & CLI Entrypoint
 # =============================================================================
 
@@ -3376,6 +3825,216 @@ def self_test() -> None:
         )
         assert not rep_mod_brief["pairs"][0]["judge_evaluations"][0]["pass_1"]["rationale"].startswith("CACHED_BRIEF_")
 
+        # 4g. Verify PR 5 shadow critique parity, UTF-8 anchor validation, and blinded directive usefulness sampling
+        sample_draft_text = "Maë braced against the floodwater as the bridge timber cracked.\nShe reached for the rope."
+        sample_draft_sha = hashlib.sha256(sample_draft_text.encode("utf-8")).hexdigest()
+        validate_critique_anchor_utf8(
+            sample_draft_text,
+            {
+                "scene_id": "PJ01",
+                "base_text_hash": sample_draft_sha,
+                "start_byte": 0,
+                "end_byte": len("Maë braced".encode("utf-8")),
+                "exact_quote": "Maë braced",
+                "context_before": None,
+                "context_after": " against the floodwater",
+            },
+            expected_base_text_hash=sample_draft_sha,
+        )
+        validate_critique_anchor_utf8(
+            sample_draft_text,
+            {
+                "scene_id": "PJ01",
+                "base_text_hash": sample_draft_sha,
+                "start_byte": len("Maë braced".encode("utf-8")),
+                "end_byte": len("Maë braced".encode("utf-8")),
+                "exact_quote": "",
+                "context_before": "Maë braced",
+                "context_after": " against",
+            },
+            expected_base_text_hash=sample_draft_sha,
+        )
+        try:
+            validate_critique_anchor_utf8(
+                sample_draft_text,
+                {
+                    "scene_id": "PJ01",
+                    "base_text_hash": sample_draft_sha,
+                    "start_byte": 3,  # mid-codepoint in 'ë'
+                    "end_byte": 11,
+                    "exact_quote": "braced",
+                },
+                expected_base_text_hash=sample_draft_sha,
+            )
+            raise AssertionError("Expected ValueError for non-UTF-8 char boundary anchor")
+        except ValueError as exc:
+            assert "invalid_anchor_span" in str(exc)
+
+        shadow_draft_path = root / "shadow_draft.artifact.json"
+        shadow_critique_path = root / "shadow_draft.shadow_critique.json"
+        write_json(
+            shadow_draft_path,
+            {
+                "schema_version": "plain_text_draft_artifact_v1",
+                "artifact_id": "draft_art_1",
+                "project_id": "proj_1",
+                "branch_id": "branch_1",
+                "scene_id": "PJ01",
+                "packet_hash": "pkt_hash_123",
+                "source_packet_sha256": "src_pkt_456",
+                "prepared_packet": {
+                    "packet": {
+                        "scene_card": {
+                            "scene_goal": briefs[0]["scene_purpose"],
+                            "dramatic_turn": briefs[0]["tension_turn"],
+                            "rating": "general",
+                        }
+                    }
+                },
+                "text": sample_draft_text,
+                "text_sha256": sample_draft_sha,
+                "accepted_text_sha256": sample_draft_sha,
+                "truncated": False,
+            },
+        )
+        write_json(
+            shadow_critique_path,
+            {
+                "schema_version": "shadow_critique_artifact_v1",
+                "artifact_id": "shadow_crit_1",
+                "draft_artifact_id": "draft_art_1",
+                "project_id": "proj_1",
+                "branch_id": "branch_1",
+                "scene_id": "PJ01",
+                "packet_hash": "pkt_hash_123",
+                "base_text_hash": sample_draft_sha,
+                "rubric_version": "scene-critic-v1",
+                "rating": "general",
+                "prompt_hashes": ["critic_prompt_hash_1"],
+                "model_call_ids": ["call_critic_1"],
+                "ingested_findings": [
+                    {
+                        "canonical_id": "f-1",
+                        "merged_finding_ids": ["f-1", "f-2"],
+                        "sources": ["continuity", "reader_persona"],
+                        "check_type": "timeline_coherence",
+                        "dimension": "continuity",
+                        "severity": "blocker",
+                        "message": "Floodwater arrival timing needs sharpening.",
+                        "anchor": None,
+                        "suggested_fix": None,
+                        "fingerprint": "fp-1",
+                    }
+                ],
+                "deduplicated_finding_ids": ["f-2"],
+                "outcome": {
+                    "status": "critiqued",
+                    "repair_used": False,
+                    "critique": {
+                        "schema_version": "critique_v1",
+                        "base_text_hash": sample_draft_sha,
+                        "packet_hash": "pkt_hash_123",
+                        "rubric_version": "scene-critic-v1",
+                        "dimensions": [
+                            {
+                                "dimension": dim,
+                                "score_1_to_5": 4,
+                                "evidence_spans": [],
+                                "rationale": f"{dim} note",
+                            }
+                            for dim in CRITIC_DIMENSIONS_10
+                        ],
+                        "directives": [
+                            {
+                                "id": "dir-1",
+                                "dimension": "tension_turn",
+                                "severity": "major",
+                                "priority": 1,
+                                "scope": "span",
+                                "anchor": {
+                                    "scene_id": "PJ01",
+                                    "base_text_hash": sample_draft_sha,
+                                    "start_byte": 0,
+                                    "end_byte": len("Maë braced against the floodwater".encode("utf-8")),
+                                    "exact_quote": "Maë braced against the floodwater",
+                                    "context_before": None,
+                                    "context_after": " as the bridge timber cracked.",
+                                },
+                                "diagnosis": "Opening beat states the hazard before the physical turn.",
+                                "requested_change": "Ground the timber crack in concrete physical escalation.",
+                                "preserve": ["bridge timber"],
+                                "success_test": "Timber crack initiates the beat.",
+                                "source_finding_ids": ["f-1"],
+                            },
+                            {
+                                "id": "dir-2",
+                                "dimension": "voice",
+                                "severity": "minor",
+                                "priority": 2,
+                                "scope": "span",
+                                "anchor": {
+                                    "scene_id": "PJ01",
+                                    "base_text_hash": sample_draft_sha,
+                                    "start_byte": len("Maë braced against the floodwater as the bridge timber cracked.\n".encode("utf-8")),
+                                    "end_byte": len(sample_draft_text.encode("utf-8")),
+                                    "exact_quote": "She reached for the rope.",
+                                    "context_before": "as the bridge timber cracked.\n",
+                                    "context_after": None,
+                                },
+                                "diagnosis": "Closing clause flattens POV specificity.",
+                                "requested_change": "Filter the reach through Maë's bruised grip.",
+                                "preserve": [],
+                                "success_test": "Closing beat stays in Maë's tactile POV.",
+                                "source_finding_ids": [],
+                            },
+                        ],
+                        "strengths_to_preserve": ["Concrete river hazard"],
+                        "requires_author_decision": [],
+                        "no_edit_reason": None,
+                    },
+                },
+            },
+        )
+        parity_report = verify_shadow_critique_parity(
+            [shadow_draft_path],
+            [shadow_critique_path],
+        )
+        assert parity_report["all_drafts_unchanged"] is True
+        assert parity_report["mutated_count"] == 0
+        assert parity_report["critiqued_count"] == 1
+        assert parity_report["parity_win_rate_tie_half"]["estimate"] == 0.5
+        assert parity_report["parity_win_rate_tie_half"]["ci95_low"] == 0.5
+        assert parity_report["parity_win_rate_tie_half"]["ci95_high"] == 0.5
+
+        directives_dir = root / "blind_directives"
+        dir_pkt_summary = build_blinded_directive_usefulness_packet(
+            [shadow_critique_path],
+            directives_dir,
+            draft_artifact_paths=[shadow_draft_path],
+            briefs_by_id={b["id"]: b for b in briefs},
+            seed=20261108,
+        )
+        assert dir_pkt_summary["total_directives"] == 2
+        dir_ratings = read_json(directives_dir / "ratings.json")
+        assert len(dir_ratings) == 2
+        dir_ratings[0]["actionable"] = True
+        dir_ratings[0]["accurate_to_brief"] = True
+        dir_ratings[0]["worth_revising"] = True
+        dir_ratings[1]["actionable"] = True
+        dir_ratings[1]["accurate_to_brief"] = True
+        dir_ratings[1]["worth_revising"] = False
+        write_json(directives_dir / "ratings.json", dir_ratings)
+        dir_score = score_directive_usefulness_packet(
+            directives_dir / "private-key.json",
+            directives_dir / "ratings.json",
+            seed=20261108,
+        )
+        assert dir_score["directives_rated"] == 2
+        assert dir_score["actionable_rate"]["estimate"] == 1.0
+        assert dir_score["accurate_to_brief_rate"]["estimate"] == 1.0
+        assert dir_score["worth_revising_rate"]["estimate"] == 0.5
+        assert dir_score["all_three_useful_rate"]["estimate"] == 0.5
+
     # 5. Verify secret redaction & key check safety
     os.environ["SPINDLE_TEST_FAKE_SECRET_KEY"] = "super-secret-value-12345"
     try:
@@ -3468,6 +4127,30 @@ def main() -> None:
     cal.add_argument("--judge-results", required=True, help="Path to judge results JSON")
     cal.add_argument("--update-results", action="store_true", help="Write calibration section back into --judge-results")
     cal.add_argument("--out", default=None, help="Optional output path for standalone calibration JSON")
+
+    vsp = sub.add_parser("verify-shadow-parity", help="Verify shadow critique immutability, anchor validity, and 0.50 tie-half parity")
+    vsp.add_argument("--draft-artifacts", nargs="+", required=True, help="PlainTextDraftArtifactV1 paths")
+    vsp.add_argument("--critique-artifacts", nargs="*", default=None, help="Optional ShadowCritiqueArtifactV1 paths")
+    vsp.add_argument("--rust-config", default=None, help="Optional agents TOML config to run critique-artifact via spindle-tokenizer")
+    vsp.add_argument("--rust-db", default=None, help="Optional SQLite DB path for spindle-tokenizer critique-artifact")
+    vsp.add_argument("--tokenizer-binary", default=None, help="Optional path to spindle-tokenizer binary")
+    vsp.add_argument("--findings", default=None, help="Optional CriticFindingInput JSON path")
+    vsp.add_argument("--generation-seed", type=int, default=None, help="Optional critic generation seed")
+    vsp.add_argument("--out", default=None, help="Optional output JSON path")
+
+    bdir = sub.add_parser("blind-directives", help="Create a blinded human calibration packet for critic directive usefulness")
+    bdir.add_argument("--critique-artifacts", nargs="+", required=True, help="ShadowCritiqueArtifactV1 JSON paths")
+    bdir.add_argument("--draft-artifacts", nargs="*", default=None, help="Optional matching PlainTextDraftArtifactV1 JSON paths")
+    bdir.add_argument("--briefs", default=str(BRIEFS_PATH))
+    bdir.add_argument("--count", type=int, default=None, help="Optional cap on number of directives sampled")
+    bdir.add_argument("--seed", type=int, default=20261108)
+    bdir.add_argument("--out", required=True, help="Directory for reviewer-packet.json, ratings.json, private-key.json")
+
+    sdir = sub.add_parser("score-directives", help="Score a human-completed blinded directive usefulness packet")
+    sdir.add_argument("--key", required=True, help="Path to directive private-key.json")
+    sdir.add_argument("--ratings", required=True, help="Path to human-completed directive ratings.json")
+    sdir.add_argument("--seed", type=int, default=20261108)
+    sdir.add_argument("--out", default=None, help="Optional output path for standalone directive usefulness report JSON")
 
     args = parser.parse_args()
 
@@ -3615,6 +4298,42 @@ def main() -> None:
         if args.out:
             write_json(args.out, cal)
         print(json.dumps(cal, indent=2))
+        return
+
+    if args.command == "verify-shadow-parity":
+        rep = verify_shadow_critique_parity(
+            args.draft_artifacts,
+            args.critique_artifacts if args.critique_artifacts else None,
+            rust_config=args.rust_config,
+            rust_db=args.rust_db,
+            tokenizer_binary=args.tokenizer_binary,
+            findings_path=args.findings,
+            generation_seed=args.generation_seed,
+        )
+        if args.out:
+            write_json(args.out, rep)
+        print(json.dumps(rep, indent=2))
+        return
+
+    if args.command == "blind-directives":
+        briefs = load_briefs(args.briefs)
+        brief_map = {b["id"]: b for b in briefs}
+        summary = build_blinded_directive_usefulness_packet(
+            args.critique_artifacts,
+            args.out,
+            draft_artifact_paths=args.draft_artifacts if args.draft_artifacts else None,
+            briefs_by_id=brief_map,
+            target_count=args.count,
+            seed=args.seed,
+        )
+        print(json.dumps(summary, indent=2))
+        return
+
+    if args.command == "score-directives":
+        rep = score_directive_usefulness_packet(args.key, args.ratings, seed=args.seed)
+        if args.out:
+            write_json(args.out, rep)
+        print(json.dumps(rep, indent=2))
         return
 
 

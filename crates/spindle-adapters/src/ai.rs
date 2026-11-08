@@ -5146,9 +5146,32 @@ enabled = false
             let mut handled = 0usize;
             for (status, body) in responses {
                 let (mut stream, _) = listener.accept().expect("accept request");
-                let mut buffer = [0_u8; 8192];
-                let count = stream.read(&mut buffer).expect("read request");
-                let request = String::from_utf8_lossy(&buffer[..count]).to_string();
+                let mut raw = Vec::new();
+                let mut chunk = [0_u8; 65536];
+                loop {
+                    let count = stream.read(&mut chunk).expect("read request");
+                    if count == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..count]);
+                    let current = String::from_utf8_lossy(&raw);
+                    if let Some((headers, body_part)) = current.split_once("\r\n\r\n") {
+                        let expected_len = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (k, v) = line.split_once(':')?;
+                                k.trim()
+                                    .eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if body_part.len() >= expected_len {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8_lossy(&raw).to_string();
                 let request_body = request
                     .split_once("\r\n\r\n")
                     .map(|(_, body)| body.to_string())
