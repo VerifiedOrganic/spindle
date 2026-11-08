@@ -2,10 +2,14 @@
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use spindle_adapters::{
-    ModelRouter, SqlitePool, drafting::artifact::accept_artifact, sqlite::SqliteSpindleService,
+    ModelRouter, SqlitePool,
+    drafting::artifact::{accept_artifact, load_artifact},
+    sqlite::SqliteSpindleService,
     sqlite::repository::Repository,
 };
-use spindle_core::drafting::{DraftMessages, DraftingPacketV1, EditorialPolicy};
+use spindle_core::drafting::{
+    CriticFindingInput, DraftMessages, DraftingPacketV1, EditorialPolicy,
+};
 use std::path::Path;
 
 fn parse_optional_seed(raw: Option<&String>) -> Result<Option<i64>> {
@@ -191,8 +195,90 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
+        [
+            command,
+            config,
+            database,
+            draft_artifact_path,
+            critique_artifact_path,
+            rest @ ..,
+        ] if command == "critique-artifact" && rest.len() <= 2 => {
+            let findings: Vec<CriticFindingInput> = match rest.first() {
+                Some(path) if !path.trim().is_empty() && path.trim() != "-" => {
+                    serde_json::from_reader(
+                        std::fs::File::open(path).context("read findings JSON")?,
+                    )?
+                }
+                _ => Vec::new(),
+            };
+            let seed = parse_optional_seed(rest.get(1))?;
+            let draft_path = Path::new(draft_artifact_path);
+            let critique_path = Path::new(critique_artifact_path);
+            let before_draft = load_artifact(draft_path)?;
+            let packet = before_draft
+                .prepared_packet
+                .as_ref()
+                .map(|p| &p.packet)
+                .context("draft artifact missing prepared_packet")?;
+            let rating = packet.scene_card.rating.as_str().to_string();
+            let project_id = before_draft.project_id.clone();
+            let branch_id = before_draft.branch_id.clone();
+            let db_path = Path::new(database);
+            let pool = SqlitePool::open(db_path).await?;
+            let router = ModelRouter::for_tokenizer_tools(config, Some(pool.clone()))?;
+            let (budget, settings) =
+                router.eval_critic_budget_and_settings("review", &rating, seed)?;
+            let data_dir = db_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+                .join("eval-data");
+            let repository = Repository::with_model_router(pool, data_dir, router);
+            let service = SqliteSpindleService::new(repository);
+            service
+                .ensure_eval_project_branch(&project_id, &branch_id)
+                .await?;
+            let shadow_artifact = service
+                .critique_artifact_shadow(
+                    EditorialPolicy::CritiqueV1,
+                    draft_path,
+                    critique_path,
+                    findings,
+                    &budget,
+                    None,
+                    2,
+                )
+                .await?;
+            let after_draft = load_artifact(draft_path)?;
+            let base_text_hash_unchanged = after_draft.text_sha256 == before_draft.text_sha256
+                && after_draft.text == before_draft.text;
+            anyhow::ensure!(
+                base_text_hash_unchanged,
+                "shadow_mode_violation: draft artifact changed during shadow critique"
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "critique_artifact_id": shadow_artifact.artifact_id,
+                    "critique_artifact_path": critique_artifact_path,
+                    "draft_artifact_id": shadow_artifact.draft_artifact_id,
+                    "project_id": shadow_artifact.project_id,
+                    "branch_id": shadow_artifact.branch_id,
+                    "scene_id": shadow_artifact.scene_id,
+                    "packet_hash": shadow_artifact.packet_hash,
+                    "base_text_hash": shadow_artifact.base_text_hash,
+                    "base_text_hash_unchanged": base_text_hash_unchanged,
+                    "prompt_hashes": shadow_artifact.prompt_hashes,
+                    "model_call_ids": shadow_artifact.model_call_ids,
+                    "ingested_findings": shadow_artifact.ingested_findings,
+                    "deduplicated_finding_ids": shadow_artifact.deduplicated_finding_ids,
+                    "settings": settings,
+                    "outcome": shadow_artifact.outcome,
+                }))?
+            );
+        }
         _ => bail!(
-            "usage: spindle-tokenizer calibrate CONFIG USAGE_DB ROUTE RATING | count CONFIG ROUTE RATING MESSAGES_JSON | draft-packet CONFIG USAGE_DB PACKET_JSON ARTIFACT_PATH [SEED] | draft-messages CONFIG USAGE_DB ROUTE RATING MESSAGES_JSON [SEED]"
+            "usage: spindle-tokenizer calibrate CONFIG USAGE_DB ROUTE RATING | count CONFIG ROUTE RATING MESSAGES_JSON | verify-packet CONFIG ROUTE RATING PACKET_JSON [SEED] | draft-packet CONFIG USAGE_DB PACKET_JSON ARTIFACT_PATH [SEED] | draft-messages CONFIG USAGE_DB ROUTE RATING MESSAGES_JSON [SEED] | critique-artifact CONFIG USAGE_DB DRAFT_ARTIFACT_PATH CRITIQUE_ARTIFACT_PATH [FINDINGS_JSON|-] [SEED]"
         ),
     }
     Ok(())

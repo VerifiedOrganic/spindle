@@ -1,5 +1,8 @@
 //! Versioned prose-task data. No retrieval, tokenizer implementation or transport.
+pub mod critique;
 pub mod extraction;
+
+pub use critique::*;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

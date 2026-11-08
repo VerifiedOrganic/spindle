@@ -646,3 +646,94 @@ Checked-in summary artifact: `evals/results/prose_judge_packet_v1_g_live.json`.
   `DraftingPacketV1` / `PlainTextDraftArtifactV1` stays opt-in while the stream
   proceeds to PR 5 (`CritiqueV1` DTO + span/hash/quote anchors) and PR 6
   (prior-draft revision + double-order acceptance).
+
+## Implementation status: critic DTO, anchor validation, feedback ingestion, and shadow mode (PR 5)
+
+PR 5 implements the structured scene critic contract (`CritiqueV1`), UTF-8
+byte-span/hash/quote anchor validation, multi-source feedback ingestion and
+deduplication, author-lock conflict quarantine, bounded 1-shot schema/anchor
+repair, and shadow-only execution (`ShadowCritiqueArtifactV1`).
+
+### G-informed scene-critic rubric (`scene-critic-v1`)
+
+The critic rubric (`CRITIC_RUBRIC`, `rubric_version = "scene-critic-v1"`) incorporates
+the empirical failure modes measured in the 90-pair live **G** experiment:
+
+- **Action scenes (`0.3611` tie-half in G — weakest scene type)** and **reveal
+  scenes (`0.4167` tie-half in G — second weakest)**: The rubric explicitly checks
+  whether structured packet constraints caused the draft to front-load or flatten
+  its dramatic turn (`tension_turn`, `-0.1981` in G), over-explain the reveal instead
+  of letting concrete action/subtext carry the discovery, or lose choreographic
+  escalation across physical beats.
+- **Chapter-closer payoff (`0.5556` tie-half in G — strongest scene type)** and
+  **brief continuity (`+0.0704` in G)**: The critic preserves the packet's
+  structural advantages on `continuity`, `chapter_role`, and `entry_exit_emotion`
+  while targeting `tension_turn`, `voice` (`-0.1500` in G), and `freshness`
+  (`-0.1445` in G) with span-anchored directives rather than generic rewrite
+  advice.
+
+### `CritiqueV1` DTO, anchor validation, and feedback ingestion
+
+- **Typed critic contract (`spindle_core::drafting::critique`)**:
+  - `CritiqueV1` (`schema_version = "critique_v1"`) binds `base_text_hash`
+    (SHA-256 of the exact UTF-8 draft bytes), `packet_hash`, `rubric_version`,
+    all 10 `CriticDimension` scores (`scene_purpose`, `tension_turn`, `pov`,
+    `voice`, `dialogue`, `freshness`, `continuity`, `length`,
+    `entry_exit_emotion`, `chapter_role`, with serde aliases for the
+    `prose_judge.py` rubric keys), up to 5 ordered `CritiqueDirective` items,
+    `strengths_to_preserve`, `requires_author_decision: Vec<AuthorDecisionItem>`,
+    and optional `no_edit_reason`.
+- **UTF-8 byte-span, quote, and zero-width insertion validation
+  (`validate_anchor`)**:
+  - Every `CritiqueAnchor` is validated against `base_text` as a half-open UTF-8
+    byte interval `[start_byte, end_byte)` on valid char boundaries with
+    `start_byte <= end_byte <= base_text.len()` and matching `base_text_hash` /
+    `scene_id`.
+  - Non-empty spans (`start_byte < end_byte`) must have a non-empty
+    `exact_quote` matching `&base_text[start_byte..end_byte]` byte-for-byte.
+  - Zero-width insertion spans (`start_byte == end_byte`) must have
+    `exact_quote == ""` and at least one non-empty surrounding context
+    (`context_before` matching the bytes immediately preceding `start_byte`, or
+    `context_after` matching the bytes immediately following `end_byte`).
+- **Deterministic and reader-persona feedback ingestion
+  (`ingest_and_dedup_findings`)**:
+  - Normalizes `CriticFindingInput` items from `continuity`, `anti_slop`,
+    `reader_persona`, and `dual_persona` sources, validates any attached
+    `CritiqueAnchor` against `base_text`, and deduplicates equivalent or
+    overlapping findings (merging `merged_finding_ids` and `sources` while
+    retaining the highest `DirectiveSeverity`: `blocker > major > minor > polish`).
+- **Author-lock quarantine and priority ordering
+  (`validate_and_normalize_critique`)**:
+  - Directives that overlap a `MustKeepLine` quote, contradict a `LockedFact`,
+    `ProtectedBeat`, or `StylePreference` in `packet.author_locks`, request an
+    outcome forbidden by `scene_card.prohibited_outcomes`, or use
+    `DirectiveScope::Chapter` / canon-creation phrasing are automatically
+    quarantined into `requires_author_decision` and excluded from actionable
+    `directives`.
+  - Remaining directives are deduplicated by overlapping span/quote, sorted by
+    priority tier (`continuity` > `scene_purpose`/`tension_turn`/`pov`/`entry_exit_emotion`/`chapter_role` >
+    `voice`/`dialogue`/`freshness`/`length`) and severity, and truncated to
+    `MAX_ACTIONABLE_DIRECTIVES = 5`.
+
+### Shadow execution, rating clearance, and bounded 1-shot repair
+
+- **`ModelRouter::critique_draft_shadow` and
+  `SqliteSpindleService::critique_artifact_shadow`**:
+  - Rejects `EditorialPolicy::Legacy` (`shadow critique requires critique_v1 policy`).
+  - Resolves the `review` route through `resolve_cleared_route("review", Some(rating))`
+    so unrated or under-cleared agents fail closed with `RouteClearanceError`
+    before any prompt is sent.
+  - Budgets the critic prompt (`CriticBudget::scene_default`: `input_limit = 16_000`,
+    `output_reserve = 1_500`, `framing_reserve = 512`) and verifies token counts
+    via the configured calibrated tokenizer when present.
+  - Executes at most 1 initial critic call plus at most 1 bounded repair call
+    (`max_calls` in `1..=2`) that includes the exact schema/anchor validation error.
+    If the repair output is still invalid or truncated, returns
+    `ShadowCritiqueOutcome::CriticInvalid` and retains the original draft unchanged.
+  - Persists `ShadowCritiqueArtifactV1` (`schema_version = "shadow_critique_artifact_v1"`)
+    via atomic tempfile rename and verifies that the underlying
+    `PlainTextDraftArtifactV1` bytes and `text_sha256` on disk remain byte-for-byte
+    identical before and after shadow critique.
+  - Exposed for offline/bridge evaluation via `spindle-tokenizer critique-artifact`
+    and verified in `evals/prose_judge.py` (`verify_shadow_critique_parity` and
+    `build_blinded_directive_usefulness_packet`).
