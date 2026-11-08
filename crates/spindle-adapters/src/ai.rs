@@ -130,7 +130,14 @@ voice, and story tone.";
 ///   agent (see [`resolve_route`] / [`explicit_offload_route`]) instead of the
 ///   default chair — keeping un-rated manuscript prose off a stricter provider
 ///   (e.g. Qwen) that would otherwise refuse it.
-pub const PROSE_BEARING_ROUTES: &[&str] = &["draft", "mine", "line_edit", "reader_sim", "review"];
+pub const PROSE_BEARING_ROUTES: &[&str] = &[
+    "draft",
+    "mine",
+    "extract",
+    "line_edit",
+    "reader_sim",
+    "review",
+];
 
 /// Manuscript-import routes. Prose-bearing (they carry the operator's full
 /// manuscript) but deliberately NOT in [`PROSE_BEARING_ROUTES`] — see that
@@ -479,6 +486,14 @@ pub fn infer_prompt_template(
     )
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("independent extraction requires a non-agentic HTTP route")]
+pub struct UnsupportedExtractionAdapter;
+
+#[derive(Debug, thiserror::Error)]
+#[error("independent extraction timed out")]
+pub struct ExtractionTimedOut;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelRequest {
     pub route: String,
@@ -503,6 +518,10 @@ pub struct ModelRequest {
 pub struct ModelResponse {
     pub adapter_kind: String,
     pub model_name: String,
+    /// Reported provider model, or configured model when omitted in the response.
+    /// Separate from the configured agent ID used by existing receipt paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_model: Option<String>,
     pub output: String,
     /// True when the model hit its token limit and the output is incomplete.
     #[serde(default)]
@@ -1108,9 +1127,22 @@ impl ModelRouter {
 
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
         let start = std::time::Instant::now();
-        let resolved_route =
+        let mut resolved_route =
             self.resolve_route_for_telemetry(&request.route, request.rating.as_deref());
-        let mut result = self.complete_inner(request).await;
+        if request.route == "extract"
+            && let Some(route) = &mut resolved_route
+        {
+            route.max_tokens = Some(route.max_tokens.unwrap_or(2000).min(2000));
+        }
+        // Leave time inside the engine's 60-second foreground bound to record
+        // timeout attribution, rather than cancelling before the ledger write.
+        let mut result = if request.route == "extract" {
+            tokio::time::timeout(Duration::from_secs(55), self.complete_inner(request))
+                .await
+                .unwrap_or_else(|_| Err(anyhow::Error::new(ExtractionTimedOut)))
+        } else {
+            self.complete_inner(request).await
+        };
         self.record_usage(
             &request.route,
             request.rating.as_deref(),
@@ -1161,6 +1193,17 @@ impl ModelRouter {
             }
         };
 
+        let mut bounded_route = route.clone();
+        if request.route == "extract" {
+            // Shadow extraction has no tool authority. Agentic/CLI routes must
+            // not gain access to a project's write tools through this pass.
+            if route.adapter_kind != "http" {
+                return Err(anyhow::Error::new(UnsupportedExtractionAdapter));
+            }
+            bounded_route.max_tokens = Some(route.max_tokens.unwrap_or(2000).min(2000));
+        }
+        let route = &bounded_route;
+
         match route.adapter_kind.as_str() {
             "local" => {
                 // The local stub errors (rather than fabricating) for an
@@ -1179,8 +1222,19 @@ impl ModelRouter {
             }
             "cli" => self.run_cli(&runtime, route, &request.prompt).await,
             "http" => {
-                self.run_http(&runtime, route, request.rating.as_deref(), &request.prompt)
+                if request.route == "extract" {
+                    self.run_http_inner(
+                        &runtime,
+                        route,
+                        request.rating.as_deref(),
+                        &request.prompt,
+                        false,
+                    )
                     .await
+                } else {
+                    self.run_http(&runtime, route, request.rating.as_deref(), &request.prompt)
+                        .await
+                }
             }
             "grok" => {
                 self.run_grok(
@@ -1559,6 +1613,13 @@ impl ModelRouter {
         Ok(ModelResponse {
             adapter_kind: route.adapter_kind.clone(),
             model_name: route.model_name.clone(),
+            provider_model: Some(
+                body.get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or(&agent.config.model)
+                    .to_string(),
+            ),
             output,
             truncated,
             usage: usage::parse_usage(&body),
@@ -6276,6 +6337,10 @@ route = "mine"
 agent = "reviewer"
 
 [[routing]]
+route = "extract"
+agent = "reviewer"
+
+[[routing]]
 route = "draft"
 agent = "reviewer"
 "####
@@ -6378,11 +6443,48 @@ agent = "reviewer"
         );
     }
 
+    #[tokio::test]
+    async fn independent_extract_never_dispatches_to_uncleared_agent() {
+        let router = cleared_route_router(&["general"]);
+        let log = router.install_dispatch_recorder().unwrap();
+        let error = router
+            .complete(&ModelRequest {
+                route: "extract".into(),
+                prompt: "private accepted scene".into(),
+                rating: Some("explicit".into()),
+                context: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<RouteClearanceError>(),
+            Some(RouteClearanceError::RatingNotCovered { .. })
+        ));
+        let records = log.lock().unwrap();
+        assert!(
+            records.iter().any(
+                |r| matches!(r, DispatchRecord::Rejection { route, .. } if route == "extract")
+            )
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, DispatchRecord::Dispatch { .. }))
+        );
+    }
+
     #[test]
-    fn prose_bearing_routes_constant_lists_the_five_prose_passes() {
+    fn prose_bearing_routes_constant_includes_independent_extraction() {
         assert_eq!(
             PROSE_BEARING_ROUTES,
-            &["draft", "mine", "line_edit", "reader_sim", "review"]
+            &[
+                "draft",
+                "mine",
+                "extract",
+                "line_edit",
+                "reader_sim",
+                "review"
+            ]
         );
     }
 

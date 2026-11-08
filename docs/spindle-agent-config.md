@@ -130,6 +130,7 @@ The current runtime understands these route names:
 
 - `draft`
 - `review`
+- `extract` (independent shadow extraction)
 - `research`
 - `embedding`
 - `import_extract`
@@ -143,6 +144,36 @@ path when you bind that route to an HTTP agent. Spindle uses the configured
 agent's OpenAI-compatible `POST /embeddings` endpoint for search indexing and
 query vectors, and it falls back to `token-hash-v1` when no `embedding` route
 is configured.
+
+## Independent extraction route (shadow integration)
+
+The optional `extract` route serves P2's implementation of P1's accepted-text
+Rust port. It receives exact accepted prose and bounded preceding ratified
+context in a fresh analysis call. Existing authoring tools keep their current
+behavior; this route does not activate a cutover or apply claims to canon.
+
+Bind it to an HTTP agent whose declared ratings cover the scene:
+
+```toml
+[[routing]]
+route = "extract"
+agent = "analysis-agent"
+max_tokens = 2000
+```
+
+V1 refuses agentic/CLI backends for this pass, caps configured output at 2,000
+tokens, makes one HTTP attempt, and bounds model work inside a 60-second response
+wait. Missing/uncleared routes, budget failures, timeouts, malformed/truncated
+reports and incomplete coverage stay explicit. The input byte guard is not a
+verified tokenizer or a measured cost guarantee. Host fallback uses the same
+claim/evidence schema and retains the original accepted prose and receipt.
+
+The Rust `IndependentCanonExtractor` takes a local cache directory. Frozen task
+IDs and request hashes prevent changed-input retries and repeated successful
+calls across restart. Successful reports are immutable; unknown coverage remains
+visible in their typed audit. An unresolved lock after a process crash reports
+recovery-needed and cannot be treated as completed extraction. Preserve the
+accepted artifact and verify no process owns the task before operator recovery.
 
 ## Per-rating routing (explicit content offload)
 

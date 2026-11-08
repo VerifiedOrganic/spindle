@@ -50,6 +50,10 @@ pub struct AcceptedTextExtractionRequestV1 {
 /// Extraction cannot replace the accepted prose or its generation identity.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CompatibilityExtractionV1 {
+    /// Independent, evidence-bound proposals retained in shadow mode. Inspect
+    /// coverage explicitly: a returned report does not certify a clean scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canon_audit: Option<crate::canon::CanonExtractionAuditV1>,
     pub accepted_text_sha256: String,
     pub summary: String,
     pub tone: Option<String>,

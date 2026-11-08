@@ -35,6 +35,17 @@ Inherited fact replacements leave parent canon unchanged until merge; their repl
 survive save-point restore. Voice-profile writes require a character owned by the active branch;
 inherited profiles remain read-only.
 
+## Independent extraction coverage
+
+When an independent extraction audit is provided, treat its claims as shadow
+proposals. Inspect each
+family's inspected-none, claims-present or unknown status and the evidence bound
+to the exact accepted-text hash. Unknown coverage and extraction failure remain
+pending work. Drafter notes alone do not establish coverage; package agreement
+and raw model confidence do not ratify a claim. Review both sources for missing
+or incompatible assertions. Existing staging and author-decision workflows remain
+the path for canon changes, including deaths, disclosures and promise payoffs.
+
 ## Workflow
 
 ### 1. Mine a committed scene
