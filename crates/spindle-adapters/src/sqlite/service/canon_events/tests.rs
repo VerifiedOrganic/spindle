@@ -2659,6 +2659,119 @@ async fn backfill_and_shadow_parity_across_nested_branches_ancestor_edits_tombst
         .await
         .unwrap();
     assert_eq!(idem_after_re_restore.total_mapped_count, 0);
+
+    // 5. Insert a predecessor `character_state` snapshot after an uninjured successor at scene 10
+    //    has already been backfilled. First backfill scene 10 (`status = ["alive"]`), then insert
+    //    scene 5 (`status = ["alive", "injury:left_arm:severe"]`) and backfill again. Verify that
+    //    reconciliation detects the newly inserted row, cascades to rebuild the scene-10 transition
+    //    so it emits `InjuryOperation::Heal`, and leaves typed `injuries` empty at/after scene 10!
+    svc.repository()
+        .append_character_state(crate::sqlite::repository::AppendCharacterStateParams {
+            project_id: project.project_id.clone(),
+            branch_id: child.branch_id.clone(),
+            character_id: veyra_id.clone(),
+            scene_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 10,
+            patch: CharacterStatePatch {
+                emotional_state: Default::default(),
+                goals: Some(vec!["reach the spire".into()]),
+                status: Some(vec!["alive".into()]),
+                notes: Some(vec!["uninjured at scene 10".into()]),
+                source_summary: Some("scene 10 snapshot".into()),
+            },
+        })
+        .await
+        .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+
+    svc.repository()
+        .append_character_state(crate::sqlite::repository::AppendCharacterStateParams {
+            project_id: project.project_id.clone(),
+            branch_id: child.branch_id.clone(),
+            character_id: veyra_id.clone(),
+            scene_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 5,
+            patch: CharacterStatePatch {
+                emotional_state: Default::default(),
+                goals: Some(vec!["survive the ambush".into()]),
+                status: Some(vec!["alive".into(), "injury:left_arm:severe".into()]),
+                notes: Some(vec!["wounded at scene 5".into()]),
+                source_summary: Some("scene 5 predecessor snapshot".into()),
+            },
+        })
+        .await
+        .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+
+    let left_arm_injury_id = format!("legacy_injury:{veyra_id}:left_arm");
+    let view_at_scene_5 = svc
+        .canon_state_at(
+            &project.project_id,
+            &child.branch_id,
+            CanonCursorV1 {
+                position: Some(CanonPositionV1 {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 5,
+                }),
+                within_scene_order: None,
+            },
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        view_at_scene_5
+            .active_injuries(&veyra_id)
+            .contains_key(left_arm_injury_id.as_str()),
+        "expected left_arm injury to be active at scene 5"
+    );
+
+    let view_after_scene_10 = svc
+        .canon_state_at(
+            &project.project_id,
+            &child.branch_id,
+            CanonCursorV1 {
+                position: Some(CanonPositionV1 {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: 10,
+                }),
+                within_scene_order: None,
+            },
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        view_after_scene_10.active_injuries(&veyra_id).is_empty(),
+        "expected scene 10 successor to emit Heal after predecessor insertion, got: {:?}",
+        view_after_scene_10.active_injuries(&veyra_id)
+    );
+    let injury_at_10 = view_after_scene_10
+        .entities
+        .get(&veyra_id)
+        .and_then(|e| e.injuries.get(&left_arm_injury_id))
+        .expect("expected left_arm injury record at scene 10");
+    assert_eq!(
+        injury_at_10.healed_at,
+        Some(CanonPositionV1 {
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 10,
+        })
+    );
+
     let _ = main_promise;
 }
 

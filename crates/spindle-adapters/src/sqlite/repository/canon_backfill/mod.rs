@@ -718,6 +718,11 @@ fn reconcile_branch_source_maps_in_tx(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
 
+    let existing_keys: BTreeSet<(String, String)> = rows
+        .iter()
+        .map(|(source_table, pk, _, _, _)| (source_table.clone(), pk.clone()))
+        .collect();
+
     let mut stale_tables = BTreeSet::new();
     for (source_table, pk, _status, _events_json, raw_snap) in &rows {
         let key = (source_table.clone(), pk.clone());
@@ -725,6 +730,11 @@ fn reconcile_branch_source_maps_in_tx(
             .get(&key)
             .is_some_and(|curr_snap| curr_snap == raw_snap);
         if !unchanged {
+            stale_tables.insert(source_table.clone());
+        }
+    }
+    for (source_table, pk) in current_snapshots.keys() {
+        if !existing_keys.contains(&(source_table.clone(), pk.clone())) {
             stale_tables.insert(source_table.clone());
         }
     }
@@ -736,14 +746,21 @@ fn reconcile_branch_source_maps_in_tx(
         let unchanged = current_snapshots
             .get(&key)
             .is_some_and(|curr_snap| curr_snap == &raw_snap);
-        let cascade_store = matches!(
-            source_table.as_str(),
-            "character_state"
-                | "quantity_state"
-                | "canonical_fact"
-                | "relates_to"
-                | "relationship_scene_delta"
-        ) && stale_tables.contains(&source_table);
+        let cascade_store = match source_table.as_str() {
+            "character_state" | "quantity_state" | "canonical_fact" => {
+                stale_tables.contains(&source_table)
+            }
+            "relates_to" | "relationship_scene_delta" => {
+                stale_tables.contains("relates_to")
+                    || stale_tables.contains("relationship_scene_delta")
+            }
+            "progression_event" => {
+                stale_tables.contains("quantity_state") || stale_tables.contains("character_state")
+            }
+            "knows" => stale_tables.contains("knowledge_fact"),
+            "timeline_event" => stale_tables.contains("timeline_event_clock"),
+            _ => false,
+        };
         if !unchanged || cascade_store {
             if status == "mapped" {
                 let ev_ids: Vec<String> = serde_json::from_str(&events_json).unwrap_or_default();
