@@ -1,4 +1,6 @@
 //! Versioned prose-task data. No retrieval, tokenizer implementation or transport.
+pub mod extraction;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -206,4 +208,18 @@ pub struct DraftingPacketV1 {
     pub research_evidence: Vec<PacketItem>,
     /// Set by the assembler; caller-supplied counts are never trusted.
     pub assembly: Option<PacketAssembly>,
+}
+
+/// Exact system/user messages; serialization order is part of prompt hashing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DraftMessages {
+    pub system: String,
+    pub user: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreparedDraftingPacket {
+    /// Includes the source data and assembly/omission report, not only selected text.
+    pub packet: DraftingPacketV1,
+    pub messages: DraftMessages,
+    pub messages_hash: String,
 }

@@ -1,6 +1,6 @@
 use super::*;
 
-struct VerifiedFixtureTokenizer;
+pub(crate) struct VerifiedFixtureTokenizer;
 impl DraftTokenizer for VerifiedFixtureTokenizer {
     fn id(&self) -> &str {
         "fixture-unicode"
@@ -9,7 +9,7 @@ impl DraftTokenizer for VerifiedFixtureTokenizer {
         "1"
     }
     fn supports_model(&self, model: &str) -> bool {
-        model == "fixture"
+        matches!(model, "fixture" | "venice-model")
     }
     fn count_text(&self, text: &str) -> Result<usize, String> {
         Ok(text.chars().count())
@@ -18,7 +18,7 @@ impl DraftTokenizer for VerifiedFixtureTokenizer {
         Ok(messages.system.chars().count() + messages.user.chars().count() + 17)
     }
 }
-fn fixture() -> DraftingPacketV1 {
+pub(crate) fn fixture() -> DraftingPacketV1 {
     let source = PacketSource {
         branch_id: "parent".into(),
         source_id: "plan".into(),
@@ -92,7 +92,7 @@ fn fixture() -> DraftingPacketV1 {
         assembly: None,
     }
 }
-fn budget() -> PacketBudget {
+pub(crate) fn budget() -> PacketBudget {
     // This fixture counts Unicode scalars, not production model tokens.
     PacketBudget {
         model_id: "fixture".into(),
@@ -400,4 +400,222 @@ fn proposition_ids_are_local_to_the_full_branch_aware_source() {
             assert_eq!(prepared.messages, assemble(p).messages);
         }
     }
+}
+
+fn receipt_for(text: &str) -> spindle_core::drafting::extraction::DraftReceiptBinding {
+    spindle_core::drafting::extraction::DraftReceiptBinding {
+        generation_id: "receipt1".into(),
+        agent_id: "agent1".into(),
+        normalized_output_sha256: format!(
+            "{:x}",
+            Sha256::digest(text.replace("\r\n", "\n").trim().as_bytes())
+        ),
+    }
+}
+#[test]
+fn plain_text_retains_exact_utf8_whitespace_and_receipt_binding() {
+    let text = " \r\n雪。\r\n ";
+    let mut artifact = artifact::capture_plain_text(
+        &fixture(),
+        "packet-hash",
+        text.into(),
+        false,
+        receipt_for(text),
+    )
+    .unwrap();
+    assert_eq!(artifact.text.as_bytes(), text.as_bytes());
+    assert_ne!(
+        artifact.text_sha256,
+        artifact.receipt.normalized_output_sha256
+    );
+    let hash = artifact.text_sha256.clone();
+    artifact::accept_text(&mut artifact, &hash).unwrap();
+    assert_eq!(
+        artifact.accepted_text_sha256.as_deref(),
+        Some(hash.as_str())
+    );
+    assert!(
+        artifact::capture_plain_text(
+            &fixture(),
+            "hash",
+            "different".into(),
+            false,
+            receipt_for(text)
+        )
+        .is_err()
+    );
+}
+#[test]
+fn truncated_or_changed_text_cannot_be_accepted() {
+    let mut artifact = artifact::capture_plain_text(
+        &fixture(),
+        "hash",
+        "partial".into(),
+        true,
+        receipt_for("partial"),
+    )
+    .unwrap();
+    let hash = artifact.text_sha256.clone();
+    assert!(artifact::accept_text(&mut artifact, &hash).is_err());
+    artifact.truncated = false;
+    artifact.text = "edited".into();
+    assert!(artifact::accept_text(&mut artifact, &hash).is_err());
+    assert!(artifact.accepted_text_sha256.is_none());
+}
+
+#[tokio::test]
+async fn accepted_only_extraction_preserves_prose_across_failure_restart_and_retry() {
+    use spindle_core::drafting::extraction::*;
+    struct Extractor {
+        fail: bool,
+    }
+    impl AcceptedTextExtractor for Extractor {
+        fn extract<'a>(
+            &'a self,
+            request: &'a AcceptedTextExtractionRequestV1,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CompatibilityExtractionV1, ExtractionFailure>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                if self.fail {
+                    return Err(ExtractionFailure {
+                        code: "route_unavailable".into(),
+                        retryable: true,
+                    });
+                }
+                Ok(CompatibilityExtractionV1 {
+                    accepted_text_sha256: request.accepted.text_sha256.clone(),
+                    summary: "A crossing fails.".into(),
+                    tone: None,
+                    character_states: vec![],
+                    canonical_facts: vec![],
+                    relationship_updates: vec![],
+                    beats: vec![],
+                    continuity_notes: vec![],
+                })
+            })
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("draft.json");
+    let text = " \r\nThe bridge fell.\r\n";
+    let mut draft =
+        artifact::capture_plain_text(&fixture(), "packet", text.into(), false, receipt_for(text))
+            .unwrap();
+    artifact::save_artifact(&path, &draft).unwrap();
+    assert!(
+        artifact::extract_accepted(&path, &Extractor { fail: false }, vec![], vec![])
+            .await
+            .is_err()
+    );
+    let hash = draft.text_sha256.clone();
+    artifact::accept_text(&mut draft, &hash).unwrap();
+    artifact::save_artifact(&path, &draft).unwrap();
+    let failed = artifact::extract_accepted(&path, &Extractor { fail: true }, vec![], vec![])
+        .await
+        .unwrap();
+    assert_eq!(failed.text.as_bytes(), text.as_bytes());
+    assert!(failed.extraction.is_none());
+    assert_eq!(failed.extraction_failure.unwrap().code, "route_unavailable");
+    assert!(
+        artifact::extract_accepted(
+            &path,
+            &Extractor { fail: false },
+            vec![],
+            vec![ExtractionEntityRef {
+                id: "new-id".into(),
+                kind: "character".into(),
+                display_name: "New".into()
+            }]
+        )
+        .await
+        .is_err()
+    );
+    let restarted = artifact::load_artifact(&path).unwrap();
+    assert_eq!(
+        restarted.accepted_text_sha256.as_deref(),
+        Some(hash.as_str())
+    );
+    let extracted = artifact::extract_accepted(&path, &Extractor { fail: false }, vec![], vec![])
+        .await
+        .unwrap();
+    assert_eq!(extracted.text.as_bytes(), text.as_bytes());
+    assert_eq!(extracted.receipt.generation_id, "receipt1");
+    assert_eq!(extracted.extraction_attempts, 2);
+    assert_eq!(extracted.extraction.unwrap().summary, "A crossing fails.");
+    let cached = artifact::extract_accepted(&path, &Extractor { fail: true }, vec![], vec![])
+        .await
+        .unwrap();
+    assert_eq!(cached.extraction_attempts, 2);
+    assert!(cached.extraction_failure.is_none());
+}
+
+#[tokio::test]
+async fn mismatched_extraction_hash_stays_parked_without_repeated_paid_attempts() {
+    use spindle_core::drafting::extraction::*;
+    struct Mismatch;
+    impl AcceptedTextExtractor for Mismatch {
+        fn extract<'a>(
+            &'a self,
+            _: &'a AcceptedTextExtractionRequestV1,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CompatibilityExtractionV1, ExtractionFailure>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Ok(CompatibilityExtractionV1 {
+                    accepted_text_sha256: "losing-candidate".into(),
+                    summary: "Wrong source".into(),
+                    tone: None,
+                    character_states: vec![],
+                    canonical_facts: vec![],
+                    relationship_updates: vec![],
+                    beats: vec![],
+                    continuity_notes: vec![],
+                })
+            })
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("draft.json");
+    let text = "The bridge fell.";
+    let draft =
+        artifact::capture_plain_text(&fixture(), "packet", text.into(), false, receipt_for(text))
+            .unwrap();
+    artifact::save_artifact(&path, &draft).unwrap();
+    artifact::accept_artifact(&path, &draft.text_sha256).unwrap();
+    let first = artifact::extract_accepted(&path, &Mismatch, vec![], vec![])
+        .await
+        .unwrap();
+    assert!(first.extraction.is_none());
+    assert!(!first.extraction_failure.unwrap().retryable);
+    let second = artifact::extract_accepted(&path, &Mismatch, vec![], vec![])
+        .await
+        .unwrap();
+    assert_eq!(second.extraction_attempts, 1);
+    assert_eq!(second.text, text);
+    let lock = artifact::lock_artifact(&path).unwrap();
+    assert!(
+        artifact::accept_artifact(&path, &draft.text_sha256)
+            .unwrap_err()
+            .to_string()
+            .contains("busy")
+    );
+    drop(lock);
+    assert_eq!(
+        artifact::load_artifact(&path)
+            .unwrap()
+            .receipt
+            .generation_id,
+        "receipt1"
+    );
 }

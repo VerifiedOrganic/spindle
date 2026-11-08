@@ -1,4 +1,6 @@
-//! Pure packet preparation. Deliberately not wired to legacy generation yet.
+//! Pure packet preparation and the local accepted-text artifact lifecycle.
+pub mod artifact;
+
 use sha2::{Digest, Sha256};
 use spindle_core::drafting::*;
 use std::collections::BTreeMap;
@@ -9,15 +11,11 @@ const SYSTEM: &str = "Write the scene from the supplied data. Return only UTF-8 
 const REMINDER: &str =
     "Write this scene now, preserving its intended outcome and turn within the target length.";
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct DraftMessages {
-    pub system: String,
-    pub user: String,
-}
+pub use spindle_core::drafting::{DraftMessages, PreparedDraftingPacket};
 
 /// Implementations must be verified for this exact resolved model and count
 /// message delimiters/role overhead as well as text. No estimated fallback.
-pub trait DraftTokenizer {
+pub trait DraftTokenizer: Send + Sync {
     fn id(&self) -> &str;
     fn version(&self) -> &str;
     fn supports_model(&self, model_id: &str) -> bool;
@@ -55,14 +53,6 @@ pub enum PacketError {
     MandatoryOverflow(String),
     #[error("packet_serialization: {0}")]
     Serialization(String),
-}
-#[derive(Debug, Clone)]
-pub struct PreparedDraftingPacket {
-    /// Complete source artifact, including excluded records and their report.
-    pub packet: DraftingPacketV1,
-    /// Only these exact messages may be dispatched without preparing again.
-    pub messages: DraftMessages,
-    pub messages_hash: String,
 }
 fn json(value: &impl serde::Serialize) -> Result<String, PacketError> {
     serde_json::to_string(value).map_err(|e| PacketError::Serialization(e.to_string()))
@@ -136,9 +126,9 @@ fn validate(packet: &DraftingPacketV1) -> Result<(), PacketError> {
     Ok(())
 }
 
-fn render_messages(sections: &[String; 6]) -> DraftMessages {
+fn render_messages(sections: &[String; 6], system: &str) -> DraftMessages {
     DraftMessages {
-        system: SYSTEM.into(),
+        system: system.into(),
         user: format!("{}\n{REMINDER}", sections.join("\n")),
     }
 }
@@ -153,10 +143,24 @@ fn fits_context(input: usize, budget: &PacketBudget) -> bool {
 /// Select whole records, never byte-slice prose. Hard knowledge boundaries are
 /// promoted to the mandatory section; other required facts must be constraints.
 pub fn assemble_packet(
-    mut packet: DraftingPacketV1,
+    packet: DraftingPacketV1,
     budget: &PacketBudget,
     tokenizer: Option<&dyn DraftTokenizer>,
 ) -> Result<PreparedDraftingPacket, PacketError> {
+    assemble_packet_with_system(packet, budget, tokenizer, "")
+}
+
+pub(crate) fn assemble_packet_with_system(
+    mut packet: DraftingPacketV1,
+    budget: &PacketBudget,
+    tokenizer: Option<&dyn DraftTokenizer>,
+    route_system: &str,
+) -> Result<PreparedDraftingPacket, PacketError> {
+    let system = if route_system.is_empty() {
+        SYSTEM.into()
+    } else {
+        format!("{route_system}\n\n{SYSTEM}")
+    };
     validate(&packet)?;
     let t =
         tokenizer.ok_or_else(|| PacketError::BudgetUnknown("no tokenizer configured".into()))?;
@@ -277,7 +281,7 @@ pub fn assemble_packet(
             let tail_overflow = *label == "prior scene tail" && tokens > 1000;
             let mut proposed_sections = sections.clone();
             proposed_sections[priority] = proposed.clone();
-            let proposed_messages = render_messages(&proposed_sections);
+            let proposed_messages = render_messages(&proposed_sections, &system);
             let proposed_input = t
                 .count_messages(&proposed_messages)
                 .map_err(PacketError::BudgetUnknown)?;
@@ -302,7 +306,7 @@ pub fn assemble_packet(
         }
         // Output contract and reminder are priority zero, despite final placement.
         let tokens = if priority == 0 {
-            count(&format!("{SYSTEM}\n{}\n{REMINDER}", sections[0]))?
+            count(&format!("{system}\n{}\n{REMINDER}", sections[0]))?
         } else {
             count(&sections[priority])?
         };
@@ -317,7 +321,7 @@ pub fn assemble_packet(
             tokens,
         });
     }
-    let messages = render_messages(&sections);
+    let messages = render_messages(&sections, &system);
     let input_tokens = t
         .count_messages(&messages)
         .map_err(PacketError::BudgetUnknown)?;
@@ -346,4 +350,4 @@ pub fn assemble_packet(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
