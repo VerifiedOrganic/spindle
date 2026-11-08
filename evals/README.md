@@ -137,6 +137,7 @@ disposable `spindle-mcp` server and temporary `SPINDLE_DATA_DIR`:
 ## Run
 
 ```sh
+cargo build -p spindle-mcp
 python3 evals/continuity_recall.py self-test
 python3 evals/continuity_recall.py --output evals/results/continuity_recall_baseline.json
 ```
@@ -149,8 +150,11 @@ python3 evals/continuity_recall.py --deep --agent-config /path/to/spindle.toml -
 ```
 
 The checked-in deterministic baseline lives at
-`evals/results/continuity_recall_baseline.json`. CI runs `self-test` and the
-deterministic benchmark on every pull request.
+`evals/results/continuity_recall_baseline.json`. Implicit debug/release binary
+selection rejects binaries older than any crate file or root Cargo manifest/lockfile.
+Rebuild before measuring; an explicit `--binary /path/to/spindle-mcp` deliberately
+bypasses this timestamp guard for a chosen benchmark artifact. CI runs `self-test`
+and the deterministic benchmark on every pull request.
 
 ---
 

@@ -162,6 +162,22 @@ class McpClient:
             self.proc.kill()
 
 
+def require_fresh_binary(binary: Path, source_root: Path) -> None:
+    """Implicit benchmark binaries must reflect all crate sources/build inputs."""
+    inputs = (path for path in (source_root / "crates").rglob("*")
+              if path.is_file() and "target" not in path.relative_to(source_root).parts)
+    newest = max((path.stat().st_mtime_ns for path in inputs), default=0)
+    for name in ("Cargo.toml", "Cargo.lock"):
+        path = source_root / name
+        if path.is_file():
+            newest = max(newest, path.stat().st_mtime_ns)
+    if binary.stat().st_mtime_ns < newest:
+        raise RuntimeError(
+            "Stale spindle-mcp binary: run `cargo build -p spindle-mcp` before recall, "
+            "or pass --binary explicitly to select an intentional benchmark artifact."
+        )
+
+
 def resolve_binary(explicit: str | None) -> Path:
     if explicit:
         path = Path(explicit).expanduser().resolve()
@@ -171,13 +187,16 @@ def resolve_binary(explicit: str | None) -> Path:
     for profile in ("debug", "release"):
         candidate = ROOT / "target" / profile / "spindle-mcp"
         if candidate.exists():
+            require_fresh_binary(candidate, ROOT)
             return candidate
     subprocess.run(
         ["cargo", "build", "--quiet", "-p", "spindle-mcp"],
         cwd=ROOT,
         check=True,
     )
-    return ROOT / "target" / "debug" / "spindle-mcp"
+    candidate = ROOT / "target" / "debug" / "spindle-mcp"
+    require_fresh_binary(candidate, ROOT)
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -2175,6 +2194,37 @@ def run_self_test() -> None:
     )
     assert "SPINDLE_CONFIG" not in isolated_env
     assert "SPINDLE_AGENT_CONFIG" not in isolated_env
+    # No cargo invocation: exercise selection and timestamps in a fake repo.
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "crates" / "core" / "src" / "lib.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("// source")
+        binary = root / "target" / "debug" / "spindle-mcp"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("fixture binary")
+        os.utime(source, ns=(20_000_000_000, 20_000_000_000))
+        os.utime(binary, ns=(10_000_000_000, 10_000_000_000))
+        with patch.object(sys.modules[__name__], "ROOT", root):
+            try:
+                resolve_binary(None)
+            except RuntimeError as error:
+                assert "Stale spindle-mcp binary" in str(error)
+            else:
+                raise AssertionError("Implicit stale binary was accepted")
+            assert resolve_binary(str(binary)) == binary.resolve()
+            os.utime(binary, ns=(30_000_000_000, 30_000_000_000))
+            assert resolve_binary(None) == binary
+            manifest = root / "Cargo.lock"
+            manifest.write_text("changed dependency")
+            os.utime(manifest, ns=(40_000_000_000, 40_000_000_000))
+            try:
+                resolve_binary(None)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Changed build input did not invalidate binary")
     print("continuity_recall.py self-test passed")
 
 
@@ -2185,7 +2235,7 @@ def main() -> int:
 
     run_parser = subparsers.add_parser("run", help="Run continuity recall benchmark against spindle-mcp")
     for p in (parser, run_parser):
-        p.add_argument("--binary", help="Path to spindle-mcp binary")
+        p.add_argument("--binary", help="Explicit benchmark artifact (bypasses source freshness check)")
         p.add_argument("--output", help="Write JSON report to this file path")
         p.add_argument(
             "--deep",
