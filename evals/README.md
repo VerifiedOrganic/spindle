@@ -156,7 +156,9 @@ which source, build-script and embedded-asset changes require rebuilding. A newe
 test-only/non-build file does not incorrectly reject a current executable.
 An explicit `--binary /path/to/spindle-mcp` or `--no-build` deliberately bypasses
 the build for a chosen artifact; freshness is then the caller's responsibility.
-`CARGO_TARGET_DIR` is honored. CI runs `self-test` and the deterministic benchmark
+The default uses Cargo's reported executable path, honoring build configuration
+without falling back to an old conventional path. `--no-build` honors
+`CARGO_TARGET_DIR`. CI runs `self-test` and the deterministic benchmark
 on every pull request.
 
 ---

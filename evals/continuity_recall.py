@@ -172,11 +172,25 @@ def resolve_binary(explicit: str | None, no_build: bool = False) -> Path:
         # Cargo knows the executable's actual dependency graph, including build
         # scripts/assets. Timestamp scans also catch non-build/test-only files
         # that Cargo rightly leaves out, and can permanently reject a fresh exe.
-        subprocess.run(
-            ["cargo", "build", "--quiet", "-p", "spindle-mcp"],
+        built = subprocess.run(
+            ["cargo", "build", "--quiet", "-p", "spindle-mcp", "--message-format=json"],
             cwd=ROOT,
             check=True,
+            stdout=subprocess.PIPE,
+            text=True,
         )
+        for line in built.stdout.splitlines():
+            artifact = json.loads(line)
+            target = artifact.get("target", {})
+            executable = artifact.get("executable")
+            if (artifact.get("reason") == "compiler-artifact"
+                    and target.get("name") == "spindle-mcp"
+                    and "bin" in target.get("kind", []) and executable):
+                candidate = Path(executable).resolve()
+                if not candidate.is_file():
+                    raise FileNotFoundError(f"Cargo executable not found at {candidate}")
+                return candidate
+        raise RuntimeError("Cargo did not report a spindle-mcp executable; no stale fallback used")
     target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
     if not target.is_absolute():
         target = ROOT / target
@@ -2197,6 +2211,9 @@ def run_self_test() -> None:
         binary.parent.mkdir(parents=True)
         binary.write_text("fixture binary")
         os.utime(binary, ns=(10_000_000_000, 10_000_000_000))
+        built_binary = root / "cargo-configured-target" / "debug" / "spindle-mcp"
+        built_binary.parent.mkdir(parents=True)
+        built_binary.write_text("cargo-reported binary")
         test_only = source.with_name("tests.rs")
         test_only.write_text("// newer test-only source")
         snapshot = source.with_name("snapshot.json")
@@ -2204,13 +2221,19 @@ def run_self_test() -> None:
         with patch.object(sys.modules[__name__], "ROOT", root), patch.dict(
             os.environ, {"CARGO_TARGET_DIR": "target"}
         ), patch.object(subprocess, "run") as build:
-            # A no-op build may retain an older binary mtime after non-build edits.
-            assert resolve_binary(None) == binary
+            build.return_value.stdout = json.dumps({
+                "reason": "compiler-artifact", "target": {"name": "spindle-mcp", "kind": ["bin"]},
+                "executable": str(built_binary), "fresh": True,
+            })
+            # A no-op build may retain an older mtime after non-build edits.
+            # Cargo config can also place the executable outside target/debug.
+            assert resolve_binary(None) == built_binary.resolve()
             build.assert_called_once_with(
-                ["cargo", "build", "--quiet", "-p", "spindle-mcp"], cwd=root, check=True
+                ["cargo", "build", "--quiet", "-p", "spindle-mcp", "--message-format=json"],
+                cwd=root, check=True, stdout=subprocess.PIPE, text=True
             )
             source.write_text("// changed executable dependency")
-            assert resolve_binary(None) == binary
+            assert resolve_binary(None) == built_binary.resolve()
             assert build.call_count == 2  # Real source changes also consult Cargo.
             assert resolve_binary(str(binary)) == binary.resolve()
             assert resolve_binary(None, no_build=True) == binary
@@ -2231,6 +2254,13 @@ def run_self_test() -> None:
             else:
                 raise AssertionError("Missing selected binary was accepted")
             assert build.call_count == 3
+            build.return_value.stdout = ""
+            try:
+                resolve_binary(None)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Missing Cargo artifact reused another binary")
     print("continuity_recall.py self-test passed")
 
 
