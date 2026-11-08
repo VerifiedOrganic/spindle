@@ -22,3 +22,11 @@ Once a packet dispatch starts, cancellation or an unresolved failure leaves a
 recovery marker; resume must not silently dispatch another draft. Inspect the
 artifact/receipt before explicit recovery. Selected extraction canon is preceding
 ratified evidence, never future plans or drafter assertions.
+
+PR 3 supplies configured, pinned local tokenizers and an operator-only
+`spindle-tokenizer` calibration/count utility. It adds no authoring tool or run
+policy. Assembly counts offline; optional final-message provider verification is
+on by default and may use a billed one-token Ollama Cloud probe. Probe usage is
+visible in the model ledger, and uncertain attempts require explicit recovery.
+See `docs/spindle-agent-config.md` for setup; never substitute an estimated token
+count or append skill content to the packet prompt.

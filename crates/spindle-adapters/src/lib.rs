@@ -10,6 +10,7 @@ pub mod export;
 pub mod format;
 pub mod guidance;
 pub mod sqlite;
+pub mod tokenization;
 pub mod workspace;
 
 pub use ai::{DraftRoutePreflight, DraftRoutePreflightProblem, ModelRouter};

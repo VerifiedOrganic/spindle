@@ -69,6 +69,8 @@ impl AntiSlopProjectConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfiguredAgent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer: Option<crate::tokenization::TokenizerConfig>,
     pub id: String,
     pub name: String,
     pub provider: String,
@@ -499,6 +501,7 @@ mod tests {
         let error = validate_config(&SpindleConfigFile {
             agents: vec![
                 ConfiguredAgent {
+                    tokenizer: None,
                     id: "dup".to_string(),
                     name: "One".to_string(),
                     provider: "test".to_string(),
@@ -519,6 +522,7 @@ mod tests {
                     extra_args: Vec::new(),
                 },
                 ConfiguredAgent {
+                    tokenizer: None,
                     id: "dup".to_string(),
                     name: "Two".to_string(),
                     provider: "test".to_string(),
@@ -553,6 +557,7 @@ mod tests {
     fn validates_unknown_routing_agent() {
         let error = validate_config(&SpindleConfigFile {
             agents: vec![ConfiguredAgent {
+                tokenizer: None,
                 id: "one".to_string(),
                 name: "One".to_string(),
                 provider: "test".to_string(),
@@ -597,6 +602,7 @@ mod tests {
     fn validates_temperature_bounds() {
         let error = validate_config(&SpindleConfigFile {
             agents: vec![ConfiguredAgent {
+                tokenizer: None,
                 id: "one".to_string(),
                 name: "One".to_string(),
                 provider: "test".to_string(),
@@ -647,6 +653,7 @@ mod tests {
 
     fn make_agent(id: &str) -> ConfiguredAgent {
         ConfiguredAgent {
+            tokenizer: None,
             id: id.to_string(),
             name: id.to_string(),
             provider: "openai-compatible".to_string(),
@@ -756,6 +763,7 @@ mod tests {
 
     fn make_grok_agent(id: &str) -> ConfiguredAgent {
         ConfiguredAgent {
+            tokenizer: None,
             id: id.to_string(),
             name: id.to_string(),
             provider: "grok-cli".to_string(),
