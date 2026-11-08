@@ -1077,9 +1077,9 @@ def fleiss_kappa(ratings_per_item: list[list[str]], categories: tuple[str, ...] 
 def panel_consensus(verdicts: list[str]) -> str:
     """Compute majority/plurality verdict across a panel of judges, breaking ties to 'tie'."""
     c = Counter(verdicts)
-    if c["candidate"] > c["baseline"] and c["candidate"] >= c["tie"]:
+    if c["candidate"] > c["baseline"] and c["candidate"] > c["tie"]:
         return "candidate"
-    if c["baseline"] > c["candidate"] and c["baseline"] >= c["tie"]:
+    if c["baseline"] > c["candidate"] and c["baseline"] > c["tie"]:
         return "baseline"
     return "tie"
 
@@ -1520,6 +1520,19 @@ def self_test() -> None:
     assert biased_report["panel_summary"]["candidate_wins"] == 0
     assert biased_report["panel_summary"]["baseline_wins"] == 0
     assert biased_report["panel_summary"]["ties"] == 6
+
+    # 2b. Verify panel_consensus requires a strictly unique highest vote count for directional wins
+    assert panel_consensus(["candidate", "tie"]) == "tie"
+    assert panel_consensus(["baseline", "tie"]) == "tie"
+    assert panel_consensus(["candidate", "baseline"]) == "tie"
+    assert panel_consensus(["candidate", "candidate", "tie", "tie"]) == "tie"
+    assert panel_consensus(["baseline", "baseline", "tie", "tie"]) == "tie"
+    assert panel_consensus(["candidate", "candidate", "baseline", "baseline", "tie"]) == "tie"
+    assert panel_consensus(["candidate", "candidate", "baseline", "tie"]) == "candidate"
+    assert panel_consensus(["baseline", "baseline", "candidate", "tie"]) == "baseline"
+    assert panel_consensus(["candidate", "candidate"]) == "candidate"
+    assert panel_consensus(["baseline", "baseline"]) == "baseline"
+    assert panel_consensus([]) == "tie"
 
     # 3. Verify generation adapter (both variant-driven and saved baseline/candidate files)
     gen_pairs = load_or_generate_pairs(
