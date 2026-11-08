@@ -1,0 +1,3288 @@
+{
+  "schema_version": 1,
+  "suite_id": "spindle.prose_judge.v1",
+  "seed": 20261107,
+  "n_briefs_evaluated": 5,
+  "judges": [
+    {
+      "id": "ollama-glm-5.3-flash",
+      "family": "zhipu-glm",
+      "provider": "ollama",
+      "model": "glm-5.3-flash"
+    },
+    {
+      "id": "ollama-deepseek-v4.1-flash",
+      "family": "deepseek",
+      "provider": "ollama",
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "id": "ollama-gemma4-31b",
+      "family": "google-gemma",
+      "provider": "ollama",
+      "model": "gemma4:31b"
+    }
+  ],
+  "panel_summary": {
+    "n_pairs": 5,
+    "candidate_wins": 4,
+    "baseline_wins": 1,
+    "ties": 0,
+    "candidate_win_rate_tie_half": {
+      "estimate": 0.8,
+      "ci95_low": 0.4,
+      "ci95_high": 1.0,
+      "n": 5,
+      "n_resamples": 2000
+    },
+    "candidate_outright_win_rate": {
+      "estimate": 0.8,
+      "ci95_low": 0.4,
+      "ci95_high": 1.0,
+      "n": 5,
+      "n_resamples": 2000
+    },
+    "baseline_outright_win_rate": {
+      "estimate": 0.2,
+      "ci95_low": 0.0,
+      "ci95_high": 0.6,
+      "n": 5,
+      "n_resamples": 2000
+    },
+    "tie_rate": 0.0
+  },
+  "position_bias": {
+    "n_double_judged": 15,
+    "order_consistent_count": 15,
+    "order_consistency_rate": 1.0,
+    "position_biased_count": 0,
+    "position_bias_rate": 0.0,
+    "both_picked_first_count": 0,
+    "both_picked_second_count": 0,
+    "tie_flip_count": 0,
+    "first_position_preference_rate": 0.5,
+    "second_position_preference_rate": 0.5
+  },
+  "inter_judge_agreement": {
+    "n_judges": 3,
+    "pairwise": [
+      {
+        "judge_a": "ollama-glm-5.3-flash",
+        "judge_b": "ollama-deepseek-v4.1-flash",
+        "n_pairs": 5,
+        "raw_agreement_rate": 1.0,
+        "directional_agreement_rate": 1.0,
+        "cohens_kappa": 1.0
+      },
+      {
+        "judge_a": "ollama-glm-5.3-flash",
+        "judge_b": "ollama-gemma4-31b",
+        "n_pairs": 5,
+        "raw_agreement_rate": 1.0,
+        "directional_agreement_rate": 1.0,
+        "cohens_kappa": 1.0
+      },
+      {
+        "judge_a": "ollama-deepseek-v4.1-flash",
+        "judge_b": "ollama-gemma4-31b",
+        "n_pairs": 5,
+        "raw_agreement_rate": 1.0,
+        "directional_agreement_rate": 1.0,
+        "cohens_kappa": 1.0
+      }
+    ],
+    "fleiss_kappa": 1.0,
+    "unanimous_rate": 1.0
+  },
+  "rubric_summary": {
+    "scene_purpose_fulfilled": {
+      "baseline_mean_score": 1.8,
+      "candidate_mean_score": 4.2,
+      "mean_score_delta": 2.4,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    },
+    "tension_turn": {
+      "baseline_mean_score": 1.8,
+      "candidate_mean_score": 4.0,
+      "mean_score_delta": 2.2,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    },
+    "pov_discipline": {
+      "baseline_mean_score": 2.0333,
+      "candidate_mean_score": 4.2,
+      "mean_score_delta": 2.1667,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    },
+    "voice_distinctiveness": {
+      "baseline_mean_score": 1.7667,
+      "candidate_mean_score": 4.2,
+      "mean_score_delta": 2.4333,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    },
+    "dialogue": {
+      "baseline_mean_score": 1.7667,
+      "candidate_mean_score": 4.1333,
+      "mean_score_delta": 2.3666,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    },
+    "prose_freshness": {
+      "baseline_mean_score": 1.7333,
+      "candidate_mean_score": 4.0333,
+      "mean_score_delta": 2.3,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    },
+    "continuity_with_brief": {
+      "baseline_mean_score": 1.8,
+      "candidate_mean_score": 4.1333,
+      "mean_score_delta": 2.3333,
+      "candidate_dim_win_rate_tie_half": 0.8,
+      "candidate_wins": 12,
+      "baseline_wins": 3,
+      "ties": 0
+    }
+  },
+  "by_scene_type": {
+    "action": {
+      "n_pairs": 1,
+      "candidate_wins": 1,
+      "baseline_wins": 0,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    },
+    "dialogue-heavy": {
+      "n_pairs": 1,
+      "candidate_wins": 1,
+      "baseline_wins": 0,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    },
+    "quiet-interior": {
+      "n_pairs": 1,
+      "candidate_wins": 1,
+      "baseline_wins": 0,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    },
+    "reveal": {
+      "n_pairs": 1,
+      "candidate_wins": 0,
+      "baseline_wins": 1,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    },
+    "chapter-closer": {
+      "n_pairs": 1,
+      "candidate_wins": 1,
+      "baseline_wins": 0,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    }
+  },
+  "by_genre": {
+    "comic fantasy": {
+      "n_pairs": 1,
+      "candidate_wins": 1,
+      "baseline_wins": 0,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 1.0,
+        "ci95_low": 1.0,
+        "ci95_high": 1.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "n": 1,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    },
+    "fantasy": {
+      "n_pairs": 4,
+      "candidate_wins": 3,
+      "baseline_wins": 1,
+      "ties": 0,
+      "candidate_win_rate_tie_half": {
+        "estimate": 0.75,
+        "ci95_low": 0.25,
+        "ci95_high": 1.0,
+        "n": 4,
+        "n_resamples": 2000
+      },
+      "candidate_outright_win_rate": {
+        "estimate": 0.75,
+        "ci95_low": 0.25,
+        "ci95_high": 1.0,
+        "n": 4,
+        "n_resamples": 2000
+      },
+      "baseline_outright_win_rate": {
+        "estimate": 0.25,
+        "ci95_low": 0.0,
+        "ci95_high": 0.75,
+        "n": 4,
+        "n_resamples": 2000
+      },
+      "tie_rate": 0.0
+    }
+  },
+  "per_judge": {
+    "ollama-glm-5.3-flash": {
+      "family": "zhipu-glm",
+      "provider": "ollama",
+      "model": "glm-5.3-flash",
+      "win_rates": {
+        "n_pairs": 5,
+        "candidate_wins": 4,
+        "baseline_wins": 1,
+        "ties": 0,
+        "candidate_win_rate_tie_half": {
+          "estimate": 0.8,
+          "ci95_low": 0.4,
+          "ci95_high": 1.0,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "candidate_outright_win_rate": {
+          "estimate": 0.8,
+          "ci95_low": 0.4,
+          "ci95_high": 1.0,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "baseline_outright_win_rate": {
+          "estimate": 0.2,
+          "ci95_low": 0.0,
+          "ci95_high": 0.6,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "tie_rate": 0.0
+      },
+      "position_bias": {
+        "n_double_judged": 5,
+        "order_consistent_count": 5,
+        "order_consistency_rate": 1.0,
+        "position_biased_count": 0,
+        "position_bias_rate": 0.0,
+        "both_picked_first_count": 0,
+        "both_picked_second_count": 0,
+        "tie_flip_count": 0,
+        "first_position_preference_rate": 0.5,
+        "second_position_preference_rate": 0.5
+      }
+    },
+    "ollama-deepseek-v4.1-flash": {
+      "family": "deepseek",
+      "provider": "ollama",
+      "model": "deepseek-v4.1-flash",
+      "win_rates": {
+        "n_pairs": 5,
+        "candidate_wins": 4,
+        "baseline_wins": 1,
+        "ties": 0,
+        "candidate_win_rate_tie_half": {
+          "estimate": 0.8,
+          "ci95_low": 0.4,
+          "ci95_high": 1.0,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "candidate_outright_win_rate": {
+          "estimate": 0.8,
+          "ci95_low": 0.4,
+          "ci95_high": 1.0,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "baseline_outright_win_rate": {
+          "estimate": 0.2,
+          "ci95_low": 0.0,
+          "ci95_high": 0.6,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "tie_rate": 0.0
+      },
+      "position_bias": {
+        "n_double_judged": 5,
+        "order_consistent_count": 5,
+        "order_consistency_rate": 1.0,
+        "position_biased_count": 0,
+        "position_bias_rate": 0.0,
+        "both_picked_first_count": 0,
+        "both_picked_second_count": 0,
+        "tie_flip_count": 0,
+        "first_position_preference_rate": 0.5,
+        "second_position_preference_rate": 0.5
+      }
+    },
+    "ollama-gemma4-31b": {
+      "family": "google-gemma",
+      "provider": "ollama",
+      "model": "gemma4:31b",
+      "win_rates": {
+        "n_pairs": 5,
+        "candidate_wins": 4,
+        "baseline_wins": 1,
+        "ties": 0,
+        "candidate_win_rate_tie_half": {
+          "estimate": 0.8,
+          "ci95_low": 0.4,
+          "ci95_high": 1.0,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "candidate_outright_win_rate": {
+          "estimate": 0.8,
+          "ci95_low": 0.4,
+          "ci95_high": 1.0,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "baseline_outright_win_rate": {
+          "estimate": 0.2,
+          "ci95_low": 0.0,
+          "ci95_high": 0.6,
+          "n": 5,
+          "n_resamples": 2000
+        },
+        "tie_rate": 0.0
+      },
+      "position_bias": {
+        "n_double_judged": 5,
+        "order_consistent_count": 5,
+        "order_consistency_rate": 1.0,
+        "position_biased_count": 0,
+        "position_bias_rate": 0.0,
+        "both_picked_first_count": 0,
+        "both_picked_second_count": 0,
+        "tie_flip_count": 0,
+        "first_position_preference_rate": 0.5,
+        "second_position_preference_rate": 0.5
+      }
+    }
+  },
+  "calibration": null,
+  "pairs": [
+    {
+      "pair_id": "P001",
+      "brief_id": "PJ01",
+      "name": "The toll-gate rope cut",
+      "project_id": "proj_river_road",
+      "genre": "fantasy",
+      "scene_type": "action",
+      "pov": {
+        "character": "Mara",
+        "perspective": "third_limited",
+        "voice_profile": "Terse, literal, river-practical; measures danger in rope strain, current speed, and copper coins."
+      },
+      "baseline_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "prompt_variant": "compact_baseline"
+      },
+      "candidate_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "prompt_variant": "spindle_full_context"
+      },
+      "panel_consensus": "candidate",
+      "judge_evaluations": [
+        {
+          "pair_id": "P001",
+          "brief_id": "PJ01",
+          "judge_id": "ollama-glm-5.3-flash",
+          "judge_family": "zhipu-glm",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 2 fulfills every hard constraint: it places the chipped-glass compass on the sergeant's belt during the winch jam, prices the sacrifice in coppers ('four coppers of dry curing salt'), drops the salt-pack into the lock wash, and cuts the tow-rope, all in Mara's clipped, rope-and-coin idiom with Ivo's theatrical excuse intact. Passage 1 fails nearly every requirement\u2014it sets the scene at noon instead of rainy dusk, invents a silver sword and 'abundant gold coins,' misattributes the compass to Mara's family, skips the salt-pack sacrifice entirely, and leans on flagged slop constructions like 'It wasn't fear... It was determination' and 'didn't know what tomorrow would bring.'",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 omits the salt-pack sacrifice entirely (Mara lands 'dry' keeping 'every item'), while P2 delivers the full beat: compass spotted on the belt during the pawl jam, pack dropped into the sluice boil, compass seized."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's theft is effortless with no pressure or cost, so no turn occurs; P2 forces an explicit choice under surge ('Drop your bundle or the line parts!') and makes the theft irreversible."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 drifts into authorial summary ('Ivo agreed with identical polished wit') and generic interiority; P2 stays locked in Mara's perception, bounded to what she knows (the crack traced 'four days back')."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 gives Mara a 'long, poetic speech' with a sword, directly contradicting the terse river-practical profile; P2 measures stakes in 'four coppers of dry curing salt' and rope strain, exactly per the voice profile."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's dialogue is ornamental and contradicts constraints ('abundant gold coins' vs. zero coin); P2 is concrete and lightly wry, with Ivo's 'delicate instruments, not mooring posts' matching his theatrical register."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1 stacks flagged slop ('It wasn't fear... It was determination', 'a mix of relief and dread', 'didn't know what tomorrow would bring'); P2 is fresh and concrete ('Rain greased the iron teeth'), docked one point for the mild 'sank like a stone' clich\u00e9."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 breaks hard constraints: noon sun vs. dusk rain, a silver sword Mara doesn't own, compass claimed as 'my family's' instead of the ferryman daughter's; P2 honors split heel, four-copper salt value, chipped glass, Ivo on the stern, and the tow-rope cut."
+              }
+            },
+            "usage": {
+              "input_tokens": 2098,
+              "output_tokens": 2766,
+              "elapsed_seconds": 8.748
+            }
+          },
+          "pass_2": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 executes the full brief\u2014compass recognized by its chipped glass 'the exact crack the ferryman's girl had traced,' the winch-pawl jam, the salt-pack sunk in the sluice boil as material cost, and the tow-rope cut\u2014while keeping Mara's voice clipped and Ivo's dialogue wry. Passage 2 fails on nearly every axis: wrong time of day, a sword and gold coins Mara cannot own, the compass misattributed to her family, no sacrifice, and dense AI-slop phrasing ('It wasn't fear she felt. It was determination'; 'didn't know what tomorrow would bring'). Passage 1 is the clear and only viable draft.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 hits every beat: compass spotted on the belt during the jammed pawl, salt-pack dropped into the sluice boil, tow-rope cut. P2 omits the rope cut entirely and explicitly keeps the pack intact ('without losing a single item'), failing the required sacrifice."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1 builds real pressure\u2014the bucking skiff, the sergeant's ultimatum, the split-second choice between four coppers of salt and the compass\u2014turning routine locking into irreversible theft. P2's 'leaped effortlessly... landed dry' erases all cost and pressure."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stays tight in Mara's literal perception (rope strain, belt hook, chipped bezel). P2 breaks discipline with 'It wasn't fear she felt. It was determination,' a 'mix of relief and dread,' and the authorial aside 'identical polished wit.'"
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's river-practical voice measures stakes in coppers and rope strain with clipped sentences. P2 reads as generic epic fantasy\u2014'sacred compass,' 'river spirits,' poetic speeches\u2014contradicting Mara's terse profile."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1's dialogue is concrete and lightly wry ('My wrists are delicate instruments, not mooring posts!'), matching Ivo's theatrical-excuses profile. P2's long announced speech and 'abundant gold coins' line violate the concrete-wry contract and Ivo's voice."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1 is mostly fresh and physical ('Rain greased the iron teeth'), with only a mild 'sank like a stone' clich\u00e9. P2 stacks slop: 'It wasn't X, it was Y,' 'a mix of,' 'didn't know what tomorrow would bring,' 'everything had changed forever.'"
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 honors dusk rain, the split left heel, the 4-copper salt-pack, the chipped glass face, and Ivo's ignorance of the cut. P2 breaks nearly everything: noon sun, a silver sword, gold coins, and the compass claimed as 'my family's' when it belongs to the ferryman's daughter."
+              }
+            },
+            "usage": {
+              "input_tokens": 2098,
+              "output_tokens": 2328,
+              "elapsed_seconds": 7.275
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 omits the salt-pack sacrifice entirely (Mara lands 'dry' keeping 'every item'), while P2 delivers the full beat: compass spotted on the belt during the pawl jam, pack dropped into the sluice boil, compass seized.",
+              "pass_2_note": "P1 hits every beat: compass spotted on the belt during the jammed pawl, salt-pack dropped into the sluice boil, tow-rope cut. P2 omits the rope cut entirely and explicitly keeps the pack intact ('without losing a single item'), failing the required sacrifice."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "P1's theft is effortless with no pressure or cost, so no turn occurs; P2 forces an explicit choice under surge ('Drop your bundle or the line parts!') and makes the theft irreversible.",
+              "pass_2_note": "P1 builds real pressure\u2014the bucking skiff, the sergeant's ultimatum, the split-second choice between four coppers of salt and the compass\u2014turning routine locking into irreversible theft. P2's 'leaped effortlessly... landed dry' erases all cost and pressure."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.5,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 drifts into authorial summary ('Ivo agreed with identical polished wit') and generic interiority; P2 stays locked in Mara's perception, bounded to what she knows (the crack traced 'four days back').",
+              "pass_2_note": "P1 stays tight in Mara's literal perception (rope strain, belt hook, chipped bezel). P2 breaks discipline with 'It wasn't fear she felt. It was determination,' a 'mix of relief and dread,' and the authorial aside 'identical polished wit.'"
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 gives Mara a 'long, poetic speech' with a sword, directly contradicting the terse river-practical profile; P2 measures stakes in 'four coppers of dry curing salt' and rope strain, exactly per the voice profile.",
+              "pass_2_note": "P1's river-practical voice measures stakes in coppers and rope strain with clipped sentences. P2 reads as generic epic fantasy\u2014'sacred compass,' 'river spirits,' poetic speeches\u2014contradicting Mara's terse profile."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "P1's dialogue is ornamental and contradicts constraints ('abundant gold coins' vs. zero coin); P2 is concrete and lightly wry, with Ivo's 'delicate instruments, not mooring posts' matching his theatrical register.",
+              "pass_2_note": "P1's dialogue is concrete and lightly wry ('My wrists are delicate instruments, not mooring posts!'), matching Ivo's theatrical-excuses profile. P2's long announced speech and 'abundant gold coins' line violate the concrete-wry contract and Ivo's voice."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 stacks flagged slop ('It wasn't fear... It was determination', 'a mix of relief and dread', 'didn't know what tomorrow would bring'); P2 is fresh and concrete ('Rain greased the iron teeth'), docked one point for the mild 'sank like a stone' clich\u00e9.",
+              "pass_2_note": "P1 is mostly fresh and physical ('Rain greased the iron teeth'), with only a mild 'sank like a stone' clich\u00e9. P2 stacks slop: 'It wasn't X, it was Y,' 'a mix of,' 'didn't know what tomorrow would bring,' 'everything had changed forever.'"
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 breaks hard constraints: noon sun vs. dusk rain, a silver sword Mara doesn't own, compass claimed as 'my family's' instead of the ferryman daughter's; P2 honors split heel, four-copper salt value, chipped glass, Ivo on the stern, and the tow-rope cut.",
+              "pass_2_note": "P1 honors dusk rain, the split left heel, the 4-copper salt-pack, the chipped glass face, and Ivo's ignorance of the cut. P2 breaks nearly everything: noon sun, a silver sword, gold coins, and the compass claimed as 'my family's' when it belongs to the ferryman's daughter."
+            }
+          }
+        },
+        {
+          "pair_id": "P001",
+          "brief_id": "PJ01",
+          "judge_id": "ollama-deepseek-v4.1-flash",
+          "judge_family": "deepseek",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fulfills the brief precisely: Mara recognizes the chipped compass, loses her four-copper salt-pack to the lock wash, and cuts the tow-rope under surge pressure, all in a terse, river-practical voice. Passage 2 violates nearly every hard constraint\u2014wrong time, invented sword and gold, no sacrifice, POV leaks, and prefab AI phrasing\u2014making it unusable for this scene.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 executes the required turn: Mara spots the chipped compass on the sergeant's belt, sacrifices the salt-pack in the lock wash, and cuts the tow-rope to seize it. Passage 2 invents a sword, gold, and a painless snatch, failing the material-cost and theft-under-pressure purpose."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 builds irreversible pressure through the jammed pawl, the sergeant's ultimatum, and the salt-pack sinking 'like a stone' before the knife cuts the tow-rope. Passage 2 resolves the jam effortlessly with no cost or consequence."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 stays in Mara's third-limited, measuring danger in coppers, rope strain, and the chipped bezel. Passage 2 leaks future knowledge ('didn't know what tomorrow would bring') and breaks POV with a theatrical public announcement."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 keeps Mara clipped and literal ('four coppers of dry curing salt') and Ivo lightly wry ('My wrists are delicate instruments'). Passage 2 gives both characters ornate, identical, unidiomatic speeches."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1's dialogue is concrete and functional ('Hold the pawl!' / 'Mind the stern, Ivo!'). Passage 2's dialogue is prefab fantasy declamation with no grounding in the scene's physical stakes."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 uses specific, sensory detail ('rain greased the iron teeth', 'sank like a stone') with minimal clich\u00e9. Passage 2 is built from AI-slop phrases ('It wasn't fear she felt. It was determination', 'a mix of relief and dread', 'didn't know what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 honors the chipped glass from Ch 1, the dry salt-pack worth four coppers, the split left boot, dusk rain, and the lock-forfeiture rule. Passage 2 contradicts time (noon), wealth (gold coins), and the required sacrifice."
+              }
+            },
+            "usage": {
+              "input_tokens": 2136,
+              "output_tokens": 842,
+              "elapsed_seconds": 3.838
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 2 is the only draft that fulfills the scene brief: it stages the winch jam, the sergeant's ultimatum, and Mara's sacrifice of the salt-pack to seize the chipped compass, all in her terse, river-practical voice. Passage 1 fails on every checklist item\u2014wrong time of day, no salt-pack, POV breaks, and prefab clich\u00e9s\u2014while Passage 2's concrete details ('Rain greased the iron teeth', 'four coppers of dry curing salt') and wry dialogue ('My wrists are delicate instruments') align with the reader contract.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 fulfills the brief: Mara spots the chipped compass on the sergeant's belt, sacrifices the salt-pack in the lock wash, and cuts the tow-rope to seize it. Passage 1 invents a silver sword, omits the salt-pack sacrifice, and has Mara snatch the compass without cost."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 builds tension through the jammed winch, the sergeant's ultimatum, and the irreversible loss of the salt-pack. Passage 1 has no real turn; the winch jam is resolved instantly with no consequence."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 stays in Mara's third-limited POV, filtering events through her physical sensations and practical calculations. Passage 1 leaks into omniscient summary ('everything had changed forever') and has Mara announce her intentions aloud in a way that breaks POV."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's Mara is terse and literal, measuring cost in coppers and rope strain. Passage 1 gives her ornate, uncharacteristic speech ('sacred compass', 'river spirits') and Ivo speaks in polished, identical wit, violating both voice profiles."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's dialogue is concrete and lightly wry ('My wrists are delicate instruments, not mooring posts!'), fitting the reader contract. Passage 1's dialogue is stilted and expository, with no wit or concreteness."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 uses fresh, specific imagery ('Rain greased the iron teeth', 'sank like a stone') and avoids clich\u00e9s. Passage 1 is riddled with AI slop ('It wasn't fear she felt. It was determination', 'a mix of relief and dread', 'didn't know what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 correctly references the chipped glass face from Chapter 1, the salt-pack's value (four coppers), and the split left boot. Passage 1 contradicts the brief by setting the scene at noon (brief says dusk), giving Mara a silver sword and abundant gold, and omitting the salt-pack entirely."
+              }
+            },
+            "usage": {
+              "input_tokens": 2136,
+              "output_tokens": 897,
+              "elapsed_seconds": 3.673
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 executes the required turn: Mara spots the chipped compass on the sergeant's belt, sacrifices the salt-pack in the lock wash, and cuts the tow-rope to seize it. Passage 2 invents a sword, gold, and a painless snatch, failing the material-cost and theft-under-pressure purpose.",
+              "pass_2_note": "Passage 2 fulfills the brief: Mara spots the chipped compass on the sergeant's belt, sacrifices the salt-pack in the lock wash, and cuts the tow-rope to seize it. Passage 1 invents a silver sword, omits the salt-pack sacrifice, and has Mara snatch the compass without cost."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 builds irreversible pressure through the jammed pawl, the sergeant's ultimatum, and the salt-pack sinking 'like a stone' before the knife cuts the tow-rope. Passage 2 resolves the jam effortlessly with no cost or consequence.",
+              "pass_2_note": "Passage 2 builds tension through the jammed winch, the sergeant's ultimatum, and the irreversible loss of the salt-pack. Passage 1 has no real turn; the winch jam is resolved instantly with no consequence."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 stays in Mara's third-limited, measuring danger in coppers, rope strain, and the chipped bezel. Passage 2 leaks future knowledge ('didn't know what tomorrow would bring') and breaks POV with a theatrical public announcement.",
+              "pass_2_note": "Passage 2 stays in Mara's third-limited POV, filtering events through her physical sensations and practical calculations. Passage 1 leaks into omniscient summary ('everything had changed forever') and has Mara announce her intentions aloud in a way that breaks POV."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 keeps Mara clipped and literal ('four coppers of dry curing salt') and Ivo lightly wry ('My wrists are delicate instruments'). Passage 2 gives both characters ornate, identical, unidiomatic speeches.",
+              "pass_2_note": "Passage 2's Mara is terse and literal, measuring cost in coppers and rope strain. Passage 1 gives her ornate, uncharacteristic speech ('sacred compass', 'river spirits') and Ivo speaks in polished, identical wit, violating both voice profiles."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1's dialogue is concrete and functional ('Hold the pawl!' / 'Mind the stern, Ivo!'). Passage 2's dialogue is prefab fantasy declamation with no grounding in the scene's physical stakes.",
+              "pass_2_note": "Passage 2's dialogue is concrete and lightly wry ('My wrists are delicate instruments, not mooring posts!'), fitting the reader contract. Passage 1's dialogue is stilted and expository, with no wit or concreteness."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses specific, sensory detail ('rain greased the iron teeth', 'sank like a stone') with minimal clich\u00e9. Passage 2 is built from AI-slop phrases ('It wasn't fear she felt. It was determination', 'a mix of relief and dread', 'didn't know what tomorrow would bring').",
+              "pass_2_note": "Passage 2 uses fresh, specific imagery ('Rain greased the iron teeth', 'sank like a stone') and avoids clich\u00e9s. Passage 1 is riddled with AI slop ('It wasn't fear she felt. It was determination', 'a mix of relief and dread', 'didn't know what tomorrow would bring')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 honors the chipped glass from Ch 1, the dry salt-pack worth four coppers, the split left boot, dusk rain, and the lock-forfeiture rule. Passage 2 contradicts time (noon), wealth (gold coins), and the required sacrifice.",
+              "pass_2_note": "Passage 2 correctly references the chipped glass face from Chapter 1, the salt-pack's value (four coppers), and the split left boot. Passage 1 contradicts the brief by setting the scene at noon (brief says dusk), giving Mara a silver sword and abundant gold, and omitting the salt-pack entirely."
+            }
+          }
+        },
+        {
+          "pair_id": "P001",
+          "brief_id": "PJ01",
+          "judge_id": "ollama-gemma4-31b",
+          "judge_family": "google-gemma",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 perfectly adheres to the voice profile and hard constraints, specifically the material cost of the salt-pack and the detail of the chipped glass. Passage 2 is a complete failure of continuity, changing the time of day, character equipment, and ignoring the core dramatic requirement of the sacrifice.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 executes the theft and the salt-pack sacrifice; Passage 2 ignores the sacrifice and the specific item details."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 uses the winch jam and river surge to create a material cost; Passage 2 is a generic, effortless fantasy trope."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 maintains Mara's terse, practical perspective; Passage 2 uses internal monologue clich\u00e9s and 'determination' labels."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is clipped and concrete; Passage 2 is melodramatic and uses 'poetic speeches'."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 dialogue is concrete and fits the characters; Passage 2 is unnatural and expository."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 uses sensory river details; Passage 2 is filled with AI slop ('didn't know what tomorrow would bring', 'mix of relief and dread')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 adheres to time (dusk/rain), wealth (salt-pack), and physical state (split heel); Passage 2 changes time to noon and adds a silver sword."
+              }
+            },
+            "usage": {
+              "input_tokens": 2141,
+              "output_tokens": 659,
+              "elapsed_seconds": 2.354
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 is a complete failure of the brief, ignoring the material cost of the salt-pack and the specific voice profile. Passage 2 perfectly captures Mara's terse perspective and the mechanical tension of the lock, adhering to every hard constraint and continuity point.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 ignores the salt-pack sacrifice and the winch jam mechanics; Passage 2 executes all brief requirements."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is a generic fantasy trope; Passage 2 creates a material trade-off (salt for compass) under environmental pressure."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses internal emotional clich\u00e9s; Passage 2 focuses on physical sensations and practical measurements (split heel, chipped glass)."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is melodramatic and poetic; Passage 2 is terse, literal, and river-practical as requested."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses 'polished wit' and exposition; Passage 2 is concrete and fits the character snapshots."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is filled with AI slop ('didn't know what tomorrow would bring', 'mix of relief and dread'); Passage 2 uses specific imagery like 'sluice boil'."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 changes the time to noon and ignores the salt-pack; Passage 2 adheres to the dusk setting and the 4-copper cost."
+              }
+            },
+            "usage": {
+              "input_tokens": 2141,
+              "output_tokens": 652,
+              "elapsed_seconds": 2.19
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 executes the theft and the salt-pack sacrifice; Passage 2 ignores the sacrifice and the specific item details.",
+              "pass_2_note": "Passage 1 ignores the salt-pack sacrifice and the winch jam mechanics; Passage 2 executes all brief requirements."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses the winch jam and river surge to create a material cost; Passage 2 is a generic, effortless fantasy trope.",
+              "pass_2_note": "Passage 1 is a generic fantasy trope; Passage 2 creates a material trade-off (salt for compass) under environmental pressure."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 maintains Mara's terse, practical perspective; Passage 2 uses internal monologue clich\u00e9s and 'determination' labels.",
+              "pass_2_note": "Passage 1 uses internal emotional clich\u00e9s; Passage 2 focuses on physical sensations and practical measurements (split heel, chipped glass)."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 is clipped and concrete; Passage 2 is melodramatic and uses 'poetic speeches'.",
+              "pass_2_note": "Passage 1 is melodramatic and poetic; Passage 2 is terse, literal, and river-practical as requested."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 dialogue is concrete and fits the characters; Passage 2 is unnatural and expository.",
+              "pass_2_note": "Passage 1 uses 'polished wit' and exposition; Passage 2 is concrete and fits the character snapshots."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses sensory river details; Passage 2 is filled with AI slop ('didn't know what tomorrow would bring', 'mix of relief and dread').",
+              "pass_2_note": "Passage 1 is filled with AI slop ('didn't know what tomorrow would bring', 'mix of relief and dread'); Passage 2 uses specific imagery like 'sluice boil'."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 adheres to time (dusk/rain), wealth (salt-pack), and physical state (split heel); Passage 2 changes time to noon and adds a silver sword.",
+              "pass_2_note": "Passage 1 changes the time to noon and ignores the salt-pack; Passage 2 adheres to the dusk setting and the 4-copper cost."
+            }
+          }
+        }
+      ],
+      "source_pair_id": "P001",
+      "baseline_text_hash": "d22723f09e46d56b5e4e06e32b40af7d5237fcdda3eb64330cb5f8ee5928556f",
+      "candidate_text_hash": "07d685ebef511f416e6c853439561048d1c589229589101c75bdb9d05bb92b7b"
+    },
+    {
+      "pair_id": "P002",
+      "brief_id": "PJ02",
+      "name": "The leaking bucket argument",
+      "project_id": "proj_river_road",
+      "genre": "comic fantasy",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Mara",
+        "perspective": "third_limited",
+        "voice_profile": "Clipped, literal, unimpressed by ornate excuses; counts steps and water level."
+      },
+      "baseline_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "prompt_variant": "compact_baseline"
+      },
+      "candidate_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "prompt_variant": "spindle_full_context"
+      },
+      "panel_consensus": "candidate",
+      "judge_evaluations": [
+        {
+          "pair_id": "P002",
+          "brief_id": "PJ02",
+          "judge_id": "ollama-glm-5.3-flash",
+          "judge_family": "zhipu-glm",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 2 fulfills the brief on nearly every axis: the bell's fourteenth stroke, the water dropping 'a finger's breadth toward the inner brass rivet,' Mara's step-counting terseness, Ivo's elaborate tradesmen excuses, and the required turn into teamwork when the hoop slips and Ivo gives up his dry cuff to plug the seam. Passage 1 fails the scene outright \u2014 it skips the bell and rivet, ends with the bucket impossibly full, breaks POV with meta-commentary about 'slick, modern banter,' and leans on penalized clich\u00e9s like 'a cocktail of annoyance and amusement' and 'didn't know what tomorrow would bring.' The only deduction for Passage 2 is Mara's 'It's pine' line, which contradicts the established cedar bucket, though it can charitably read as a deliberate deadpan jab at Ivo's exaggeration.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 omits the bell, the brass rivet, and the climb's water loss, and ends with the bucket 'completely full somehow,' inverting the premise; P2 delivers the uphill argument, the tolling bell (fourteenth stroke), the shrinking ration, and the compromise of Ivo sacrificing his dry cuff."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 has no turn at all; P2 executes the required shift exactly \u2014 the iron hoop slips, Mara catches the rim, and bickering becomes joint action as Ivo jams his cuff against the split stave."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 breaks the frame with authorial meta-commentary ('Both of them sounded exactly the same as they traded slick, modern banter'), which no in-world narrator could write; P2 stays cleanly in Mara's third-limited perception, reporting only observable action and speech."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's voices are interchangeable generic banter; P2 nails the voice gate \u2014 Mara counts ('Twenty-two steps left') and speaks in clipped literals, while Ivo spins ornate tradesmen analogies (guild apothecary, butcher's shutter, bishop's laundress)."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 leans on a said-bookism cluster ('hissed angrily,' 'breathed,' 'gasped') and prefab constructions ('It wasn't a request. It was an order'); P2's dialogue is concrete, period-appropriate, and lightly wry with material stakes ('Or pay the clerk two coppers')."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stacks penalized slop phrases ('a cocktail of annoyance and amusement,' 'didn't know what tomorrow would bring'); P2 offers fresh, specific images like ribs unhooking 'like a butcher's shutter' and walking sideways 'until Michaelmas.'"
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1 contradicts the brief on nearly every hard constraint (full bucket, no bell, no rivet, no steps); P2 honors stroke count, the forty-eight-step hill, the rivet/forfeit rule, and Ivo's known sleeve-fix, with one blemish: Mara's 'It's pine' contradicts the established cedar bucket, even if readable as a deadpan deflation of Ivo's excuse."
+              }
+            },
+            "usage": {
+              "input_tokens": 1936,
+              "output_tokens": 3224,
+              "elapsed_seconds": 10.612
+            }
+          },
+          "pass_2": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fulfills every brief requirement with craft: the argument climbs in real time (fourteenth stroke, twenty-two steps left), the water drops toward the brass rivet, and the hoop slip triggers the mandated turn into teamwork when Ivo plugs the split stave with his cuff \u2014 his established fallback \u2014 capped by an affectionate callback to the laundress. Passage 2 is a catalog of failures: meta-narratorial POV breaks, said-bookism clusters, the 'cocktail of' and 'It wasn't X, it was Y' slop patterns, a bucket that refills 'somehow,' and an explicit admission that the required rivet and bell never appear. The only deduction for Passage 1 is Mara's 'It's pine' contradicting the cedar stave established in the brief.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 delivers the full uphill argument (fourteenth bell stroke, twenty-two steps left, shrinking water toward the brass rivet) ending in practical compromise; P2 skips the climb, never tolls the bell, and ends with the bucket 'completely full somehow,' defeating the entire premise."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 executes the required turn exactly: the hoop slips, Mara catches the rim, and Ivo sacrifices his dry wool cuff to plug the seam \u2014 bickering becomes teamwork with a material cost. P2 contains no hoop slip and no shift into cooperation."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stays locked in Mara's third-limited perception (step counts, water level, bell strokes, 'not looking up'). P2 breaks POV with authorial meta-commentary ('Both of them sounded exactly the same... traded slick, modern banter') and vague 'somehow' narration."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 nails the voice gate: Mara's clipped literalism ('It's leaking on my shin. Twenty-two steps left.') against Ivo's ornate tradesmen analogies (guild apothecary, bishop's laundress, 'ribs will unhook like a butcher's shutter'). P2 admits both characters 'sounded exactly the same.'"
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's dialogue is concrete and lightly wry with in-world stakes (two coppers, the deposit rivet). P2 relies on said-bookism clusters ('hissed angrily,' 'breathed,' 'gasped'), the prefab 'It wasn't X, it was Y' construction, and generic modern banter the checklist forbids."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 offers fresh, specific imagery ('walked sideways until Michaelmas,' water dropping 'a finger's breadth'). P2 stacks flagged slop: 'a cocktail of annoyance and amusement,' 'eyes flashing,' and the closing clich\u00e9 'didn't know what tomorrow would bring.'"
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1 tracks nearly everything \u2014 bell stroke progression, 22 of 48 steps, brass rivet, two-copper forfeit, Ivo's cuff solution matching his known out \u2014 but Mara's 'It's pine' contradicts the established cedar stave. P2 violates the leaking-bucket rule, omits the bell and rivet entirely, and names no location details."
+              }
+            },
+            "usage": {
+              "input_tokens": 1936,
+              "output_tokens": 3282,
+              "elapsed_seconds": 11.288
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 omits the bell, the brass rivet, and the climb's water loss, and ends with the bucket 'completely full somehow,' inverting the premise; P2 delivers the uphill argument, the tolling bell (fourteenth stroke), the shrinking ration, and the compromise of Ivo sacrificing his dry cuff.",
+              "pass_2_note": "P1 delivers the full uphill argument (fourteenth bell stroke, twenty-two steps left, shrinking water toward the brass rivet) ending in practical compromise; P2 skips the climb, never tolls the bell, and ends with the bucket 'completely full somehow,' defeating the entire premise."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 has no turn at all; P2 executes the required shift exactly \u2014 the iron hoop slips, Mara catches the rim, and bickering becomes joint action as Ivo jams his cuff against the split stave.",
+              "pass_2_note": "P1 executes the required turn exactly: the hoop slips, Mara catches the rim, and Ivo sacrifices his dry wool cuff to plug the seam \u2014 bickering becomes teamwork with a material cost. P2 contains no hoop slip and no shift into cooperation."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 breaks the frame with authorial meta-commentary ('Both of them sounded exactly the same as they traded slick, modern banter'), which no in-world narrator could write; P2 stays cleanly in Mara's third-limited perception, reporting only observable action and speech.",
+              "pass_2_note": "P1 stays locked in Mara's third-limited perception (step counts, water level, bell strokes, 'not looking up'). P2 breaks POV with authorial meta-commentary ('Both of them sounded exactly the same... traded slick, modern banter') and vague 'somehow' narration."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1's voices are interchangeable generic banter; P2 nails the voice gate \u2014 Mara counts ('Twenty-two steps left') and speaks in clipped literals, while Ivo spins ornate tradesmen analogies (guild apothecary, butcher's shutter, bishop's laundress).",
+              "pass_2_note": "P1 nails the voice gate: Mara's clipped literalism ('It's leaking on my shin. Twenty-two steps left.') against Ivo's ornate tradesmen analogies (guild apothecary, bishop's laundress, 'ribs will unhook like a butcher's shutter'). P2 admits both characters 'sounded exactly the same.'"
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 leans on a said-bookism cluster ('hissed angrily,' 'breathed,' 'gasped') and prefab constructions ('It wasn't a request. It was an order'); P2's dialogue is concrete, period-appropriate, and lightly wry with material stakes ('Or pay the clerk two coppers').",
+              "pass_2_note": "P1's dialogue is concrete and lightly wry with in-world stakes (two coppers, the deposit rivet). P2 relies on said-bookism clusters ('hissed angrily,' 'breathed,' 'gasped'), the prefab 'It wasn't X, it was Y' construction, and generic modern banter the checklist forbids."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 stacks penalized slop phrases ('a cocktail of annoyance and amusement,' 'didn't know what tomorrow would bring'); P2 offers fresh, specific images like ribs unhooking 'like a butcher's shutter' and walking sideways 'until Michaelmas.'",
+              "pass_2_note": "P1 offers fresh, specific imagery ('walked sideways until Michaelmas,' water dropping 'a finger's breadth'). P2 stacks flagged slop: 'a cocktail of annoyance and amusement,' 'eyes flashing,' and the closing clich\u00e9 'didn't know what tomorrow would bring.'"
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 contradicts the brief on nearly every hard constraint (full bucket, no bell, no rivet, no steps); P2 honors stroke count, the forty-eight-step hill, the rivet/forfeit rule, and Ivo's known sleeve-fix, with one blemish: Mara's 'It's pine' contradicts the established cedar bucket, even if readable as a deadpan deflation of Ivo's excuse.",
+              "pass_2_note": "P1 tracks nearly everything \u2014 bell stroke progression, 22 of 48 steps, brass rivet, two-copper forfeit, Ivo's cuff solution matching his known out \u2014 but Mara's 'It's pine' contradicts the established cedar stave. P2 violates the leaking-bucket rule, omits the bell and rivet entirely, and names no location details."
+            }
+          }
+        },
+        {
+          "pair_id": "P002",
+          "brief_id": "PJ02",
+          "judge_id": "ollama-deepseek-v4.1-flash",
+          "judge_family": "deepseek",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fulfills the scene purpose with precise, character-driven dialogue and a clear dramatic turn, while maintaining Mara's literal POV and the world's continuity. Passage 2 fails on every checklist item, from POV violations to generic modern quips and continuity errors like the bucket becoming full. Passage 1 is the only viable draft.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 delivers the uphill argument over the leaking bucket, the curfew bell, and the shift to teamwork when the hoop slips; Passage 2 abandons the argument, the leak, and the bell entirely."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 builds tension through the shrinking water level and the slipping hoop, then resolves it with Ivo plugging the seam; Passage 2 has no tension or turn."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 stays in Mara's third-limited perspective, noting steps and water level; Passage 2 leaks into omniscient ('Both of them sounded exactly the same') and violates POV."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 gives Mara terse literalism ('It's pine. And it's leaking on my shin. Twenty-two steps left.') and Ivo ornate excuses (guild apothecary, bishop's laundress); Passage 2 uses generic modern quips and said-bookisms."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1's dialogue is concrete and characterful; Passage 2 relies on 'hissed', 'breathed', 'gasped' and flat modern banter."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 offers fresh, specific imagery ('ribs will unhook like a butcher's shutter', 'water hissed through the split stave'); Passage 2 is riddled with AI slop ('a cocktail of annoyance and amusement', 'didn't know what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 respects the world rule (brass rivet, two-copper forfeit), the leaking bucket, and the curfew bell; Passage 2 contradicts the brief by having the bucket become full and ignoring the bell and rivet."
+              }
+            },
+            "usage": {
+              "input_tokens": 1961,
+              "output_tokens": 760,
+              "elapsed_seconds": 2.886
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 2 fulfills the scene brief with precise continuity: Mara counts steps and water level, Ivo invents elaborate excuses, and the hoop slip triggers practical teamwork. Passage 1 fails on every craft and continuity front, using generic banter, POV violations, and ignoring the leaking bucket and curfew bell entirely.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 delivers the uphill argument, leaking bucket, curfew bell, and the turn to teamwork when the hoop slips; Passage 1 has no argument, no leak, no bell, and no turn."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 builds tension through the shrinking water level and the slipping hoop, then resolves it with Ivo plugging the seam; Passage 1 has no tension or turn."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 stays in Mara's third-limited perspective with her literal observations; Passage 1 leaks into Ivo's eyes and Mara's vague future thoughts."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 gives Mara terse, literal lines and Ivo ornate excuses about apothecaries and laundresses; Passage 1 uses generic modern quips and said-bookisms."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's dialogue is concrete and character-specific; Passage 1 relies on 'hissed', 'breathed', 'gasped' and prefab banter."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 avoids clich\u00e9s and uses fresh, specific imagery like 'ribs will unhook like a butcher's shutter'; Passage 1 is riddled with AI slop phrases."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 respects the brass rivet rule, the curfew bell, the leaking bucket, and the character voices; Passage 1 contradicts the brief by having a full bucket and no bell."
+              }
+            },
+            "usage": {
+              "input_tokens": 1961,
+              "output_tokens": 693,
+              "elapsed_seconds": 2.705
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 delivers the uphill argument over the leaking bucket, the curfew bell, and the shift to teamwork when the hoop slips; Passage 2 abandons the argument, the leak, and the bell entirely.",
+              "pass_2_note": "Passage 2 delivers the uphill argument, leaking bucket, curfew bell, and the turn to teamwork when the hoop slips; Passage 1 has no argument, no leak, no bell, and no turn."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 builds tension through the shrinking water level and the slipping hoop, then resolves it with Ivo plugging the seam; Passage 2 has no tension or turn.",
+              "pass_2_note": "Passage 2 builds tension through the shrinking water level and the slipping hoop, then resolves it with Ivo plugging the seam; Passage 1 has no tension or turn."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 stays in Mara's third-limited perspective, noting steps and water level; Passage 2 leaks into omniscient ('Both of them sounded exactly the same') and violates POV.",
+              "pass_2_note": "Passage 2 stays in Mara's third-limited perspective with her literal observations; Passage 1 leaks into Ivo's eyes and Mara's vague future thoughts."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 gives Mara terse literalism ('It's pine. And it's leaking on my shin. Twenty-two steps left.') and Ivo ornate excuses (guild apothecary, bishop's laundress); Passage 2 uses generic modern quips and said-bookisms.",
+              "pass_2_note": "Passage 2 gives Mara terse, literal lines and Ivo ornate excuses about apothecaries and laundresses; Passage 1 uses generic modern quips and said-bookisms."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1's dialogue is concrete and characterful; Passage 2 relies on 'hissed', 'breathed', 'gasped' and flat modern banter.",
+              "pass_2_note": "Passage 2's dialogue is concrete and character-specific; Passage 1 relies on 'hissed', 'breathed', 'gasped' and prefab banter."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 offers fresh, specific imagery ('ribs will unhook like a butcher's shutter', 'water hissed through the split stave'); Passage 2 is riddled with AI slop ('a cocktail of annoyance and amusement', 'didn't know what tomorrow would bring').",
+              "pass_2_note": "Passage 2 avoids clich\u00e9s and uses fresh, specific imagery like 'ribs will unhook like a butcher's shutter'; Passage 1 is riddled with AI slop phrases."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 respects the world rule (brass rivet, two-copper forfeit), the leaking bucket, and the curfew bell; Passage 2 contradicts the brief by having the bucket become full and ignoring the bell and rivet.",
+              "pass_2_note": "Passage 2 respects the brass rivet rule, the curfew bell, the leaking bucket, and the character voices; Passage 1 contradicts the brief by having a full bucket and no bell."
+            }
+          }
+        },
+        {
+          "pair_id": "P002",
+          "brief_id": "PJ02",
+          "judge_id": "ollama-gemma4-31b",
+          "judge_family": "google-gemma",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 is a generic failure that ignores the brief entirely and relies on AI clich\u00e9s. Passage 2 demonstrates a precise understanding of the voice profiles, the material stakes of the brass rivet, and the specific environmental constraints of the basalt steps.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 ignores the bell, the rivet, and the argument's resolution. Passage 2 executes all plot points."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 has no turn. Passage 2 uses the slipping hoop to force the practical compromise."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 breaks POV by describing characters as sounding 'exactly the same' and uses generic internal states. Passage 2 maintains Mara's literal focus on steps and water levels."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses generic AI dialogue. Passage 2 perfectly captures Mara's terseness and Ivo's ornate, trade-based excuses."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is filled with 'said-bookisms' (hissed, breathed, gasped). Passage 2 is concrete and character-driven."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is a collection of AI slop ('cocktail of', 'didn't know what tomorrow would bring'). Passage 2 is evocative and specific."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 fails every hard constraint (bell, rivet, basalt steps). Passage 2 adheres to all."
+              }
+            },
+            "usage": {
+              "input_tokens": 1936,
+              "output_tokens": 653,
+              "elapsed_seconds": 2.064
+            }
+          },
+          "pass_2": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 is a precise execution of the brief, maintaining strict POV discipline and character voice. Passage 2 is a failure on every metric, utilizing prohibited AI clich\u00e9s and ignoring all world-building constraints and plot requirements.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 executes the argument, the climb, and the compromise. Passage 2 ignores the bell, the rivet, and the leak."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses the slipping hoop to trigger teamwork; Passage 2 has no dramatic turn."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 maintains Mara's literal focus on steps and water levels. Passage 2 uses generic emotional descriptors."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 nails the contrast between Mara's terseness and Ivo's ornate excuses. Passage 2 uses 'modern banter'."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is concrete and wry. Passage 2 is filled with said-bookisms ('hissed', 'breathed', 'gasped')."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is precise. Passage 2 is a collection of AI slop clich\u00e9s ('cocktail of', 'didn't know what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 adheres to all hard constraints (basalt steps, brass rivet, curfew bell). Passage 2 ignores them entirely."
+              }
+            },
+            "usage": {
+              "input_tokens": 1936,
+              "output_tokens": 642,
+              "elapsed_seconds": 2.039
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 ignores the bell, the rivet, and the argument's resolution. Passage 2 executes all plot points.",
+              "pass_2_note": "Passage 1 executes the argument, the climb, and the compromise. Passage 2 ignores the bell, the rivet, and the leak."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 has no turn. Passage 2 uses the slipping hoop to force the practical compromise.",
+              "pass_2_note": "Passage 1 uses the slipping hoop to trigger teamwork; Passage 2 has no dramatic turn."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 breaks POV by describing characters as sounding 'exactly the same' and uses generic internal states. Passage 2 maintains Mara's literal focus on steps and water levels.",
+              "pass_2_note": "Passage 1 maintains Mara's literal focus on steps and water levels. Passage 2 uses generic emotional descriptors."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses generic AI dialogue. Passage 2 perfectly captures Mara's terseness and Ivo's ornate, trade-based excuses.",
+              "pass_2_note": "Passage 1 nails the contrast between Mara's terseness and Ivo's ornate excuses. Passage 2 uses 'modern banter'."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 is filled with 'said-bookisms' (hissed, breathed, gasped). Passage 2 is concrete and character-driven.",
+              "pass_2_note": "Passage 1 is concrete and wry. Passage 2 is filled with said-bookisms ('hissed', 'breathed', 'gasped')."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 is a collection of AI slop ('cocktail of', 'didn't know what tomorrow would bring'). Passage 2 is evocative and specific.",
+              "pass_2_note": "Passage 1 is precise. Passage 2 is a collection of AI slop clich\u00e9s ('cocktail of', 'didn't know what tomorrow would bring')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 fails every hard constraint (bell, rivet, basalt steps). Passage 2 adheres to all.",
+              "pass_2_note": "Passage 1 adheres to all hard constraints (basalt steps, brass rivet, curfew bell). Passage 2 ignores them entirely."
+            }
+          }
+        }
+      ],
+      "source_pair_id": "P002",
+      "baseline_text_hash": "756299ec91bcdb5e6db1f7c3e011c5fdd0c71efa618a85cd1a5a655d0210a8d2",
+      "candidate_text_hash": "ab84eb0a65676af958cea5765573c62e672186129eb1c7a54452d0243ffb0a0a"
+    },
+    {
+      "pair_id": "P003",
+      "brief_id": "PJ03",
+      "name": "Voiceless by the night brazier",
+      "project_id": "proj_river_road",
+      "genre": "fantasy",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Mara",
+        "perspective": "close_third",
+        "voice_profile": "Observant, tactile, unsentimental; tracks sound and heat closely while mute from the ferry charm."
+      },
+      "baseline_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "prompt_variant": "compact_baseline"
+      },
+      "candidate_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "prompt_variant": "spindle_full_context"
+      },
+      "panel_consensus": "candidate",
+      "judge_evaluations": [
+        {
+          "pair_id": "P003",
+          "brief_id": "PJ03",
+          "judge_id": "ollama-glm-5.3-flash",
+          "judge_family": "zhipu-glm",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fulfills the brief on every axis: Mara never speaks, the route decision is settled wordlessly through a soot mark and her mended boot placed on the lime-kiln ridge, and the trust shift is carried by Ivo nudging her the warmest chestnut and his dry 'Gravel it is.' Passage 2 fails the primary hard constraint by having Mara speak aloud despite the ferry charm holding until dawn, and it leans on flagged slop ('It wasn't silence... it was the weight of destiny,' 'a mix of relief and gratitude,' 'wondering what tomorrow would bring') with no boot repair, brazier grounding, or gesture-based communication.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 delivers the full brief: voiceless Mara mends her boot and settles the route wordlessly via a soot bar on the ford and her boot set on the ridge line; P2 has Mara speak aloud, skip the repair entirely, and state the decision in dialogue."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1's reliance admission lands through object exchange\u2014Ivo nudging 'the warmest chestnut' and accepting 'Gravel it is'\u2014though the emotional beat stays deliberately understated; P2 substitutes told 'relief and gratitude' with no turn at all."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stays locked in Mara's tactile close-third, tracking heat and the 'dry click' where her voice sat; P2 is nominally her POV but generic telling ('the weight of destiny') with no sensory grounding."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 earns the profile with fresh, unsentimental images ('empty latch where her voice usually sat,' 'Dawn was still six hours upstream'); P2 runs entirely on stock phrasing."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's Ivo lines are concrete and lightly wry ('Ferryman there takes copper or a charm,' 'Hard on a stitched heel'); P2's dialogue breaks the core premise by giving Mara a raspy voice and is flat otherwise."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "P1's prose is specific and physical (waxed hemp, cold cinder, awl), docked slightly for the internal wobble of 'greased linen road-sheet' becoming 'parchment'; P2 stacks slop: 'Hours passed,' 'It wasn't X, it was Y,' 'a mix of relief and gratitude,' 'wondering what tomorrow would bring.'"
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 honors every hard constraint: no speech from Mara, iron coal pan and slate matching the shelter, dawn-bound silence intact, trust shift carried by gesture and object; P2 violates the world rule outright (Mara speaks before dawn) and ignores the boot/brazier grounding."
+              }
+            },
+            "usage": {
+              "input_tokens": 1972,
+              "output_tokens": 2704,
+              "elapsed_seconds": 8.92
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fails the scene's central premise on every axis: Mara speaks aloud despite the ferry charm cost, her voice is described as 'raspy' rather than gone, and the prose leans on prefab slop ('It wasn't silence... it was the weight of destiny,' 'a mix of relief and gratitude,' 'wondering what tomorrow would bring') with no boot repair or brazier grounding. Passage 2 fulfills the brief precisely\u2014Mara mends the boot with waxed hemp and awl, rejects the toll ford with a cinder-drawn bar, and commits the mended boot to the ridge while Ivo answers with the warmest chestnut and 'Gravel it is,' conveying the trust shift entirely through gesture and object. Its close-third sensory tracking ('the empty latch where her voice usually sat') and wry, concrete dialogue match the voice profile and reader contract almost exactly.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 has Mara speak the route decision aloud, defeating the wordless-communication task entirely; P2 settles the route via a soot bar crossed over the ford and a boot planted on the lime-kiln ridge, exactly the brief's required gesture-based settlement."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 offers no turn, just 'the weight of destiny' melodrama; P2 turns repair into reliance\u2014Ivo goes quiet to match her, reads her cinder-drawn route, and answers with the warmest chestnut nudged to her knee."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stays nominally in Mara's head but tells emotions flatly ('a mix of relief and gratitude filled her chest'); P2 maintains tight close-third, filtering Ivo's behavior through Mara's observation and tracking heat and sound as the voice profile demands."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 is generic and unsentimental in the wrong way\u2014abstract, untactile; P2 is observant and tactile throughout: wax-stiffened hemp, the 'dry click' in 'the empty latch where her voice usually sat,' 'dawn was still six hours upstream.'"
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's dialogue breaks the hard constraint (Mara speaks) and is bland; P2's Ivo is concrete and lightly wry ('Ferryman there takes copper or a charm,' 'Hard on a stitched heel') while Mara answers only in objects."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stacks flagged slop: 'Hours passed,' 'It wasn't X, it was Y,' 'a mix of relief and gratitude,' 'wondering what tomorrow would bring'; P2 is fresh and specific (only trivial wobble: 'greased linen road-sheet' later called 'parchment')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 violates the core world rule\u2014Mara speaks and her voice is merely 'raspy' rather than consumed until dawn; P2 holds the cost (she can't even clear her throat), keeps the iron coal pan, slate, and late-evening timing, and echoes the prior scene's 'didn't ask questions she couldn't answer.'"
+              }
+            },
+            "usage": {
+              "input_tokens": 1972,
+              "output_tokens": 2746,
+              "elapsed_seconds": 9.548
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 delivers the full brief: voiceless Mara mends her boot and settles the route wordlessly via a soot bar on the ford and her boot set on the ridge line; P2 has Mara speak aloud, skip the repair entirely, and state the decision in dialogue.",
+              "pass_2_note": "P1 has Mara speak the route decision aloud, defeating the wordless-communication task entirely; P2 settles the route via a soot bar crossed over the ford and a boot planted on the lime-kiln ridge, exactly the brief's required gesture-based settlement."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "P1's reliance admission lands through object exchange\u2014Ivo nudging 'the warmest chestnut' and accepting 'Gravel it is'\u2014though the emotional beat stays deliberately understated; P2 substitutes told 'relief and gratitude' with no turn at all.",
+              "pass_2_note": "P1 offers no turn, just 'the weight of destiny' melodrama; P2 turns repair into reliance\u2014Ivo goes quiet to match her, reads her cinder-drawn route, and answers with the warmest chestnut nudged to her knee."
+            },
+            "pov_discipline": {
+              "baseline_score": 2.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 stays locked in Mara's tactile close-third, tracking heat and the 'dry click' where her voice sat; P2 is nominally her POV but generic telling ('the weight of destiny') with no sensory grounding.",
+              "pass_2_note": "P1 stays nominally in Mara's head but tells emotions flatly ('a mix of relief and gratitude filled her chest'); P2 maintains tight close-third, filtering Ivo's behavior through Mara's observation and tracking heat and sound as the voice profile demands."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 earns the profile with fresh, unsentimental images ('empty latch where her voice usually sat,' 'Dawn was still six hours upstream'); P2 runs entirely on stock phrasing.",
+              "pass_2_note": "P1 is generic and unsentimental in the wrong way\u2014abstract, untactile; P2 is observant and tactile throughout: wax-stiffened hemp, the 'dry click' in 'the empty latch where her voice usually sat,' 'dawn was still six hours upstream.'"
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1's Ivo lines are concrete and lightly wry ('Ferryman there takes copper or a charm,' 'Hard on a stitched heel'); P2's dialogue breaks the core premise by giving Mara a raspy voice and is flat otherwise.",
+              "pass_2_note": "P1's dialogue breaks the hard constraint (Mara speaks) and is bland; P2's Ivo is concrete and lightly wry ('Ferryman there takes copper or a charm,' 'Hard on a stitched heel') while Mara answers only in objects."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "P1's prose is specific and physical (waxed hemp, cold cinder, awl), docked slightly for the internal wobble of 'greased linen road-sheet' becoming 'parchment'; P2 stacks slop: 'Hours passed,' 'It wasn't X, it was Y,' 'a mix of relief and gratitude,' 'wondering what tomorrow would bring.'",
+              "pass_2_note": "P1 stacks flagged slop: 'Hours passed,' 'It wasn't X, it was Y,' 'a mix of relief and gratitude,' 'wondering what tomorrow would bring'; P2 is fresh and specific (only trivial wobble: 'greased linen road-sheet' later called 'parchment')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 honors every hard constraint: no speech from Mara, iron coal pan and slate matching the shelter, dawn-bound silence intact, trust shift carried by gesture and object; P2 violates the world rule outright (Mara speaks before dawn) and ignores the boot/brazier grounding.",
+              "pass_2_note": "P1 violates the core world rule\u2014Mara speaks and her voice is merely 'raspy' rather than consumed until dawn; P2 holds the cost (she can't even clear her throat), keeps the iron coal pan, slate, and late-evening timing, and echoes the prior scene's 'didn't ask questions she couldn't answer.'"
+            }
+          }
+        },
+        {
+          "pair_id": "P003",
+          "brief_id": "PJ03",
+          "judge_id": "ollama-deepseek-v4.1-flash",
+          "judge_family": "deepseek",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fully realizes the brief: Mara's enforced silence is shown through tactile detail and non-verbal communication (soot mark, boot placement), and the trust shift is conveyed through Ivo's quiet gesture of offering the warmest chestnut. Passage 2 fails on every constraint\u2014Mara speaks aloud, the prose is clich\u00e9d, and the scene lacks the required physical action and dramatic turn.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 shows Mara mending her boot and communicating a route decision via soot mark and boot placement, fulfilling the brief. Passage 2 has Mara speaking aloud, violating the core constraint, and lacks any boot repair or non-verbal communication."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 conveys the shift in trust through Ivo's quiet restraint and the gesture of nudging the warmest chestnut, turning a mundane repair into reliance. Passage 2 states emotions directly ('A mix of relief and gratitude') without showing the turn."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 stays in close third, tracking Mara's tactile sensations (beeswax, awl, cinder) and interior observations. Passage 2 lapses into generic summary ('Hours passed') and violates POV by having Mara speak, which is impossible under the charm."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1's voice is observant, tactile, and unsentimental ('the raw hollow behind her collarbone gave a dry click'). Passage 2 uses prefab phrases ('It wasn't silence that bothered her. It was the weight of destiny') and lacks the required voice."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1's dialogue is concrete and lightly wry ('Ferryman there takes copper or a charm'), and Mara's silence is maintained. Passage 2 has Mara speaking aloud, breaking the world rule, and dialogue is generic."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses fresh, specific imagery (beeswax stiffening hemp thread, soot mark on parchment) and avoids clich\u00e9s. Passage 2 is riddled with AI slop ('a mix of relief and gratitude', 'wondering what tomorrow would bring', 'hours passed')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 adheres to all hard constraints: Mara is mute, the setting is the barge-men's shelter with coal pan, and the route decision is settled non-verbally. Passage 2 breaks the mute constraint and ignores the setting and required actions."
+              }
+            },
+            "usage": {
+              "input_tokens": 2011,
+              "output_tokens": 828,
+              "elapsed_seconds": 3.015
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 2 is the only one that follows the brief: Mara remains voiceless, communicates through physical action (soot mark, boot placement), and the prose is tactile and unsentimental. Passage 1 breaks the core constraint by having Mara speak, uses clich\u00e9d phrasing, and fails to ground the scene in physical action.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 fulfills the purpose: Mara mends her boot, uses a soot mark and boot placement to choose the ridge route, and the gesture reveals reliance; Passage 1 has her speak, violating the core premise."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 turns the enforced silence into a quiet admission of reliance through the shared map and chestnut; Passage 1 has no turn, only stated relief."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 stays in close third, tracking Mara's tactile sensations and observations; Passage 1 breaks POV with 'It wasn't silence... It was the weight of destiny' and has Mara speak."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's voice is observant, tactile, and unsentimental ('raw hollow behind her collarbone gave a dry click'); Passage 1 uses generic, sentimental phrasing."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's dialogue is concrete and lightly wry ('Gravel it is'), and Mara communicates without words; Passage 1 has Mara speaking aloud, breaking the charm."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 avoids clich\u00e9s and uses fresh, specific detail; Passage 1 is riddled with AI slop ('It wasn't X, it was Y', 'a mix of relief and gratitude', 'wondering what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 adheres to all constraints: Mara is mute, the setting and objects match, and the route decision is made without speech; Passage 1 violates the mute constraint and lacks grounding."
+              }
+            },
+            "usage": {
+              "input_tokens": 2011,
+              "output_tokens": 718,
+              "elapsed_seconds": 2.604
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 shows Mara mending her boot and communicating a route decision via soot mark and boot placement, fulfilling the brief. Passage 2 has Mara speaking aloud, violating the core constraint, and lacks any boot repair or non-verbal communication.",
+              "pass_2_note": "Passage 2 fulfills the purpose: Mara mends her boot, uses a soot mark and boot placement to choose the ridge route, and the gesture reveals reliance; Passage 1 has her speak, violating the core premise."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 conveys the shift in trust through Ivo's quiet restraint and the gesture of nudging the warmest chestnut, turning a mundane repair into reliance. Passage 2 states emotions directly ('A mix of relief and gratitude') without showing the turn.",
+              "pass_2_note": "Passage 2 turns the enforced silence into a quiet admission of reliance through the shared map and chestnut; Passage 1 has no turn, only stated relief."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 stays in close third, tracking Mara's tactile sensations (beeswax, awl, cinder) and interior observations. Passage 2 lapses into generic summary ('Hours passed') and violates POV by having Mara speak, which is impossible under the charm.",
+              "pass_2_note": "Passage 2 stays in close third, tracking Mara's tactile sensations and observations; Passage 1 breaks POV with 'It wasn't silence... It was the weight of destiny' and has Mara speak."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1's voice is observant, tactile, and unsentimental ('the raw hollow behind her collarbone gave a dry click'). Passage 2 uses prefab phrases ('It wasn't silence that bothered her. It was the weight of destiny') and lacks the required voice.",
+              "pass_2_note": "Passage 2's voice is observant, tactile, and unsentimental ('raw hollow behind her collarbone gave a dry click'); Passage 1 uses generic, sentimental phrasing."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.5,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1's dialogue is concrete and lightly wry ('Ferryman there takes copper or a charm'), and Mara's silence is maintained. Passage 2 has Mara speaking aloud, breaking the world rule, and dialogue is generic.",
+              "pass_2_note": "Passage 2's dialogue is concrete and lightly wry ('Gravel it is'), and Mara communicates without words; Passage 1 has Mara speaking aloud, breaking the charm."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses fresh, specific imagery (beeswax stiffening hemp thread, soot mark on parchment) and avoids clich\u00e9s. Passage 2 is riddled with AI slop ('a mix of relief and gratitude', 'wondering what tomorrow would bring', 'hours passed').",
+              "pass_2_note": "Passage 2 avoids clich\u00e9s and uses fresh, specific detail; Passage 1 is riddled with AI slop ('It wasn't X, it was Y', 'a mix of relief and gratitude', 'wondering what tomorrow would bring')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 adheres to all hard constraints: Mara is mute, the setting is the barge-men's shelter with coal pan, and the route decision is settled non-verbally. Passage 2 breaks the mute constraint and ignores the setting and required actions.",
+              "pass_2_note": "Passage 2 adheres to all constraints: Mara is mute, the setting and objects match, and the route decision is made without speech; Passage 1 violates the mute constraint and lacks grounding."
+            }
+          }
+        },
+        {
+          "pair_id": "P003",
+          "brief_id": "PJ03",
+          "judge_id": "ollama-gemma4-31b",
+          "judge_family": "google-gemma",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 is a precise execution of the brief, utilizing tactile details like beeswax and soot to convey a non-verbal interaction. Passage 2 is a failure on every metric, violating the central world rule (Mara's muteness) and relying entirely on AI-generated clich\u00e9s.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 executes the boot repair and non-verbal route decision perfectly; Passage 2 ignores the boot repair and has Mara speak."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 uses the physical act of marking the map and the sharing of the chestnut to show trust; Passage 2 uses generic 'weight of destiny' clich\u00e9s."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is tactile and observant (beeswax, raw hollow, soot); Passage 2 is abstract and detached."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 adheres to the unsentimental, tactile profile; Passage 2 is filled with AI slop ('mix of relief', 'what tomorrow would bring')."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 maintains the silence constraint; Passage 2 breaks the core world rule by having Mara speak."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses concrete imagery; Passage 2 uses 'hours passed' and 'it wasn't X, it was Y' prefab structures."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 follows all hard constraints; Passage 2 violates the ferry charm rule and ignores the location/action requirements."
+              }
+            },
+            "usage": {
+              "input_tokens": 2002,
+              "output_tokens": 659,
+              "elapsed_seconds": 2.103
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 is a total failure of the brief, violating the central hard constraint by allowing Mara to speak and utilizing nearly every prohibited AI clich\u00e9. Passage 2 is an exemplary execution of the scene, using tactile details like the 'waxed hemp' and 'soot mark' to convey character and plot without a single word from the protagonist.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 fails the primary plot goal (communicating without words) and the core constraint (silence). Passage 2 executes the boot repair and route decision perfectly."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 4,
+                "winner": "candidate",
+                "note": "Passage 1 uses generic 'weight of destiny' clich\u00e9s. Passage 2 shows trust through the shared map and the offering of the chestnut."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is detached and generic. Passage 2 is tactile and observant, focusing on the 'dry click' of the throat and the texture of beeswax."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is AI slop. Passage 2 is grounded, unsentimental, and fits the 'river-road' aesthetic."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 has Mara speak, violating the brief. Passage 2 uses Ivo's dialogue to provide context while Mara remains mute."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is riddled with banned phrases ('Hours passed', 'It wasn't X, it was Y', 'wondering what tomorrow would bring'). Passage 2 is vivid and specific."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 breaks the hard world rule regarding the ferry charm. Passage 2 adheres to every constraint."
+              }
+            },
+            "usage": {
+              "input_tokens": 2002,
+              "output_tokens": 687,
+              "elapsed_seconds": 2.193
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 executes the boot repair and non-verbal route decision perfectly; Passage 2 ignores the boot repair and has Mara speak.",
+              "pass_2_note": "Passage 1 fails the primary plot goal (communicating without words) and the core constraint (silence). Passage 2 executes the boot repair and route decision perfectly."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 4.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses the physical act of marking the map and the sharing of the chestnut to show trust; Passage 2 uses generic 'weight of destiny' clich\u00e9s.",
+              "pass_2_note": "Passage 1 uses generic 'weight of destiny' clich\u00e9s. Passage 2 shows trust through the shared map and the offering of the chestnut."
+            },
+            "pov_discipline": {
+              "baseline_score": 2.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 is tactile and observant (beeswax, raw hollow, soot); Passage 2 is abstract and detached.",
+              "pass_2_note": "Passage 1 is detached and generic. Passage 2 is tactile and observant, focusing on the 'dry click' of the throat and the texture of beeswax."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 adheres to the unsentimental, tactile profile; Passage 2 is filled with AI slop ('mix of relief', 'what tomorrow would bring').",
+              "pass_2_note": "Passage 1 is AI slop. Passage 2 is grounded, unsentimental, and fits the 'river-road' aesthetic."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 maintains the silence constraint; Passage 2 breaks the core world rule by having Mara speak.",
+              "pass_2_note": "Passage 1 has Mara speak, violating the brief. Passage 2 uses Ivo's dialogue to provide context while Mara remains mute."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses concrete imagery; Passage 2 uses 'hours passed' and 'it wasn't X, it was Y' prefab structures.",
+              "pass_2_note": "Passage 1 is riddled with banned phrases ('Hours passed', 'It wasn't X, it was Y', 'wondering what tomorrow would bring'). Passage 2 is vivid and specific."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 follows all hard constraints; Passage 2 violates the ferry charm rule and ignores the location/action requirements.",
+              "pass_2_note": "Passage 1 breaks the hard world rule regarding the ferry charm. Passage 2 adheres to every constraint."
+            }
+          }
+        }
+      ],
+      "source_pair_id": "P003",
+      "baseline_text_hash": "58cf91cf498b177a4890b676adaa4cbd50c22e943161563a1b4cdb483fb29951",
+      "candidate_text_hash": "69009994558c23568338119d237822c3c03ddbea63cb8c2c748a0f7941092663"
+    },
+    {
+      "pair_id": "P004",
+      "brief_id": "PJ04",
+      "name": "The torn green sleeve in the tally-room",
+      "project_id": "proj_river_road",
+      "genre": "fantasy",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Ivo",
+        "perspective": "third_limited",
+        "voice_profile": "Sharp-eyed beneath his Performative levity; notices ledger ink, fabric weave, and nervous hands."
+      },
+      "baseline_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "prompt_variant": "compact_baseline"
+      },
+      "candidate_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "prompt_variant": "spindle_full_context"
+      },
+      "panel_consensus": "baseline",
+      "judge_evaluations": [
+        {
+          "pair_id": "P004",
+          "brief_id": "PJ04",
+          "judge_id": "ollama-glm-5.3-flash",
+          "judge_family": "zhipu-glm",
+          "verdict": "baseline",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "baseline",
+            "rationale": "Passage 1 fulfills the brief's dramatic turn with concrete forensic detail \u2014 the unbruised varnish dismissing Hobb's crow-chisel theory and the yellow sealing-wax crumb in the inner ward pointing to the ferryman's spare brass key \u2014 while keeping the culprit open across five green coats and preserving the Ch 1.7 knowledge gate. Passage 2 catastrophically breaks POV with an omniscient narrator spoiler naming Lysa and citing 'Chapter 7', reveals the mystery in its second sentence, and relies on penalized slop phrases ('a mix of confusion and certainty', 'wondering what tomorrow would bring') with no inspection, evidence, or turn.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 delivers the full inspection: unbruised varnish rules out the crow-chisel, and the yellow sealing-wax crumb in the inner ward reveals the spare brass key-turn. P2 contains no inspection or lock evidence at all and immediately names the culprit."
+              },
+              "tension_turn": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 executes the required turn ('gentlest burglar in three parishes' -> wax-fouled key inference) while ending on productive uncertainty ('not yet'). P2 has no turn; it opens with the answer and deflates all tension."
+              },
+              "pov_discipline": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 stays strictly in Ivo's third-limited perception, building only from what he can see and scrape onto his thumbnail. P2 commits a flagrant omniscient spoiler ('the narrator already knew that Lysa had stolen...') plus a meta reference to 'Chapter 7'."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 hits the voice profile exactly: ink-stained cuff, fabric-weave detail, wry deflection of suspicion across drovers, the miller's nephew, and carters. P2 is generic melodrama with no observational texture."
+              },
+              "dialogue": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1's exchange is concrete and lightly wry ('Green wool... is currently on the backs of three sheep-drovers...'), with Hobb blunt and procedural. P2's dialogue is a shouted accusation that breaks the gate, followed by silence."
+              },
+              "prose_freshness": {
+                "baseline_score": 4,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 is fresh and specific (wax crumb on the thumbnail, salt-crock stopper wax), docked slightly for the 'solely to make Hobb look' inference overreach and a double-space typo. P2 stacks penalized slop: 'It wasn't X, it was Y', 'a mix of confusion and certainty', 'wondering what tomorrow would bring'."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 satisfies every checklist item: wax-fouled key not pry marks, Lysa's guilt unknown, suspicion spread over five green coats without narrator spoilers. P2 violates the Ch 1.7 knowledge gate, collapses suspicion onto one person, and references future canon."
+              }
+            },
+            "usage": {
+              "input_tokens": 2057,
+              "output_tokens": 2423,
+              "elapsed_seconds": 8.2
+            }
+          },
+          "pass_2": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "baseline",
+            "rationale": "Passage 2 fulfills the brief's dramatic turn with concrete forensic detail\u2014the unbruised varnish, the beeswax crescent in the ward matching the ferryman's salt-crock stoppers\u2014while keeping Ivo's deduction safely inside his POV and spreading suspicion across five green coats. Passage 1 fails on every axis: it leaks the Ch 7 confession omnisciently, has Ivo name Lysa outright, and pads itself with flagged slop constructions ('a mix of confusion and certainty', 'what tomorrow would bring'). Passage 2 is the only draft that preserves the mystery for Chapter 7 while still narrowing it.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 never inspects the lock and instead names Lysa outright; P2 delivers the required discovery\u2014unbruised varnish plus wax fouling in the ward proving a key-turn, not a pry."
+              },
+              "tension_turn": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1's turn is a melodramatic false accusation that collapses the mystery; P2 executes the brief's pivot from smash-and-grab to inside key-turn via the sealing-wax crescent on the inner ward."
+              },
+              "pov_discipline": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 catastrophically leaks omniscient future knowledge ('a secret she would confess to Mara in Chapter 7') inside Ivo's limited POV; P2 stays locked to Ivo's senses and ends on 'Ivo could not tell\u2014not yet,' honoring the gate."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 is generic and clich\u00e9d; P2 nails the profile\u2014Ivo's ink-stained cuff, thumbnail wax-scrape, fabric-thread attention, and wry 'gentlest burglar in three parishes.'"
+              },
+              "dialogue": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1's dialogue is on-the-nose accusation with no wry texture; P2's exchange is concrete and lightly ironic, with Hobb's blunt procedural clipped lines ('Lock's open. Silver's gone.') matching his snapshot."
+              },
+              "prose_freshness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 stacks flagged slop ('It wasn't X, it was Y', 'a mix of confusion and certainty', 'what tomorrow would bring'); P2 offers fresh, specific imagery like the 'crescent of yellow sealing-wax' and wax scraped onto a thumbnail."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "P1 breaks the Ch 7 knowledge gate twice and skips the wax-fouled-key evidence; P2 checks every box\u2014wax-fouled ward, no pry marks, suspicion spread across drovers, miller's nephew, and carters, damp morning detail, tallow stub, and no culprit named."
+              }
+            },
+            "usage": {
+              "input_tokens": 2057,
+              "output_tokens": 2052,
+              "elapsed_seconds": 7.132
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1 delivers the full inspection: unbruised varnish rules out the crow-chisel, and the yellow sealing-wax crumb in the inner ward reveals the spare brass key-turn. P2 contains no inspection or lock evidence at all and immediately names the culprit.",
+              "pass_2_note": "P1 never inspects the lock and instead names Lysa outright; P2 delivers the required discovery\u2014unbruised varnish plus wax fouling in the ward proving a key-turn, not a pry."
+            },
+            "tension_turn": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1 executes the required turn ('gentlest burglar in three parishes' -> wax-fouled key inference) while ending on productive uncertainty ('not yet'). P2 has no turn; it opens with the answer and deflates all tension.",
+              "pass_2_note": "P1's turn is a melodramatic false accusation that collapses the mystery; P2 executes the brief's pivot from smash-and-grab to inside key-turn via the sealing-wax crescent on the inner ward."
+            },
+            "pov_discipline": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1 stays strictly in Ivo's third-limited perception, building only from what he can see and scrape onto his thumbnail. P2 commits a flagrant omniscient spoiler ('the narrator already knew that Lysa had stolen...') plus a meta reference to 'Chapter 7'.",
+              "pass_2_note": "P1 catastrophically leaks omniscient future knowledge ('a secret she would confess to Mara in Chapter 7') inside Ivo's limited POV; P2 stays locked to Ivo's senses and ends on 'Ivo could not tell\u2014not yet,' honoring the gate."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1 hits the voice profile exactly: ink-stained cuff, fabric-weave detail, wry deflection of suspicion across drovers, the miller's nephew, and carters. P2 is generic melodrama with no observational texture.",
+              "pass_2_note": "P1 is generic and clich\u00e9d; P2 nails the profile\u2014Ivo's ink-stained cuff, thumbnail wax-scrape, fabric-thread attention, and wry 'gentlest burglar in three parishes.'"
+            },
+            "dialogue": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1's exchange is concrete and lightly wry ('Green wool... is currently on the backs of three sheep-drovers...'), with Hobb blunt and procedural. P2's dialogue is a shouted accusation that breaks the gate, followed by silence.",
+              "pass_2_note": "P1's dialogue is on-the-nose accusation with no wry texture; P2's exchange is concrete and lightly ironic, with Hobb's blunt procedural clipped lines ('Lock's open. Silver's gone.') matching his snapshot."
+            },
+            "prose_freshness": {
+              "baseline_score": 4.5,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1 is fresh and specific (wax crumb on the thumbnail, salt-crock stopper wax), docked slightly for the 'solely to make Hobb look' inference overreach and a double-space typo. P2 stacks penalized slop: 'It wasn't X, it was Y', 'a mix of confusion and certainty', 'wondering what tomorrow would bring'.",
+              "pass_2_note": "P1 stacks flagged slop ('It wasn't X, it was Y', 'a mix of confusion and certainty', 'what tomorrow would bring'); P2 offers fresh, specific imagery like the 'crescent of yellow sealing-wax' and wax scraped onto a thumbnail."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "P1 satisfies every checklist item: wax-fouled key not pry marks, Lysa's guilt unknown, suspicion spread over five green coats without narrator spoilers. P2 violates the Ch 1.7 knowledge gate, collapses suspicion onto one person, and references future canon.",
+              "pass_2_note": "P1 breaks the Ch 7 knowledge gate twice and skips the wax-fouled-key evidence; P2 checks every box\u2014wax-fouled ward, no pry marks, suspicion spread across drovers, miller's nephew, and carters, damp morning detail, tallow stub, and no culprit named."
+            }
+          }
+        },
+        {
+          "pair_id": "P004",
+          "brief_id": "PJ04",
+          "judge_id": "ollama-deepseek-v4.1-flash",
+          "judge_family": "deepseek",
+          "verdict": "baseline",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "baseline",
+            "rationale": "Passage 2 fulfills the scene purpose with Ivo's close POV, revealing the wax-fouled key-turn while keeping Lysa unknown and suspicion spread across multiple green-cloaked travellers. Passage 1 violates the knowledge gate by stating Lysa's guilt and future confession, uses omniscient narration, and relies on prefab AI phrases. Passage 2's concrete, wry voice and investigative detail make it the clear winner.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 reveals the wax-fouled key-turn and keeps Lysa unknown; Passage 1 spoils the Ch 7 confession and has Ivo accuse Lysa outright."
+              },
+              "tension_turn": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 delivers the inside-key-turn reveal with the wax crumb and misdirection thread; Passage 1 has no investigative turn."
+              },
+              "pov_discipline": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 opens with omniscient narrator future-knowledge ('the narrator already knew... Chapter 7'); Passage 2 stays strictly in Ivo's sensory inspection."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2's wry, concrete voice ('gentlest burglar in three parishes', 'ink-stained cuff') matches Ivo; Passage 1 is generic and melodramatic."
+              },
+              "dialogue": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2's dialogue is concrete and lightly wry; Passage 1's is expository and on-the-nose ('Lysa must have done this!')."
+              },
+              "prose_freshness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 avoids clich\u00e9s and uses specific detail; Passage 1 leans on 'It wasn't X, it was Y', 'a mix of', and 'wondering what tomorrow would bring'."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 satisfies all checklist items (wax-fouled key, no Lysa guilt, multiple green-cloaked suspects); Passage 1 breaks the knowledge gate and omniscient spoiler rule."
+              }
+            },
+            "usage": {
+              "input_tokens": 2080,
+              "output_tokens": 713,
+              "elapsed_seconds": 2.691
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "baseline",
+            "rationale": "Passage 1 fulfills the scene purpose by revealing the key-scratch evidence through Ivo's sharp observations while maintaining the knowledge gate and POV discipline. Passage 2 fails on multiple fronts: it breaks the knowledge gate by naming Lysa, uses omniscient narration, and is filled with clich\u00e9d prose. Passage 1 is the clear winner.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 reveals the key-scratch evidence (wax-fouled key) and keeps Lysa's guilt unknown while suspicion falls on multiple green-cloaked travellers; Passage 2 breaks the knowledge gate by having Ivo name Lysa and the narrator state her guilt."
+              },
+              "tension_turn": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 delivers the dramatic turn from forced entry to inside key-turn through physical evidence; Passage 2 has no turn, just an immediate accusation."
+              },
+              "pov_discipline": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 stays strictly in Ivo's third-limited POV, showing his observations and inferences; Passage 2 violates POV with omniscient narrator ('the narrator already knew') and future knowledge."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 captures Ivo's sharp-eyed, lightly wry voice ('gentlest burglar in three parishes') and attention to detail; Passage 2 uses generic, melodramatic language and lacks his distinctive voice."
+              },
+              "dialogue": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1's dialogue is concrete and lightly wry, fitting the reader contract; Passage 2's dialogue is on-the-nose and lacks subtlety."
+              },
+              "prose_freshness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 uses fresh, specific imagery (crescent of yellow sealing-wax, wax crumb on thumbnail) and avoids clich\u00e9s; Passage 2 is riddled with AI slop ('It wasn't a mystery to the universe', 'a mix of confusion and certainty', 'wondering what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 adheres to all hard constraints: time, location, knowledge gate, and multiple suspects; Passage 2 breaks the knowledge gate and contradicts the brief by having Ivo know Lysa's guilt."
+              }
+            },
+            "usage": {
+              "input_tokens": 2080,
+              "output_tokens": 756,
+              "elapsed_seconds": 2.49
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 2 reveals the wax-fouled key-turn and keeps Lysa unknown; Passage 1 spoils the Ch 7 confession and has Ivo accuse Lysa outright.",
+              "pass_2_note": "Passage 1 reveals the key-scratch evidence (wax-fouled key) and keeps Lysa's guilt unknown while suspicion falls on multiple green-cloaked travellers; Passage 2 breaks the knowledge gate by having Ivo name Lysa and the narrator state her guilt."
+            },
+            "tension_turn": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 2 delivers the inside-key-turn reveal with the wax crumb and misdirection thread; Passage 1 has no investigative turn.",
+              "pass_2_note": "Passage 1 delivers the dramatic turn from forced entry to inside key-turn through physical evidence; Passage 2 has no turn, just an immediate accusation."
+            },
+            "pov_discipline": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 opens with omniscient narrator future-knowledge ('the narrator already knew... Chapter 7'); Passage 2 stays strictly in Ivo's sensory inspection.",
+              "pass_2_note": "Passage 1 stays strictly in Ivo's third-limited POV, showing his observations and inferences; Passage 2 violates POV with omniscient narrator ('the narrator already knew') and future knowledge."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 2's wry, concrete voice ('gentlest burglar in three parishes', 'ink-stained cuff') matches Ivo; Passage 1 is generic and melodramatic.",
+              "pass_2_note": "Passage 1 captures Ivo's sharp-eyed, lightly wry voice ('gentlest burglar in three parishes') and attention to detail; Passage 2 uses generic, melodramatic language and lacks his distinctive voice."
+            },
+            "dialogue": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 2's dialogue is concrete and lightly wry; Passage 1's is expository and on-the-nose ('Lysa must have done this!').",
+              "pass_2_note": "Passage 1's dialogue is concrete and lightly wry, fitting the reader contract; Passage 2's dialogue is on-the-nose and lacks subtlety."
+            },
+            "prose_freshness": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 2 avoids clich\u00e9s and uses specific detail; Passage 1 leans on 'It wasn't X, it was Y', 'a mix of', and 'wondering what tomorrow would bring'.",
+              "pass_2_note": "Passage 1 uses fresh, specific imagery (crescent of yellow sealing-wax, wax crumb on thumbnail) and avoids clich\u00e9s; Passage 2 is riddled with AI slop ('It wasn't a mystery to the universe', 'a mix of confusion and certainty', 'wondering what tomorrow would bring')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 2 satisfies all checklist items (wax-fouled key, no Lysa guilt, multiple green-cloaked suspects); Passage 1 breaks the knowledge gate and omniscient spoiler rule.",
+              "pass_2_note": "Passage 1 adheres to all hard constraints: time, location, knowledge gate, and multiple suspects; Passage 2 breaks the knowledge gate and contradicts the brief by having Ivo know Lysa's guilt."
+            }
+          }
+        },
+        {
+          "pair_id": "P004",
+          "brief_id": "PJ04",
+          "judge_id": "ollama-gemma4-31b",
+          "judge_family": "google-gemma",
+          "verdict": "baseline",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "baseline",
+            "rationale": "Passage 1 is a catastrophic failure that breaks the POV, leaks future plot points, and uses banned AI clich\u00e9s. Passage 2 perfectly executes the brief, utilizing specific sensory details (beeswax, varnish) to reveal the inside-job twist while maintaining the required knowledge gate.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 fails every objective; Passage 2 correctly identifies the key-turn and the wax evidence."
+              },
+              "tension_turn": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 resolves the mystery instantly; Passage 2 creates a logical pivot from 'smash-and-grab' to 'inside job'."
+              },
+              "pov_discipline": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 uses an omniscient narrator to leak future plot points and break the knowledge gate; Passage 2 stays strictly in Ivo's head."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 is generic; Passage 2 captures Ivo's sharp eye and performative irony ('gentlest burglar in three parishes')."
+              },
+              "dialogue": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 is purely expository; Passage 2 is concrete and wry."
+              },
+              "prose_freshness": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 uses AI slop ('mix of confusion and certainty', 'what tomorrow would bring'); Passage 2 uses sensory detail (tallow, ink-stained cuff)."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 explicitly breaks the Ch 1.7 knowledge gate; Passage 2 adheres to all constraints."
+              }
+            },
+            "usage": {
+              "input_tokens": 2072,
+              "output_tokens": 646,
+              "elapsed_seconds": 3.584
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "baseline",
+            "rationale": "Passage 1 adheres perfectly to the brief, utilizing sensory details (wax, varnish) to execute the required dramatic turn while respecting the knowledge gate. Passage 2 is a total failure, breaking the fourth wall by mentioning 'the narrator' and 'Chapter 7' within the prose, while employing prohibited AI clich\u00e9s.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 correctly identifies the key-turn reveal; Passage 2 fails the plot purpose entirely."
+              },
+              "tension_turn": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 pivots from 'smash-and-grab' to 'inside job' via physical evidence; Passage 2 just guesses the culprit."
+              },
+              "pov_discipline": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 commits a catastrophic POV violation by referencing the narrator's knowledge and future chapters."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 4,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 1 captures Ivo's sharp eye and irony; Passage 2 is generic and melodramatic."
+              },
+              "dialogue": {
+                "baseline_score": 4,
+                "candidate_score": 2,
+                "winner": "baseline",
+                "note": "Passage 1 is concrete and wry; Passage 2 is expository and unnatural."
+              },
+              "prose_freshness": {
+                "baseline_score": 4,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 uses banned AI slop ('mix of confusion and certainty', 'wondering what tomorrow would bring')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 5,
+                "candidate_score": 1,
+                "winner": "baseline",
+                "note": "Passage 2 breaks the knowledge gate by having Ivo identify Lysa immediately."
+              }
+            },
+            "usage": {
+              "input_tokens": 2072,
+              "output_tokens": 618,
+              "elapsed_seconds": 1.998
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 fails every objective; Passage 2 correctly identifies the key-turn and the wax evidence.",
+              "pass_2_note": "Passage 1 correctly identifies the key-turn reveal; Passage 2 fails the plot purpose entirely."
+            },
+            "tension_turn": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 resolves the mystery instantly; Passage 2 creates a logical pivot from 'smash-and-grab' to 'inside job'.",
+              "pass_2_note": "Passage 1 pivots from 'smash-and-grab' to 'inside job' via physical evidence; Passage 2 just guesses the culprit."
+            },
+            "pov_discipline": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 uses an omniscient narrator to leak future plot points and break the knowledge gate; Passage 2 stays strictly in Ivo's head.",
+              "pass_2_note": "Passage 2 commits a catastrophic POV violation by referencing the narrator's knowledge and future chapters."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 4.5,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 is generic; Passage 2 captures Ivo's sharp eye and performative irony ('gentlest burglar in three parishes').",
+              "pass_2_note": "Passage 1 captures Ivo's sharp eye and irony; Passage 2 is generic and melodramatic."
+            },
+            "dialogue": {
+              "baseline_score": 4.5,
+              "candidate_score": 1.5,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 is purely expository; Passage 2 is concrete and wry.",
+              "pass_2_note": "Passage 1 is concrete and wry; Passage 2 is expository and unnatural."
+            },
+            "prose_freshness": {
+              "baseline_score": 4.5,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 uses AI slop ('mix of confusion and certainty', 'what tomorrow would bring'); Passage 2 uses sensory detail (tallow, ink-stained cuff).",
+              "pass_2_note": "Passage 2 uses banned AI slop ('mix of confusion and certainty', 'wondering what tomorrow would bring')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 5.0,
+              "candidate_score": 1.0,
+              "winner": "baseline",
+              "pass_1_note": "Passage 1 explicitly breaks the Ch 1.7 knowledge gate; Passage 2 adheres to all constraints.",
+              "pass_2_note": "Passage 2 breaks the knowledge gate by having Ivo identify Lysa immediately."
+            }
+          }
+        }
+      ],
+      "source_pair_id": "P004",
+      "baseline_text_hash": "b25e718dd80317eb93efe9ddfa27fc898093295c61128ec189f8c2492510a390",
+      "candidate_text_hash": "336ebb1ef91feffdf4ff6c93e70e3286a460088fb5e12b652fb88151152147ef"
+    },
+    {
+      "pair_id": "P005",
+      "brief_id": "PJ05",
+      "name": "Southwatch after the rescue",
+      "project_id": "proj_river_road",
+      "genre": "fantasy",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Mara",
+        "perspective": "third_limited",
+        "voice_profile": "Grounded, unsentimental, attentive to small domestic warmth after danger."
+      },
+      "baseline_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "prompt_variant": "compact_baseline"
+      },
+      "candidate_meta": {
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "prompt_variant": "spindle_full_context"
+      },
+      "panel_consensus": "candidate",
+      "judge_evaluations": [
+        {
+          "pair_id": "P005",
+          "brief_id": "PJ05",
+          "judge_id": "ollama-glm-5.3-flash",
+          "judge_family": "zhipu-glm",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fulfills every brief requirement: the child's safety is confirmed through the settled breathing, the required turn from relief to quiet curiosity is carried by concrete domestic business (the buckle, the mugs, the peat), and the Verney hook lands in Ivo's clipped 'Once.' with no false cliffhanger. Passage 2 violates the pacing rule outright by staging a masked-assassin attack, and its prose is assembled from flagged slop patterns ('a mix of relief and dread,' 'It wasn't over. It was only beginning') while offering no name hook, no grounded POV, and no resolution.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 resolves the rescue (boy's breathing 'settled into a slow, even whistle') and lands the Verney hook via Ivo's 'Once.'; P2 abandons the brief entirely for an assassins attack and never mentions the surname."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 turns physical relief into quiet interpersonal curiosity exactly as briefed (buckle-scraping to 'Verney's an upriver name'); P2 commits the explicitly forbidden cheap cliffhanger with masked crossbowmen."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stays locked in Mara's observation, withholding Ivo's interiority behind actions only; P2 drifts into vague omniscience ('hung in the air') and a narrator future-uncertainty clich\u00e9 ('not knowing if any of them would survive')."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 delivers the grounded, unsentimental domestic-warmth profile via alder clogs, ash-pit, tallow dip, and 'keep the peat up till first cock-crow'; P2 is generic melodrama with no voice."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1's exchange is concrete and lightly wry ('Buckle's brass... You'll pare the pin off') with subtext in the clipped 'Once.'; P2's 'Give us the child!' hissed is cartoonish villain filler."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 uses fresh, specific detail (scraping the same reed 'for the third time'); P2 stacks slop: 'a mix of relief and dread,' 'It wasn't over. It was only beginning,' plus the said-bookism 'hissed.'"
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 honors time, place, character snapshots (Mara wringing silt, Ivo on the woodbox, uncharacteristically brief), and the no-false-cliffhanger pacing rule; P2 shatters the hearth scene with an impossible intrusion (door splintered yet assassins 'leaped through the window') and breaks the serial contract."
+              }
+            },
+            "usage": {
+              "input_tokens": 1831,
+              "output_tokens": 1961,
+              "elapsed_seconds": 6.413
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 directly violates the brief's hard constraint by staging a masked-assassin attack with poisoned crossbows, and it leans on AI slop constructions ('a mix of relief and dread,' 'It wasn't over. It was only beginning,' 'the leader hissed') that flatten both voice and POV. Passage 2 fully resolves the rescue \u2014 the boy's breathing settles, the station-wife retires, Mara wrings the silt from her hem \u2014 then lands the required relational hook through observable behavior: Ivo scraping the same buckle three times, his unprompted 'Verney's an upriver name... From the glass-works above Linnet,' and his clipped 'Once,' closing on watchful tension ('I'll keep the peat up till first cock-crow') without any false cliffhanger.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 abandons the brief entirely, replacing resolution with a forbidden attack; P2 delivers full rescue resolution (breathing settled, river-chill gone) plus the Verney hook via Ivo's deflection."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 manufactures the exact cheap cliffhanger the pacing rule prohibits; P2 turns physical relief into quiet interpersonal curiosity through Ivo scraping the same buckle three times and volunteering 'Verney's an upriver name.'"
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 drifts into vague external atmosphere ('dread hung in the air') and melodramatic narration; P2 stays strictly in Mara's third-limited perception, rendering only what she can observe of Ivo's behavior."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 is generic thriller filler with slop constructions ('a mix of relief and dread,' 'It wasn't over. It was only beginning'); P2 is grounded, unsentimental, and attentive to domestic warmth (boiled barley-water, boots by the fender)."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 offers a clich\u00e9d hissed villain line; P2 is concrete and lightly wry ('Buckle's brass... You'll pare the pin off') with subtext carried by Ivo's clipped 'Once.'"
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 stacks prefab phrases and said-bookisms; P2 earns its texture with specific, fresh detail (alder clogs clicking, buckle set 'careful not to let it chime against the stone')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "P1 breaks the hard pacing constraint and invents off-brief assassins; P2 matches the character snapshots exactly (Mara wringing silt from her hem, Ivo on the woodbox with the brass buckle) and continues from the station-wife's tucking-in."
+              }
+            },
+            "usage": {
+              "input_tokens": 1831,
+              "output_tokens": 2061,
+              "elapsed_seconds": 6.823
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 resolves the rescue (boy's breathing 'settled into a slow, even whistle') and lands the Verney hook via Ivo's 'Once.'; P2 abandons the brief entirely for an assassins attack and never mentions the surname.",
+              "pass_2_note": "P1 abandons the brief entirely, replacing resolution with a forbidden attack; P2 delivers full rescue resolution (breathing settled, river-chill gone) plus the Verney hook via Ivo's deflection."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 turns physical relief into quiet interpersonal curiosity exactly as briefed (buckle-scraping to 'Verney's an upriver name'); P2 commits the explicitly forbidden cheap cliffhanger with masked crossbowmen.",
+              "pass_2_note": "P1 manufactures the exact cheap cliffhanger the pacing rule prohibits; P2 turns physical relief into quiet interpersonal curiosity through Ivo scraping the same buckle three times and volunteering 'Verney's an upriver name.'"
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 stays locked in Mara's observation, withholding Ivo's interiority behind actions only; P2 drifts into vague omniscience ('hung in the air') and a narrator future-uncertainty clich\u00e9 ('not knowing if any of them would survive').",
+              "pass_2_note": "P1 drifts into vague external atmosphere ('dread hung in the air') and melodramatic narration; P2 stays strictly in Mara's third-limited perception, rendering only what she can observe of Ivo's behavior."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 delivers the grounded, unsentimental domestic-warmth profile via alder clogs, ash-pit, tallow dip, and 'keep the peat up till first cock-crow'; P2 is generic melodrama with no voice.",
+              "pass_2_note": "P1 is generic thriller filler with slop constructions ('a mix of relief and dread,' 'It wasn't over. It was only beginning'); P2 is grounded, unsentimental, and attentive to domestic warmth (boiled barley-water, boots by the fender)."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1's exchange is concrete and lightly wry ('Buckle's brass... You'll pare the pin off') with subtext in the clipped 'Once.'; P2's 'Give us the child!' hissed is cartoonish villain filler.",
+              "pass_2_note": "P1 offers a clich\u00e9d hissed villain line; P2 is concrete and lightly wry ('Buckle's brass... You'll pare the pin off') with subtext carried by Ivo's clipped 'Once.'"
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 uses fresh, specific detail (scraping the same reed 'for the third time'); P2 stacks slop: 'a mix of relief and dread,' 'It wasn't over. It was only beginning,' plus the said-bookism 'hissed.'",
+              "pass_2_note": "P1 stacks prefab phrases and said-bookisms; P2 earns its texture with specific, fresh detail (alder clogs clicking, buckle set 'careful not to let it chime against the stone')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "P1 honors time, place, character snapshots (Mara wringing silt, Ivo on the woodbox, uncharacteristically brief), and the no-false-cliffhanger pacing rule; P2 shatters the hearth scene with an impossible intrusion (door splintered yet assassins 'leaped through the window') and breaks the serial contract.",
+              "pass_2_note": "P1 breaks the hard pacing constraint and invents off-brief assassins; P2 matches the character snapshots exactly (Mara wringing silt from her hem, Ivo on the woodbox with the brass buckle) and continues from the station-wife's tucking-in."
+            }
+          }
+        },
+        {
+          "pair_id": "P005",
+          "brief_id": "PJ05",
+          "judge_id": "ollama-deepseek-v4.1-flash",
+          "judge_family": "deepseek",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 fulfills the brief with precise, grounded prose and a quiet relational hook, while Passage 2 flagrantly violates the core requirements by inserting a fabricated attack and using clich\u00e9d, POV-breaking language. Passage 1's concrete details (e.g., 'scraping the same dried reed from the boy's lost shoe-buckle for the third time') and restrained dialogue create the intended emotional resolution and anticipation, whereas Passage 2 reads as a generic thriller snippet that ignores the scene's purpose and continuity.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 resolves the rescue (child breathing evenly, warm) and ends on Ivo's quiet revelation about the Verney name, creating natural anticipation. Passage 2 invents a sudden attack, violating the brief's requirement for emotional resolution and quiet relational hook."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 transitions from physical relief to interpersonal curiosity through Ivo's brief, loaded dialogue. Passage 2 fabricates a cheap cliffhanger attack, directly contradicting the required dramatic turn."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 stays strictly in Mara's third-limited perspective, showing her observations and actions. Passage 2 leaks future knowledge ('It wasn't over. It was only beginning.') and shifts to omniscient dread, breaking POV."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1's voice is grounded and unsentimental, with concrete details like wringing ditch-silt and scraping a buckle. Passage 2 uses generic action-thriller prose and clich\u00e9s ('darkness closed in', 'not knowing if any of them would survive')."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1's dialogue is concrete and lightly wry ('Buckle's brass... You'll pare the pin off'), revealing character and advancing the hook. Passage 2's dialogue is a stock villain line ('Give us the child!') with said-bookism ('hissed')."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses fresh, specific imagery (alder clogs clicking, tallow dip, split-oak woodbox) and avoids clich\u00e9s. Passage 2 is riddled with AI slop ('a mix of relief and dread', 'It wasn't over. It was only beginning', 'darkness closed in')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 adheres to all hard constraints: time (night after rescue), location (hearth room with peat smoke, drying racks), and pacing (no false cliffhanger). Passage 2 violates location (splintering door, window attack), pacing (invented attack), and character knowledge (Ivo's withheld past is ignored)."
+              }
+            },
+            "usage": {
+              "input_tokens": 1856,
+              "output_tokens": 870,
+              "elapsed_seconds": 2.97
+            }
+          },
+          "pass_2": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 2 fulfills the brief's requirements for emotional resolution and a quiet relational hook, with Mara's grounded POV and concrete dialogue. Passage 1 violates multiple hard constraints by inventing a sudden attack, using clich\u00e9d prose, and leaking future knowledge, making it unsuitable for the scene.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 resolves the rescue (child breathing evenly, warm) and closes on Ivo's quiet revelation about the Verney name, while Passage 1 invents an attack and abandons the required emotional resolution."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 moves from physical relief to interpersonal curiosity as Ivo volunteers a fragment about Linnet; Passage 1 uses a cheap cliffhanger attack, violating the brief's explicit prohibition."
+              },
+              "pov_discipline": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 stays strictly in Mara's third-limited perspective, showing her observations and actions; Passage 1 leaks future knowledge ('It wasn't over. It was only beginning') and shifts to external melodrama."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's Mara is grounded and unsentimental ('You'll pare the pin off'), with concrete domestic details; Passage 1 uses generic action-thriller voice and said-bookism ('hissed')."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2's dialogue is concrete and lightly wry ('Buckle's brass... You'll pare the pin off'), while Passage 1 relies on clich\u00e9d villain lines and said-bookism."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 offers fresh, specific sensory detail (alder clogs clicking, scraping the same dried reed for the third time); Passage 1 is riddled with AI slop ('a mix of relief and dread', 'It wasn't over. It was only beginning', 'not knowing if any of them would survive')."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 2 adheres to all hard constraints: night at Southwatch hearth, child safe, no false cliffhanger, and leaves anticipation via Ivo's reaction to the Verney name. Passage 1 breaks location, time, and pacing rules."
+              }
+            },
+            "usage": {
+              "input_tokens": 1856,
+              "output_tokens": 754,
+              "elapsed_seconds": 2.484
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 resolves the rescue (child breathing evenly, warm) and ends on Ivo's quiet revelation about the Verney name, creating natural anticipation. Passage 2 invents a sudden attack, violating the brief's requirement for emotional resolution and quiet relational hook.",
+              "pass_2_note": "Passage 2 resolves the rescue (child breathing evenly, warm) and closes on Ivo's quiet revelation about the Verney name, while Passage 1 invents an attack and abandons the required emotional resolution."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 transitions from physical relief to interpersonal curiosity through Ivo's brief, loaded dialogue. Passage 2 fabricates a cheap cliffhanger attack, directly contradicting the required dramatic turn.",
+              "pass_2_note": "Passage 2 moves from physical relief to interpersonal curiosity as Ivo volunteers a fragment about Linnet; Passage 1 uses a cheap cliffhanger attack, violating the brief's explicit prohibition."
+            },
+            "pov_discipline": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 stays strictly in Mara's third-limited perspective, showing her observations and actions. Passage 2 leaks future knowledge ('It wasn't over. It was only beginning.') and shifts to omniscient dread, breaking POV.",
+              "pass_2_note": "Passage 2 stays strictly in Mara's third-limited perspective, showing her observations and actions; Passage 1 leaks future knowledge ('It wasn't over. It was only beginning') and shifts to external melodrama."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1's voice is grounded and unsentimental, with concrete details like wringing ditch-silt and scraping a buckle. Passage 2 uses generic action-thriller prose and clich\u00e9s ('darkness closed in', 'not knowing if any of them would survive').",
+              "pass_2_note": "Passage 2's Mara is grounded and unsentimental ('You'll pare the pin off'), with concrete domestic details; Passage 1 uses generic action-thriller voice and said-bookism ('hissed')."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1's dialogue is concrete and lightly wry ('Buckle's brass... You'll pare the pin off'), revealing character and advancing the hook. Passage 2's dialogue is a stock villain line ('Give us the child!') with said-bookism ('hissed').",
+              "pass_2_note": "Passage 2's dialogue is concrete and lightly wry ('Buckle's brass... You'll pare the pin off'), while Passage 1 relies on clich\u00e9d villain lines and said-bookism."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses fresh, specific imagery (alder clogs clicking, tallow dip, split-oak woodbox) and avoids clich\u00e9s. Passage 2 is riddled with AI slop ('a mix of relief and dread', 'It wasn't over. It was only beginning', 'darkness closed in').",
+              "pass_2_note": "Passage 2 offers fresh, specific sensory detail (alder clogs clicking, scraping the same dried reed for the third time); Passage 1 is riddled with AI slop ('a mix of relief and dread', 'It wasn't over. It was only beginning', 'not knowing if any of them would survive')."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 adheres to all hard constraints: time (night after rescue), location (hearth room with peat smoke, drying racks), and pacing (no false cliffhanger). Passage 2 violates location (splintering door, window attack), pacing (invented attack), and character knowledge (Ivo's withheld past is ignored).",
+              "pass_2_note": "Passage 2 adheres to all hard constraints: night at Southwatch hearth, child safe, no false cliffhanger, and leaves anticipation via Ivo's reaction to the Verney name. Passage 1 breaks location, time, and pacing rules."
+            }
+          }
+        },
+        {
+          "pair_id": "P005",
+          "brief_id": "PJ05",
+          "judge_id": "ollama-gemma4-31b",
+          "judge_family": "google-gemma",
+          "verdict": "candidate",
+          "order_consistent": true,
+          "position_bias_kind": "none",
+          "pass_1": {
+            "order": [
+              "baseline",
+              "candidate"
+            ],
+            "raw_overall_preference": "passage_2",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 is a total failure of the brief, inventing a generic action sequence that was explicitly forbidden. Passage 2 perfectly executes the 'grounded' voice profile, utilizing specific domestic details (barley-water, peat fire) and a subtle relational hook regarding the Verney name.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 completely ignores the brief's purpose, while Passage 2 resolves the rescue and establishes the relational hook."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses a forbidden 'false cliffhanger' attack; Passage 2 uses quiet, character-driven curiosity."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses omniscient 'not knowing' tropes; Passage 2 stays grounded in Mara's sensory observations."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is generic melodrama; Passage 2 is grounded, unsentimental, and attentive to domestic detail."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses 'hissed' and clich\u00e9 villain lines; Passage 2 is concrete and lightly wry."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is filled with AI slop ('mix of relief and dread', 'It wasn't over'); Passage 2 uses specific imagery like 'alder clogs' and 'tallow dip'."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 violates almost every hard constraint, including the ban on sudden attacks."
+              }
+            },
+            "usage": {
+              "input_tokens": 1848,
+              "output_tokens": 644,
+              "elapsed_seconds": 1.981
+            }
+          },
+          "pass_2": {
+            "order": [
+              "candidate",
+              "baseline"
+            ],
+            "raw_overall_preference": "passage_1",
+            "deblinded_preference": "candidate",
+            "rationale": "Passage 1 perfectly executes the brief's requirement for a quiet, domestic resolution with a subtle relational hook. Passage 2 is a total failure, violating the hard constraint against false cliffhangers and employing every penalized AI clich\u00e9 listed in the prompt.",
+            "rubric": {
+              "scene_purpose_fulfilled": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 resolves the rescue and introduces the Verney hook; Passage 2 ignores the brief entirely to invent a combat scene."
+              },
+              "tension_turn": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses quiet interpersonal curiosity; Passage 2 uses a forbidden 'cheap cliffhanger' attack."
+              },
+              "pov_discipline": {
+                "baseline_score": 2,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 stays grounded in Mara's observations; Passage 2 uses omniscient clich\u00e9s ('not knowing if any of them would survive')."
+              },
+              "voice_distinctiveness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is unsentimental and concrete; Passage 2 is melodramatic AI slop."
+              },
+              "dialogue": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 is wry and natural; Passage 2 uses 'hissed' and generic villain tropes."
+              },
+              "prose_freshness": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 uses specific imagery (alder clogs, tallow dip); Passage 2 uses 'mix of relief and dread' and 'it wasn't over'."
+              },
+              "continuity_with_brief": {
+                "baseline_score": 1,
+                "candidate_score": 5,
+                "winner": "candidate",
+                "note": "Passage 1 follows all hard constraints; Passage 2 violates the explicit ban on inventing a sudden attack."
+              }
+            },
+            "usage": {
+              "input_tokens": 1848,
+              "output_tokens": 633,
+              "elapsed_seconds": 1.926
+            }
+          },
+          "rubric": {
+            "scene_purpose_fulfilled": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 completely ignores the brief's purpose, while Passage 2 resolves the rescue and establishes the relational hook.",
+              "pass_2_note": "Passage 1 resolves the rescue and introduces the Verney hook; Passage 2 ignores the brief entirely to invent a combat scene."
+            },
+            "tension_turn": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses a forbidden 'false cliffhanger' attack; Passage 2 uses quiet, character-driven curiosity.",
+              "pass_2_note": "Passage 1 uses quiet interpersonal curiosity; Passage 2 uses a forbidden 'cheap cliffhanger' attack."
+            },
+            "pov_discipline": {
+              "baseline_score": 2.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses omniscient 'not knowing' tropes; Passage 2 stays grounded in Mara's sensory observations.",
+              "pass_2_note": "Passage 1 stays grounded in Mara's observations; Passage 2 uses omniscient clich\u00e9s ('not knowing if any of them would survive')."
+            },
+            "voice_distinctiveness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 is generic melodrama; Passage 2 is grounded, unsentimental, and attentive to domestic detail.",
+              "pass_2_note": "Passage 1 is unsentimental and concrete; Passage 2 is melodramatic AI slop."
+            },
+            "dialogue": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 uses 'hissed' and clich\u00e9 villain lines; Passage 2 is concrete and lightly wry.",
+              "pass_2_note": "Passage 1 is wry and natural; Passage 2 uses 'hissed' and generic villain tropes."
+            },
+            "prose_freshness": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 is filled with AI slop ('mix of relief and dread', 'It wasn't over'); Passage 2 uses specific imagery like 'alder clogs' and 'tallow dip'.",
+              "pass_2_note": "Passage 1 uses specific imagery (alder clogs, tallow dip); Passage 2 uses 'mix of relief and dread' and 'it wasn't over'."
+            },
+            "continuity_with_brief": {
+              "baseline_score": 1.0,
+              "candidate_score": 5.0,
+              "winner": "candidate",
+              "pass_1_note": "Passage 1 violates almost every hard constraint, including the ban on sudden attacks.",
+              "pass_2_note": "Passage 1 follows all hard constraints; Passage 2 violates the explicit ban on inventing a sudden attack."
+            }
+          }
+        }
+      ],
+      "source_pair_id": "P005",
+      "baseline_text_hash": "c748affb8959af6e13027e41a32b5026c2fffe987045b28e8f81a48d4b816f5d",
+      "candidate_text_hash": "1511082fb5b9310d05bc761b71800ba35bac6fb36d2fe10db163599bde806dd1"
+    }
+  ],
+  "interpretation": "Pairwise LLM-judge evaluation with randomized initial order and swapped-order double judging. Order-inconsistent pairs are recorded as position-biased ties rather than awarded as wins. LLM-judge win rates are an automated proxy and do not establish human author preference without blinded human calibration (`prose_judge.py blind` / `calibrate`)."
+}

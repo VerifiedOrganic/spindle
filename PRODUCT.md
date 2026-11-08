@@ -28,7 +28,7 @@ Spindle is a local Rust/SQLite service used through MCP clients and an embedded 
 
 ## Evidence on Hand
 
-`docs/serial-fiction-implementation.md` records implementation and verification. `evals/` contains twelve synthetic comparison cases and a blinded rating workflow. These fixtures establish behavior, not author preference or superior story quality; no such quality result has been measured.
+`docs/serial-fiction-implementation.md` records implementation and verification. `evals/` contains twelve synthetic comparison cases, a 30-brief pairwise LLM-judge prose evaluation kit (`evals/prose_judge.py`) with swapped-order double judging across multiple model families, and a blinded human rating and calibration workflow. Offline fixtures and uncalibrated LLM-judge scores establish tool behavior and proxy rubric comparisons, not human author preference; human-calibrated blind ratings remain required for superior story-quality claims.
 
 ## Product Principles
 
