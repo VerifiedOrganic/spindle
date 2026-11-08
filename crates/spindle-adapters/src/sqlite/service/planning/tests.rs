@@ -4998,7 +4998,7 @@ agent = "shared-db-agent"
         .await
         .unwrap();
 
-    let (reclaimed_id, fresh_token, _guard_2) = match svc_b
+    let (reclaimed_id, fresh_token, guard_2) = match svc_b
         .repository
         .claim_planning_generation_attempt(&s.id, None, Some("fenced-retry-key".into()))
         .await
@@ -5016,6 +5016,33 @@ agent = "shared-db-agent"
     assert_eq!(fenced_id, reclaimed_id);
     assert_ne!(stale_token, fresh_token);
 
+    // A third repository instance on the same database must see guard_2's live ownership
+    // even after guard_1 was dropped, and must not reclaim the fresh owner.
+    let pool_c = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let router_c = crate::ai::ModelRouter::local_only();
+    router_c
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let svc_c = SqliteSpindleService::new(Repository::with_model_router(
+        pool_c,
+        tmp.path().join("data_c"),
+        router_c,
+    ));
+    let third_reclaim = svc_c
+        .repository
+        .claim_planning_generation_attempt(&s.id, None, Some("fenced-retry-key".into()))
+        .await;
+    assert!(
+        third_reclaim.is_err(),
+        "third repository instance must not reclaim fresh owner after old guard is dropped"
+    );
+    assert!(
+        third_reclaim
+            .unwrap_err()
+            .to_string()
+            .contains("already in progress")
+    );
+
     let stale_reserve = svc_a
         .repository
         .reserve_planning_model_call(
@@ -5032,6 +5059,7 @@ agent = "shared-db-agent"
         stale_reserve.is_err(),
         "stale claim_token must not reserve budget"
     );
+    drop(guard_2);
 
     srv_handle.join().unwrap();
 }

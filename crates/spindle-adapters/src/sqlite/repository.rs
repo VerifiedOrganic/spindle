@@ -626,11 +626,11 @@ pub struct Repository {
 type PlanningRetryLockMap =
     std::sync::Mutex<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
 
-fn planning_attempt_lock_path(db_path: &Path, attempt_id: &str) -> Option<PathBuf> {
+fn planning_attempt_lock_path(db_path: &Path, claim_token: &str) -> Option<PathBuf> {
     if db_path.as_os_str().is_empty() || db_path == Path::new(":memory:") {
         return None;
     }
-    let sanitized: String = attempt_id
+    let sanitized: String = claim_token
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
@@ -647,44 +647,76 @@ fn planning_attempt_lock_path(db_path: &Path, attempt_id: &str) -> Option<PathBu
 
 pub(crate) fn acquire_planning_attempt_lock(
     db_path: &Path,
-    attempt_id: &str,
-) -> PlanningActiveAttemptGuard {
-    let mut lock_file = None;
-    let lock_path = planning_attempt_lock_path(db_path, attempt_id);
-    if let Some(ref lp) = lock_path
-        && let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(lp)
-    {
-        let _ = file.try_lock();
-        lock_file = Some(file);
-    }
-    PlanningActiveAttemptGuard {
-        lock_file,
-        lock_path,
+    claim_token: &str,
+) -> Result<PlanningActiveAttemptGuard> {
+    let Some(lp) = planning_attempt_lock_path(db_path, claim_token) else {
+        anyhow::bail!(
+            "cannot coordinate planning attempt lock on an empty or in-memory database path"
+        );
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lp)
+        .with_context(|| {
+            format!(
+                "failed to open planning attempt lock file '{}'",
+                lp.display()
+            )
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(PlanningActiveAttemptGuard {
+            lock_file: Some(file),
+            lock_path: Some(lp),
+        }),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            anyhow::bail!("planning attempt lock '{}' is already held", lp.display())
+        }
+        Err(std::fs::TryLockError::Error(err)) => Err(anyhow::Error::new(err).context(format!(
+            "failed to lock planning attempt lock file '{}'",
+            lp.display()
+        ))),
     }
 }
 
-pub(crate) fn is_planning_attempt_lock_held(db_path: &Path, attempt_id: &str) -> bool {
-    let Some(lp) = planning_attempt_lock_path(db_path, attempt_id) else {
-        return true;
+pub(crate) fn is_planning_attempt_lock_held(
+    db_path: &Path,
+    claim_token: Option<&str>,
+) -> Result<bool> {
+    let Some(token) = claim_token.filter(|t| !t.trim().is_empty()) else {
+        return Ok(false);
     };
-    let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&lp) else {
-        return false;
+    let Some(lp) = planning_attempt_lock_path(db_path, token) else {
+        anyhow::bail!(
+            "cannot inspect planning attempt lock on an empty or in-memory database path"
+        );
+    };
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(&lp) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(anyhow::Error::new(err).context(format!(
+                "failed to open planning attempt lock file '{}'",
+                lp.display()
+            )));
+        }
     };
     match file.try_lock() {
-        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
         Ok(()) => {
             let _ = file.unlock();
-            false
+            Ok(false)
         }
-        Err(_) => false,
+        Err(std::fs::TryLockError::Error(err)) => Err(anyhow::Error::new(err).context(format!(
+            "failed to probe planning attempt lock file '{}'",
+            lp.display()
+        ))),
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct PlanningActiveAttemptGuard {
     lock_file: Option<std::fs::File>,
     lock_path: Option<PathBuf>,

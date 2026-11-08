@@ -909,6 +909,7 @@ fn validate_stage_input_in_conn(
     Ok(findings)
 }
 
+#[derive(Debug)]
 pub(crate) enum PlanningAttemptClaim {
     Existing(Box<PlanningAdvanceReport>),
     Claimed {
@@ -1057,25 +1058,27 @@ impl Repository {
         self.pool()
             .read(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT id, outcome, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                    "SELECT outcome, claim_token, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
                 )?;
                 let mut rows = stmt.query(rusqlite::params![session_id, retry_key])?;
                 let Some(row) = rows.next()? else {
                     return Ok(Ok(None));
                 };
-                let id: String = row.get(0)?;
-                let outcome: String = row.get(1)?;
+                let outcome: String = row.get(0)?;
+                let claim_token: Option<String> = row.get(1)?;
                 let lease_expires_at: Option<i64> = row.get(2)?;
                 let data: String = row.get(3)?;
-                let now = timestamp_to_micros(chrono::Utc::now());
-                let lease_unexpired = lease_expires_at.is_none_or(|exp| now < exp);
-                if outcome == "in_progress"
-                    && lease_unexpired
-                    && super::is_planning_attempt_lock_held(&db_path, &id)
-                {
-                    return Ok(Ok(None));
-                }
-                Ok((|| -> Result<_> { Ok(Some(serde_json::from_str(&data)?)) })())
+                Ok((|| -> Result<_> {
+                    let now = timestamp_to_micros(chrono::Utc::now());
+                    let lease_unexpired = lease_expires_at.is_none_or(|exp| now < exp);
+                    if outcome == "in_progress"
+                        && lease_unexpired
+                        && super::is_planning_attempt_lock_held(&db_path, claim_token.as_deref())?
+                    {
+                        return Ok(None);
+                    }
+                    Ok(Some(serde_json::from_str(&data)?))
+                })())
             })
             .await?
     }
@@ -1093,24 +1096,27 @@ impl Repository {
                     check_session(conn, &session_id, &scope)?;
                     let now = timestamp_to_micros(chrono::Utc::now());
                     let mut stmt = conn.prepare(
-                        "SELECT id, outcome, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
+                        "SELECT outcome, claim_token, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
                     )?;
                     let rows = stmt
                         .query_map([&session_id], |r| {
                             Ok((
                                 r.get::<_, String>(0)?,
-                                r.get::<_, String>(1)?,
+                                r.get::<_, Option<String>>(1)?,
                                 r.get::<_, Option<i64>>(2)?,
                                 r.get::<_, String>(3)?,
                             ))
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     let mut out = Vec::new();
-                    for (id, outcome, lease_expires_at, data) in rows {
+                    for (outcome, claim_token, lease_expires_at, data) in rows {
                         let lease_unexpired = lease_expires_at.is_none_or(|exp| now < exp);
                         if outcome == "in_progress"
                             && lease_unexpired
-                            && super::is_planning_attempt_lock_held(&db_path, &id)
+                            && super::is_planning_attempt_lock_held(
+                                &db_path,
+                                claim_token.as_deref(),
+                            )?
                         {
                             continue;
                         }
@@ -1138,14 +1144,16 @@ impl Repository {
                     let now = timestamp_to_micros(chrono::Utc::now());
                     let lease_ttl_micros: i64 = 300_000_000;
                     if let Some(rk) = retry_key.as_deref() {
-                        let existing: Option<(String, String, Option<i64>, String)> = tx
+                        type ExistingAttemptRow =
+                            (String, String, Option<String>, Option<i64>, String);
+                        let existing: Option<ExistingAttemptRow> = tx
                             .query_row(
-                                "SELECT id, outcome, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                                "SELECT id, outcome, claim_token, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
                                 rusqlite::params![session_id, rk],
-                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                             )
                             .optional_inner()?;
-                        if let Some((existing_id, outcome, lease_expires_at, data)) = existing {
+                        if let Some((existing_id, outcome, existing_token, lease_expires_at, data)) = existing {
                             if outcome != "in_progress" {
                                 let report: PlanningAdvanceReport = serde_json::from_str(&data)?;
                                 return Ok(PlanningAttemptClaim::Existing(Box::new(report)));
@@ -1153,11 +1161,11 @@ impl Repository {
                             let lease_unexpired =
                                 lease_expires_at.is_none_or(|exp| now < exp);
                             anyhow::ensure!(
-                                !(lease_unexpired && super::is_planning_attempt_lock_held(&db_path, &existing_id)),
+                                !(lease_unexpired && super::is_planning_attempt_lock_held(&db_path, existing_token.as_deref())?),
                                 "planning generation attempt for retry_key '{rk}' is already in progress"
                             );
                             let claim_token = mint_id("planning_claim");
-                            let active_guard = super::acquire_planning_attempt_lock(&db_path, &existing_id);
+                            let active_guard = super::acquire_planning_attempt_lock(&db_path, &claim_token)?;
                             let created_at = now;
                             let next_lease = created_at + lease_ttl_micros;
                             let recovered_report = PlanningAdvanceReport {
@@ -1202,7 +1210,7 @@ impl Repository {
                     }
                     let attempt_id = mint_id("planning_generation_attempt");
                     let claim_token = mint_id("planning_claim");
-                    let active_guard = super::acquire_planning_attempt_lock(&db_path, &attempt_id);
+                    let active_guard = super::acquire_planning_attempt_lock(&db_path, &claim_token)?;
                     let created_at = now;
                     let next_lease = created_at + lease_ttl_micros;
                     let initial_report = PlanningAdvanceReport {
