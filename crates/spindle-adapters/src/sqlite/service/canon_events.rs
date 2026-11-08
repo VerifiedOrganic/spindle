@@ -146,4 +146,60 @@ impl SqliteSpindleService {
             .list_canon_source_maps(project_id, branch_id, source_table)
             .await
     }
+
+    pub async fn backfill_project_canon(&self, project_id: &str) -> Result<CanonBackfillReportV1> {
+        self.repository.backfill_project_canon(project_id).await
+    }
+
+    pub async fn backfill_project_canon_with_version(
+        &self,
+        project_id: &str,
+        migration_version: u32,
+    ) -> Result<CanonBackfillReportV1> {
+        self.repository
+            .backfill_project_canon_with_version(project_id, migration_version)
+            .await
+    }
+
+    pub async fn compare_canon_compatibility_shadow_reads(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        placement: Option<StoryPlacement>,
+    ) -> Result<CanonCompatibilityShadowReportV1> {
+        self.repository
+            .compare_canon_compatibility_shadow_reads(project_id, branch_id, placement)
+            .await
+    }
+
+    pub async fn evaluate_project_canon_cutover_readiness(
+        &self,
+        project_id: &str,
+    ) -> Result<ProjectCutoverReadinessV1> {
+        self.repository
+            .evaluate_project_canon_cutover_readiness(project_id)
+            .await
+    }
+
+    pub async fn evaluate_project_canon_cutover_readiness_with_version(
+        &self,
+        project_id: &str,
+        migration_version: u32,
+    ) -> Result<ProjectCutoverReadinessV1> {
+        self.repository
+            .evaluate_project_canon_cutover_readiness_with_version(project_id, migration_version)
+            .await
+    }
+
+    pub async fn get_canon_projected_subject_snapshot(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        subject: &spindle_core::subject::Subject,
+        placement: Option<&StoryPlacement>,
+    ) -> Result<spindle_core::subject_snapshot::SubjectSnapshot> {
+        self.repository
+            .get_canon_projected_subject_snapshot(project_id, branch_id, subject, placement)
+            .await
+    }
 }

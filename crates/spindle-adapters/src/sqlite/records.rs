@@ -3175,7 +3175,7 @@ impl<'a> TryFrom<&Row<'a>> for StoredProjectCalendar {
 pub const SCENE_CLOCK_COLUMNS: &str = "scene_id, project_id, branch_id, day_index, \
      time_of_day, duration_days, precision, temporal_mode, thread_key, created_at, updated_at";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSceneClock {
     pub scene_id: String,
     pub project_id: String,
@@ -3209,7 +3209,7 @@ impl<'a> TryFrom<&Row<'a>> for StoredSceneClock {
 pub const TIMELINE_EVENT_CLOCK_COLUMNS: &str = "timeline_event_id, project_id, branch_id, \
      day_index, time_of_day, duration_days, precision, created_at, updated_at";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredTimelineEventClock {
     pub timeline_event_id: String,
     pub project_id: String,
@@ -3340,7 +3340,7 @@ pub const QUANTITY_STATE_COLUMNS: &str = "id, project_id, branch_id, subject_tab
      subject_id, measure, amount, unit, band, change_reason, scene_id, book_number, \
      chapter_number, scene_order, created_at";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredQuantityState {
     pub id: String,
     pub project_id: String,
@@ -3475,7 +3475,7 @@ pub const CANON_DELTA_COLUMNS: &str = "id, project_id, branch_id, scene_id, \
 /// stored microsecond [`Timestamp`]; the adapter maps them to ISO-8601 strings
 /// when producing the spindle-core [`spindle_core::models::CanonDelta`] read
 /// model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCanonDelta {
     pub id: String,
     pub project_id: String,

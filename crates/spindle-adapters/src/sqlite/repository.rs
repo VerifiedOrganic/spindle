@@ -743,6 +743,8 @@ struct Inner {
 mod authoring;
 mod branches;
 mod canon;
+pub mod canon_backfill;
+pub use canon_backfill::*;
 mod canon_events;
 mod characters;
 mod entities;
