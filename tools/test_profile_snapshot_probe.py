@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from profile_snapshot_probe import check_budget, compact, measure, probe
+from profile_snapshot_probe import check_budget, check_unknown_profile_rejected, compact, measure, probe
 
 
 class ProbeTests(unittest.TestCase):
@@ -73,6 +73,14 @@ for line in sys.stdin:
             self.assertEqual(len(children), 1)
             self.assertIsNotNone(children[0].poll())
             self.assertFalse(workspaces[0].exists())
+
+    def test_unknown_profile_guard_requires_rejection_before_data_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = self.server(directory, "import sys\nprint('unknown tool profile', file=sys.stderr)\nraise SystemExit(1)\n")
+            check_unknown_profile_rejected(binary)
+            binary = self.server(directory, 'raise SystemExit(0)\n')
+            with self.assertRaises(AssertionError):
+                check_unknown_profile_rejected(binary)
 
     def test_early_exit_fails_instead_of_hanging(self):
         with tempfile.TemporaryDirectory() as directory:

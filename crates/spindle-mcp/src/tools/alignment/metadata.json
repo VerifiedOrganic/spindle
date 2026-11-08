@@ -1,7 +1,8 @@
 {
   "authoring-supervisor": {
     "profiles": [
-      "default"
+      "default",
+      "workflow-authoring"
     ],
     "references": [],
     "requires_skills": [
@@ -51,7 +52,8 @@
   },
   "bible-librarian": {
     "profiles": [
-      "default"
+      "default",
+      "release"
     ],
     "references": [],
     "requires_skills": [
@@ -139,7 +141,8 @@
   },
   "character-creator": {
     "profiles": [
-      "default"
+      "default",
+      "worldbuilding"
     ],
     "references": [],
     "requires_skills": [
@@ -208,13 +211,16 @@
   },
   "editor": {
     "profiles": [
-      "default"
+      "default",
+      "release",
+      "style"
     ],
     "references": [
       {
         "name": "editor/style",
         "profiles": [
-          "default"
+          "default",
+          "style"
         ],
         "tools": [
           "apply_style_profile",
@@ -268,7 +274,8 @@
   },
   "manuscript-importer": {
     "profiles": [
-      "default"
+      "default",
+      "workflow-import"
     ],
     "references": [],
     "requires_skills": [
@@ -294,7 +301,8 @@
   },
   "plot-architect": {
     "profiles": [
-      "default"
+      "default",
+      "planning"
     ],
     "references": [],
     "requires_skills": [
@@ -335,7 +343,8 @@
   },
   "researcher": {
     "profiles": [
-      "default"
+      "default",
+      "research"
     ],
     "references": [],
     "requires_skills": [
@@ -356,7 +365,8 @@
   },
   "revision-manager": {
     "profiles": [
-      "default"
+      "default",
+      "revision"
     ],
     "references": [],
     "requires_skills": [
@@ -396,7 +406,9 @@
   },
   "scene-writer": {
     "profiles": [
-      "default"
+      "default",
+      "workflow-authoring",
+      "workflow-write"
     ],
     "references": [
       {
@@ -454,14 +466,27 @@
   "spindle": {
     "profiles": [
       "authoring",
-      "default"
+      "default",
+      "planning",
+      "release",
+      "research",
+      "revision",
+      "setup",
+      "style",
+      "workflow-authoring",
+      "workflow-import",
+      "workflow-write",
+      "worldbuilding"
     ],
     "references": [
       {
         "name": "spindle/setup",
         "profiles": [
           "authoring",
-          "default"
+          "default",
+          "setup",
+          "workflow-authoring",
+          "workflow-write"
         ],
         "tools": [
           "create_book",
@@ -493,7 +518,8 @@
   },
   "worldbuilder": {
     "profiles": [
-      "default"
+      "default",
+      "worldbuilding"
     ],
     "references": [],
     "requires_skills": [

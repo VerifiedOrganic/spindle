@@ -93,16 +93,55 @@ def probe(binary, profile, request_timeout=30):
                 reader.join(timeout=5)
 
 
+def check_unknown_profile_rejected(binary):
+    for http in (False, True):
+        with tempfile.TemporaryDirectory(prefix='spindle-profile-invalid-', dir='/tmp') as directory:
+            config = Path(directory) / 'config.toml'
+            config.write_text('')
+            env = {k: v for k, v in os.environ.items() if not k.startswith('SPINDLE_')}
+            env.update(SPINDLE_DATA_DIR=directory, SPINDLE_CONFIG=str(config), SPINDLE_TOOL_PROFILE='unknown-profile')
+            if http:
+                env['SPINDLE_HTTP_ADDR'] = '127.0.0.1:0'
+            result = subprocess.run([str(binary)], cwd=directory, env=env, input=b'', capture_output=True, timeout=10)
+            assert result.returncode != 0 and b'unknown tool profile' in result.stderr, result.stderr.decode(errors='replace')
+            assert not result.stdout, 'invalid startup must not serve MCP'
+            assert sorted(p.name for p in Path(directory).iterdir()) == ['config.toml'], 'profile validation must precede data access'
+    print('unknown profile: rejected before data access in stdio and HTTP modes')
+
+
+def check_profile_cli(binary, budgets):
+    with tempfile.TemporaryDirectory(prefix='spindle-profile-cli-', dir='/tmp') as directory:
+        config = Path(directory) / 'config.toml'
+        config.write_text('')
+        env = {k: v for k, v in os.environ.items() if not k.startswith('SPINDLE_')}
+        env.update(SPINDLE_DATA_DIR=directory, SPINDLE_CONFIG=str(config))
+        result = subprocess.run([str(binary), 'profiles', '--json'], cwd=directory, env=env, capture_output=True, timeout=10, check=True)
+        catalog = json.loads(result.stdout)
+        assert {p['name'] for p in catalog} == set(budgets['compatibility']) - {'default'}
+        generated = json.loads((ROOT / 'tools/generated-profiles.json').read_text())
+        actual = {p['name']: p for p in catalog}
+        for profile in generated:
+            for key in ('tools', 'units', 'description'):
+                assert actual[profile['name']][key] == profile[key], (profile['name'], key)
+        help_result = subprocess.run([str(binary), '--help'], cwd=directory, env=env, capture_output=True, timeout=10, check=True)
+        for profile in catalog:
+            assert profile['name'].encode() in help_result.stdout
+        assert sorted(p.name for p in Path(directory).iterdir()) == ['config.toml']
+    print('profile CLI: composition metadata and startup help match, without data access')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=ROOT / 'target/debug/spindle-mcp')
     args = parser.parse_args()
+    check_unknown_profile_rejected(args.binary.resolve())
     budgets = json.loads((ROOT / 'tools/profile-budgets.json').read_text())
     assert budgets['version'] == 1
-    for profile in ('default', 'minimal', 'write', 'import', 'authoring', 'unknown-profile'):
-        expected = json.loads((SNAPSHOTS / f'{"default" if profile == "unknown-profile" else profile}.json').read_text())
+    check_profile_cli(args.binary.resolve(), budgets)
+    for profile in budgets['compatibility']:
+        expected = json.loads((SNAPSHOTS / f'{"default" if profile == "legacy-all" else profile}.json').read_text())
         actual = probe(args.binary.resolve(), profile)
-        budget_profile = 'default' if profile == 'unknown-profile' else profile
+        budget_profile = 'default' if profile == 'legacy-all' else profile
         check_budget(actual['tools'], budgets['compatibility'][budget_profile])
         count, inputs, full = measure(actual['tools'])
         print(f'{profile}: {count} tools; input {inputs} bytes ({(inputs + 3)//4} tokens); '

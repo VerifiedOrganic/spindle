@@ -1,3 +1,4 @@
+use super::static_tool_names;
 pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'static str]> {
     match profile {
         "import" => Some(&[
@@ -266,6 +267,87 @@ pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'st
             "create_save_point",
             "restore_save_point",
         ]),
-        _ => None,
+        _ => spindle_adapters::guidance::list_profiles()
+            .iter()
+            .find(|p| p.name == profile)
+            .map(|p| p.tools),
+    }
+}
+
+pub(crate) fn profile_names() -> Vec<&'static str> {
+    let mut names = vec!["minimal", "write", "import", "authoring", "legacy-all"];
+    names.extend(
+        spindle_adapters::guidance::list_profiles()
+            .iter()
+            .map(|p| p.name),
+    );
+    names.sort_unstable();
+    names
+}
+
+pub(crate) fn validate_tool_profile(profile: Option<&str>) -> anyhow::Result<()> {
+    if let Some(profile) = profile {
+        anyhow::ensure!(
+            profile_names().contains(&profile),
+            "unknown tool profile '{profile}'; choose one of: {}. Unset SPINDLE_TOOL_PROFILE keeps the compatibility catalog",
+            profile_names().join(", ")
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn profile_has_tool(profile: Option<&str>, name: &str) -> bool {
+    if !static_tool_names().contains(name) {
+        return false;
+    }
+    match profile {
+        None | Some("legacy-all") => true,
+        Some(profile) => {
+            profile_allowed_tool_names(profile).is_some_and(|allowed| allowed.contains(&name))
+        }
+    }
+}
+
+pub(crate) fn profile_help() -> String {
+    format!(
+        "Select a startup profile with SPINDLE_TOOL_PROFILE. Profiles: {}. Unset and legacy-all keep the full compatibility catalog. Generated profiles retain current schemas; run 'spindle-mcp profiles' for units and capabilities.",
+        profile_names().join(", ")
+    )
+}
+
+pub(crate) fn print_profiles(json: bool) {
+    let generated = spindle_adapters::guidance::list_profiles();
+    if json {
+        let entries: Vec<_> = profile_names().iter().map(|name| {
+            if let Some(profile) = generated.iter().find(|p| p.name == *name) {
+                serde_json::json!({"name": profile.name, "description": profile.description, "units": profile.units, "tools": profile.tools, "catalog": "generated-transitional"})
+            } else {
+                let mut names: Vec<_> = if *name == "legacy-all" { static_tool_names().iter().copied().collect() } else { profile_allowed_tool_names(name).unwrap().to_vec() };
+                names.sort_unstable();
+                serde_json::json!({"name": name, "catalog": "compatibility", "tools": names})
+            }
+        }).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&entries).expect("profile catalog")
+        );
+    } else {
+        println!(
+            "Unset profile: full compatibility catalog ({} tools).",
+            static_tool_names().len()
+        );
+        for name in profile_names() {
+            if let Some(p) = generated.iter().find(|p| p.name == name) {
+                println!(
+                    "{} ({} tools): {} Units: {}",
+                    p.name,
+                    p.tools.len(),
+                    p.description,
+                    p.units.join(", ")
+                );
+            } else {
+                println!("{name}: unchanged compatibility catalog.");
+            }
+        }
     }
 }

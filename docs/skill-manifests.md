@@ -26,14 +26,15 @@ annotations, never alternate callable names. This deliberately conservative
 scanner covers prose, code spans, and fenced examples; remove obsolete tool
 mentions instead of concealing them behind negative examples.
 
-Current long-form cores describe broad workflows, so most honestly declare only
-the unset `default` profile. `default` is an internal manifest label for no startup
-profile setting, not a newly registered profile. These declarations are coverage
-assertions, not a profile compiler or access grant. Current named profiles and
-`tools/list` bytes remain unchanged. Narrow cores, generated task profiles,
-profile-aware loader messages, schema hygiene lint and target size ceilings follow
-in later P4 PRs. Do not advertise a workflow in a narrow profile until its complete
-dependency closure fits there.
+`skills/profiles.toml` now composes generated workflow profiles from core and
+reference units. The build includes transitive skill dependencies and appends
+generated profile membership to embedded manifests. Authored `profiles` arrays
+remain coverage assertions for compatibility profiles. The unset `default` label
+means no startup setting. See [profile selection and measurements](tool-profiles.md)
+for new names, enabled units, static compiler snapshots and transitional limits.
+Current long-form cores remain broad; narrowed cores, profile-aware loader
+messages and canonical schema/size cleanup follow. Reading a skill never grants
+new capabilities.
 
 `tools/tool-dispositions.toml` freezes every currently shipped registry name.
 Retained entries need a skill/reference owner; compatibility entries have an
