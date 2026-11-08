@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -122,9 +121,12 @@ async fn check_browser_origin(
     next.run(request).await
 }
 
-pub async fn serve(service: SpindleService, addr: SocketAddr) -> anyhow::Result<()> {
-    let ct = CancellationToken::new();
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+pub async fn serve_with_listener(
+    service: SpindleService,
+    listener: tokio::net::TcpListener,
+    ct: CancellationToken,
+) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
     tracing::info!("spindle mcp listening on http://{addr}/mcp");
     axum::serve(listener, mcp_router(service, ct.clone()))
         .with_graceful_shutdown(async move { ct.cancelled_owned().await })

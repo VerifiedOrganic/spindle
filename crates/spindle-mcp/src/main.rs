@@ -119,24 +119,7 @@ async fn main() -> anyhow::Result<()> {
     // file is removed on shutdown. (The external harness still reaches the server
     // via --server-url; the addr file serves the server's own dispatch-back.)
     if let Some(addr) = http_listen_addr()? {
-        let _primary_lock = try_acquire_primary_lock(&data_dir)?;
-        let db = init_sqlite(&db_path).await?;
-        let service = build_service(db, &data_dir, config_path);
-        let _addr_guard = match internal_listener::claim_addr_file(&data_dir, addr).await {
-            internal_listener::AddrClaim::Won => {
-                tracing::info!("http mode: claimed primacy; addr file points at {addr}/mcp");
-                Some(AddrFileGuard::new(data_dir.clone(), addr))
-            }
-            internal_listener::AddrClaim::LostTo(existing) => {
-                tracing::warn!(
-                    "http mode: existing primary at {existing} already owns addr file; serving HTTP on {addr} without overwriting addr file"
-                );
-                None
-            }
-        };
-        let result = http::serve(service, addr).await;
-        drop(_addr_guard);
-        return result;
+        return run_http_mode(&data_dir, &db_path, config_path, addr).await;
     }
 
     // Default: try to become primary via cross-process runtime lock, fall back
@@ -152,6 +135,65 @@ async fn main() -> anyhow::Result<()> {
             run_secondary(&data_dir, &db_path).await
         }
     }
+}
+
+async fn run_http_mode(
+    data_dir: &Path,
+    db_path: &Path,
+    config_path: Option<String>,
+    addr: SocketAddr,
+) -> anyhow::Result<()> {
+    run_http_mode_with_shutdown(
+        data_dir,
+        db_path,
+        config_path,
+        addr,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+pub(crate) async fn run_http_mode_with_shutdown(
+    data_dir: &Path,
+    db_path: &Path,
+    config_path: Option<String>,
+    addr: SocketAddr,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
+    let Some(_primary_lock) = try_acquire_primary_lock(data_dir)? else {
+        let existing = read_addr_file(data_dir)
+            .map(|existing| format!(" (active primary listener at {existing})"))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "cannot start HTTP server on {addr}: primary lock for workspace {} is already held by another process{existing}",
+            data_dir.display()
+        );
+    };
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding HTTP listener on {addr}"))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("reading bound HTTP listener address")?;
+
+    let db = init_sqlite(db_path).await?;
+    let service = build_service(db, data_dir, config_path);
+    let _addr_guard = match internal_listener::claim_addr_file(data_dir, bound_addr).await? {
+        internal_listener::AddrClaim::Won => {
+            tracing::info!("http mode: claimed primacy; addr file points at {bound_addr}/mcp");
+            AddrFileGuard::new(data_dir.to_path_buf(), bound_addr)
+        }
+        internal_listener::AddrClaim::LostTo(existing) => {
+            anyhow::bail!(
+                "cannot start HTTP server on {bound_addr}: existing primary at {existing} already owns addr file"
+            );
+        }
+    };
+
+    let result = http::serve_with_listener(service, listener, shutdown).await;
+    internal_listener::shutdown_lazy_listener(data_dir).await;
+    result
 }
 
 /// Open or create the SQLite-backed Spindle DB at the canonical path inside
@@ -298,15 +340,19 @@ where
     let listener = internal_listener::spawn_internal_listener(service.clone()).await?;
     let addr = listener.addr();
     let addr_guard = match internal_listener::claim_addr_file(data_dir, addr).await {
-        internal_listener::AddrClaim::Won => {
+        Ok(internal_listener::AddrClaim::Won) => {
             tracing::info!("primary: internal MCP listener on {addr}");
             Some(AddrFileGuard::new(data_dir.to_path_buf(), addr))
         }
-        internal_listener::AddrClaim::LostTo(existing) => {
+        Ok(internal_listener::AddrClaim::LostTo(existing)) => {
             tracing::warn!(
                 "primary: internal MCP listener bound on {addr}, but live listener at {existing} already owns addr file"
             );
             None
+        }
+        Err(err) => {
+            listener.shutdown();
+            return Err(err);
         }
     };
 
@@ -503,13 +549,17 @@ pub(crate) fn addr_file_path(data_dir: &Path) -> PathBuf {
 }
 
 pub fn write_addr_file(data_dir: &Path, addr: SocketAddr) -> anyhow::Result<()> {
+    let _lock = acquire_addr_file_lock(data_dir);
+    write_addr_file_unlocked(data_dir, addr)
+}
+
+pub(crate) fn write_addr_file_unlocked(data_dir: &Path, addr: SocketAddr) -> anyhow::Result<()> {
     let path = addr_file_path(data_dir);
     let parent = path
         .parent()
         .context("addr file path must have a parent directory")?;
     std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
 
-    let _lock = acquire_addr_file_lock(data_dir);
     static NEXT_TMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let seq = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp_path = parent.join(format!("spindle.addr.tmp.{}.{seq}", std::process::id()));
@@ -963,5 +1013,130 @@ mod tests {
         let _ = secondary_task.await;
         let _ = primary_client.cancel().await;
         let _ = primary_task.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_mode_requires_primary_lock_and_cooperates_with_stdio_and_http_peers() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let data_dir = temp.path().join(".spindle");
+        let db_path = data_dir.join("spindle.db");
+
+        // (1) While a stdio primary holds the primary lock, starting HTTP mode
+        // on the same workspace must fail fast before binding or overwriting
+        // the stdio primary's addr file.
+        let stdio_lock = try_acquire_primary_lock(&data_dir)
+            .expect("lock attempt")
+            .expect("stdio primary wins lock");
+        let stdio_addr: SocketAddr = "127.0.0.1:42001".parse().unwrap();
+        write_addr_file(&data_dir, stdio_addr).expect("write stdio addr");
+
+        let err = run_http_mode_with_shutdown(
+            &data_dir,
+            &db_path,
+            None,
+            "127.0.0.1:0".parse().unwrap(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("HTTP mode must reject startup when stdio primary holds workspace lock");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("primary lock for workspace") && msg.contains("42001"),
+            "error should report held workspace lock and active primary addr: {msg}"
+        );
+        assert_eq!(
+            read_addr_file(&data_dir).expect("stdio addr must remain intact"),
+            stdio_addr
+        );
+        remove_addr_file(&data_dir);
+        drop(stdio_lock);
+
+        // (2) Once the lock is free, HTTP mode claims primacy, writes its bound
+        // addr to `spindle.addr`, rejects a second concurrent HTTP server on the
+        // same workspace, and allows a stdio secondary to proxy through it.
+        let http_shutdown = tokio_util::sync::CancellationToken::new();
+        let http_data_dir = data_dir.clone();
+        let http_db_path = db_path.clone();
+        let http_shutdown_clone = http_shutdown.clone();
+        let http_task = tokio::spawn(async move {
+            run_http_mode_with_shutdown(
+                &http_data_dir,
+                &http_db_path,
+                None,
+                "127.0.0.1:0".parse().unwrap(),
+                http_shutdown_clone,
+            )
+            .await
+        });
+
+        let active_http_addr = proxy::wait_for_primary(&data_dir)
+            .await
+            .expect("wait for HTTP primary to become healthy");
+
+        let second_http_err = run_http_mode_with_shutdown(
+            &data_dir,
+            &db_path,
+            None,
+            "127.0.0.1:0".parse().unwrap(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("second HTTP server on same workspace must fail primary election");
+        assert!(
+            format!("{second_http_err:#}").contains("primary lock for workspace"),
+            "unexpected second HTTP error: {second_http_err:#}"
+        );
+        assert_eq!(
+            read_addr_file(&data_dir).expect("first HTTP primary addr must remain intact"),
+            active_http_addr
+        );
+
+        // A stdio instance started alongside the HTTP primary loses primary
+        // election and proxies through the HTTP primary.
+        assert!(
+            try_acquire_primary_lock(&data_dir)
+                .expect("stdio lock check")
+                .is_none()
+        );
+        let (secondary_server_io, secondary_client_io) = tokio::io::duplex(64 * 1024);
+        let secondary_data_dir = data_dir.clone();
+        let secondary_task = tokio::spawn(async move {
+            run_secondary_with_io(&secondary_data_dir, secondary_server_io).await
+        });
+        let secondary_client =
+            ().serve(secondary_client_io)
+                .await
+                .expect("connect stdio secondary to HTTP primary");
+        let create_result = secondary_client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("create_project").with_arguments(
+                    serde_json::json!({
+                        "name": "HTTP Primary Novel",
+                        "project_type": "novel",
+                        "genre": "fantasy",
+                        "reader_contract": {
+                            "promise": "Created via stdio secondary proxying to HTTP primary"
+                        }
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .expect("create_project via stdio secondary to HTTP primary");
+        assert_eq!(create_result.is_error, Some(false));
+
+        let _ = secondary_client.cancel().await;
+        let _ = secondary_task.await;
+        http_shutdown.cancel();
+        http_task
+            .await
+            .expect("join http task")
+            .expect("http primary clean exit");
+        assert!(
+            !addr_file_path(&data_dir).exists(),
+            "HTTP primary must remove its addr file on shutdown"
+        );
     }
 }
