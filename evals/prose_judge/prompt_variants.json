@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "description": "Prompt and context variants for the prose_judge generation adapter. Compare two variants end-to-end or load pre-generated candidate files.",
+  "default_generator": {
+    "provider": "ollama",
+    "endpoint": "https://ollama.com",
+    "model": "glm-5.3-flash",
+    "api_key_env": "OLLAMA_API_KEY",
+    "temperature": 0.4,
+    "max_tokens": 1200
+  },
+  "variants": {
+    "compact_baseline": {
+      "id": "compact_baseline",
+      "label": "Compact 3-summary baseline",
+      "context_mode": "compact",
+      "system_prompt": "You are a fiction drafting assistant. Write the requested scene based on the brief and recent summaries. Return story prose only.",
+      "user_template": "Write 350-550 words for this scene.\nContract: {contract}\nPOV: {pov_character} ({pov_perspective})\nScene type: {scene_type}\nTask: {task}\n\nRecent episode summaries:\n{compact_summaries}\n\nOutput prose only."
+    },
+    "spindle_full_context": {
+      "id": "spindle_full_context",
+      "label": "Spindle full scene context + anti-slop discipline",
+      "context_mode": "full_drafter_context",
+      "system_prompt": "You are Spindle's scene-writing agent. Honor every hard constraint ([IN-WORLD TIME], [WORLD RULE], [SECRETS IN PLAY], [WEALTH/STATE], [KNOWLEDGE GATE]), maintain strict POV discipline and distinct character voice, fulfill the scene purpose with a concrete dramatic turn, and avoid prefab AI prose cliches ('not X, but Y' contrast hinges, emotion cocktails, fishing-for-significance endings, and said-bookism clusters). Return story prose only.",
+      "user_template": "Write 350-550 words for this scene.\n\n{context_markdown}\n\n## Drafting Task\n- Scene Type: {scene_type}\n- Scene Purpose: {scene_purpose}\n- Required Turn: {tension_turn}\n- Task: {task}\n\nOutput prose only."
+    }
+  }
+}

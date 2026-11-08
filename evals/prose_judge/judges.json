@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "description": "Configurable multi-family LLM judge panel for Spindle pairwise prose evaluation. Keys are read from environment only (use `ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py ...`) and never printed.",
+  "live_judges": [
+    {
+      "id": "ollama-glm-5.3-flash",
+      "family": "zhipu-glm",
+      "provider": "ollama",
+      "endpoint": "https://ollama.com",
+      "model": "glm-5.3-flash",
+      "api_key_env": "OLLAMA_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 2048
+    },
+    {
+      "id": "ollama-deepseek-v4.1-flash",
+      "family": "deepseek",
+      "provider": "ollama",
+      "endpoint": "https://ollama.com",
+      "model": "deepseek-v4.1-flash",
+      "api_key_env": "OLLAMA_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 2048
+    },
+    {
+      "id": "ollama-gemma4-31b",
+      "family": "google-gemma",
+      "provider": "ollama",
+      "endpoint": "https://ollama.com",
+      "model": "gemma4:31b",
+      "api_key_env": "OLLAMA_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 2048
+    }
+  ],
+  "alternate_provider_judges": [
+    {
+      "id": "claude-sonnet",
+      "family": "anthropic-claude",
+      "provider": "anthropic",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "model": "claude-sonnet-4-6",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 2048
+    },
+    {
+      "id": "fireworks-kimi",
+      "family": "moonshot-kimi",
+      "provider": "openai-compatible",
+      "endpoint": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "model": "accounts/fireworks/models/kimi-k2-instruct",
+      "api_key_env": "FIREWORKS_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 2048
+    }
+  ],
+  "offline_judges": [
+    {
+      "id": "fake-structural-critic",
+      "family": "synthetic-structural",
+      "provider": "fake",
+      "endpoint": "offline://structural",
+      "model": "spindle-fake-judge-structural-v1",
+      "api_key_env": null,
+      "profile": "structural"
+    },
+    {
+      "id": "fake-voice-critic",
+      "family": "synthetic-voice",
+      "provider": "fake",
+      "endpoint": "offline://voice",
+      "model": "spindle-fake-judge-voice-v1",
+      "api_key_env": null,
+      "profile": "voice"
+    },
+    {
+      "id": "fake-continuity-critic",
+      "family": "synthetic-continuity",
+      "provider": "fake",
+      "endpoint": "offline://continuity",
+      "model": "spindle-fake-judge-continuity-v1",
+      "api_key_env": null,
+      "profile": "continuity"
+    }
+  ]
+}

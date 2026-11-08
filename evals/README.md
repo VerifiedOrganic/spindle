@@ -113,3 +113,121 @@ credit, rated counts, separate craft/effort means and known/unknown usage. It
 reports missing judgments and does not rank an unjudged experiment as a win.
 Twelve cases are a screening set. Before changing your production writing
 workflow, repeat on several real arcs and have the author judge the results.
+
+---
+
+# Pairwise LLM-judge prose quality kit
+
+`evals/prose_judge.py` (+ fixtures under `evals/prose_judge/`) evaluates pairwise
+prose quality across a fixed suite of 30 scene briefs (`PJ01`–`PJ30` in
+`evals/prose_judge/briefs.json`). The 30 briefs span six synthetic projects and
+six genres (`fantasy`, `comic fantasy`, `science fiction`, `noir mystery`,
+`political intrigue`, `progression fantasy`, `gothic horror`), three POV modes
+(`first_person`, `third_limited`, `close_third`), and five scene types (six
+briefs each: `action`, `dialogue-heavy`, `quiet-interior`, `reveal`,
+`chapter-closer`). Every brief carries the full Spindle drafter context packet
+(location, in-world time anchor, hard constraints, character snapshots with
+knowledge gates, prior episode summaries, previous-scene closing lines, open
+promises, and rendered Markdown context).
+
+## Offline self-test & CI-free evaluation
+
+CI runs `python3 evals/prose_judge.py self-test` offline on every pull request:
+
+```sh
+python3 evals/prose_judge.py self-test
+python3 evals/prose_judge.py check-keys
+python3 evals/prose_judge.py judge --out evals/results/prose_judge_offline_baseline.json
+```
+
+`evals/prose_judge/fixture_pairs.json` supplies 30 saved `(baseline, candidate)`
+pairs (22 where `candidate` is stronger, 5 where `baseline` is stronger, and 3
+closely matched ties) so bidirectional discrimination, position-bias guards,
+bootstrap confidence intervals, and inter-judge kappa can be verified without
+network calls.
+
+## Swapped-order double judging & multi-family judge panels
+
+For every `(brief, judge)` pair, `prose_judge.py` runs **two independent passes**:
+
+1. **Pass 1 (randomized order):** a seeded RNG assigns `baseline` and `candidate`
+   to neutral labels `Passage 1` and `Passage 2`.
+2. **Pass 2 (swapped order):** the passages are evaluated again in reversed
+   order (`Passage 1` and `Passage 2` swapped).
+
+Each pass requires a structured 7-dimension rubric (`scene_purpose_fulfilled`,
+`tension_turn`, `pov_discipline`, `voice_distinctiveness`, `dialogue`,
+`prose_freshness`, `continuity_with_brief` scored 1–5 with per-dimension winner
+and note) plus `overall_preference` and `rationale`. If swapping presentation
+order changes the judge's de-blinded winner, the pair is flagged as
+order-inconsistent (`position_bias_kind`: `first_position`, `second_position`,
+or `tie_flip`) and resolved to a tie rather than awarded as an outright win.
+
+Judge panels are configured in `evals/prose_judge/judges.json` across multiple
+model families and providers (`ollama`, `anthropic`, `openai-compatible`, and
+`fake`). Multi-judge runs enforce at least two distinct model families and
+report:
+
+- **Win rates** (`candidate_win_rate_tie_half`, `candidate_outright_win_rate`,
+  `baseline_outright_win_rate`, `tie_rate`) with **95% non-parametric bootstrap
+  confidence intervals** (`n_resamples = 2000`).
+- **Position-bias rate** and order-consistency rate (overall and per-judge).
+- **Inter-judge agreement** (pairwise raw agreement, non-tie directional
+  agreement, **Cohen's kappa**, and multi-rater **Fleiss' kappa**).
+
+## Live evaluation & generation adapter (`ai run`)
+
+API keys are read from environment variables only and never printed or logged.
+Check key status with `ai keys ls` or `python3 evals/prose_judge.py check-keys`,
+and run live calls via `ai run`:
+
+```sh
+# Generate candidate outputs for two prompt variants end-to-end:
+ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py generate \
+  --variant compact_baseline --condition baseline --limit 5 --out /tmp/base.json
+ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py generate \
+  --variant spindle_full_context --condition candidate --limit 5 --out /tmp/cand.json
+
+# Run live multi-family Ollama Cloud judges (zhipu-glm, deepseek, google-gemma):
+ai run OLLAMA_API_KEY -- python3 evals/prose_judge.py judge \
+  --live --limit 5 --out evals/results/prose_judge_live_ollama_smoke.json
+```
+
+You can also compare saved candidate files directly via
+`--baseline /path/to/base.json --candidate /path/to/cand.json` or compare two
+prompt variants from `evals/prose_judge/prompt_variants.json` in one step with
+`--variant-a compact_baseline --variant-b spindle_full_context`.
+
+## Human calibration (~100 pairs)
+
+`prose_judge.py` reuses and extends `serial_fiction.py blind` (`--pairwise`) so
+an operator can blind and label ~100 pairs without seeing condition names,
+prompt variants, or model identities:
+
+```sh
+python3 evals/prose_judge.py blind --count 100 --out /tmp/prose-calibration --seed 20261107
+# Operator fills preferred ("A", "B", or ["A", "B"] for tie) in /tmp/prose-calibration/ratings.json
+python3 evals/prose_judge.py calibrate \
+  --key /tmp/prose-calibration/private-key.json \
+  --ratings /tmp/prose-calibration/ratings.json \
+  --judge-results evals/results/prose_judge_offline_baseline.json
+```
+
+`calibrate` reports raw agreement, non-tie directional agreement, Cohen's kappa
+between each judge (and panel consensus) and the human rater, the 3×3 confusion
+matrix, and candidate/tie preference drift relative to human labels.
+
+## What this kit does and does not establish
+
+- **What it establishes:** reproducible pairwise comparisons between two drafting
+  configurations or saved candidate sets across 30 structured scene briefs,
+  explicit accounting for presentation-order position bias via swapped-order
+  double judging, inter-judge agreement across distinct model families, and
+  quantified judge-human alignment when paired with a blinded human calibration
+  set.
+- **What it does NOT establish:** LLM judges are automated proxies with known
+  failure modes (surface fluency bias, length sensitivity, and blind spots on
+  long-horizon structural payoff). Uncalibrated LLM-judge win rates do not prove
+  human reader preference or publication-grade novel quality across a full book.
+  Use blinded human calibration ratings before treating proxy win-rate gains as
+  validated story-quality improvements.
