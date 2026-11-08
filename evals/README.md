@@ -150,11 +150,14 @@ python3 evals/continuity_recall.py --deep --agent-config /path/to/spindle.toml -
 ```
 
 The checked-in deterministic baseline lives at
-`evals/results/continuity_recall_baseline.json`. Implicit debug/release binary
-selection rejects binaries older than any crate file or root Cargo manifest/lockfile.
-Rebuild before measuring; an explicit `--binary /path/to/spindle-mcp` deliberately
-bypasses this timestamp guard for a chosen benchmark artifact. CI runs `self-test`
-and the deterministic benchmark on every pull request.
+`evals/results/continuity_recall_baseline.json`. By default the benchmark runs
+`cargo build -p spindle-mcp` and selects the debug executable, so Cargo determines
+which source, build-script and embedded-asset changes require rebuilding. A newer
+test-only/non-build file does not incorrectly reject a current executable.
+An explicit `--binary /path/to/spindle-mcp` or `--no-build` deliberately bypasses
+the build for a chosen artifact; freshness is then the caller's responsibility.
+`CARGO_TARGET_DIR` is honored. CI runs `self-test` and the deterministic benchmark
+on every pull request.
 
 ---
 
