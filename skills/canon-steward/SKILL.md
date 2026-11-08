@@ -31,6 +31,9 @@ recommitting a continuity package without a previously included pair reverses th
 Save points preserve relationship totals together with the per-scene delta ledger. Older save
 points without a ledger restore totals with an empty ledger; prior contributions cannot be
 reconstructed from those snapshots.
+Inherited fact replacements leave parent canon unchanged until merge; their replacement links
+survive save-point restore. Voice-profile writes require a character owned by the active branch;
+inherited profiles remain read-only.
 
 ## Workflow
 

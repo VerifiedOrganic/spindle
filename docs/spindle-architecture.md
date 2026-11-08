@@ -163,7 +163,11 @@ replaced on recommit; removing a pair from the continuity package reverses its
 prior contribution. Branch-local relationship totals and their per-scene delta
 ledger travel together through save-point snapshots and restores. Older snapshots
 without a ledger restore with an empty ledger; their historical contributions
-cannot be reconstructed.
+cannot be reconstructed. Canonical fact replacements retain their predecessor
+links through save-point restore and merge; merging applies supersession only to
+facts on the target branch. Voice profiles are keyed to their owning character,
+so inherited characters' profiles are read-only until branch-local profile storage
+is available.
 
 ## The authoring-run editorial loop
 
@@ -505,7 +509,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0031 | style-learning-from-edits (`project.style_learning` + edit candidates) |
 | V0041 | `model_call` telemetry ledger (`get_model_usage`) |
 | V0047 | `model_call` attribution columns (`scene_id`, `run_id`, `route`, `prompt_template_id`, `prompt_version`, `context_packet_hash`, `temperature`, `top_p`, `max_tokens`) |
-| V0048 | branch-scoped canon uniqueness and per-scene relationship delta ledger (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
+| V0048 | branch-scoped canon uniqueness, per-scene relationship delta ledger, and fact replacement links (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
 
 ## Where to make changes
 

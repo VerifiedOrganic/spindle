@@ -4360,11 +4360,9 @@ impl SqliteSpindleService {
             .repository
             .active_branch_id_public(&input.project_id)
             .await?;
-        if !self
-            .repository
-            .branch_inherits_from(&input.project_id, &active_branch_id, &character.branch_id)
-            .await?
-        {
+        // Profiles are keyed only by character_id; inherited writes would
+        // mutate the parent and every sibling that reads this character.
+        if character.branch_id != active_branch_id {
             anyhow::bail!("character must belong to the active branch");
         }
 
@@ -25668,12 +25666,14 @@ async fn build_branch_restore_snapshot(
         .list_characters_by_project_and_branch(project_id, branch_id)
         .await?
         .into_iter()
+        .filter(|c| c.branch_id == branch_id)
         .map(|c| c.id)
         .collect();
     let mut live_scene_ids: BTreeSet<String> = repository
         .list_scenes_by_project_and_branch(project_id, branch_id)
         .await?
         .into_iter()
+        .filter(|s| s.branch_id == branch_id)
         .map(|s| s.id)
         .collect();
 
@@ -61900,7 +61900,7 @@ agent = "local-style"
             .unwrap();
 
         // Override parent's eye_color ("blue") on child with "green".
-        let _child_eye_fact = svc
+        let child_eye_fact = svc
             .register_canonical_fact(RegisterCanonicalFactInput {
                 project_id: project.project_id.clone(),
                 scene_id: Some(main_scene.scene_id.clone()),
@@ -62009,7 +62009,7 @@ agent = "local-style"
                         valid_from: None,
                         valid_until: None,
                         context: None,
-                        supersedes_fact_id: None,
+                        supersedes_fact_id: Some(child_eye_fact.canonical_fact_id.clone()),
                     },
                     CanonicalFactEntry {
                         fact_type: None,
@@ -62052,5 +62052,104 @@ agent = "local-style"
         assert_eq!(main_facts.len(), 1);
         assert_eq!(main_facts[0].predicate, "eye_color");
         assert_eq!(main_facts[0].value_text.as_deref(), Some("blue"));
+        assert!(
+            svc.repository
+                .get_canonical_fact(&main_eye_fact.canonical_fact_id)
+                .await
+                .unwrap()
+                .superseded_by
+                .is_none()
+        );
+
+        let save = svc
+            .create_save_point(spindle_core::models::CreateSavePointInput {
+                project_id: project.project_id.clone(),
+                name: "supersession-chain".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.restore_save_point(spindle_core::models::RestoreSavePointInput {
+            project_id: project.project_id.clone(),
+            save_point_id: save.save_point_id,
+        })
+        .await
+        .unwrap();
+
+        svc.merge_branch(spindle_core::models::MergeBranchInput {
+            project_id: project.project_id.clone(),
+            source_branch_id: child_branch.branch_id.clone(),
+            target_branch_id: Some(project.branch_id.clone()),
+            merge_type: "squash".into(),
+        })
+        .await
+        .unwrap();
+        let merged = svc
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(
+                &project.project_id,
+                &project.branch_id,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !merged
+                .iter()
+                .any(|f| f.id == main_eye_fact.canonical_fact_id),
+            "merging inherited supersession must retire the original parent fact"
+        );
+        assert!(
+            merged
+                .iter()
+                .filter(|f| f.predicate == "eye_color")
+                .all(|f| f.value_text.as_deref() == Some("green"))
+        );
+
+        let sibling = svc
+            .create_branch(CreateBranchInput {
+                project_id: project.project_id.clone(),
+                name: "voice-sibling".into(),
+                parent_branch_id: Some(project.branch_id.clone()),
+                description: None,
+                branch_type: "what_if".into(),
+            })
+            .await
+            .unwrap();
+        for branch_id in [&child_branch.branch_id, &sibling.branch_id] {
+            svc.switch_branch(SwitchBranchInput {
+                project_id: project.project_id.clone(),
+                branch_id: branch_id.clone(),
+            })
+            .await
+            .unwrap();
+            let profile = svc
+                .repository
+                .get_character_voice_profile(&character.character_id)
+                .await
+                .unwrap();
+            assert_eq!(profile.tone, None);
+            let mut profile: CharacterVoiceProfileData =
+                serde_json::from_value(serde_json::to_value(profile).unwrap()).unwrap();
+            profile.tone = Some("child-only".into());
+            profile.updated_at = None;
+            let result = svc
+                .set_character_voice_profile(spindle_core::models::SetCharacterVoiceProfileInput {
+                    project_id: project.project_id.clone(),
+                    character_id: character.character_id.clone(),
+                    branch_id: branch_id.clone(),
+                    profile,
+                })
+                .await;
+            assert!(
+                result.is_err(),
+                "inherited voice edits require branch-local storage"
+            );
+        }
+        let parent_voice = svc
+            .repository
+            .get_character_voice_profile(&character.character_id)
+            .await
+            .unwrap();
+        assert_eq!(parent_voice.tone, None);
     }
 }

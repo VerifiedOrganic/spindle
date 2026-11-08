@@ -5016,6 +5016,21 @@ impl Repository {
                         )?;
                     }
                     tx.execute(&sql, rusqlite::params![&target_branch_id, id])?;
+                    if table == "canonical_fact" {
+                        // Follow replacements made on intermediate branches too.
+                        // Ancestors outside the merge target remain untouched.
+                        tx.execute(
+                            "WITH RECURSIVE predecessors(id) AS ( \
+                               SELECT supersedes_fact_id FROM canonical_fact WHERE id = ?1 \
+                               UNION \
+                               SELECT f.supersedes_fact_id FROM canonical_fact f \
+                               JOIN predecessors p ON f.id = p.id \
+                             ) UPDATE canonical_fact SET superseded_by = ?1, updated_at = ?2 \
+                               WHERE branch_id = ?3 AND id IN (SELECT id FROM predecessors) \
+                                 AND id != ?1",
+                            rusqlite::params![id, timestamp_to_micros(chrono::Utc::now()), &target_branch_id],
+                        )?;
+                    }
                 }
                 tx.commit()?;
                 Ok(())
@@ -15312,6 +15327,10 @@ impl CanonTransaction<'_> {
                 "superseded canonical_fact '{old_fact_id}' does not belong to branch '{branch_id}' or its ancestors"
             );
         }
+        self.tx.execute(
+            "UPDATE canonical_fact SET supersedes_fact_id = ?1 WHERE id = ?2 AND branch_id = ?3",
+            rusqlite::params![old_fact_id, new_fact_id, branch_id],
+        )?;
         Ok(())
     }
 

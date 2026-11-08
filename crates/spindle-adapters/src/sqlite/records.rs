@@ -2042,7 +2042,7 @@ impl<'a> TryFrom<&Row<'a>> for WriterPosition {
 pub const CANONICAL_FACT_COLUMNS: &str = "id, project_id, branch_id, scene_id, source_scene_id, book_number, chapter_number, \
      subject_table, subject_id, predicate, value_kind, value_number, value_text, value_json, \
      unit, aliases, scope, valid_from, valid_until, superseded_by, created_at, updated_at, \
-     secret, concealment_note";
+     secret, concealment_note, supersedes_fact_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalFact {
@@ -2069,6 +2069,9 @@ pub struct CanonicalFact {
     pub valid_from: Option<StoredStoryPlacement>,
     pub valid_until: Option<StoredStoryPlacement>,
     pub superseded_by: Option<String>,
+    /// Replacement intent, retained across branch merges and save points.
+    #[serde(default)]
+    pub supersedes_fact_id: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     /// Secret-knowledge gating (V0023): true when this fact is held in
@@ -2109,6 +2112,7 @@ impl<'a> TryFrom<&Row<'a>> for CanonicalFact {
             updated_at: row::time(r, 21)?,
             secret: row::boolean(r, 22)?,
             concealment_note: row::opt_text(r, 23)?,
+            supersedes_fact_id: row::opt_text(r, 24)?,
         })
     }
 }

@@ -62,3 +62,7 @@ CREATE UNIQUE INDEX idx_conflict_project_name
 DROP INDEX IF EXISTS idx_motif_project_name;
 CREATE UNIQUE INDEX idx_motif_project_name
     ON motif(project_id, branch_id, normalized_name);
+
+-- Keep branch-local replacement intent without marking ancestor facts superseded
+-- until the replacement is merged into their branch.
+ALTER TABLE canonical_fact ADD COLUMN supersedes_fact_id TEXT;
