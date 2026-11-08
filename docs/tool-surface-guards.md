@@ -6,8 +6,8 @@ existing strict-client tests and all `tools/list` snapshots.
 
 `cargo test -p spindle-mcp quality` covers:
 
-- `tool_schema_lint`: validates every emitted input/output schema against its
-  JSON-Schema meta-schema, checks profile schema equality, and records current
+- `tool_schema_lint`: validates every advertised input/output schema against its
+  JSON-Schema meta-schema, checks each profile against its explicit discovery projection, and records current
   compatibility-catalog descriptive debt with tool names and JSON pointers.
 - Description checks on every nested/optional property, including local `$ref`
   targets. The walker follows schema keywords, visits distinct pointer nodes,
@@ -58,3 +58,10 @@ public surface changes still require same-PR snapshot updates and a changelog.
 The target caps are not claims of implemented reduction. Generated transitional
 profiles now have measured compatibility ceilings; canonical descriptions/enums,
 narrowed skill cores and compact discovery remain upcoming P4 work.
+
+Generated discovery now applies an explicit output-schema policy for large
+results; full contracts remain optional resources/references. Compatibility
+inventory still checks the complete legacy descriptors. A separate projection
+boundary test preserves all input validation keywords, receipts and unrelated
+metadata, and real HTTP/proxy/stdio checks use the same projected descriptors.
+See `docs/tool-response-contracts.md` for the v1 loading routes and limits.

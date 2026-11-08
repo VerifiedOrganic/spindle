@@ -68,6 +68,10 @@ impl ServerHandler for ProxyHandler {
         tools.retain(|tool| {
             crate::tools::profile_has_tool(self.tool_profile.as_deref(), &tool.name)
         });
+        let tools = tools
+            .into_iter()
+            .map(|tool| crate::tools::project_tool_discovery(self.tool_profile.as_deref(), tool))
+            .collect();
         Ok(ListToolsResult::with_all_items(tools))
     }
 

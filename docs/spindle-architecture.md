@@ -95,7 +95,9 @@ Current audit findings:
   non-standard numeric `format` annotations (`uint`, `int32`, `float`, …) at
   the generation seam so strict JSON-Schema clients do not warn per field.
   Finalized schema lint, structural validation and transport discovery-byte
-  guards are described in `docs/tool-surface-guards.md`.
+  guards are described in `docs/tool-surface-guards.md`. Generated profiles
+  omit explicitly selected large output schemas; full typed response schemas
+  remain available through the v1 routes in `docs/tool-response-contracts.md`.
 
 The service layer currently lives under:
 

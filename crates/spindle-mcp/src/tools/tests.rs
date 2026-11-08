@@ -270,3 +270,6 @@ mod quality;
 
 #[path = "profiles/tests.rs"]
 mod profile_generation;
+
+#[path = "schema/discovery_tests.rs"]
+mod slim_discovery;
