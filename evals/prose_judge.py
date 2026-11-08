@@ -1228,6 +1228,56 @@ def render_variant_prompt(brief: dict, variant_cfg: dict) -> tuple[str, str]:
     return sys_prompt, user_prompt
 
 
+def compute_generation_input_fingerprint(
+    brief: dict,
+    variant_cfg: dict,
+    generator_cfg: dict,
+    condition_label: str = "candidate",
+    generation_seed: int | None = None,
+) -> str:
+    """Compute a deterministic fingerprint of the effective brief, variant, and generator config."""
+    effective_seed = (
+        generation_seed
+        if generation_seed is not None
+        else (int(generator_cfg["seed"]) if generator_cfg.get("seed") is not None else None)
+    )
+    provider = str(generator_cfg.get("provider", "fake")).lower()
+    if provider != "fake" and generator_cfg.get("rust_config"):
+        provider = "rust-bridge"
+    rust_cfg_path = generator_cfg.get("rust_config")
+    rust_cfg_hash = None
+    if rust_cfg_path:
+        p = Path(rust_cfg_path)
+        if p.exists():
+            try:
+                rust_cfg_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+            except Exception:
+                rust_cfg_hash = str(rust_cfg_path)
+        else:
+            rust_cfg_hash = str(rust_cfg_path)
+    normalized_gen = {
+        "provider": provider,
+        "model": generator_cfg.get("model"),
+        "endpoint": generator_cfg.get("endpoint"),
+        "api_key_env": generator_cfg.get("api_key_env"),
+        "temperature": generator_cfg.get("temperature"),
+        "max_tokens": generator_cfg.get("max_tokens"),
+        "route": str(generator_cfg.get("route") or "draft") if provider == "rust-bridge" else generator_cfg.get("route"),
+        "rating": str(generator_cfg.get("rating") or "general") if provider == "rust-bridge" else generator_cfg.get("rating"),
+        "rust_config_hash": rust_cfg_hash,
+        "tokenizer_binary": str(generator_cfg.get("tokenizer_binary")) if generator_cfg.get("tokenizer_binary") else None,
+    }
+    return digest(
+        {
+            "brief": brief,
+            "variant": variant_cfg,
+            "condition": condition_label,
+            "generation_seed": effective_seed,
+            "generator_cfg": normalized_gen,
+        }
+    )
+
+
 def call_rust_bridge_for_brief(
     brief: dict,
     variant_cfg: dict,
@@ -1253,6 +1303,14 @@ def call_rust_bridge_for_brief(
     )
     artifact_root.mkdir(parents=True, exist_ok=True)
     seed_tag = f"seed_{generation_seed}" if generation_seed is not None else "seed_none"
+    gen_input_fp = compute_generation_input_fingerprint(
+        brief,
+        variant_cfg,
+        generator_cfg,
+        condition_label=condition_label,
+        generation_seed=generation_seed,
+    )
+    fp_tag = gen_input_fp[:16]
 
     max_attempts = 3
     proc = None
@@ -1260,15 +1318,20 @@ def call_rust_bridge_for_brief(
     for attempt in range(max_attempts):
         if context_mode == "drafting_packet_v1":
             packet = brief_to_drafting_packet_v1(brief)
-            packet_path = artifact_root / "packets" / f"{brief['id']}.packet.json"
-            # Preserve any existing recovery .lock files untouched; if a previous attempt left a
-            # recovery lock on the primary artifact path, use a fresh attempt-scoped artifact path.
-            candidate_art_path = artifact_root / "artifacts" / f"{brief['id']}_{seed_tag}.artifact.json"
+            packet_path = artifact_root / "packets" / f"{brief['id']}_{fp_tag}.packet.json"
+            # Namespace artifact paths by the effective generation fingerprint (including recovery
+            # attempt paths) so changing rust_config/route settings never collides with an older
+            # cached PlainTextDraftArtifactV1 file on disk.
+            candidate_art_path = (
+                artifact_root / "artifacts" / f"{brief['id']}_{seed_tag}_{fp_tag}.artifact.json"
+            )
             attempt_idx = attempt
             while Path(f"{candidate_art_path}.lock").exists() and not candidate_art_path.exists():
                 attempt_idx += 1
                 candidate_art_path = (
-                    artifact_root / "artifacts" / f"{brief['id']}_{seed_tag}_attempt{attempt_idx}.artifact.json"
+                    artifact_root
+                    / "artifacts"
+                    / f"{brief['id']}_{seed_tag}_{fp_tag}_attempt{attempt_idx}.artifact.json"
                 )
             artifact_path = candidate_art_path
             write_json(packet_path, packet)
@@ -1284,7 +1347,9 @@ def call_rust_bridge_for_brief(
                 cmd.append(str(generation_seed))
         else:
             sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
-            messages_path = artifact_root / "messages" / f"{brief['id']}_{variant_id}.messages.json"
+            messages_path = (
+                artifact_root / "messages" / f"{brief['id']}_{variant_id}_{fp_tag}.messages.json"
+            )
             write_json(messages_path, {"system": sys_prompt, "user": user_prompt})
             cmd = [
                 str(bin_path),
@@ -1381,6 +1446,7 @@ def call_rust_bridge_for_brief(
         "condition": condition_label,
         "prompt_variant": variant_id,
         "generation_seed": bridge_out.get("generation_seed", generation_seed),
+        "generation_input_fingerprint": gen_input_fp,
         "model": model_name,
         "model_version": f"rust-bridge:{model_name}@{model_rev}",
         "text": text,
@@ -1401,56 +1467,6 @@ def call_rust_bridge_for_brief(
         "output_tokens": bridge_out.get("output_tokens"),
         "elapsed_seconds": elapsed,
     }
-
-
-def compute_generation_input_fingerprint(
-    brief: dict,
-    variant_cfg: dict,
-    generator_cfg: dict,
-    condition_label: str = "candidate",
-    generation_seed: int | None = None,
-) -> str:
-    """Compute a deterministic fingerprint of the effective brief, variant, and generator config."""
-    effective_seed = (
-        generation_seed
-        if generation_seed is not None
-        else (int(generator_cfg["seed"]) if generator_cfg.get("seed") is not None else None)
-    )
-    provider = str(generator_cfg.get("provider", "fake")).lower()
-    if provider != "fake" and generator_cfg.get("rust_config"):
-        provider = "rust-bridge"
-    rust_cfg_path = generator_cfg.get("rust_config")
-    rust_cfg_hash = None
-    if rust_cfg_path:
-        p = Path(rust_cfg_path)
-        if p.exists():
-            try:
-                rust_cfg_hash = hashlib.sha256(p.read_bytes()).hexdigest()
-            except Exception:
-                rust_cfg_hash = str(rust_cfg_path)
-        else:
-            rust_cfg_hash = str(rust_cfg_path)
-    normalized_gen = {
-        "provider": provider,
-        "model": generator_cfg.get("model"),
-        "endpoint": generator_cfg.get("endpoint"),
-        "api_key_env": generator_cfg.get("api_key_env"),
-        "temperature": generator_cfg.get("temperature"),
-        "max_tokens": generator_cfg.get("max_tokens"),
-        "route": str(generator_cfg.get("route") or "draft") if provider == "rust-bridge" else generator_cfg.get("route"),
-        "rating": str(generator_cfg.get("rating") or "general") if provider == "rust-bridge" else generator_cfg.get("rating"),
-        "rust_config_hash": rust_cfg_hash,
-        "tokenizer_binary": str(generator_cfg.get("tokenizer_binary")) if generator_cfg.get("tokenizer_binary") else None,
-    }
-    return digest(
-        {
-            "brief": brief,
-            "variant": variant_cfg,
-            "condition": condition_label,
-            "generation_seed": effective_seed,
-            "generator_cfg": normalized_gen,
-        }
-    )
 
 
 def generate_candidate_for_brief(
@@ -3016,14 +3032,21 @@ def self_test() -> None:
         mock_bin = root / "mock-spindle-tokenizer"
         mock_bin.write_text(
             "#!/usr/bin/env python3\n"
-            "import hashlib, json, sys\n"
+            "import hashlib, json, os, sys\n"
             "args = sys.argv[1:]\n"
             "cmd = args[0]\n"
             "if cmd == 'draft-packet':\n"
             "    cfg, db, pkt_path, art_path = args[1:5]\n"
             "    seed = int(args[5]) if len(args) > 5 else None\n"
             "    pkt = json.loads(open(pkt_path, encoding='utf-8').read())\n"
-            "    text = f\"Packet prose for {pkt['scene_id']} seed={seed}\"\n"
+            "    cfg_text = open(cfg, encoding='utf-8').read().strip() if os.path.exists(cfg) else 'default'\n"
+            "    if os.path.exists(art_path):\n"
+            "        cached_art = json.loads(open(art_path, encoding='utf-8').read())\n"
+            "        text = cached_art['text']\n"
+            "    else:\n"
+            "        text = f\"Packet prose for {pkt['scene_id']} seed={seed} cfg={cfg_text}\"\n"
+            "        os.makedirs(os.path.dirname(art_path), exist_ok=True)\n"
+            "        open(art_path, 'w', encoding='utf-8').write(json.dumps({'text': text, 'seed': seed}))\n"
             "    sha_pkt = hashlib.sha256(text.encode('utf-8')).hexdigest()\n"
             "    truncated = (seed == 999)\n"
             "    accepted_sha = None if seed in (998, 999) else sha_pkt\n"
@@ -3073,9 +3096,11 @@ def self_test() -> None:
         )
         mock_bin.chmod(0o755)
         variants = read_json(VARIANTS_PATH)["variants"]
+        agents_toml_path = root / "agents.toml"
+        agents_toml_path.write_text("temperature = 0.4\n", encoding="utf-8")
         bridge_cfg = {
             "provider": "rust-bridge",
-            "rust_config": str(root / "agents.toml"),
+            "rust_config": str(agents_toml_path),
             "rust_db": str(root / "usage.db"),
             "artifact_dir": str(root / "bridge_out"),
             "tokenizer_binary": str(mock_bin),
@@ -3238,6 +3263,29 @@ def self_test() -> None:
         )
         assert out_bridge[0]["model_version"].startswith("rust-bridge:")
         assert "Legacy prose len=" in out_bridge[0]["text"]
+
+        # Changing Rust route settings (agents.toml) while retaining the same artifact_dir, --out, brief, and seed
+        # must allocate a fingerprint-namespaced artifact path rather than reusing the prior artifact file on disk (PRRT_kwDOSmzJlM61EBGF)
+        out_pkt_v1 = generate_candidates_with_checkpoint(
+            briefs[:1],
+            variants["drafting_packet_v1"],
+            bridge_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert "cfg=temperature = 0.4" in out_pkt_v1[0]["text"]
+        agents_toml_path.write_text("temperature = 0.7\n", encoding="utf-8")
+        out_pkt_v2 = generate_candidates_with_checkpoint(
+            briefs[:1],
+            variants["drafting_packet_v1"],
+            bridge_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert "cfg=temperature = 0.7" in out_pkt_v2[0]["text"]
+        assert out_pkt_v2[0]["artifact_path"] != out_pkt_v1[0]["artifact_path"]
 
         # Editing brief content with same --out, variant, provider, and seed must NOT reuse stale brief output
         edited_brief = {**briefs[0], "scene_purpose": "Edited scene purpose for fingerprint invalidation test"}
