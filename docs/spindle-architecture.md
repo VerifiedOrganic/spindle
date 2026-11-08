@@ -490,7 +490,16 @@ Voice-drift (`voice_drift`) and retcon/reachability (`retcon_reachability`) are
 shipped Phase-4 validators (`crates/spindle-adapters/src/sqlite/validators.rs`),
 cached per `scene_text_hash` + context hash like the other Phase-4 validators and
 run by default in `check_consistency`. `voice_drift` is also in the scene-scoped
-`SCENE_VERIFY_CHECKS` subset the in-run verify step uses. The `continuity-editor`
+`SCENE_VERIFY_CHECKS` subset the in-run verify step uses. Retcon checks also run
+the shared character-state scanner on save/revise, commit, scene verify and broad
+consistency scans, resolving inherited scenes against the active branch. A named
+action after a prior-scene deceased state yields one scene-attributed
+`retcon_reachability` issue; mentions and explicitly marked memories, flashbacks,
+recordings, dreams and hypothetical actions are excluded by a conservative lexical
+prefilter. It is not a semantic claim extractor. Same-scene final death states
+are excluded because within-scene ordering is not yet available. Free-text death
+statuses remain warnings; `status:deceased` remains an error. This state scan is
+uncached so state changes cannot leave a stale text-only hit. The `continuity-editor`
 skill documents both alongside the rest of the check catalog.
 
 ## Migration ledger
