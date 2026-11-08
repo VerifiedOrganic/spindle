@@ -927,4 +927,344 @@ async fn sqlite_checkpoint_rollback_nested_inheritance_and_branch_merge() {
         .unwrap();
     assert_eq!(maps.len(), 1);
     assert_eq!(maps[0].legacy_primary_key, sm.legacy_primary_key);
+
+    // 7. Incremental second merge recognizes previously merged source events via
+    //    `merge_provenance`: relationship and untransacted quantity deltas are
+    //    applied exactly once, and source-only removals (hiding an inherited scene)
+    //    propagate to target.
+    let p3 = CanonPositionV1::new(1, 3, 1).unwrap();
+    svc.append_canon_decision(AppendCanonDecisionInputV1 {
+        project_id: project.project_id.clone(),
+        branch_id: main_branch.id.clone(),
+        resolve_active_descendant_branch: false,
+        action: CanonPolicyAction::Ratify,
+        tier: CanonTier::Ratified,
+        actor: "author:human".into(),
+        policy_version: CANON_POLICY_VERSION_V1.into(),
+        source_revision_id: "rev:main_rel_q_open".into(),
+        target_scene_id: Some(scene_id.clone()),
+        replace_prior_scene_revisions: false,
+        previous_decision_id: None,
+        confidence_inputs: Vec::new(),
+        reason: "establish relationship and wealth opening on main".into(),
+        events: vec![
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Relationship {
+                    operation: RelationshipOperation::Observation,
+                    other: resolved("character:bram"),
+                    trust: 10,
+                    tension: 5,
+                },
+                p1,
+                Some(20),
+                None,
+            ),
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Quantity {
+                    operation: QuantityOperation::Set,
+                    measure: "coins".into(),
+                    amount: "100".into(),
+                    unit: "silver".into(),
+                    transaction_id: None,
+                },
+                p1,
+                Some(21),
+                None,
+            ),
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::LocatedAt {
+                    location: resolved("location:watchtower"),
+                },
+                p1,
+                Some(22),
+                Some(&scene_id),
+            ),
+        ],
+    })
+    .await
+    .unwrap();
+
+    // First child delta batch: relationship +5/-2, coins +15.
+    svc.append_canon_decision(AppendCanonDecisionInputV1 {
+        project_id: project.project_id.clone(),
+        branch_id: child_branch.id.clone(),
+        resolve_active_descendant_branch: false,
+        action: CanonPolicyAction::Ratify,
+        tier: CanonTier::Ratified,
+        actor: "author:human".into(),
+        policy_version: CANON_POLICY_VERSION_V1.into(),
+        source_revision_id: "rev:child_delta_1".into(),
+        target_scene_id: None,
+        replace_prior_scene_revisions: false,
+        previous_decision_id: None,
+        confidence_inputs: Vec::new(),
+        reason: "child delta 1".into(),
+        events: vec![
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Relationship {
+                    operation: RelationshipOperation::Delta,
+                    other: resolved("character:bram"),
+                    trust: 5,
+                    tension: -2,
+                },
+                p2,
+                Some(10),
+                None,
+            ),
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Quantity {
+                    operation: QuantityOperation::Delta,
+                    measure: "coins".into(),
+                    amount: "15".into(),
+                    unit: "silver".into(),
+                    transaction_id: None,
+                },
+                p2,
+                Some(11),
+                None,
+            ),
+        ],
+    })
+    .await
+    .unwrap();
+
+    let (plan_m1, out_m1) = svc
+        .merge_canon_branch_events(
+            &project.project_id,
+            &main_branch.id,
+            &main_branch.id,
+            &child_branch.id,
+            "author:human",
+            "incremental merge 1",
+        )
+        .await
+        .unwrap();
+    assert!(plan_m1.conflicts.is_empty());
+    assert_eq!(out_m1.unwrap().events.len(), 2);
+
+    // Second child batch: relationship +3/+1, coins -5, plus hiding inherited `scene_id`.
+    svc.append_canon_decision(AppendCanonDecisionInputV1 {
+        project_id: project.project_id.clone(),
+        branch_id: child_branch.id.clone(),
+        resolve_active_descendant_branch: false,
+        action: CanonPolicyAction::Ratify,
+        tier: CanonTier::Ratified,
+        actor: "author:human".into(),
+        policy_version: CANON_POLICY_VERSION_V1.into(),
+        source_revision_id: "rev:child_delta_2_and_hide".into(),
+        target_scene_id: None,
+        replace_prior_scene_revisions: false,
+        previous_decision_id: None,
+        confidence_inputs: Vec::new(),
+        reason: "child delta 2 and hide scene 1".into(),
+        events: vec![
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Relationship {
+                    operation: RelationshipOperation::Delta,
+                    other: resolved("character:bram"),
+                    trust: 3,
+                    tension: 1,
+                },
+                p3,
+                Some(1),
+                None,
+            ),
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Quantity {
+                    operation: QuantityOperation::Delta,
+                    measure: "coins".into(),
+                    amount: "-5".into(),
+                    unit: "silver".into(),
+                    transaction_id: None,
+                },
+                p3,
+                Some(2),
+                None,
+            ),
+            CanonEventDraftV1 {
+                subject: resolved(&format!("scene:{scene_id}")),
+                payload: CanonEventPayloadV1::SceneVisibility {
+                    visibility: ScenePlacementVisibilityV1 {
+                        scene_id: scene_id.clone(),
+                        visible: false,
+                        position_override: None,
+                        invalidated_from: p1,
+                    },
+                },
+                effective_position: Some(p1),
+                within_scene_order: None,
+                in_world_time: None,
+                scene_id: Some(scene_id.clone()),
+                source_claim_ids: Vec::new(),
+                evidence_sha256: exact_text_sha256("hide_scene_1"),
+                provenance: CanonProvenanceKind::ManualAuthor,
+                supersedes_event_id: None,
+                withdraws_event_id: None,
+                legacy_record_scope: None,
+                merge_provenance: None,
+            },
+        ],
+    })
+    .await
+    .unwrap();
+
+    let (plan_m2, out_m2) = svc
+        .merge_canon_branch_events(
+            &project.project_id,
+            &main_branch.id,
+            &main_branch.id,
+            &child_branch.id,
+            "author:human",
+            "incremental merge 2",
+        )
+        .await
+        .unwrap();
+    assert!(plan_m2.conflicts.is_empty());
+    // Only the 3 new events from batch 2 are accepted; batch 1 events are NOT re-applied.
+    assert_eq!(out_m2.unwrap().events.len(), 3);
+
+    let main_after_m2 = svc
+        .canon_state_at(
+            &project.project_id,
+            &main_branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    // Hiding `scene_id` removed the scene 1 location on main (`location:watchtower`),
+    // and both incremental merges applied batch 1 (+5/-2 trust/tension, +15 coins)
+    // and batch 2 (+3/+1 trust/tension, -5 coins) exactly once.
+    assert_eq!(main_after_m2.location("character:veyra"), None);
+    assert_eq!(
+        main_after_m2.quantity_balance("character:veyra", "coins"),
+        Some("110")
+    );
+    let rel_after_m2 = main_after_m2
+        .relationship("character:veyra", "character:bram")
+        .unwrap();
+    assert_eq!(rel_after_m2.resolved_trust, Some(18));
+    assert_eq!(rel_after_m2.resolved_tension, Some(4));
+
+    // 8. Precondition validation in SQLite rejects a quantity delta or item drop
+    //    ordered at an earlier `within_scene_order` step than its opening/acquisition.
+    svc.append_canon_decision(AppendCanonDecisionInputV1 {
+        project_id: project.project_id.clone(),
+        branch_id: main_branch.id.clone(),
+        resolve_active_descendant_branch: false,
+        action: CanonPolicyAction::Ratify,
+        tier: CanonTier::Ratified,
+        actor: "author:human".into(),
+        policy_version: CANON_POLICY_VERSION_V1.into(),
+        source_revision_id: "rev:step10_open_and_acq".into(),
+        target_scene_id: None,
+        replace_prior_scene_revisions: false,
+        previous_decision_id: None,
+        confidence_inputs: Vec::new(),
+        reason: "opening balance and item acquisition at step 10".into(),
+        events: vec![
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Quantity {
+                    operation: QuantityOperation::Set,
+                    measure: "mana".into(),
+                    amount: "50".into(),
+                    unit: "mp".into(),
+                    transaction_id: None,
+                },
+                p2,
+                Some(10),
+                None,
+            ),
+            draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Possession {
+                    operation: PossessionOperation::Acquire,
+                    item: resolved("item:sunstone"),
+                    counterparty: None,
+                    custody: CustodyKind::Custodian,
+                },
+                p2,
+                Some(10),
+                None,
+            ),
+        ],
+    })
+    .await
+    .unwrap();
+
+    // Delta at step 5 in `p2` must fail because opening balance is at step 10.
+    assert!(
+        svc.append_canon_decision(AppendCanonDecisionInputV1 {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            resolve_active_descendant_branch: false,
+            action: CanonPolicyAction::Ratify,
+            tier: CanonTier::Ratified,
+            actor: "author:human".into(),
+            policy_version: CANON_POLICY_VERSION_V1.into(),
+            source_revision_id: "rev:step5_early_delta".into(),
+            target_scene_id: None,
+            replace_prior_scene_revisions: false,
+            previous_decision_id: None,
+            confidence_inputs: Vec::new(),
+            reason: "early delta before step 10 opening".into(),
+            events: vec![draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Quantity {
+                    operation: QuantityOperation::Delta,
+                    measure: "mana".into(),
+                    amount: "-10".into(),
+                    unit: "mp".into(),
+                    transaction_id: None,
+                },
+                p2,
+                Some(5),
+                None,
+            )],
+        })
+        .await
+        .is_err()
+    );
+
+    // Drop at step 5 in `p2` must fail because acquisition is at step 10.
+    assert!(
+        svc.append_canon_decision(AppendCanonDecisionInputV1 {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            resolve_active_descendant_branch: false,
+            action: CanonPolicyAction::Ratify,
+            tier: CanonTier::Ratified,
+            actor: "author:human".into(),
+            policy_version: CANON_POLICY_VERSION_V1.into(),
+            source_revision_id: "rev:step5_early_drop".into(),
+            target_scene_id: None,
+            replace_prior_scene_revisions: false,
+            previous_decision_id: None,
+            confidence_inputs: Vec::new(),
+            reason: "early drop before step 10 acquisition".into(),
+            events: vec![draft_assertion(
+                "character:veyra",
+                ClaimAssertion::Possession {
+                    operation: PossessionOperation::Lose,
+                    item: resolved("item:sunstone"),
+                    counterparty: None,
+                    custody: CustodyKind::Custodian,
+                },
+                p2,
+                Some(5),
+                None,
+            )],
+        })
+        .await
+        .is_err()
+    );
 }

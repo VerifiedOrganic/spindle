@@ -532,33 +532,23 @@ pub(crate) fn append_canon_decision_in_tx(
         }
     }
 
-    // 5. Compute prior state at the batch position (including any prepended
-    //    `SourceInvalidation` control events so recommits validate against the
-    //    post-invalidation state) and run `validate_event_batch_preconditions`.
-    let mut preflight_history = lineage_events.clone();
-    for ev in &candidate_events {
-        if !matches!(ev.payload, CanonEventPayloadV1::Assertion { .. }) {
-            preflight_history.push(ev.clone());
-        }
-    }
-    let batch_cursor = candidate_events
+    // 5. Validate candidate batch preconditions in exact reducer order against
+    //    existing lineage history (including within-scene step bounds, prepended
+    //    `SourceInvalidation` control events, and intervening history for
+    //    multi-position batches).
+    let prior_watermark = lineage_events
         .iter()
-        .find_map(|e| e.effective_position)
-        .map_or_else(CanonCursorV1::unbounded, CanonCursorV1::at_scene);
-    let prior_state = state_at(
+        .map(|e| e.decision_seq)
+        .max()
+        .unwrap_or(0);
+    validate_event_batch_in_history(
         &effective_branch_id,
         &lineage,
-        &preflight_history,
-        &batch_cursor,
-        input.tier,
-        None,
-    )?;
-
-    validate_event_batch_preconditions(
+        &lineage_events,
         &input.actor,
         input.action,
+        input.tier,
         &candidate_events,
-        &prior_state,
     )?;
 
     // 6. Persist `canon_decision` and each `canon_event` atomically.
@@ -580,7 +570,7 @@ pub(crate) fn append_canon_decision_in_tx(
         source_revision_id: input.source_revision_id.clone(),
         semantic_fingerprint: raw_batch_fp.clone(),
         idempotency_key: raw_decision_idem.clone(),
-        projection_watermark: prior_state.decision_watermark,
+        projection_watermark: prior_watermark,
         previous_decision_id: input.previous_decision_id.clone(),
         target_scene_id: input.target_scene_id.clone(),
         confidence_inputs: input.confidence_inputs.clone(),

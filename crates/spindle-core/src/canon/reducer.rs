@@ -504,7 +504,13 @@ fn is_delta_event(event: &CanonEventV1) -> bool {
 
 fn mask_matches_event_target(mask: &StreamCoverageMaskV1, event: &CanonEventV1) -> bool {
     match &mask.target {
-        CoverageMaskTargetV1::AncestorEvent { event_id } => &event.event_id == event_id,
+        CoverageMaskTargetV1::AncestorEvent { event_id } => {
+            &event.event_id == event_id
+                || event
+                    .merge_provenance
+                    .as_ref()
+                    .is_some_and(|mp| &mp.source_event_id == event_id)
+        }
         CoverageMaskTargetV1::Stream { stream } => {
             event.semantic_stream_key().as_ref() == Some(stream)
         }
@@ -516,120 +522,26 @@ fn mask_matches_event_target(mask: &StreamCoverageMaskV1, event: &CanonEventV1) 
     }
 }
 
-fn apply_tombstone_to_state(view: &mut CanonStateViewV1, mask: &StreamCoverageMaskV1) {
-    match &mask.target {
-        CoverageMaskTargetV1::Stream { stream } => match stream {
-            SemanticStreamKeyV1::LifeStatus { subject_id } => {
-                if let Some(entity) = view.entities.get_mut(subject_id) {
-                    entity.life_status = ProjectedScalarV1::default();
-                }
-            }
-            SemanticStreamKeyV1::Location { subject_id } => {
-                if let Some(entity) = view.entities.get_mut(subject_id) {
-                    entity.location_id = ProjectedScalarV1::default();
-                }
-            }
-            SemanticStreamKeyV1::AttributeScalar { subject_id, key } => {
-                if let Some(entity) = view.entities.get_mut(subject_id) {
-                    entity.attributes.remove(key);
-                }
-            }
-            SemanticStreamKeyV1::AttributeMember {
-                subject_id,
-                key,
-                member,
-            } => {
-                if let Some(entity) = view.entities.get_mut(subject_id)
-                    && let Some(attr) = entity.attributes.get_mut(key)
-                {
-                    attr.members.remove(member);
-                }
-            }
-            SemanticStreamKeyV1::InjuryMember {
-                subject_id,
-                injury_id,
-            } => {
-                if let Some(entity) = view.entities.get_mut(subject_id) {
-                    entity.injuries.remove(injury_id);
-                }
-            }
-            SemanticStreamKeyV1::PossessionItem {
-                subject_id,
-                item_id,
-                custody,
-            } => {
-                if let Some(entity) = view.entities.get_mut(subject_id) {
-                    entity
-                        .possessions
-                        .remove(&possession_slot_key(item_id, *custody));
-                }
-            }
-            SemanticStreamKeyV1::QuantityMeasure {
-                subject_id,
-                measure,
-                ..
-            } => {
-                view.quantities
-                    .remove(&quantity_slot_key(subject_id, measure));
-            }
-            SemanticStreamKeyV1::KnowledgeProposition {
-                subject_id,
-                proposition_id,
-            } => {
-                if let Some(k) = view.knowledge.get_mut(proposition_id) {
-                    k.knowers.remove(subject_id);
-                    k.circle_of_trust.remove(subject_id);
-                }
-            }
-            SemanticStreamKeyV1::RelationshipPair {
-                subject_id,
-                other_id,
-            } => {
-                view.relationships
-                    .remove(&relationship_slot_key(subject_id, other_id));
-            }
-            SemanticStreamKeyV1::PromiseThread { thread_id } => {
-                view.open_threads.remove(thread_id);
-            }
-            SemanticStreamKeyV1::RuleConstraint { rule_id } => {
-                view.rules.remove(rule_id);
-            }
-            SemanticStreamKeyV1::SceneClock { position } => {
-                view.timeline
-                    .scene_clocks
-                    .remove(&position_slot_key(*position));
-            }
-            SemanticStreamKeyV1::Action { .. } => {}
-        },
-        CoverageMaskTargetV1::LegacyWholeRecord {
-            record_kind,
-            subject_id,
-            ..
-        } => {
-            if record_kind == "character_state"
-                && let Some(entity) = view.entities.get_mut(subject_id)
-            {
-                entity.life_status = ProjectedScalarV1::default();
-                entity.location_id = ProjectedScalarV1::default();
-                entity.attributes.clear();
-                entity.injuries.clear();
-            }
-        }
-        CoverageMaskTargetV1::AncestorEvent { .. } => {}
-    }
+fn is_withdrawal_only_event(event: &CanonEventV1) -> bool {
+    event.policy_action == CanonPolicyAction::Withdraw
+        || (event.withdraws_event_id.is_some() && event.supersedes_event_id.is_none())
 }
 
-/// Fold visible canon events along `lineage` (`[child, parent, ..., main]`, never
-/// siblings) through `cursor` at `tier` and `decision_watermark`.
-pub fn state_at(
+fn event_matches_id_or_merged_source(event: &CanonEventV1, target_id: &str) -> bool {
+    event.event_id == target_id
+        || event
+            .merge_provenance
+            .as_ref()
+            .is_some_and(|mp| mp.source_event_id == target_id)
+}
+
+fn active_lineage_events_at_watermark<'a>(
     branch_id: &str,
     lineage: &[String],
-    events: &[CanonEventV1],
-    cursor: &CanonCursorV1,
+    events: &'a [CanonEventV1],
     tier: CanonTier,
     decision_watermark: Option<i64>,
-) -> Result<CanonStateViewV1, CanonAppendError> {
-    cursor.validate()?;
+) -> (Vec<String>, i64, i64, Vec<(usize, &'a CanonEventV1)>) {
     let effective_lineage: Vec<String> = if lineage.is_empty() {
         vec![branch_id.to_string()]
     } else {
@@ -650,8 +562,6 @@ pub fn state_at(
         .max()
         .unwrap_or(0);
 
-    // 1. Resolve active decisions per branch in the lineage at `max_decision_seq`
-    // (respecting any savepoint `WatermarkRestore` decisions).
     let mut active_decisions_by_branch: BTreeMap<&str, BTreeSet<i64>> = BTreeMap::new();
     for b in &effective_lineage {
         active_decisions_by_branch.insert(
@@ -660,8 +570,6 @@ pub fn state_at(
         );
     }
 
-    // 2. Collect candidate events on the lineage whose decision_seq is active and
-    // whose tier matches the requested tier filter.
     let mut active_lineage_events: Vec<(usize, &CanonEventV1)> = Vec::new();
     for event in events {
         let Some(&depth) = branch_depths.get(event.branch_id.as_str()) else {
@@ -682,16 +590,38 @@ pub fn state_at(
         active_lineage_events.push((depth, event));
     }
 
+    (
+        effective_lineage,
+        max_decision_seq,
+        max_event_seq,
+        active_lineage_events,
+    )
+}
+
+/// Fold visible canon events along `lineage` (`[child, parent, ..., main]`, never
+/// siblings) through `cursor` at `tier` and `decision_watermark`.
+pub fn state_at(
+    branch_id: &str,
+    lineage: &[String],
+    events: &[CanonEventV1],
+    cursor: &CanonCursorV1,
+    tier: CanonTier,
+    decision_watermark: Option<i64>,
+) -> Result<CanonStateViewV1, CanonAppendError> {
+    cursor.validate()?;
+    let (effective_lineage, max_decision_seq, max_event_seq, active_lineage_events) =
+        active_lineage_events_at_watermark(branch_id, lineage, events, tier, decision_watermark);
+
     // 3. Collect control state from active events:
-    //    - Withdrawn / superseded event IDs (a child withdrawal applies at its depth and ancestor depths >= child_depth)
+    //    - Withdrawn / superseded event IDs
     //    - Source invalidations (scene revisions / remines)
     //    - Scene placement & visibility overrides (most specific branch depth wins)
     //    - Stream coverage masks
-    let mut suppressed_event_ids: Vec<(usize, String)> = Vec::new();
-    let mut invalidated_revisions: Vec<(usize, Option<String>, String)> = Vec::new();
+    let mut suppressed_event_ids: Vec<(usize, i64, i64, String)> = Vec::new();
+    let mut invalidated_revisions: Vec<(usize, i64, i64, Option<String>, String)> = Vec::new();
     let mut scene_visibility_by_id: BTreeMap<String, (usize, ScenePlacementVisibilityV1)> =
         BTreeMap::new();
-    let mut masks_by_depth: Vec<(usize, StreamCoverageMaskV1)> = Vec::new();
+    let mut masks_by_depth: Vec<(usize, i64, i64, bool, StreamCoverageMaskV1)> = Vec::new();
 
     // Sort active events by (depth DESC, decision_seq ASC, append_seq ASC) so newer
     // scene visibility mappings at the same depth override older ones and child
@@ -702,22 +632,39 @@ pub fn state_at(
 
     for &(depth, event) in &control_scan {
         if let Some(withdrawn) = &event.withdraws_event_id {
-            suppressed_event_ids.push((depth, withdrawn.clone()));
+            suppressed_event_ids.push((
+                depth,
+                event.decision_seq,
+                event.append_seq,
+                withdrawn.clone(),
+            ));
         }
         if let Some(superseded) = &event.supersedes_event_id {
-            suppressed_event_ids.push((depth, superseded.clone()));
+            suppressed_event_ids.push((
+                depth,
+                event.decision_seq,
+                event.append_seq,
+                superseded.clone(),
+            ));
         }
         match &event.payload {
             CanonEventPayloadV1::SourceInvalidation { invalidation } => {
                 for rev_id in &invalidation.invalidated_revision_ids {
                     invalidated_revisions.push((
                         depth,
+                        event.decision_seq,
+                        event.append_seq,
                         invalidation.scene_id.clone(),
                         rev_id.clone(),
                     ));
                 }
                 for ev_id in &invalidation.invalidated_event_ids {
-                    suppressed_event_ids.push((depth, ev_id.clone()));
+                    suppressed_event_ids.push((
+                        depth,
+                        event.decision_seq,
+                        event.append_seq,
+                        ev_id.clone(),
+                    ));
                 }
             }
             CanonEventPayloadV1::SceneVisibility { visibility } => {
@@ -725,7 +672,13 @@ pub fn state_at(
                     .insert(visibility.scene_id.clone(), (depth, visibility.clone()));
             }
             CanonEventPayloadV1::CoverageMask { mask } => {
-                masks_by_depth.push((depth, mask.clone()));
+                masks_by_depth.push((
+                    depth,
+                    event.decision_seq,
+                    event.append_seq,
+                    event.provenance == CanonProvenanceKind::Merged,
+                    mask.clone(),
+                ));
             }
             CanonEventPayloadV1::Assertion { .. }
             | CanonEventPayloadV1::WatermarkRestore { .. } => {}
@@ -745,27 +698,35 @@ pub fn state_at(
     let mut visible_events: Vec<(usize, Option<CanonPositionV1>, &CanonEventV1)> = Vec::new();
 
     for (depth, event) in active_lineage_events {
-        if !matches!(event.payload, CanonEventPayloadV1::Assertion { .. }) {
-            continue;
-        }
-        // Suppressed by an equal-or-more-specific branch (`suppressor_depth <= depth`)
-        // created after or targeting this event.
-        if suppressed_event_ids
-            .iter()
-            .any(|(sup_depth, id)| *sup_depth <= depth && id == &event.event_id)
+        if !matches!(event.payload, CanonEventPayloadV1::Assertion { .. })
+            || is_withdrawal_only_event(event)
         {
             continue;
         }
-        if invalidated_revisions
+        // Suppressed by a more-specific branch (`sup_depth < depth`) or a later
+        // control/withdrawal event on the same branch.
+        if suppressed_event_ids
             .iter()
-            .any(|(inv_depth, scene_filter, rev_id)| {
-                *inv_depth <= depth
+            .any(|(sup_depth, sup_dec, sup_app, id)| {
+                (*sup_depth < depth
+                    || (*sup_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*sup_dec, *sup_app)))
+                    && event_matches_id_or_merged_source(event, id)
+            })
+        {
+            continue;
+        }
+        if invalidated_revisions.iter().any(
+            |(inv_depth, inv_dec, inv_app, scene_filter, rev_id)| {
+                (*inv_depth < depth
+                    || (*inv_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*inv_dec, *inv_app)))
                     && rev_id == &event.source_revision_id
                     && scene_filter
                         .as_ref()
                         .is_none_or(|s| event.scene_id.as_ref() == Some(s))
-            })
-        {
+            },
+        ) {
             continue;
         }
 
@@ -812,42 +773,54 @@ pub fn state_at(
             }
         }
 
-        // Check child-over-ancestor coverage masks (`mask_depth < depth`).
-        let masked_by_descendant = masks_by_depth.iter().any(|(mask_depth, mask)| {
-            if *mask_depth >= depth {
-                return false;
-            }
-            if !mask_matches_event_target(mask, event) {
-                return false;
-            }
-            match &mask.target {
-                CoverageMaskTargetV1::AncestorEvent { .. } => true,
-                CoverageMaskTargetV1::Stream { .. }
-                | CoverageMaskTargetV1::LegacyWholeRecord { .. } => {
-                    if is_delta_event(event) {
-                        // Delta streams: any ancestor delta inside `[start, end]` is masked.
-                        mask.covers_position(effective_pos)
-                    } else {
-                        // State/collection streams:
-                        // - Before `mask.start_position`, ancestor state remains visible.
-                        // - During `[mask.start_position, mask.end_position]`, ancestor state at
-                        //   or before `mask.end_position` is shadowed by the child stream.
-                        // - After a bounded `mask.end_position`, inheritance of ancestor state resumes.
-                        let cursor_in_mask = match cursor.position {
-                            Some(c_pos) => mask.covers_position(Some(c_pos)),
-                            None => mask.end_position.is_none(),
-                        };
-                        if cursor_in_mask {
-                            effective_pos.is_none_or(|ev_pos| {
-                                mask.end_position.is_none_or(|end| ev_pos <= end)
-                            })
-                        } else {
-                            false
+        // Check child-over-ancestor or same-branch tombstone/merged coverage masks.
+        let masked_by_descendant =
+            masks_by_depth
+                .iter()
+                .any(|(mask_depth, mask_dec, mask_app, is_merged, mask)| {
+                    let mask_applies = *mask_depth < depth
+                        || (*mask_depth == depth
+                            && (event.decision_seq, event.append_seq) < (*mask_dec, *mask_app)
+                            && (mask.tombstone
+                                || *is_merged
+                                || matches!(
+                                    mask.target,
+                                    CoverageMaskTargetV1::AncestorEvent { .. }
+                                )));
+                    if !mask_applies {
+                        return false;
+                    }
+                    if !mask_matches_event_target(mask, event) {
+                        return false;
+                    }
+                    match &mask.target {
+                        CoverageMaskTargetV1::AncestorEvent { .. } => true,
+                        CoverageMaskTargetV1::Stream { .. }
+                        | CoverageMaskTargetV1::LegacyWholeRecord { .. } => {
+                            if is_delta_event(event) && !mask.tombstone {
+                                // Delta streams: any ancestor delta inside `[start, end]` is masked.
+                                mask.covers_position(effective_pos)
+                            } else {
+                                // State/collection streams (or tombstone mask):
+                                // - Before `mask.start_position`, ancestor state remains visible.
+                                // - During `[mask.start_position, mask.end_position]`, ancestor state at
+                                //   or before `mask.end_position` is shadowed by the child stream.
+                                // - After a bounded `mask.end_position`, inheritance of ancestor state resumes.
+                                let cursor_in_mask = match cursor.position {
+                                    Some(c_pos) => mask.covers_position(Some(c_pos)),
+                                    None => mask.end_position.is_none(),
+                                };
+                                if cursor_in_mask {
+                                    effective_pos.is_none_or(|ev_pos| {
+                                        mask.end_position.is_none_or(|end| ev_pos <= end)
+                                    })
+                                } else {
+                                    false
+                                }
+                            }
                         }
                     }
-                }
-            }
-        });
+                });
         if masked_by_descendant {
             continue;
         }
@@ -857,21 +830,27 @@ pub fn state_at(
         // is strictly after `end` (`cursor > end`), then the child's bounded override
         // interval has ended and ancestor inheritance has resumed!
         if !is_delta_event(event) {
-            let expired_child_override = masks_by_depth.iter().any(|(mask_depth, mask)| {
-                if *mask_depth != depth || !mask_matches_event_target(mask, event) {
-                    return false;
-                }
-                let Some(end_pos) = mask.end_position else {
-                    return false;
-                };
-                if !mask.covers_position(effective_pos) {
-                    return false;
-                }
-                match cursor.position {
-                    Some(c_pos) => c_pos > end_pos,
-                    None => true,
-                }
-            });
+            let expired_child_override =
+                masks_by_depth
+                    .iter()
+                    .any(|(mask_depth, _mask_dec, _mask_app, is_merged, mask)| {
+                        let same_override_layer = *mask_depth == depth
+                            && (depth + 1 < effective_lineage.len()
+                                || (*is_merged && event.provenance == CanonProvenanceKind::Merged));
+                        if !same_override_layer || !mask_matches_event_target(mask, event) {
+                            return false;
+                        }
+                        let Some(end_pos) = mask.end_position else {
+                            return false;
+                        };
+                        if !mask.covers_position(effective_pos) {
+                            return false;
+                        }
+                        match cursor.position {
+                            Some(c_pos) => c_pos > end_pos,
+                            None => true,
+                        }
+                    });
             if expired_child_override {
                 continue;
             }
@@ -961,21 +940,6 @@ pub fn state_at(
             entry.push((event.within_scene_order, event.event_id.clone()));
         }
         apply_event_to_view(&mut view, event, *effective_pos)?;
-    }
-
-    // Apply active tombstones for masks covering the current cursor when no child
-    // event inside the mask re-populated the stream.
-    for (_mask_depth, mask) in &masks_by_depth {
-        if !mask.tombstone {
-            continue;
-        }
-        let cursor_in_mask = match cursor.position {
-            Some(c_pos) => mask.covers_position(Some(c_pos)),
-            None => mask.end_position.is_none(),
-        };
-        if cursor_in_mask {
-            apply_tombstone_to_state(&mut view, mask);
-        }
     }
 
     Ok(view)
@@ -1681,12 +1645,17 @@ fn apply_event_to_view(
 /// - enforces v1 auto-ratification policy guard (`disallowed_for_v1_auto_ratification`)
 /// - validates transfer conservation across paired `Quantity` deltas sharing a `transaction_id`
 /// - validates opening balances, units, and explicit set-member preconditions against `prior_state`
-pub fn validate_event_batch_preconditions(
+fn validate_event_batch_structure_and_conservation(
     actor: &str,
-    action: CanonPolicyAction,
     batch: &[CanonEventV1],
-    prior_state: &CanonStateViewV1,
 ) -> Result<(), CanonAppendError> {
+    if batch.is_empty() {
+        return Err(append_error(
+            CanonAppendErrorCode::Precondition,
+            "events",
+            "canon decision requires at least one event",
+        ));
+    }
     if actor.trim().is_empty() {
         return Err(append_error(
             CanonAppendErrorCode::Identity,
@@ -1695,7 +1664,6 @@ pub fn validate_event_batch_preconditions(
         ));
     }
 
-    // Track paired quantity transactions across the batch for transfer conservation.
     struct TxLeg {
         index: usize,
         subject_id: String,
@@ -1705,7 +1673,6 @@ pub fn validate_event_batch_preconditions(
         position: Option<CanonPositionV1>,
     }
     let mut tx_groups: BTreeMap<String, Vec<TxLeg>> = BTreeMap::new();
-    let mut working_state = prior_state.clone();
 
     for (idx, event) in batch.iter().enumerate() {
         let with_idx = |mut err: CanonAppendError| {
@@ -1787,53 +1754,6 @@ pub fn validate_event_batch_preconditions(
                 speaker,
                 experiencer,
             } => {
-                let subject_id = event.subject_key();
-                let prior_life = working_state
-                    .entities
-                    .get(&subject_id)
-                    .and_then(|e| e.life_status.value);
-                let prior_invariant_differs = match assertion {
-                    ClaimAssertion::Attribute {
-                        key,
-                        value,
-                        nature: AttributeNature::Invariant,
-                        ..
-                    } => {
-                        let norm_key = key_text(key);
-                        let norm_val = match normalized_assertion(assertion) {
-                            ClaimAssertion::Attribute { value, .. } => value,
-                            _ => value.clone(),
-                        };
-                        working_state
-                            .entities
-                            .get(&subject_id)
-                            .and_then(|e| e.attributes.get(&norm_key))
-                            .and_then(|a| a.scalar_value.as_ref())
-                            .is_some_and(|existing| existing != &norm_val)
-                    }
-                    _ => false,
-                };
-
-                // Enforce v1 policy auto-ratification guard.
-                if action == CanonPolicyAction::Ratify
-                    && is_policy_actor(actor)
-                    && let Some(reason) = disallowed_for_v1_auto_ratification(
-                        &event.subject,
-                        assertion,
-                        speaker,
-                        experiencer,
-                        prior_life,
-                        prior_invariant_differs,
-                    )
-                {
-                    return Err(with_idx(append_error(
-                        CanonAppendErrorCode::PolicyGuard,
-                        "policy_action",
-                        reason,
-                    )));
-                }
-
-                // Ratified non-legacy events require resolved entity references.
                 if event.tier == CanonTier::Ratified
                     && event.provenance != CanonProvenanceKind::LegacyUnverified
                     && assertion_has_unresolved_entity(
@@ -1849,178 +1769,52 @@ pub fn validate_event_batch_preconditions(
                         "ratified canon event requires resolved entity references",
                     )));
                 }
-
-                // Precondition checks for current narrative assertions.
                 if *modality == ClaimModality::Narration
                     && *temporal_scope == TemporalScope::Current
+                    && !is_withdrawal_only_event(event)
+                    && let ClaimAssertion::Quantity {
+                        operation,
+                        measure,
+                        amount,
+                        unit,
+                        transaction_id,
+                    } = assertion
                 {
-                    match assertion {
-                        ClaimAssertion::Quantity {
-                            operation,
-                            measure,
-                            amount,
-                            unit,
-                            transaction_id,
-                        } => {
-                            let parsed = ExactDecimal::parse(amount).map_err(with_idx)?;
-                            let norm_measure = key_text(measure);
-                            let norm_unit = unit.trim().to_string();
-                            if norm_unit.is_empty() || norm_measure.is_empty() {
-                                return Err(with_idx(append_error(
-                                    CanonAppendErrorCode::Schema,
-                                    "quantity",
-                                    "quantity requires nonempty measure and unit",
-                                )));
-                            }
-                            if let Some(tx_id) = transaction_id {
-                                if *operation != QuantityOperation::Delta {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::Conservation,
-                                        "quantity.transaction_id",
-                                        "paired quantity transfer leg must use QuantityOperation::Delta",
-                                    )));
-                                }
-                                if parsed.is_zero() {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::Conservation,
-                                        "quantity.amount",
-                                        "paired quantity transfer leg must have non-zero amount",
-                                    )));
-                                }
-                                tx_groups.entry(tx_id.clone()).or_default().push(TxLeg {
-                                    index: idx,
-                                    subject_id: subject_id.clone(),
-                                    measure: norm_measure.clone(),
-                                    unit: norm_unit.clone(),
-                                    amount: parsed,
-                                    position: event.effective_position,
-                                });
-                            }
-                            if *operation == QuantityOperation::Delta
-                                && event.provenance != CanonProvenanceKind::LegacyUnverified
-                            {
-                                let Some(existing) =
-                                    working_state.quantity(&subject_id, &norm_measure)
-                                else {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::Precondition,
-                                        "quantity.opening_balance",
-                                        format!(
-                                            "quantity delta for {subject_id}:{norm_measure} requires an opening balance"
-                                        ),
-                                    )));
-                                };
-                                if existing.balance.is_none() {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::Precondition,
-                                        "quantity.opening_balance",
-                                        format!(
-                                            "quantity delta for {subject_id}:{norm_measure} requires an opening balance"
-                                        ),
-                                    )));
-                                }
-                                if existing.unit != norm_unit {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::UnitMismatch,
-                                        "quantity.unit",
-                                        format!(
-                                            "quantity delta unit {norm_unit} does not match opening unit {}",
-                                            existing.unit
-                                        ),
-                                    )));
-                                }
-                            }
+                    let parsed = ExactDecimal::parse(amount).map_err(with_idx)?;
+                    let norm_measure = key_text(measure);
+                    let norm_unit = unit.trim().to_string();
+                    if norm_unit.is_empty() || norm_measure.is_empty() {
+                        return Err(with_idx(append_error(
+                            CanonAppendErrorCode::Schema,
+                            "quantity",
+                            "quantity requires nonempty measure and unit",
+                        )));
+                    }
+                    if let Some(tx_id) = transaction_id {
+                        if *operation != QuantityOperation::Delta {
+                            return Err(with_idx(append_error(
+                                CanonAppendErrorCode::Conservation,
+                                "quantity.transaction_id",
+                                "paired quantity transfer leg must use QuantityOperation::Delta",
+                            )));
                         }
-                        ClaimAssertion::Possession {
-                            operation,
-                            item,
-                            counterparty,
-                            custody,
-                        } => {
-                            let item_id = entity_key(item);
-                            if *operation == PossessionOperation::Transfer {
-                                let Some(other) = counterparty else {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::Precondition,
-                                        "possession.counterparty",
-                                        "possession transfer requires a counterparty",
-                                    )));
-                                };
-                                if entity_key(other) == subject_id {
-                                    return Err(with_idx(append_error(
-                                        CanonAppendErrorCode::Precondition,
-                                        "possession.counterparty",
-                                        "possession transfer counterparty must differ from subject",
-                                    )));
-                                }
-                            }
-                            if matches!(
-                                operation,
-                                PossessionOperation::Transfer | PossessionOperation::Lose
-                            ) && event.provenance != CanonProvenanceKind::LegacyUnverified
-                                && working_state.holds_item(&subject_id, &item_id, *custody)
-                                    != Some(true)
-                            {
-                                return Err(with_idx(append_error(
-                                    CanonAppendErrorCode::Precondition,
-                                    "possession.held",
-                                    format!(
-                                        "{subject_id} does not currently hold item {item_id} ({custody:?})"
-                                    ),
-                                )));
-                            }
+                        if parsed.is_zero() {
+                            return Err(with_idx(append_error(
+                                CanonAppendErrorCode::Conservation,
+                                "quantity.amount",
+                                "paired quantity transfer leg must have non-zero amount",
+                            )));
                         }
-                        ClaimAssertion::Injury {
-                            operation: InjuryOperation::Heal,
-                            injury_id,
-                            ..
-                        } if event.provenance != CanonProvenanceKind::LegacyUnverified => {
-                            let norm_id = injury_id.trim();
-                            let active = working_state
-                                .entities
-                                .get(&subject_id)
-                                .and_then(|e| e.injuries.get(norm_id))
-                                .is_some_and(|inj| inj.status == InjuryStatus::Active);
-                            if !active {
-                                return Err(with_idx(append_error(
-                                    CanonAppendErrorCode::Precondition,
-                                    "injury.heal",
-                                    format!(
-                                        "cannot heal injury {norm_id} on {subject_id} when not active"
-                                    ),
-                                )));
-                            }
-                        }
-                        ClaimAssertion::Attribute {
-                            operation: AttributeOperation::Remove,
-                            key,
-                            value,
-                            ..
-                        } if event.provenance != CanonProvenanceKind::LegacyUnverified => {
-                            let norm_key = key_text(key);
-                            let member_key = scalar_member_key(value);
-                            let present = working_state
-                                .entities
-                                .get(&subject_id)
-                                .and_then(|e| e.attributes.get(&norm_key))
-                                .is_some_and(|a| a.members.contains_key(&member_key));
-                            if !present {
-                                return Err(with_idx(append_error(
-                                    CanonAppendErrorCode::Precondition,
-                                    "attribute.remove",
-                                    format!(
-                                        "cannot remove absent attribute member {member_key} from {subject_id}.{norm_key}"
-                                    ),
-                                )));
-                            }
-                        }
-                        _ => {}
+                        tx_groups.entry(tx_id.clone()).or_default().push(TxLeg {
+                            index: idx,
+                            subject_id: event.subject_key(),
+                            measure: norm_measure,
+                            unit: norm_unit,
+                            amount: parsed,
+                            position: event.effective_position,
+                        });
                     }
                 }
-
-                // Advance working state so subsequent events in the same batch see earlier effects.
-                apply_event_to_view(&mut working_state, event, event.effective_position)
-                    .map_err(with_idx)?;
             }
         }
     }
@@ -2097,6 +1891,527 @@ pub fn validate_event_batch_preconditions(
     Ok(())
 }
 
+fn validate_single_assertion_preconditions(
+    actor: &str,
+    action: CanonPolicyAction,
+    idx: usize,
+    event: &CanonEventV1,
+    working_state: &CanonStateViewV1,
+) -> Result<(), CanonAppendError> {
+    let with_idx = |mut err: CanonAppendError| {
+        err.event_index = Some(idx);
+        err
+    };
+    let CanonEventPayloadV1::Assertion {
+        assertion,
+        modality,
+        temporal_scope,
+        speaker,
+        experiencer,
+    } = &event.payload
+    else {
+        return Ok(());
+    };
+    if is_withdrawal_only_event(event) {
+        return Ok(());
+    }
+
+    let subject_id = event.subject_key();
+    let prior_life = working_state
+        .entities
+        .get(&subject_id)
+        .and_then(|e| e.life_status.value);
+    let prior_invariant_differs = match assertion {
+        ClaimAssertion::Attribute {
+            key,
+            value,
+            nature: AttributeNature::Invariant,
+            ..
+        } => {
+            let norm_key = key_text(key);
+            let norm_val = match normalized_assertion(assertion) {
+                ClaimAssertion::Attribute { value, .. } => value,
+                _ => value.clone(),
+            };
+            working_state
+                .entities
+                .get(&subject_id)
+                .and_then(|e| e.attributes.get(&norm_key))
+                .and_then(|a| a.scalar_value.as_ref())
+                .is_some_and(|existing| existing != &norm_val)
+        }
+        _ => false,
+    };
+
+    // Enforce v1 policy auto-ratification guard.
+    if action == CanonPolicyAction::Ratify
+        && is_policy_actor(actor)
+        && let Some(reason) = disallowed_for_v1_auto_ratification(
+            &event.subject,
+            assertion,
+            speaker,
+            experiencer,
+            prior_life,
+            prior_invariant_differs,
+        )
+    {
+        return Err(with_idx(append_error(
+            CanonAppendErrorCode::PolicyGuard,
+            "policy_action",
+            reason,
+        )));
+    }
+
+    // Precondition checks for current narrative assertions.
+    if *modality == ClaimModality::Narration && *temporal_scope == TemporalScope::Current {
+        match assertion {
+            ClaimAssertion::Quantity {
+                operation,
+                measure,
+                amount,
+                unit,
+                ..
+            } => {
+                let _parsed = ExactDecimal::parse(amount).map_err(with_idx)?;
+                let norm_measure = key_text(measure);
+                let norm_unit = unit.trim().to_string();
+                if norm_unit.is_empty() || norm_measure.is_empty() {
+                    return Err(with_idx(append_error(
+                        CanonAppendErrorCode::Schema,
+                        "quantity",
+                        "quantity requires nonempty measure and unit",
+                    )));
+                }
+                if *operation == QuantityOperation::Delta
+                    && event.provenance != CanonProvenanceKind::LegacyUnverified
+                {
+                    let Some(existing) = working_state.quantity(&subject_id, &norm_measure) else {
+                        return Err(with_idx(append_error(
+                            CanonAppendErrorCode::Precondition,
+                            "quantity.opening_balance",
+                            format!(
+                                "quantity delta for {subject_id}:{norm_measure} requires an opening balance"
+                            ),
+                        )));
+                    };
+                    if existing.balance.is_none() {
+                        return Err(with_idx(append_error(
+                            CanonAppendErrorCode::Precondition,
+                            "quantity.opening_balance",
+                            format!(
+                                "quantity delta for {subject_id}:{norm_measure} requires an opening balance"
+                            ),
+                        )));
+                    }
+                    if existing.unit != norm_unit {
+                        return Err(with_idx(append_error(
+                            CanonAppendErrorCode::UnitMismatch,
+                            "quantity.unit",
+                            format!(
+                                "quantity delta unit {norm_unit} does not match opening unit {}",
+                                existing.unit
+                            ),
+                        )));
+                    }
+                }
+            }
+            ClaimAssertion::Possession {
+                operation,
+                item,
+                counterparty,
+                custody,
+            } => {
+                let item_id = entity_key(item);
+                if *operation == PossessionOperation::Transfer {
+                    let Some(other) = counterparty else {
+                        return Err(with_idx(append_error(
+                            CanonAppendErrorCode::Precondition,
+                            "possession.counterparty",
+                            "possession transfer requires a counterparty",
+                        )));
+                    };
+                    if entity_key(other) == subject_id {
+                        return Err(with_idx(append_error(
+                            CanonAppendErrorCode::Precondition,
+                            "possession.counterparty",
+                            "possession transfer counterparty must differ from subject",
+                        )));
+                    }
+                }
+                if matches!(
+                    operation,
+                    PossessionOperation::Transfer | PossessionOperation::Lose
+                ) && event.provenance != CanonProvenanceKind::LegacyUnverified
+                    && working_state.holds_item(&subject_id, &item_id, *custody) != Some(true)
+                {
+                    return Err(with_idx(append_error(
+                        CanonAppendErrorCode::Precondition,
+                        "possession.held",
+                        format!(
+                            "{subject_id} does not currently hold item {item_id} ({custody:?})"
+                        ),
+                    )));
+                }
+            }
+            ClaimAssertion::Injury {
+                operation: InjuryOperation::Heal,
+                injury_id,
+                ..
+            } if event.provenance != CanonProvenanceKind::LegacyUnverified => {
+                let norm_id = injury_id.trim();
+                let active = working_state
+                    .entities
+                    .get(&subject_id)
+                    .and_then(|e| e.injuries.get(norm_id))
+                    .is_some_and(|inj| inj.status == InjuryStatus::Active);
+                if !active {
+                    return Err(with_idx(append_error(
+                        CanonAppendErrorCode::Precondition,
+                        "injury.heal",
+                        format!("cannot heal injury {norm_id} on {subject_id} when not active"),
+                    )));
+                }
+            }
+            ClaimAssertion::Attribute {
+                operation: AttributeOperation::Remove,
+                key,
+                value,
+                ..
+            } if event.provenance != CanonProvenanceKind::LegacyUnverified => {
+                let norm_key = key_text(key);
+                let member_key = scalar_member_key(value);
+                let present = working_state
+                    .entities
+                    .get(&subject_id)
+                    .and_then(|e| e.attributes.get(&norm_key))
+                    .is_some_and(|a| a.members.contains_key(&member_key));
+                if !present {
+                    return Err(with_idx(append_error(
+                        CanonAppendErrorCode::Precondition,
+                        "attribute.remove",
+                        format!(
+                            "cannot remove absent attribute member {member_key} from {subject_id}.{norm_key}"
+                        ),
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a batch of events against `prior_state` in reducer order.
+pub fn validate_event_batch_preconditions(
+    actor: &str,
+    action: CanonPolicyAction,
+    batch: &[CanonEventV1],
+    prior_state: &CanonStateViewV1,
+) -> Result<(), CanonAppendError> {
+    validate_event_batch_structure_and_conservation(actor, batch)?;
+
+    let mut ordered_candidates: Vec<(usize, &CanonEventV1)> = batch.iter().enumerate().collect();
+    ordered_candidates.sort_by(|(idx_a, ev_a), (idx_b, ev_b)| {
+        let pos_key_a = ev_a.effective_position.map_or((0, 0, 0), |p| {
+            (p.book_number, p.chapter_number, p.scene_order)
+        });
+        let pos_key_b = ev_b.effective_position.map_or((0, 0, 0), |p| {
+            (p.book_number, p.chapter_number, p.scene_order)
+        });
+        let step_key_a = ev_a
+            .within_scene_order
+            .map_or((1u8, u32::MAX), |s| (0u8, s));
+        let step_key_b = ev_b
+            .within_scene_order
+            .map_or((1u8, u32::MAX), |s| (0u8, s));
+        pos_key_a
+            .cmp(&pos_key_b)
+            .then_with(|| step_key_a.cmp(&step_key_b))
+            .then_with(|| ev_a.decision_seq.cmp(&ev_b.decision_seq))
+            .then_with(|| ev_a.append_seq.cmp(&ev_b.append_seq))
+            .then_with(|| idx_a.cmp(idx_b))
+            .then_with(|| ev_a.event_id.cmp(&ev_b.event_id))
+    });
+
+    let mut working_state = prior_state.clone();
+    for (idx, event) in ordered_candidates {
+        validate_single_assertion_preconditions(actor, action, idx, event, &working_state)?;
+        if !is_withdrawal_only_event(event) {
+            apply_event_to_view(&mut working_state, event, event.effective_position).map_err(
+                |mut err| {
+                    err.event_index = Some(idx);
+                    err
+                },
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a batch of candidate events against the full branch lineage history,
+/// building the pre-event state in exact reducer order (including within-scene step
+/// bounds and intervening history across multi-position batches).
+pub fn validate_event_batch_in_history(
+    branch_id: &str,
+    lineage: &[String],
+    existing_events: &[CanonEventV1],
+    actor: &str,
+    action: CanonPolicyAction,
+    tier: CanonTier,
+    candidate_events: &[CanonEventV1],
+) -> Result<(), CanonAppendError> {
+    validate_event_batch_structure_and_conservation(actor, candidate_events)?;
+
+    let mut combined_events: Vec<CanonEventV1> =
+        Vec::with_capacity(existing_events.len() + candidate_events.len());
+    combined_events.extend_from_slice(existing_events);
+    combined_events.extend_from_slice(candidate_events);
+
+    let candidate_index_by_id: BTreeMap<&str, usize> = candidate_events
+        .iter()
+        .enumerate()
+        .map(|(idx, ev)| (ev.event_id.as_str(), idx))
+        .collect();
+
+    let (effective_lineage, max_decision_seq, max_event_seq, active_lineage_events) =
+        active_lineage_events_at_watermark(branch_id, lineage, &combined_events, tier, None);
+
+    let mut suppressed_event_ids: Vec<(usize, i64, i64, String)> = Vec::new();
+    let mut invalidated_revisions: Vec<(usize, i64, i64, Option<String>, String)> = Vec::new();
+    let mut scene_visibility_by_id: BTreeMap<String, (usize, ScenePlacementVisibilityV1)> =
+        BTreeMap::new();
+    let mut masks_by_depth: Vec<(usize, i64, i64, bool, StreamCoverageMaskV1)> = Vec::new();
+
+    let mut control_scan = active_lineage_events.clone();
+    control_scan
+        .sort_by_key(|(depth, e)| (std::cmp::Reverse(*depth), e.decision_seq, e.append_seq));
+
+    for &(depth, event) in &control_scan {
+        if let Some(withdrawn) = &event.withdraws_event_id {
+            suppressed_event_ids.push((
+                depth,
+                event.decision_seq,
+                event.append_seq,
+                withdrawn.clone(),
+            ));
+        }
+        if let Some(superseded) = &event.supersedes_event_id {
+            suppressed_event_ids.push((
+                depth,
+                event.decision_seq,
+                event.append_seq,
+                superseded.clone(),
+            ));
+        }
+        match &event.payload {
+            CanonEventPayloadV1::SourceInvalidation { invalidation } => {
+                for rev_id in &invalidation.invalidated_revision_ids {
+                    invalidated_revisions.push((
+                        depth,
+                        event.decision_seq,
+                        event.append_seq,
+                        invalidation.scene_id.clone(),
+                        rev_id.clone(),
+                    ));
+                }
+                for ev_id in &invalidation.invalidated_event_ids {
+                    suppressed_event_ids.push((
+                        depth,
+                        event.decision_seq,
+                        event.append_seq,
+                        ev_id.clone(),
+                    ));
+                }
+            }
+            CanonEventPayloadV1::SceneVisibility { visibility } => {
+                scene_visibility_by_id
+                    .insert(visibility.scene_id.clone(), (depth, visibility.clone()));
+            }
+            CanonEventPayloadV1::CoverageMask { mask } => {
+                masks_by_depth.push((
+                    depth,
+                    event.decision_seq,
+                    event.append_seq,
+                    event.provenance == CanonProvenanceKind::Merged,
+                    mask.clone(),
+                ));
+            }
+            CanonEventPayloadV1::Assertion { .. }
+            | CanonEventPayloadV1::WatermarkRestore { .. } => {}
+        }
+    }
+
+    let mut visible_events: Vec<(usize, Option<CanonPositionV1>, &CanonEventV1)> = Vec::new();
+    for (depth, event) in active_lineage_events {
+        if !matches!(event.payload, CanonEventPayloadV1::Assertion { .. })
+            || is_withdrawal_only_event(event)
+        {
+            continue;
+        }
+        if suppressed_event_ids
+            .iter()
+            .any(|(sup_depth, sup_dec, sup_app, id)| {
+                (*sup_depth < depth
+                    || (*sup_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*sup_dec, *sup_app)))
+                    && event_matches_id_or_merged_source(event, id)
+            })
+        {
+            continue;
+        }
+        if invalidated_revisions.iter().any(
+            |(inv_depth, inv_dec, inv_app, scene_filter, rev_id)| {
+                (*inv_depth < depth
+                    || (*inv_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*inv_dec, *inv_app)))
+                    && rev_id == &event.source_revision_id
+                    && scene_filter
+                        .as_ref()
+                        .is_none_or(|s| event.scene_id.as_ref() == Some(s))
+            },
+        ) {
+            continue;
+        }
+
+        let mut effective_pos = event.effective_position;
+        if let Some(scene_id) = &event.scene_id
+            && let Some((vis_depth, vis)) = scene_visibility_by_id.get(scene_id)
+            && *vis_depth <= depth
+        {
+            if !vis.visible {
+                continue;
+            }
+            if let Some(override_pos) = vis.position_override {
+                effective_pos = Some(override_pos);
+            }
+        }
+
+        let masked_by_descendant =
+            masks_by_depth
+                .iter()
+                .any(|(mask_depth, mask_dec, mask_app, is_merged, mask)| {
+                    let mask_applies = *mask_depth < depth
+                        || (*mask_depth == depth
+                            && (event.decision_seq, event.append_seq) < (*mask_dec, *mask_app)
+                            && (mask.tombstone
+                                || *is_merged
+                                || matches!(
+                                    mask.target,
+                                    CoverageMaskTargetV1::AncestorEvent { .. }
+                                )));
+                    if !mask_applies || !mask_matches_event_target(mask, event) {
+                        return false;
+                    }
+                    match &mask.target {
+                        CoverageMaskTargetV1::AncestorEvent { .. } => true,
+                        CoverageMaskTargetV1::Stream { .. }
+                        | CoverageMaskTargetV1::LegacyWholeRecord { .. } => {
+                            if is_delta_event(event) && !mask.tombstone {
+                                mask.covers_position(effective_pos)
+                            } else {
+                                // Validate against the candidate's own effective position cursor when checking masks.
+                                mask.end_position.is_none()
+                                    && effective_pos.is_none_or(|ev_pos| {
+                                        mask.end_position.is_none_or(|end| ev_pos <= end)
+                                    })
+                            }
+                        }
+                    }
+                });
+        if masked_by_descendant {
+            continue;
+        }
+
+        visible_events.push((depth, effective_pos, event));
+    }
+
+    visible_events.sort_by(|(depth_a, pos_a, ev_a), (depth_b, pos_b, ev_b)| {
+        let pos_key_a = pos_a.map_or((0, 0, 0), |p| {
+            (p.book_number, p.chapter_number, p.scene_order)
+        });
+        let pos_key_b = pos_b.map_or((0, 0, 0), |p| {
+            (p.book_number, p.chapter_number, p.scene_order)
+        });
+        let step_key_a = ev_a
+            .within_scene_order
+            .map_or((1u8, u32::MAX), |s| (0u8, s));
+        let step_key_b = ev_b
+            .within_scene_order
+            .map_or((1u8, u32::MAX), |s| (0u8, s));
+        pos_key_a
+            .cmp(&pos_key_b)
+            .then_with(|| step_key_a.cmp(&step_key_b))
+            .then_with(|| depth_b.cmp(depth_a))
+            .then_with(|| ev_a.decision_seq.cmp(&ev_b.decision_seq))
+            .then_with(|| ev_a.append_seq.cmp(&ev_b.append_seq))
+            .then_with(|| ev_a.event_id.cmp(&ev_b.event_id))
+    });
+
+    let mut working_state = CanonStateViewV1 {
+        branch_id: branch_id.to_string(),
+        lineage: effective_lineage,
+        cursor: CanonCursorV1::unbounded(),
+        tier,
+        decision_watermark: max_decision_seq,
+        event_watermark: max_event_seq,
+        reducer_version: CANON_REDUCER_VERSION,
+        entities: BTreeMap::new(),
+        relationships: BTreeMap::new(),
+        quantities: BTreeMap::new(),
+        knowledge: BTreeMap::new(),
+        rules: BTreeMap::new(),
+        timeline: ProjectedTimelineV1 {
+            scene_clocks: BTreeMap::new(),
+            latest_clock: None,
+            source_event_ids: Vec::new(),
+            reducer_version: CANON_REDUCER_VERSION,
+        },
+        open_threads: BTreeMap::new(),
+        uncertain_orderings: Vec::new(),
+        precondition_anomalies: Vec::new(),
+        invalidated_scene_suffixes: Vec::new(),
+        visible_event_ids: Vec::new(),
+    };
+
+    let mut validated_candidate_indices: BTreeSet<usize> = BTreeSet::new();
+    for (_depth, effective_pos, event) in &visible_events {
+        if let Some(&cand_idx) = candidate_index_by_id.get(event.event_id.as_str()) {
+            validate_single_assertion_preconditions(
+                actor,
+                action,
+                cand_idx,
+                event,
+                &working_state,
+            )?;
+            validated_candidate_indices.insert(cand_idx);
+        }
+        apply_event_to_view(&mut working_state, event, *effective_pos)?;
+    }
+
+    // Also validate any candidate assertion events that were filtered out by
+    // masks/visibility against the state at their exact position/step cursor.
+    for (idx, cand) in candidate_events.iter().enumerate() {
+        if validated_candidate_indices.contains(&idx) {
+            continue;
+        }
+        if matches!(cand.payload, CanonEventPayloadV1::Assertion { .. })
+            && !is_withdrawal_only_event(cand)
+        {
+            let sub_cursor = CanonCursorV1 {
+                position: cand.effective_position,
+                within_scene_order: cand.within_scene_order,
+            };
+            let cursor_state =
+                state_at(branch_id, lineage, existing_events, &sub_cursor, tier, None)?;
+            validate_single_assertion_preconditions(actor, action, idx, cand, &cursor_state)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Conflict reported by 3-way branch merge across common ancestor, target, and source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -2161,16 +2476,58 @@ pub fn plan_canon_branch_merge(
         decision_watermark,
     )?;
 
-    let ancestor_event_set: BTreeSet<&str> = ancestor_view
+    let (_, _, _, ancestor_active_events) = active_lineage_events_at_watermark(
+        common_ancestor_branch_id,
+        ancestor_lineage,
+        events,
+        CanonTier::Ratified,
+        decision_watermark,
+    );
+    let (_, _, _, target_active_events) = active_lineage_events_at_watermark(
+        target_branch_id,
+        target_lineage,
+        events,
+        CanonTier::Ratified,
+        decision_watermark,
+    );
+    let (_, _, _, source_active_events) = active_lineage_events_at_watermark(
+        source_branch_id,
+        source_lineage,
+        events,
+        CanonTier::Ratified,
+        decision_watermark,
+    );
+
+    let mut ancestor_represented_ids: BTreeSet<&str> = ancestor_view
         .visible_event_ids
         .iter()
         .map(String::as_str)
         .collect();
-    let target_event_set: BTreeSet<&str> = target_view
-        .visible_event_ids
-        .iter()
-        .map(String::as_str)
-        .collect();
+    for (_, ev) in &ancestor_active_events {
+        ancestor_represented_ids.insert(ev.event_id.as_str());
+        if let Some(mp) = &ev.merge_provenance {
+            ancestor_represented_ids.insert(mp.source_event_id.as_str());
+        }
+    }
+
+    let mut target_represented_ids: BTreeSet<&str> = ancestor_represented_ids.clone();
+    for id in &target_view.visible_event_ids {
+        target_represented_ids.insert(id.as_str());
+    }
+    for (_, ev) in &target_active_events {
+        target_represented_ids.insert(ev.event_id.as_str());
+        if let Some(mp) = &ev.merge_provenance {
+            target_represented_ids.insert(mp.source_event_id.as_str());
+        }
+    }
+
+    let is_represented_on_target = |ev: &CanonEventV1| -> bool {
+        target_represented_ids.contains(ev.event_id.as_str())
+            || ev
+                .merge_provenance
+                .as_ref()
+                .is_some_and(|mp| target_represented_ids.contains(mp.source_event_id.as_str()))
+    };
 
     let events_by_id: BTreeMap<&str, &CanonEventV1> =
         events.iter().map(|e| (e.event_id.as_str(), e)).collect();
@@ -2179,25 +2536,113 @@ pub fn plan_canon_branch_merge(
     let target_only_events: Vec<&CanonEventV1> = target_view
         .visible_event_ids
         .iter()
-        .filter(|id| !ancestor_event_set.contains(id.as_str()))
+        .filter(|id| !ancestor_represented_ids.contains(id.as_str()))
         .filter_map(|id| events_by_id.get(id.as_str()).copied())
         .collect();
-    let source_only_events: Vec<&CanonEventV1> = source_view
+
+    // Collect source-only control/removal events (SceneVisibility, SourceInvalidation,
+    // CoverageMask, and withdrawals) active on `source_lineage` after `common_ancestor`
+    // and not already represented on `target`.
+    let mut source_control_scan = source_active_events.clone();
+    source_control_scan
+        .sort_by_key(|(depth, e)| (std::cmp::Reverse(*depth), e.decision_seq, e.append_seq));
+    let mut latest_source_scene_vis: BTreeMap<&str, &CanonEventV1> = BTreeMap::new();
+    let mut source_control_events: Vec<&CanonEventV1> = Vec::new();
+    for &(_depth, ev) in &source_control_scan {
+        if let CanonEventPayloadV1::SceneVisibility { visibility } = &ev.payload {
+            latest_source_scene_vis.insert(visibility.scene_id.as_str(), ev);
+        }
+    }
+    for &(_depth, ev) in &source_control_scan {
+        if is_represented_on_target(ev) {
+            continue;
+        }
+        let is_control_or_removal = match &ev.payload {
+            CanonEventPayloadV1::SceneVisibility { visibility } => latest_source_scene_vis
+                .get(visibility.scene_id.as_str())
+                .is_some_and(|latest| latest.event_id == ev.event_id),
+            CanonEventPayloadV1::SourceInvalidation { .. }
+            | CanonEventPayloadV1::CoverageMask { .. } => true,
+            CanonEventPayloadV1::Assertion { .. } => is_withdrawal_only_event(ev),
+            CanonEventPayloadV1::WatermarkRestore { .. } => false,
+        };
+        if is_control_or_removal {
+            source_control_events.push(ev);
+        }
+    }
+
+    let source_assertion_events: Vec<&CanonEventV1> = source_view
         .visible_event_ids
         .iter()
-        .filter(|id| {
-            !ancestor_event_set.contains(id.as_str()) && !target_event_set.contains(id.as_str())
-        })
         .filter_map(|id| events_by_id.get(id.as_str()).copied())
+        .filter(|ev| !is_represented_on_target(ev))
         .collect();
+
+    let mut source_only_events: Vec<&CanonEventV1> =
+        Vec::with_capacity(source_control_events.len() + source_assertion_events.len());
+    source_only_events.extend(source_control_events.iter().copied());
+    source_only_events.extend(source_assertion_events.iter().copied());
 
     let mut conflicts: Vec<CanonMergeConflictV1> = Vec::new();
     let mut conflicting_source_event_ids: BTreeSet<String> = BTreeSet::new();
 
+    // Helper: identify source control/removal event IDs that removed an ancestor event
+    // or entity stream when `source` has no surviving positive event on that stream.
+    let find_source_removal_ids = |entity_id: &str, ancestor_event_ids: &[String]| -> Vec<String> {
+        let mut matched: Vec<String> = Vec::new();
+        for &ctrl in &source_control_events {
+            let matches_ancestor = ancestor_event_ids.iter().any(|anc_id| {
+                let Some(&anc_ev) = events_by_id.get(anc_id.as_str()) else {
+                    return false;
+                };
+                if ctrl
+                    .withdraws_event_id
+                    .as_ref()
+                    .is_some_and(|w| event_matches_id_or_merged_source(anc_ev, w))
+                    || ctrl
+                        .supersedes_event_id
+                        .as_ref()
+                        .is_some_and(|s| event_matches_id_or_merged_source(anc_ev, s))
+                {
+                    return true;
+                }
+                match &ctrl.payload {
+                    CanonEventPayloadV1::SceneVisibility { visibility } => {
+                        !visibility.visible
+                            && anc_ev.scene_id.as_deref() == Some(visibility.scene_id.as_str())
+                    }
+                    CanonEventPayloadV1::SourceInvalidation { invalidation } => {
+                        invalidation
+                            .invalidated_event_ids
+                            .iter()
+                            .any(|id| event_matches_id_or_merged_source(anc_ev, id))
+                            || (invalidation
+                                .invalidated_revision_ids
+                                .contains(&anc_ev.source_revision_id)
+                                && invalidation
+                                    .scene_id
+                                    .as_ref()
+                                    .is_none_or(|s| anc_ev.scene_id.as_ref() == Some(s)))
+                    }
+                    CanonEventPayloadV1::CoverageMask { mask } => {
+                        mask_matches_event_target(mask, anc_ev)
+                    }
+                    CanonEventPayloadV1::Assertion { .. }
+                    | CanonEventPayloadV1::WatermarkRestore { .. } => false,
+                }
+            });
+            if matches_ancestor || ctrl.subject_key() == entity_id {
+                push_unique_id(&mut matched, &ctrl.event_id);
+            }
+        }
+        matched
+    };
+
     // 1. Check divergent scalar sets & removal conflicts across entities.
-    let all_entity_ids: BTreeSet<&String> = target_view
+    let all_entity_ids: BTreeSet<&String> = ancestor_view
         .entities
         .keys()
+        .chain(target_view.entities.keys())
         .chain(source_view.entities.keys())
         .collect();
 
@@ -2211,15 +2656,26 @@ pub fn plan_canon_branch_merge(
         let tgt_life = tgt_ent.and_then(|e| e.life_status.value);
         let src_life = src_ent.and_then(|e| e.life_status.value);
         if tgt_life != anc_life && src_life != anc_life && tgt_life != src_life {
+            let kind = if tgt_life.is_none() || src_life.is_none() {
+                CanonMergeConflictKind::RemovalConflict
+            } else {
+                CanonMergeConflictKind::DivergentScalarSet
+            };
+            let anc_ids = anc_ent
+                .map(|e| e.life_status.source_event_ids.clone())
+                .unwrap_or_default();
             let tgt_ids = tgt_ent
                 .map(|e| e.life_status.source_event_ids.clone())
                 .unwrap_or_default();
-            let src_ids = src_ent
+            let mut src_ids = src_ent
                 .map(|e| e.life_status.source_event_ids.clone())
                 .unwrap_or_default();
+            if src_ids.is_empty() {
+                src_ids = find_source_removal_ids(entity_id, &anc_ids);
+            }
             conflicting_source_event_ids.extend(src_ids.iter().cloned());
             conflicts.push(CanonMergeConflictV1 {
-                kind: CanonMergeConflictKind::DivergentScalarSet,
+                kind,
                 stream_description: format!("{entity_id}.life_status"),
                 target_event_ids: tgt_ids,
                 source_event_ids: src_ids,
@@ -2234,15 +2690,26 @@ pub fn plan_canon_branch_merge(
         let tgt_loc = tgt_ent.and_then(|e| e.location_id.value.as_ref());
         let src_loc = src_ent.and_then(|e| e.location_id.value.as_ref());
         if tgt_loc != anc_loc && src_loc != anc_loc && tgt_loc != src_loc {
+            let kind = if tgt_loc.is_none() || src_loc.is_none() {
+                CanonMergeConflictKind::RemovalConflict
+            } else {
+                CanonMergeConflictKind::DivergentScalarSet
+            };
+            let anc_ids = anc_ent
+                .map(|e| e.location_id.source_event_ids.clone())
+                .unwrap_or_default();
             let tgt_ids = tgt_ent
                 .map(|e| e.location_id.source_event_ids.clone())
                 .unwrap_or_default();
-            let src_ids = src_ent
+            let mut src_ids = src_ent
                 .map(|e| e.location_id.source_event_ids.clone())
                 .unwrap_or_default();
+            if src_ids.is_empty() {
+                src_ids = find_source_removal_ids(entity_id, &anc_ids);
+            }
             conflicting_source_event_ids.extend(src_ids.iter().cloned());
             conflicts.push(CanonMergeConflictV1 {
-                kind: CanonMergeConflictKind::DivergentScalarSet,
+                kind,
                 stream_description: format!("{entity_id}.location"),
                 target_event_ids: tgt_ids,
                 source_event_ids: src_ids,
@@ -2253,9 +2720,10 @@ pub fn plan_canon_branch_merge(
         }
 
         // Attribute scalar & set-member removal checks
-        let all_attr_keys: BTreeSet<&String> = tgt_ent
+        let all_attr_keys: BTreeSet<&String> = anc_ent
             .into_iter()
             .flat_map(|e| e.attributes.keys())
+            .chain(tgt_ent.into_iter().flat_map(|e| e.attributes.keys()))
             .chain(src_ent.into_iter().flat_map(|e| e.attributes.keys()))
             .collect();
         for attr_key in all_attr_keys {
@@ -2272,12 +2740,18 @@ pub fn plan_canon_branch_merge(
                 } else {
                     CanonMergeConflictKind::DivergentScalarSet
                 };
+                let anc_ids = anc_attr
+                    .map(|a| a.source_event_ids.clone())
+                    .unwrap_or_default();
                 let tgt_ids = tgt_attr
                     .map(|a| a.source_event_ids.clone())
                     .unwrap_or_default();
-                let src_ids = src_attr
+                let mut src_ids = src_attr
                     .map(|a| a.source_event_ids.clone())
                     .unwrap_or_default();
+                if src_ids.is_empty() {
+                    src_ids = find_source_removal_ids(entity_id, &anc_ids);
+                }
                 conflicting_source_event_ids.extend(src_ids.iter().cloned());
                 conflicts.push(CanonMergeConflictV1 {
                     kind,
@@ -2292,9 +2766,10 @@ pub fn plan_canon_branch_merge(
         }
 
         // Injury removal / modification conflict check
-        let all_injury_ids: BTreeSet<&String> = tgt_ent
+        let all_injury_ids: BTreeSet<&String> = anc_ent
             .into_iter()
             .flat_map(|e| e.injuries.keys())
+            .chain(tgt_ent.into_iter().flat_map(|e| e.injuries.keys()))
             .chain(src_ent.into_iter().flat_map(|e| e.injuries.keys()))
             .collect();
         for injury_id in all_injury_ids {
@@ -2310,12 +2785,18 @@ pub fn plan_canon_branch_merge(
                 if tgt_removed != src_removed
                     || tgt_inj.map(|i| i.severity) != src_inj.map(|i| i.severity)
                 {
+                    let anc_ids = anc_inj
+                        .map(|i| i.source_event_ids.clone())
+                        .unwrap_or_default();
                     let tgt_ids = tgt_inj
                         .map(|i| i.source_event_ids.clone())
                         .unwrap_or_default();
-                    let src_ids = src_inj
+                    let mut src_ids = src_inj
                         .map(|i| i.source_event_ids.clone())
                         .unwrap_or_default();
+                    if src_ids.is_empty() {
+                        src_ids = find_source_removal_ids(entity_id, &anc_ids);
+                    }
                     conflicting_source_event_ids.extend(src_ids.iter().cloned());
                     conflicts.push(CanonMergeConflictV1 {
                         kind: CanonMergeConflictKind::RemovalConflict,

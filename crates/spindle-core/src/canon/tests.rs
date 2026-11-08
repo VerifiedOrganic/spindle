@@ -1901,4 +1901,243 @@ fn v1_policy_guard_and_three_way_branch_merge_conflicts() {
         plan.accepted_source_events[0].event_id,
         "canon_event:src_title"
     );
+
+    // 7. Source-only removals (scene hiding, source invalidation, withdrawal, tombstone)
+    //    are carried by `plan_canon_branch_merge` when target is unchanged.
+    let anc_loc = make_test_event(
+        "canon_event:anc_scene1_loc",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::LocatedAt {
+            location: ClaimEntity::Resolved {
+                id: "location:harbor".into(),
+            },
+        }),
+        Some(p1),
+        Some(1),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let src_hide = make_test_event(
+        "canon_event:src_hide_scene1",
+        "branch:source",
+        2,
+        2,
+        "scene:1",
+        CanonEventPayloadV1::SceneVisibility {
+            visibility: ScenePlacementVisibilityV1 {
+                scene_id: "scene:1".into(),
+                visible: false,
+                position_override: None,
+                invalidated_from: p1,
+            },
+        },
+        Some(p1),
+        None,
+        Some("scene:1"),
+        "rev:s_hide",
+    );
+    let removal_plan = plan_canon_branch_merge(
+        "branch:main",
+        &["branch:main".into()],
+        "branch:main",
+        &["branch:main".into()],
+        "branch:source",
+        &["branch:source".into(), "branch:main".into()],
+        &[anc_loc.clone(), src_hide.clone()],
+        None,
+    )
+    .unwrap();
+    assert!(removal_plan.conflicts.is_empty());
+    assert_eq!(removal_plan.accepted_source_events.len(), 1);
+    assert_eq!(
+        removal_plan.accepted_source_events[0].event_id,
+        "canon_event:src_hide_scene1"
+    );
+
+    // 8. Preconditions are evaluated in reducer order (within-scene step bounds and
+    //    intervening history across multi-position batches): a later opening balance
+    //    or acquisition cannot satisfy an earlier delta or drop.
+    let open_at_step_10 = make_test_event(
+        "canon_event:open_step10",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Set,
+            measure: "wealth".into(),
+            amount: "100".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(10),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let delta_at_step_5 = make_test_event(
+        "canon_event:delta_step5",
+        "branch:main",
+        2,
+        2,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(5),
+        Some("scene:1"),
+        "rev:m2",
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:main",
+            &["branch:main".into()],
+            std::slice::from_ref(&open_at_step_10),
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&delta_at_step_5),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+
+    let acquire_at_step_10 = make_test_event(
+        "canon_event:acq_step10",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Acquire,
+            item: ClaimEntity::Resolved {
+                id: "item:key".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p1),
+        Some(10),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let drop_at_step_5 = make_test_event(
+        "canon_event:drop_step5",
+        "branch:main",
+        2,
+        2,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:key".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p1),
+        Some(5),
+        Some("scene:1"),
+        "rev:m2",
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:main",
+            &["branch:main".into()],
+            std::slice::from_ref(&acquire_at_step_10),
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&drop_at_step_5),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+
+    // Intervening history across a multi-position batch: Acquire at p1 and Transfer at p3
+    // in one batch fails when existing history has a Lose at p2.
+    let p3 = CanonPositionV1::new(1, 3, 1).unwrap();
+    let lose_at_p2 = make_test_event(
+        "canon_event:lose_p2",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:key".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p2),
+        Some(1),
+        Some("scene:2"),
+        "rev:m_p2",
+    );
+    let multi_pos_batch = vec![
+        make_test_event(
+            "canon_event:acq_p1",
+            "branch:main",
+            2,
+            2,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Possession {
+                operation: PossessionOperation::Acquire,
+                item: ClaimEntity::Resolved {
+                    id: "item:key".into(),
+                },
+                counterparty: None,
+                custody: CustodyKind::Custodian,
+            }),
+            Some(p1),
+            Some(1),
+            Some("scene:1"),
+            "rev:m_multi",
+        ),
+        make_test_event(
+            "canon_event:xfer_p3",
+            "branch:main",
+            2,
+            3,
+            "character:veyra",
+            narration_assertion(ClaimAssertion::Possession {
+                operation: PossessionOperation::Transfer,
+                item: ClaimEntity::Resolved {
+                    id: "item:key".into(),
+                },
+                counterparty: Some(ClaimEntity::Resolved {
+                    id: "character:bram".into(),
+                }),
+                custody: CustodyKind::Custodian,
+            }),
+            Some(p3),
+            Some(1),
+            Some("scene:3"),
+            "rev:m_multi",
+        ),
+    ];
+    let multi_err = validate_event_batch_in_history(
+        "branch:main",
+        &["branch:main".into()],
+        std::slice::from_ref(&lose_at_p2),
+        "author:op",
+        CanonPolicyAction::Ratify,
+        CanonTier::Ratified,
+        &multi_pos_batch,
+    )
+    .unwrap_err();
+    assert_eq!(multi_err.code, CanonAppendErrorCode::Precondition);
+    assert_eq!(multi_err.event_index, Some(1));
 }
