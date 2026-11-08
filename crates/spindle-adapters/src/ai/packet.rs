@@ -55,6 +55,9 @@ impl ModelRouter {
         if route.max_tokens.is_none() {
             route.max_tokens = Some(reserve);
         }
+        if budget.generation_seed.is_some() {
+            route.seed = budget.generation_seed;
+        }
         let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
             Some(self.counter_scope(&runtime, &route)?)
         } else {
@@ -156,6 +159,254 @@ impl ModelRouter {
             }
         }
         Ok((prepared, response))
+    }
+
+    /// Resolve the effective `PacketBudget` and transport/sampling metadata for
+    /// an evaluation route and rating so both packet and legacy baseline arms
+    /// use identical model, context window, output reserve, and sampling policy.
+    pub fn eval_draft_budget_and_settings(
+        &self,
+        route_name: &str,
+        rating: &str,
+        generation_seed: Option<i64>,
+    ) -> anyhow::Result<(PacketBudget, serde_json::Value)> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let route = resolve_cleared_route(&runtime, route_name, Some(rating))?.clone();
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: eval framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        let context_window = agent.config.max_context.unwrap_or(32_768);
+        let mut budget = PacketBudget::scene_default(agent.config.model.clone(), context_window);
+        if let Some(max_tokens) = route.max_tokens {
+            budget.output_reserve = budget.output_reserve.max(max_tokens as usize);
+        }
+        budget.generation_seed = generation_seed.or(route.seed);
+        let effective_max_tokens = route
+            .max_tokens
+            .unwrap_or_else(|| u32::try_from(budget.output_reserve).unwrap_or(3_000));
+        let settings = if agent.config.tokenizer.is_some() {
+            let scope = self.counter_scope(&runtime, &route)?;
+            let encoder = self.configured_tokenizer(&scope)?;
+            serde_json::json!({
+                "transport": "ollama_native_chat",
+                "agent_id": agent.config.id,
+                "model": agent.config.model,
+                "model_revision": encoder.config().model_revision,
+                "tokenizer_id": encoder.id(),
+                "tokenizer_version": encoder.version(),
+                "context_window": scope.max_context,
+                "max_tokens": effective_max_tokens,
+                "output_reserve": budget.output_reserve,
+                "input_limit": budget.input_limit,
+                "framing_reserve": budget.framing_reserve,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "seed": budget.generation_seed,
+                "truncate": false,
+                "shift": false,
+            })
+        } else {
+            serde_json::json!({
+                "transport": "openai_compatible_http",
+                "agent_id": agent.config.id,
+                "model": agent.config.model,
+                "model_revision": serde_json::Value::Null,
+                "tokenizer_id": serde_json::Value::Null,
+                "tokenizer_version": serde_json::Value::Null,
+                "context_window": context_window,
+                "max_tokens": effective_max_tokens,
+                "output_reserve": budget.output_reserve,
+                "input_limit": budget.input_limit,
+                "framing_reserve": budget.framing_reserve,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "seed": budget.generation_seed,
+                "truncate": false,
+                "shift": false,
+            })
+        };
+        Ok((budget, settings))
+    }
+
+    /// Assemble and verify a `DraftingPacketV1` offline against the configured
+    /// calibrated tokenizer and route budget without making any network calls.
+    pub fn verify_packet_offline(
+        &self,
+        route_name: &str,
+        rating: &str,
+        packet: DraftingPacketV1,
+        generation_seed: Option<i64>,
+    ) -> anyhow::Result<PreparedDraftingPacket> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let route = resolve_cleared_route(&runtime, route_name, Some(rating))?.clone();
+        let scope = self.counter_scope(&runtime, &route)?;
+        let encoder = self.configured_tokenizer(&scope)?;
+        let (budget, _) =
+            self.eval_draft_budget_and_settings(route_name, rating, generation_seed)?;
+        let system = system_prompt_for_request(&route, Some(rating));
+        Ok(assemble_packet_with_system(
+            packet,
+            &budget,
+            Some(encoder.as_ref() as &dyn DraftTokenizer),
+            &system,
+        )?)
+    }
+
+    /// Dispatch pre-rendered evaluation messages (such as the frozen legacy
+    /// baseline in G) under the exact same route clearance, calibrated
+    /// tokenizer, context window, sampling options, and prompt-count
+    /// verification as `draft_packet`.
+    pub async fn draft_eval_messages(
+        &self,
+        route_name: &str,
+        rating: &str,
+        messages: &crate::drafting::DraftMessages,
+        budget: &PacketBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+    ) -> anyhow::Result<(String, usize, ModelResponse)> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let mut route = resolve_cleared_route(&runtime, route_name, Some(rating))?.clone();
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: eval framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        anyhow::ensure!(
+            agent.config.model == budget.model_id,
+            "budget_unknown: resolved model does not match budget"
+        );
+        let reserve: u32 = budget.output_reserve.try_into()?;
+        anyhow::ensure!(reserve > 0, "output reserve must be positive");
+        anyhow::ensure!(
+            route.max_tokens.is_none_or(|max| max <= reserve),
+            "configured output exceeds packet reservation"
+        );
+        if route.max_tokens.is_none() {
+            route.max_tokens = Some(reserve);
+        }
+        if budget.generation_seed.is_some() {
+            route.seed = budget.generation_seed;
+        }
+        let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
+            Some(self.counter_scope(&runtime, &route)?)
+        } else {
+            None
+        };
+        if let Some(scope) = &scope {
+            anyhow::ensure!(
+                budget.context_window <= scope.max_context,
+                "packet window exceeds configured model context"
+            );
+        }
+        let configured = scope
+            .as_ref()
+            .map(|scope| self.configured_tokenizer(scope))
+            .transpose()?;
+        let t = configured
+            .as_deref()
+            .map(|encoder| encoder as &dyn DraftTokenizer)
+            .or(tokenizer)
+            .ok_or_else(|| anyhow::anyhow!("budget_unknown: no tokenizer configured"))?;
+        anyhow::ensure!(
+            !t.id().is_empty() && !t.version().is_empty() && t.supports_model(&budget.model_id),
+            "budget_unknown: tokenizer/model mismatch"
+        );
+        let input_tokens = t
+            .count_messages(messages)
+            .map_err(|e| anyhow::anyhow!("budget_unknown: {e}"))?;
+        anyhow::ensure!(
+            input_tokens <= budget.input_limit
+                && input_tokens
+                    .checked_add(budget.output_reserve)
+                    .and_then(|n| n.checked_add(budget.framing_reserve))
+                    .is_some_and(|n| n <= budget.context_window),
+            "mandatory_overflow: final rendered messages/context window"
+        );
+        let prompt_hash = crate::tokenization::messages_hash(messages)?;
+        route.system_prompt = messages.system.clone();
+        let request = ModelRequest {
+            route: route_name.into(),
+            prompt: messages.user.clone(),
+            rating: Some(rating.into()),
+            context: Some(RequestContext {
+                prompt_template_id: Some("draft.legacy_eval".into()),
+                prompt_version: Some("v1".into()),
+                context_packet_hash: Some(prompt_hash.clone()),
+                ..Default::default()
+            }),
+        };
+        let verified_provider_count = if let (Some(scope), Some(encoder)) = (&scope, &configured)
+            && encoder.config().verify_each_prompt
+        {
+            let receipt = self
+                .probe_count(scope, messages, Some(rating), request.context.as_ref())
+                .await?;
+            encoder.verify_count(messages, receipt.input_tokens)?;
+            Some(receipt.input_tokens)
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        self.record_dispatch(DispatchRecord::Dispatch {
+            route: request.route.clone(),
+            agent: dispatch_agent_label(&runtime, &route),
+            rating: request.rating.clone(),
+            prompt: request.prompt.clone(),
+        })?;
+        let start = std::time::Instant::now();
+        let mut response = if let Some(scope) = &scope {
+            self.run_ollama_packet(scope, &route, messages).await
+        } else {
+            self.run_http_inner(
+                &runtime,
+                &route,
+                request.rating.as_deref(),
+                &request.prompt,
+                false,
+            )
+            .await
+        };
+        self.record_usage(
+            &request.route,
+            request.rating.as_deref(),
+            request.context.as_ref(),
+            &request.prompt,
+            false,
+            Some(&route),
+            start,
+            &mut response,
+        )
+        .await;
+        let response = response?;
+        if let Some(encoder) = &configured {
+            let count = response
+                .usage
+                .as_ref()
+                .and_then(|u| u.input_tokens)
+                .context("native packet missing prompt_eval_count; recovery required")?;
+            encoder.verify_count(messages, count.try_into()?)?;
+            if let Some(verified) = verified_provider_count {
+                anyhow::ensure!(
+                    count == verified as u64,
+                    "native packet prompt count differs from verified probe; recovery required"
+                );
+            }
+        }
+        Ok((prompt_hash, input_tokens, response))
     }
 }
 

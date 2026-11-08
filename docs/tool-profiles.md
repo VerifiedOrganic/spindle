@@ -21,26 +21,25 @@ as unset. New generated profiles are opt-in:
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + setup | 45 | 48,810 | 101,367 |
-| workflow-authoring | Scene-writer + authoring-supervisor + setup | 70 | 67,904 | 148,840 |
-| workflow-import | Manuscript importer and source sync | 27 | 25,793 | 60,829 |
-| revision | Branch/revision/history workflow | 38 | 32,040 | 81,715 |
-| worldbuilding | Worldbuilder + character creator | 48 | 50,469 | 88,202 |
-| planning | Plot architect | 39 | 38,043 | 78,031 |
-| research | Researcher | 22 | 21,071 | 50,133 |
-| style | Editor core + style reference | 48 | 40,953 | 104,780 |
-| release | Editor + bible librarian | 65 | 54,388 | 114,368 |
-| setup | New-book setup reference | 16 | 17,667 | 39,156 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 40 | 39,592 | 81,791 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 70 | 67,904 | 150,318 |
+| workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
+| revision | Branch/revision/history workflow | 32 | 20,661 | 53,896 |
+| worldbuilding | Worldbuilder + character creator | 43 | 40,080 | 61,514 |
+| planning | Plot architect | 33 | 25,883 | 49,437 |
+| research | Researcher | 15 | 7,584 | 20,051 |
+| style | Editor core + style reference | 42 | 29,574 | 76,961 |
+| release | Editor + bible librarian + canon steward | 62 | 45,475 | 90,729 |
+| setup | New-book setup reference | 9 | 4,180 | 9,074 |
 
-Every generated profile includes the shared entry core. These are **transitional
-closures over current long-form skills and schemas**, not the final canonical
-catalogs. The broad entry/core dependencies still contribute run, offload or
-release capabilities in some profiles. Large context/analysis output schemas now load optionally through versioned
+Every generated profile includes the shared entry core (`spindle`, 6 entry tools).
+Large context/analysis output schemas load optionally through versioned
 [response contracts](tool-response-contracts.md); actual results are unchanged.
-Their measured byte ceilings are explicit
-in `tools/profile-budgets.json`; canonical target caps are unchanged and remain
-unmet. Lower tool counts alone do not establish lower full-schema bytes. Skill
-splitting, profile-aware loading metadata and canonical schema cleanup follow.
+Their measured byte ceilings are explicit in `tools/profile-budgets.json`;
+canonical target caps remain unmet until prepare/commit and domain consolidation
+phases complete. `get_skill` and `get_reference` check active profile coverage and
+return structured coverage metadata (`covered`, `required_profile`,
+`available_units`, `missing_capabilities`) without mutating the active profile.
 Generated import has no style dependency; style is a separately selected profile.
 No generated profile includes the six currently classified operator tools. This
 is discovery/invocation filtering, not operator authentication; operator CLI

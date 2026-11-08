@@ -31,9 +31,17 @@ impl SqliteSpindleService {
         let mut lock = artifact::lock_artifact(path)?;
         if path.exists() {
             let captured = artifact::load_artifact(path)?;
+            let prepared = captured.prepared_packet.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("captured packet/report missing; manual recovery required")
+            })?;
+            let recorded_seed = prepared
+                .packet
+                .assembly
+                .as_ref()
+                .and_then(|assembly| assembly.generation_seed);
             anyhow::ensure!(
-                captured.prepared_packet.is_some(),
-                "captured packet/report missing; manual recovery required"
+                recorded_seed == budget.generation_seed,
+                "artifact generation seed mismatch"
             );
             let source_hash = generation_sha256_hex(&serde_json::to_vec(&packet)?);
             anyhow::ensure!(
@@ -85,5 +93,43 @@ impl SqliteSpindleService {
         artifact::save_artifact(path, &captured)?;
         lock.captured();
         Ok(captured)
+    }
+
+    /// Ensure a deterministic `(project_id, branch_id)` pair exists as an active
+    /// project/branch in SQLite for evaluation packet runs. Never mutates an
+    /// existing project's active branch to a different branch ID.
+    pub async fn ensure_eval_project_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<()> {
+        let pid = project_id.to_string();
+        let bid = branch_id.to_string();
+        let now = chrono::Utc::now().timestamp_micros();
+        self.repository
+            .pool()
+            .write(move |conn| {
+                let tx = conn.savepoint()?;
+                tx.execute(
+                    "INSERT INTO project \
+                     (id, name, project_type, genre, reader_contract, active_branch_id, notes, created_at, updated_at) \
+                     VALUES (?1, ?1, 'novel', 'eval', '{\"promise\":\"eval\",\"style_notes\":[],\"boundaries\":[]}', ?2, NULL, ?3, ?3) \
+                     ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![&pid, &bid, now],
+                )?;
+                tx.execute(
+                    "INSERT INTO bible_branch \
+                     (id, project_id, parent_branch_id, name, status, branch_type, description, created_from_save_point_id, created_at, updated_at) \
+                     VALUES (?1, ?2, NULL, 'main', 'active', NULL, NULL, NULL, ?3, ?3) \
+                     ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![&bid, &pid, now],
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+        let active = self.repository.get_active_branch(project_id).await?;
+        anyhow::ensure!(active.id == branch_id, "packet branch is no longer active");
+        Ok(())
     }
 }

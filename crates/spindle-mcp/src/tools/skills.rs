@@ -128,4 +128,170 @@ impl ToolRouter {
     ) -> anyhow::Result<InitGrokSkillsOutput> {
         run_init_grok_skills(input.target_dir, input.global)
     }
+
+    pub(crate) fn covered_units(&self) -> Vec<String> {
+        let skills = spindle_adapters::list_skills();
+        let mut units = std::collections::BTreeSet::new();
+        for skill in skills {
+            let required =
+                skill_required_tools(skill, skills, &mut std::collections::BTreeSet::new());
+            if required.iter().all(|tool| self.has_tool(tool)) {
+                units.insert(skill.name.to_string());
+            }
+            for reference in skill.manifest.references {
+                let mut ref_required = required.clone();
+                ref_required.extend(reference.tools.iter().copied());
+                if ref_required.iter().all(|tool| self.has_tool(tool)) {
+                    units.insert(reference.name.to_string());
+                }
+            }
+        }
+        units.into_iter().collect()
+    }
+
+    pub(super) fn resolve_skill_output(
+        &self,
+        skill: spindle_adapters::EmbeddedSkill,
+    ) -> GetSkillOutput {
+        let skills = spindle_adapters::list_skills();
+        let required = skill_required_tools(&skill, skills, &mut std::collections::BTreeSet::new());
+        let missing_capabilities: Vec<String> = required
+            .iter()
+            .filter(|tool| !self.has_tool(tool))
+            .map(|tool| (*tool).to_string())
+            .collect();
+        let covered = missing_capabilities.is_empty();
+        let required_profile = smallest_covering_profile(skill.name, &required);
+        let available_units = self.covered_units();
+        let markdown = if covered {
+            skill.markdown.to_string()
+        } else {
+            uncovered_unit_message(
+                skill.name,
+                self.tool_profile.as_deref().unwrap_or("default"),
+                required_profile.as_deref().unwrap_or("default"),
+                &missing_capabilities,
+                &available_units,
+            )
+        };
+        GetSkillOutput {
+            name: skill.name.to_string(),
+            markdown,
+            covered,
+            required_profile,
+            available_units,
+            missing_capabilities,
+        }
+    }
+
+    pub(super) fn resolve_reference_output(
+        &self,
+        reference: spindle_adapters::EmbeddedReference,
+    ) -> GetReferenceOutput {
+        let required = reference_required_tools(reference.name);
+        let missing_capabilities: Vec<String> = required
+            .iter()
+            .filter(|tool| !self.has_tool(tool))
+            .map(|tool| (*tool).to_string())
+            .collect();
+        let covered = missing_capabilities.is_empty();
+        let required_profile = smallest_covering_profile(reference.name, &required);
+        let available_units = self.covered_units();
+        let markdown = if covered {
+            reference.markdown.to_string()
+        } else {
+            uncovered_unit_message(
+                reference.name,
+                self.tool_profile.as_deref().unwrap_or("default"),
+                required_profile.as_deref().unwrap_or("default"),
+                &missing_capabilities,
+                &available_units,
+            )
+        };
+        GetReferenceOutput {
+            name: reference.name.to_string(),
+            markdown,
+            covered,
+            required_profile,
+            available_units,
+            missing_capabilities,
+        }
+    }
+}
+
+fn skill_required_tools<'a>(
+    skill: &'a spindle_adapters::EmbeddedSkill,
+    skills: &'a [spindle_adapters::EmbeddedSkill],
+    seen: &mut std::collections::BTreeSet<&'a str>,
+) -> std::collections::BTreeSet<&'a str> {
+    assert!(seen.insert(skill.name), "dependency cycle: {}", skill.name);
+    let mut tools: std::collections::BTreeSet<_> = skill.manifest.tools.iter().copied().collect();
+    for dependency in skill.manifest.requires_skills {
+        if let Some(parent) = skills.iter().find(|s| s.name == *dependency) {
+            tools.extend(skill_required_tools(parent, skills, seen));
+        }
+    }
+    seen.remove(skill.name);
+    tools
+}
+
+fn reference_required_tools(name: &str) -> std::collections::BTreeSet<&'static str> {
+    let skills = spindle_adapters::list_skills();
+    for skill in skills {
+        for reference in skill.manifest.references {
+            if reference.name == name {
+                let mut required =
+                    skill_required_tools(skill, skills, &mut std::collections::BTreeSet::new());
+                required.extend(reference.tools.iter().copied());
+                return required;
+            }
+        }
+    }
+    std::collections::BTreeSet::new()
+}
+
+fn smallest_covering_profile(
+    unit_name: &str,
+    required_tools: &std::collections::BTreeSet<&str>,
+) -> Option<String> {
+    if required_tools
+        .iter()
+        .all(|tool| super::profile_has_tool(Some("minimal"), tool))
+    {
+        return Some("minimal".to_string());
+    }
+    spindle_adapters::guidance::list_profiles()
+        .iter()
+        .filter(|profile| {
+            profile.units.contains(&unit_name)
+                || required_tools
+                    .iter()
+                    .all(|tool| profile.tools.contains(tool))
+        })
+        .min_by_key(|profile| (profile.tools.len(), profile.name))
+        .map(|profile| profile.name.to_string())
+        .or_else(|| Some("default".to_string()))
+}
+
+fn uncovered_unit_message(
+    unit_name: &str,
+    active_profile: &str,
+    required_profile: &str,
+    missing_capabilities: &[String],
+    available_units: &[String],
+) -> String {
+    let available = if available_units.is_empty() {
+        "none".to_string()
+    } else {
+        available_units.join(", ")
+    };
+    format!(
+        "# Profile coverage required for `{unit_name}`\n\n\
+         The active tool profile (`{active_profile}`) does not cover `{unit_name}`.\n\
+         - Required profile: `{required_profile}`\n\
+         - Missing capabilities: {}\n\
+         - Available units in active profile: {available}\n\n\
+         Reconnect with `SPINDLE_TOOL_PROFILE={required_profile}` (or unset `SPINDLE_TOOL_PROFILE` for the full catalog) to load and run this workflow.",
+        missing_capabilities.join(", ")
+    )
 }

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -2024,10 +2025,550 @@ def score_manuscript(
     }
 
 
+def verify_accepted_draft_artifact(artifact: dict[str, Any]) -> str:
+    """Validate a PlainTextDraftArtifactV1 receipt/checksum boundary and return normalized accepted text."""
+    schema_version = artifact.get("schema_version")
+    if schema_version != "plain_text_draft_v1":
+        raise ValueError(
+            f"Unsupported artifact schema_version: {schema_version!r} (expected 'plain_text_draft_v1')"
+        )
+    artifact_id = str(artifact.get("artifact_id") or "")
+    if not artifact_id:
+        raise ValueError("Missing artifact_id in accepted draft artifact")
+    if not artifact.get("packet_hash"):
+        raise ValueError("Missing packet_hash in accepted draft artifact")
+    if not artifact.get("source_packet_sha256"):
+        raise ValueError("Missing source_packet_sha256 in accepted draft artifact")
+
+    receipt = artifact.get("receipt")
+    if not isinstance(receipt, dict):
+        raise ValueError("Missing receipt object in accepted draft artifact")
+    generation_id = receipt.get("generation_id") or receipt.get("call_id") or receipt.get("model_call_id")
+    if not generation_id:
+        raise ValueError("Missing receipt.generation_id in accepted draft artifact")
+    if not receipt.get("agent_id") or not receipt.get("normalized_output_sha256"):
+        raise ValueError("Incomplete receipt metadata in accepted draft artifact")
+    if artifact.get("truncated") is not False:
+        raise ValueError("Truncated draft artifacts cannot be accepted")
+
+    raw_text = artifact.get("text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ValueError("Empty text in accepted draft artifact")
+    expected_raw_sha = artifact.get("text_sha256")
+    computed_raw_sha = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    if expected_raw_sha != computed_raw_sha:
+        raise ValueError(
+            f"text_sha256 mismatch: artifact={expected_raw_sha} computed={computed_raw_sha}"
+        )
+    if artifact.get("accepted_text_sha256") != computed_raw_sha:
+        raise ValueError(
+            f"accepted_text_sha256 mismatch: artifact={artifact.get('accepted_text_sha256')} computed={computed_raw_sha}"
+        )
+
+    normalized_accepted = raw_text.replace("\r\n", "\n").strip()
+    if not normalized_accepted:
+        raise ValueError("Normalized accepted text is empty")
+    computed_norm_sha = hashlib.sha256(normalized_accepted.encode("utf-8")).hexdigest()
+    if receipt.get("normalized_output_sha256") and receipt.get("normalized_output_sha256") != computed_norm_sha:
+        raise ValueError(
+            f"receipt.normalized_output_sha256 mismatch: receipt={receipt.get('normalized_output_sha256')} computed={computed_norm_sha}"
+        )
+    return normalized_accepted
+
+
+def build_sample_accepted_draft_artifact(
+    *,
+    artifact_id: str,
+    project_id: str,
+    branch_id: str,
+    scene_id: str,
+    raw_text: str,
+    packet_hash: str = "pkt_continuity_fixture_v1",
+    source_packet_sha256: str = "src_pkt_continuity_fixture_v1",
+    model_call_id: str = "call_continuity_fixture_1",
+) -> dict[str, Any]:
+    """Construct a valid PlainTextDraftArtifactV1 payload for testing the acceptance boundary."""
+    text_sha = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    normalized_sha = hashlib.sha256(raw_text.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
+    return {
+        "schema_version": "plain_text_draft_v1",
+        "artifact_id": artifact_id or f"{source_packet_sha256}:{packet_hash}:{text_sha}",
+        "project_id": project_id,
+        "branch_id": branch_id,
+        "scene_id": scene_id,
+        "packet_hash": packet_hash,
+        "source_packet_sha256": source_packet_sha256,
+        "text": raw_text,
+        "text_sha256": text_sha,
+        "accepted_text_sha256": text_sha,
+        "truncated": False,
+        "receipt": {
+            "generation_id": model_call_id,
+            "agent_id": "drafter",
+            "model": "gemma4:31b",
+            "normalized_output_sha256": normalized_sha,
+        },
+    }
+
+
+def _seed_accepted_prose_continuity_fixture_project(
+    client: McpClient,
+    project_title: str,
+    accepted_ch2_prose: str,
+    ch2_location_id_attr: str = "sunken_cistern",
+    ch2_day: int = 2,
+) -> tuple[str, list[PlantedContradiction]]:
+    """Seed a 2-chapter project where Chapter 2 is ingested via PlainTextDraftArtifactV1 -> save_scene_draft."""
+    proj = client.tool(
+        "create_project",
+        {
+            "name": project_title,
+            "project_type": "novel",
+            "genre": "dark_fantasy",
+            "reader_contract": {
+                "promise": "tight siege survival under unforgiving winter logistics",
+                "tone": "taut, grounded, atmospheric",
+                "content_boundaries": ["safe"],
+                "emotional_payoffs": ["earned survival"],
+            },
+        },
+    )
+    project_id = proj["project_id"]
+
+    client.tool(
+        "set_project_calendar",
+        {
+            "project_id": project_id,
+            "calendar": {
+                "days_per_week": 7,
+                "hours_per_day": 24,
+                "week_day_names": [],
+                "months": [],
+                "days_per_year": 360,
+                "epoch_label": "Siege Day 1",
+            },
+        },
+    )
+
+    loc_bastion = client.tool(
+        "create_location",
+        {
+            "project_id": project_id,
+            "name": "Ash Gate Bastion",
+            "kind": "fortress_sector",
+            "realm": "Ashfall Hold",
+            "summary": "Outer fortress gatehouse overlooking the slag ravine.",
+            "initial_state": {
+                "status": "intact",
+                "sensory_details": ["cold basalt", "coal smoke"],
+            },
+        },
+    )["location_id"]
+    loc_cistern = client.tool(
+        "create_location",
+        {
+            "project_id": project_id,
+            "name": "Sunken Cistern",
+            "kind": "fortress_sector",
+            "realm": "Ashfall Hold",
+            "summary": "Flooded stone reservoir beneath the courtyard.",
+            "initial_state": {
+                "status": "intact",
+                "sensory_details": ["black water", "iron chains"],
+            },
+        },
+    )["location_id"]
+    loc_map = {
+        "ash_gate_bastion": loc_bastion,
+        "sunken_cistern": loc_cistern,
+    }
+
+    char_mara = client.tool(
+        "create_character",
+        {
+            "project_id": project_id,
+            "name": "Mara Vance",
+            "summary": "Captain of the Ash Gate garrison.",
+            "role": "protagonist",
+            "realm": "Ashfall Hold",
+            "voice_profile": {
+                "tone": "clipped",
+                "vocabulary": ["military"],
+                "sentence_structure": ["direct"],
+                "tics": [],
+                "forbidden_words": [],
+                "example_lines": ["Hold the north embrasure clear of slag."],
+            },
+            "emotional_profile": {
+                "baseline_mood": "resolute",
+                "triggers": ["betrayal"],
+                "coping_mechanisms": ["discipline"],
+                "core_wound": "prior siege loss",
+            },
+        },
+    )["character_id"]
+    char_lyra = client.tool(
+        "create_character",
+        {
+            "project_id": project_id,
+            "name": "Lyra Voss",
+            "summary": "Lead cavern scout of the garrison.",
+            "role": "supporting",
+            "realm": "Ashfall Hold",
+            "voice_profile": {
+                "tone": "clipped",
+                "vocabulary": ["military"],
+                "sentence_structure": ["direct"],
+                "tics": [],
+                "forbidden_words": [],
+                "example_lines": ["No sapper has touched these stones."],
+            },
+            "emotional_profile": {
+                "baseline_mood": "resolute",
+                "triggers": ["betrayal"],
+                "coping_mechanisms": ["discipline"],
+                "core_wound": "prior siege loss",
+            },
+        },
+    )["character_id"]
+
+    # World rule with explicit cost
+    client.tool(
+        "create_world_rule",
+        {
+            "project_id": project_id,
+            "rule_name": "Soulforge Blood Toll",
+            "rule_type": "magic_system",
+            "description": (
+                "Channeling soulforge flame requires paying a blood toll and leaves frostbite "
+                "on the caster's fingers; no caster can channel effortlessly or without cost."
+            ),
+            "scan_pattern": "channel|cast|invoke|unleash",
+            "relevance_tags": ["magic", "soulforge"],
+            "established_in": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": None},
+        },
+    )
+
+    # Chapter 1: Day 3 at Ash Gate Bastion, where Scout Lyra Voss dies at the end of the scene
+    ch1_prose = (
+        "Captain Mara Vance stood on the Ash Gate Bastion with her amber eyes fixed on the sleet. "
+        "Scout Lyra Voss signaled from the lower culvert trench before the masonry gave way in a roar "
+        "of black water and crushed stone. By the time the dust settled, Scout Lyra Voss lay dead beneath "
+        "the fallen arch."
+    )
+    ch1_summary = "Captain Mara Vance and Scout Lyra Voss defend the gate before the culvert collapses on Lyra Voss."
+    sc1 = client.tool(
+        "save_scene_draft",
+        {
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "full_text": ch1_prose,
+            "summary": ch1_summary,
+            "content_rating": "general",
+            "tone": "taut",
+            "location_id": loc_bastion,
+        },
+    )["scene_id"]
+    client.tool(
+        "save_summary",
+        {
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "summary": ch1_summary,
+        },
+    )
+    client.tool(
+        "set_scene_clock",
+        {
+            "project_id": project_id,
+            "scene_id": sc1,
+            "clock": {
+                "day_index": 3,
+                "time_of_day": 720,
+                "duration_days": 0.25,
+                "precision": "hour",
+            },
+            "temporal_mode": "linear",
+            "thread_key": "main",
+        },
+    )
+
+    # Canonical fact for Mara's eye color
+    client.tool(
+        "register_canonical_fact",
+        {
+            "project_id": project_id,
+            "scene_id": sc1,
+            "book_number": 1,
+            "chapter_number": 1,
+            "fact_type": "character_attribute",
+            "key": "Mara eye color",
+            "value": "amber",
+            "subject_table": "character",
+            "subject_id": char_mara,
+            "predicate": "Mara eye color",
+            "value_kind": "text",
+            "value_text": "amber",
+        },
+    )
+
+    # Record Lyra Voss's death at Chapter 1
+    client.tool(
+        "commit_scene_changes",
+        {
+            "project_id": project_id,
+            "scene_id": sc1,
+            "character_states": [
+                {
+                    "character_id": char_lyra,
+                    "changes": {
+                        "emotional_state": {},
+                        "goals": [],
+                        "status": ["dead", "deceased"],
+                        "notes": ["Killed in the Chapter 1 culvert collapse."],
+                        "source_summary": "Killed in the Chapter 1 culvert collapse.",
+                    },
+                }
+            ],
+            "canonical_facts": [],
+            "relationship_updates": [],
+            "accept_world_rule_risks": True,
+            "accept_continuity_risks": True,
+            "continuity_gate": "off",
+        },
+    )
+
+    # Chapter 2: Scene 2 drafted via PlainTextDraftArtifactV1 -> verify_accepted_draft_artifact -> save_scene_draft
+    client.tool(
+        "create_chapter",
+        {
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 2,
+        },
+    )
+    sc2_loc = loc_map.get(ch2_location_id_attr, loc_cistern)
+    artifact = build_sample_accepted_draft_artifact(
+        artifact_id=f"draft_artifact:{project_id}:ch2",
+        project_id=project_id,
+        branch_id=f"bible_branch:{project_id}:main",
+        scene_id="scene:ch2_pending",
+        raw_text=accepted_ch2_prose,
+    )
+    verified_text = verify_accepted_draft_artifact(artifact)
+    ch2_summary = "Captain Mara Vance inspects and seals the Sunken Cistern sluice."
+    sc2 = client.tool(
+        "save_scene_draft",
+        {
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 2,
+            "scene_order": 1,
+            "full_text": verified_text,
+            "summary": ch2_summary,
+            "content_rating": "general",
+            "tone": "taut",
+            "location_id": sc2_loc,
+        },
+    )["scene_id"]
+    client.tool(
+        "save_summary",
+        {
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 2,
+            "summary": ch2_summary,
+        },
+    )
+    client.tool(
+        "set_scene_clock",
+        {
+            "project_id": project_id,
+            "scene_id": sc2,
+            "clock": {
+                "day_index": ch2_day,
+                "time_of_day": 720,
+                "duration_days": 0.25,
+                "precision": "hour",
+            },
+            "temporal_mode": "linear",
+            "thread_key": "main",
+        },
+    )
+
+    planted_specs = [
+        PlantedContradiction(
+            contradiction_id="accepted_prose.attr",
+            contradiction_type="character_attribute",
+            variant="accepted_draft_prose",
+            chapter_number=2,
+            description="Accepted packet prose states Mara eye color is cerulean blue instead of canonical amber",
+            expected_check_types=("canonical_fact_prose_drift", "canonical_fact_consistency"),
+            match_tokens=("mara eye color", "amber", sc2),
+        ),
+        PlantedContradiction(
+            contradiction_id="accepted_prose.dead",
+            contradiction_type="dead_character_acting",
+            variant="accepted_draft_prose",
+            chapter_number=2,
+            description="Accepted packet prose has deceased Scout Lyra Voss speaking and acting in Chapter 2",
+            expected_check_types=("retcon_reachability", "character_consistency", "dead_character_acting"),
+            match_tokens=("lyra voss", "dead", "deceased"),
+        ),
+        PlantedContradiction(
+            contradiction_id="accepted_prose.rule",
+            contradiction_type="world_rule_cost_violation",
+            variant="accepted_draft_prose",
+            chapter_number=2,
+            description="Accepted packet prose channels soulforge flame to bypass the blood toll effortlessly",
+            expected_check_types=("world_rule_semantic_drift", "world_rule_compliance"),
+            match_tokens=("likely violates world rule", "soulforge blood toll", sc2),
+        ),
+        PlantedContradiction(
+            contradiction_id="accepted_prose.rewind",
+            contradiction_type="timeline_chronology_rewind",
+            variant="accepted_draft_prose",
+            chapter_number=2,
+            description="Chapter 2 linear scene clock rewinds to day_index=1 after Chapter 1 at day_index=3",
+            expected_check_types=("chronology",),
+            match_tokens=("earlier in story time", sc2),
+        ),
+    ]
+    return project_id, planted_specs
+
+
+def evaluate_generated_accepted_prose(
+    binary: Path,
+    accepted_artifacts_dir: Path | None = None,
+    agent_config: Path | None = None,
+) -> dict[str, Any]:
+    """Integration check that accepted PlainTextDraftArtifactV1 prose passes through extraction + check_consistency."""
+    clean_ch2_prose = (
+        "Captain Mara Vance descended into the Sunken Cistern with her amber eyes narrowed against the damp torchlight. "
+        "She paid the blood toll across the bronze overflow hatch, wincing as frostbite bit her fingers while sealing "
+        "the stonework against the rising flood."
+    )
+    violating_ch2_prose = (
+        "Captain Mara Vance descended into the Sunken Cistern; Mara eye color gleamed a vivid cerulean blue in the damp torchlight.\n\n"
+        "Scout Lyra Voss vaulted onto the parapet beside Mara Vance and pointed her bow toward the ravine. "
+        "\"I just scouted the lower ridge and the road is clear,\" Lyra Voss said.\n\n"
+        "Inside the cistern, Mara Vance chose to channel the soulforge flame and bypass the blood toll effortlessly, "
+        "her bare fingers warm and unharmed as the seal fused shut."
+    )
+
+    with tempfile.TemporaryDirectory(prefix="spindle-accepted-prose-continuity-") as tmp:
+        client = McpClient(binary, Path(tmp), agent_config=agent_config)
+        try:
+            clean_project_id, _ = _seed_accepted_prose_continuity_fixture_project(
+                client,
+                "Accepted Prose Clean Project",
+                clean_ch2_prose,
+                ch2_day=4,
+            )
+            clean_check = client.tool(
+                "check_consistency",
+                {
+                    "project_id": clean_project_id,
+                    "scope": {"scope_type": "full"},
+                    "checks": [],
+                    "severity_filter": [],
+                    "deep_check": False,
+                    "subjects": [],
+                },
+            )
+            clean_issues = clean_check.get("issues", [])
+            clean_blockers = [
+                iss
+                for iss in clean_issues
+                if str(iss.get("severity", "")).lower() in ("error", "critical", "blocker")
+                or iss.get("check_type")
+                in (
+                    "canonical_fact_prose_drift",
+                    "retcon_reachability",
+                    "world_rule_semantic_drift",
+                    "chronology",
+                )
+            ]
+
+            violating_project_id, planted_specs = _seed_accepted_prose_continuity_fixture_project(
+                client,
+                "Accepted Prose Violating Project",
+                violating_ch2_prose,
+                ch2_day=1,
+            )
+            violating_check = client.tool(
+                "check_consistency",
+                {
+                    "project_id": violating_project_id,
+                    "scope": {"scope_type": "full"},
+                    "checks": [],
+                    "severity_filter": [],
+                    "deep_check": False,
+                    "subjects": [],
+                },
+            )
+            violating_scored = score_manuscript(
+                manuscript_id="accepted_prose_fixture",
+                chapter_count=2,
+                control_issues=clean_issues,
+                planted_issues=violating_check.get("issues", []),
+                planted_contradictions=planted_specs,
+            )
+
+            live_artifacts_checked = 0
+            live_artifacts_ingested = 0
+            live_artifact_ids: list[str] = []
+            if accepted_artifacts_dir is not None and accepted_artifacts_dir.exists():
+                artifact_files = sorted(accepted_artifacts_dir.rglob("*.artifact.json"))
+                for idx, art_file in enumerate(artifact_files):
+                    art_data = json.loads(art_file.read_text(encoding="utf-8"))
+                    accepted_text = verify_accepted_draft_artifact(art_data)
+                    live_artifacts_checked += 1
+                    if len(live_artifact_ids) < 10:
+                        live_artifact_ids.append(str(art_data.get("artifact_id")))
+                    if idx == 0:
+                        live_pid, _ = _seed_accepted_prose_continuity_fixture_project(
+                            client,
+                            f"Live Artifact Project {art_file.stem}",
+                            accepted_text,
+                            ch2_day=4,
+                        )
+                        client.tool(
+                            "check_consistency",
+                            {
+                                "project_id": live_pid,
+                                "scope": {"scope_type": "full"},
+                                "checks": [],
+                                "severity_filter": [],
+                                "deep_check": False,
+                                "subjects": [],
+                            },
+                        )
+                        live_artifacts_ingested += 1
+        finally:
+            client.close()
+
+    return {
+        "clean_artifact_receipt_valid": True,
+        "clean_accepted_issue_count": len(clean_issues),
+        "clean_accepted_blocker_count": len(clean_blockers),
+        "violating_probe_planted": violating_scored["planted_total"],
+        "violating_probe_detected": violating_scored["detected_total"],
+        "violating_probe_recall": violating_scored["recall"],
+        "live_artifacts_verified": live_artifacts_checked,
+        "live_artifacts_ingested": live_artifacts_ingested,
+        "sample_live_artifact_ids": live_artifact_ids,
+    }
+
+
 def run_benchmark(
     binary: Path,
     deep_check: bool = False,
     agent_config: Path | None = None,
+    accepted_artifacts_dir: Path | None = None,
 ) -> dict[str, Any]:
     effective_agent_config = (
         resolve_agent_config(agent_config)
@@ -2088,6 +2629,11 @@ def run_benchmark(
         finally:
             client.close()
 
+    accepted_prose_fixture = evaluate_generated_accepted_prose(
+        binary=binary,
+        accepted_artifacts_dir=accepted_artifacts_dir,
+        agent_config=effective_agent_config,
+    )
     elapsed_s = round(time.monotonic() - started, 3)
 
     aggregate_by_type: dict[str, Any] = {}
@@ -2123,6 +2669,7 @@ def run_benchmark(
             "control_false_positives_by_check_type": dict(sorted(control_fp_by_check.items())),
             "per_type_recall": aggregate_by_type,
         },
+        "generated_accepted_prose_fixture": accepted_prose_fixture,
         "manuscripts": manuscript_reports,
     }
 
@@ -2261,6 +2808,33 @@ def run_self_test() -> None:
                 pass
             else:
                 raise AssertionError("Missing Cargo artifact reused another binary")
+
+    # Verify PlainTextDraftArtifactV1 validation and rejection of tampered/truncated artifacts
+    valid_art = build_sample_accepted_draft_artifact(
+        artifact_id="draft_artifact:scene_1:1",
+        project_id="project:test",
+        branch_id="bible_branch:test:main",
+        scene_id="scene:1",
+        raw_text="  Captain Mara Vance held the lantern high.\r\n",
+    )
+    assert verify_accepted_draft_artifact(valid_art) == "Captain Mara Vance held the lantern high."
+
+    truncated_art = json.loads(json.dumps(valid_art))
+    truncated_art["truncated"] = True
+    try:
+        verify_accepted_draft_artifact(truncated_art)
+        raise AssertionError("Expected truncated artifact to be rejected")
+    except ValueError:
+        pass
+
+    tampered_art = json.loads(json.dumps(valid_art))
+    tampered_art["text"] = "Tampered prose without updating hash."
+    try:
+        verify_accepted_draft_artifact(tampered_art)
+        raise AssertionError("Expected tampered artifact to be rejected")
+    except ValueError:
+        pass
+
     print("continuity_recall.py self-test passed")
 
 
@@ -2270,7 +2844,11 @@ def main() -> int:
     subparsers.add_parser("self-test", help="Run offline unit tests of benchmark scoring")
 
     run_parser = subparsers.add_parser("run", help="Run continuity recall benchmark against spindle-mcp")
-    for p in (parser, run_parser):
+    verify_prose_parser = subparsers.add_parser(
+        "verify-accepted-prose",
+        help="Run only the generated-accepted-prose continuity fixture against spindle-mcp",
+    )
+    for p in (parser, run_parser, verify_prose_parser):
         p.add_argument("--binary", help="Explicit benchmark artifact (bypasses automatic build)")
         p.add_argument("--no-build", action="store_true", default=argparse.SUPPRESS, help="Use an existing binary without building (may be stale)")
         p.add_argument("--output", help="Write JSON report to this file path")
@@ -2283,6 +2861,10 @@ def main() -> int:
             "--agent-config",
             help="Path to Spindle agent config TOML when running with --deep",
         )
+        p.add_argument(
+            "--accepted-artifacts-dir",
+            help="Optional directory of PlainTextDraftArtifactV1 (*.artifact.json) files to verify and ingest",
+        )
 
     args = parser.parse_args()
     if args.command == "self-test":
@@ -2291,7 +2873,24 @@ def main() -> int:
 
     binary = resolve_binary(args.binary, no_build=getattr(args, "no_build", False))
     agent_config = Path(args.agent_config).expanduser().resolve() if args.agent_config else None
-    report = run_benchmark(binary=binary, deep_check=bool(args.deep), agent_config=agent_config)
+    accepted_dir = (
+        Path(args.accepted_artifacts_dir).expanduser().resolve()
+        if getattr(args, "accepted_artifacts_dir", None)
+        else None
+    )
+    if args.command == "verify-accepted-prose":
+        report = evaluate_generated_accepted_prose(
+            binary=binary,
+            accepted_artifacts_dir=accepted_dir,
+            agent_config=agent_config,
+        )
+    else:
+        report = run_benchmark(
+            binary=binary,
+            deep_check=bool(args.deep),
+            agent_config=agent_config,
+            accepted_artifacts_dir=accepted_dir,
+        )
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output:
         out_path = Path(args.output)

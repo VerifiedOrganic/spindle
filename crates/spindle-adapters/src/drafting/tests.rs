@@ -102,6 +102,7 @@ pub(crate) fn budget() -> PacketBudget {
         framing_reserve: 512,
         context_window: 20000,
         section_limits: [2000, 2500, 2500, 1500, 1500, 2000],
+        generation_seed: None,
     }
 }
 fn item(packet: &mut DraftingPacketV1, id: &str, text: &str) -> PacketItem {

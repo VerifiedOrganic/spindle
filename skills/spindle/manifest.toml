@@ -1,12 +1,12 @@
 version = 1
 name = "spindle"
-profiles = ["authoring", "default"]
+profiles = ["minimal", "write", "authoring", "default"]
 requires_skills = []
-tools = ["authoring_execute_next", "authoring_save_scene_draft", "get_chapter_briefing", "get_entity", "get_reference", "get_scene_context", "get_skill", "get_writer_state", "list_agents", "list_projects", "list_skills", "save_scene_draft", "set_active_project"]
+tools = ["get_reference", "get_skill", "get_writer_state", "list_projects", "list_skills", "set_active_project"]
 
 [[references]]
 name = "setup"
 path = "references/setup.md"
-trigger = "Load for new-book setup."
-profiles = ["authoring", "default"]
-tools = ["create_book", "create_chapter", "create_project", "get_writer_state", "set_active_project"]
+trigger = "Load when starting a new book project."
+profiles = ["write", "authoring", "default"]
+tools = ["create_book", "create_chapter", "create_project", "get_skill", "get_writer_state", "set_active_project"]

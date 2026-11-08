@@ -106,17 +106,13 @@ impl ServerHandler for SpindleMcpServer {
                 .build(),
         )
             .with_instructions(
-                "Spindle is a persistent story bible for fiction. Start with get_skill(name=\"spindle\"). Select the existing project with set_active_project, then get_writer_state before drafting. The host assistant writes prose by default; save with authorship=\"assistant\". Inside an authoring run use authoring_save_scene_draft and its continuity package. Load only the relevant workflow with get_skill; resources are optional. Follow the book's voice, canon, and reader contract.
+                "Spindle is a persistent story bible for fiction. Start with get_skill(name=\"spindle\"). Select the existing project with set_active_project, then get_writer_state before drafting. The connected host assistant writes prose by default; save with authorship=\"assistant\". Inside an authoring run use authoring_save_scene_draft and its continuity package. Load only the relevant workflow with get_skill or get_reference; MCP resources are optional. Follow the book's voice, canon, and reader contract.
 
 Read `bible://skills/character-creator` and `bible://skills/worldbuilder` for setup flows. Read `bible://skills/scene-writer` for drafting and continuation, and `bible://skills/authoring-supervisor` for multi-chapter runs. Route manuscript import through `bible://skills/manuscript-importer`. Use `bible://skills/revision-manager`, `bible://skills/continuity-editor`, and `bible://skills/bible-librarian` for revision, quality, and Bible lookup flows. Read `bible://skills/editor` for editorial review, developmental editing, and fact-checking workflows. Additional embedded skills and craft references are available under `bible://skills/*` and `bible://references/*`.
 
-Codex users: `spindle-mcp init` and `spindle-mcp init-codex` install one global entry skill in `~/.agents/skills/spindle/`; it loads specialist workflows on demand to conserve the skill-discovery budget. Use `init-codex` for existing books without creating a workspace. Select the writing model in Codex. Host drafting does not require a Spindle API key; server-side model routes are configured separately.
-
-Grok users: `init_grok_skills` now defaults to installing into your global `~/.grok/skills/` (recommended). Pass `global=false` + `target_dir` only if you specifically want repo-scoped adapters. This gives you the full set of Spindle skills (spindle, spindle-scene-writer, spindle-character-creator, etc.) as first-class Grok skills.
-
 Model routes are exposed as read-only resources under `bible://system/model-routes`. Direct entity resources can be read with the `bible://{table}:{id}` template, for example `bible://scene:xyz789`.
 
-MCP clients without resource support: use the `list_skills`, `get_skill`, and `get_reference` tools — they return the same content as the `bible://skills/*` and `bible://references/*` resources."
+All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as equivalent loading routes for `bible://skills/*`, `bible://references/*`, and `bible://contracts/tools/v1`."
                     .to_string(),
             )
             .with_server_info(Implementation::new("spindle", env!("CARGO_PKG_VERSION")))
@@ -360,5 +356,15 @@ mod tests {
                 .expect("instructions")
                 .contains("bible://{table}:{id}")
         );
+        for host_term in ["Codex", "GPT-6", "Grok"] {
+            assert!(
+                !info
+                    .instructions
+                    .as_deref()
+                    .expect("instructions")
+                    .contains(host_term),
+                "initialize instructions must remain host-neutral (found {host_term})"
+            );
+        }
     }
 }

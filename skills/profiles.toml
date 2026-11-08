@@ -3,12 +3,12 @@ version = 1
 [[profiles]]
 name = "workflow-write"
 description = "Complete current scene-writing workflow, with new-book setup."
-units = ["scene-writer", "spindle/setup"]
+units = ["scene-writer", "scene-writer/craft-and-voice", "scene-writer/drafting-packets", "scene-writer/research-and-sources", "spindle/setup"]
 
 [[profiles]]
 name = "workflow-authoring"
 description = "Scene writing plus run and checkpoint orchestration."
-units = ["scene-writer", "authoring-supervisor", "spindle/setup"]
+units = ["scene-writer", "scene-writer/authoring-runs", "scene-writer/craft-and-voice", "scene-writer/drafting-packets", "scene-writer/offloaded-generation", "scene-writer/research-and-sources", "authoring-supervisor", "spindle/setup"]
 
 [[profiles]]
 name = "workflow-import"
