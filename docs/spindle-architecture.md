@@ -157,6 +157,14 @@ but connected:
 `check_consistency` remains the broad audit surface for branch-scoped
 consistency review.
 
+Canon checks and writes for an inherited scene use the active descendant
+branch, including child-only facts and overrides. Scene relationship deltas are
+replaced on recommit; removing a pair from the continuity package reverses its
+prior contribution. Branch-local relationship totals and their per-scene delta
+ledger travel together through save-point snapshots and restores. Older snapshots
+without a ledger restore with an empty ledger; their historical contributions
+cannot be reconstructed.
+
 ## The authoring-run editorial loop
 
 The authoring supervisor (`spindle-harness`, driven through the `authoring_*`
@@ -497,6 +505,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0031 | style-learning-from-edits (`project.style_learning` + edit candidates) |
 | V0041 | `model_call` telemetry ledger (`get_model_usage`) |
 | V0047 | `model_call` attribution columns (`scene_id`, `run_id`, `route`, `prompt_template_id`, `prompt_version`, `context_packet_hash`, `temperature`, `top_p`, `max_tokens`) |
+| V0048 | branch-scoped canon uniqueness and per-scene relationship delta ledger (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
 
 ## Where to make changes
 

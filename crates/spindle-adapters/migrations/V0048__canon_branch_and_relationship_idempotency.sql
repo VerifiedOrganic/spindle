@@ -1,5 +1,5 @@
 -- =============================================================================
--- V0046: per-(scene, source) relationship delta idempotency and branch-scoped
+-- V0048: per-(scene, source) relationship delta idempotency and branch-scoped
 -- canon override uniqueness indexes.
 --
 -- 1. `relationship_scene_delta` records applied trust/tension deltas keyed by

@@ -25,6 +25,13 @@ Applying a delta never opens a new write path — each class maps to exactly one
 already-tested write tool. A delta cannot express anything the tool surface can't; that ceiling
 is intentional.
 
+Canon commits through an inherited scene validate and write against the active descendant
+branch's facts and overrides. Relationship shifts replace that scene's prior contribution;
+recommitting a continuity package without a previously included pair reverses that contribution.
+Save points preserve relationship totals together with the per-scene delta ledger. Older save
+points without a ledger restore totals with an empty ledger; prior contributions cannot be
+reconstructed from those snapshots.
+
 ## Workflow
 
 ### 1. Mine a committed scene

@@ -164,6 +164,7 @@ pub(crate) const BRANCH_RESTORE_TABLES: &[&str] = &[
     "book_outline",
     "chapter_outline",
     "relates_to",
+    "relationship_scene_delta",
     "knows",
 ];
 
@@ -12941,7 +12942,10 @@ impl Repository {
                             format!("DELETE FROM {table} WHERE project_id = ?1 AND branch_id = ?2")
                         }
                         // Branch-only tables (no project_id column).
-                        "book_outline" | "chapter_outline" | "relates_to" => {
+                        "book_outline"
+                        | "chapter_outline"
+                        | "relates_to"
+                        | "relationship_scene_delta" => {
                             format!("DELETE FROM {table} WHERE branch_id = ?1")
                         }
                         // Child tables keyed by a parent_id column. Their
@@ -12965,11 +12969,6 @@ impl Repository {
                         tx.execute(&delete_sql, rusqlite::params![&branch_id])?;
                     }
                 }
-                tx.execute(
-                    "DELETE FROM relationship_scene_delta WHERE branch_id = ?1",
-                    rusqlite::params![&branch_id],
-                )?;
-
                 // Phase 2: insert the snapshot rows. For each table we build
                 // an INSERT statement keyed by the union of column names
                 // present on the first row (the snapshot is guaranteed to
@@ -19186,6 +19185,47 @@ mod tests {
             .await
             .unwrap();
         assert!(listed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn main_v0047_database_applies_canon_migration() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("main47.db");
+        let _warm = SqlitePool::open(&tmp.path().join("warm47.db"))
+            .await
+            .unwrap();
+        {
+            let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+            let migrations = crate::sqlite::migrations::runner()
+                .get_migrations()
+                .iter()
+                .filter(|m| {
+                    !m.name()
+                        .contains("canon_branch_and_relationship_idempotency")
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            refinery::Runner::new(&migrations).run(&mut conn).unwrap();
+            let latest: i32 = conn
+                .query_row(
+                    "SELECT MAX(version) FROM refinery_schema_history",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(latest, 47);
+        }
+        let pool = SqlitePool::open(&db_path).await.unwrap();
+        pool.read(|conn| {
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM relationship_scene_delta", [], |r| {
+                    r.get(0)
+                })?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

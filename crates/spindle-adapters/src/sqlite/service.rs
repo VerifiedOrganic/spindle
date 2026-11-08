@@ -13263,8 +13263,8 @@ impl SqliteSpindleService {
         let (character_states, canonical_facts, relationship_updates) = self
             .repository
             .with_transaction(move |tx| {
-                let target_branch_id =
-                    tx.resolve_effective_scene_branch(&tx_project_id, &tx_scene.branch_id)?;
+                // Use the branch already checked by the continuity gate.
+                let target_branch_id = tx_scene.branch_id.clone();
                 let mut character_states = Vec::with_capacity(tx_character_states.len());
                 for entry in tx_character_states {
                     let character = tx.get_character(&entry.character_id)?;
@@ -17472,6 +17472,16 @@ impl SqliteSpindleService {
                     .list_all_relationships_by_branch_ids(&branch_ids)
                     .await?,
             )?,
+        );
+        // Export the delta ledger with the totals it explains. Older save
+        // points omit this table; restore treats an absent table as empty.
+        insert_export_rows(
+            &mut tables,
+            &mut counts,
+            "relationship_scene_delta",
+            self.repository
+                .dump_table_by_column_in("relationship_scene_delta", "branch_id", &branch_ids)
+                .await?,
         );
         insert_export_rows(
             &mut tables,
@@ -60777,6 +60787,22 @@ agent = "local-style"
         assert_eq!(out1.relationship_updates[0].trust, Some(60));
         assert_eq!(out1.relationship_updates[0].tension, Some(25));
 
+        // A save point must preserve the per-scene ledger alongside totals.
+        let saved = svc
+            .create_save_point(spindle_core::models::CreateSavePointInput {
+                project_id: project.project_id.clone(),
+                name: "relationship-ledger".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.restore_save_point(spindle_core::models::RestoreSavePointInput {
+            project_id: project.project_id.clone(),
+            save_point_id: saved.save_point_id.clone(),
+        })
+        .await
+        .unwrap();
+
         // Recommitting the same scene with the same delta must be idempotent (60, not 70).
         let out2 = svc
             .commit_scene_changes(CommitSceneChangesInput {
@@ -60799,6 +60825,32 @@ agent = "local-style"
             .unwrap();
         assert_eq!(out2.relationship_updates[0].trust, Some(60));
         assert_eq!(out2.relationship_updates[0].tension, Some(25));
+
+        // Omitting the restored contribution must reverse it back to baseline.
+        svc.commit_scene_changes(CommitSceneChangesInput {
+            project_id: project.project_id.clone(),
+            scene_id: scene1.scene_id.clone(),
+            character_states: Vec::new(),
+            canonical_facts: Vec::new(),
+            relationship_updates: Vec::new(),
+            accept_world_rule_risks: true,
+            accept_continuity_risks: true,
+            continuity_gate: Some(CommitContinuityGate::WarnOnly),
+        })
+        .await
+        .unwrap();
+        let removed = svc
+            .repository
+            .list_relationships_by_branch(&project.branch_id)
+            .await
+            .unwrap();
+        assert_eq!((removed[0].trust, removed[0].tension), (50, 30));
+        svc.restore_save_point(spindle_core::models::RestoreSavePointInput {
+            project_id: project.project_id.clone(),
+            save_point_id: saved.save_point_id,
+        })
+        .await
+        .unwrap();
 
         // Recommitting the revised scene with an updated delta (+15 trust, -10 tension)
         // replaces the scene's prior (+10, -5) delta -> (65, 20).
@@ -60873,6 +60925,46 @@ agent = "local-style"
         assert_eq!(rels_after_mining.len(), 1);
         assert_eq!(rels_after_mining[0].trust, 70);
         assert_eq!(rels_after_mining[0].tension, 22);
+
+        // Older snapshots have no ledger table. Restore their totals without
+        // retaining ledger entries from the live branch's later state.
+        let mut legacy = svc
+            .build_project_export_payload(
+                &project.project_id,
+                "spindle-save-point-v1",
+                std::collections::BTreeMap::new(),
+            )
+            .await
+            .unwrap()
+            .payload;
+        legacy["tables"]
+            .as_object_mut()
+            .unwrap()
+            .remove("relationship_scene_delta");
+        let legacy_snapshot = build_branch_restore_snapshot(
+            &svc.repository,
+            &project.project_id,
+            &project.branch_id,
+            &legacy,
+        )
+        .await
+        .unwrap();
+        svc.repository
+            .restore_branch_snapshot(&project.project_id, &project.branch_id, &legacy_snapshot)
+            .await
+            .unwrap();
+        let legacy_rels = svc
+            .repository
+            .list_relationships_by_branch(&project.branch_id)
+            .await
+            .unwrap();
+        assert_eq!((legacy_rels[0].trust, legacy_rels[0].tension), (70, 22));
+        let legacy_ledger = svc
+            .repository
+            .dump_table_by_column("relationship_scene_delta", "branch_id", &project.branch_id)
+            .await
+            .unwrap();
+        assert!(legacy_ledger.is_empty());
 
         // A second scene accumulates its delta on top of scene 1 (70 + 5 = 75, 22 - 2 = 20).
         let scene2 = svc
