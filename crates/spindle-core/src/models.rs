@@ -1606,6 +1606,297 @@ pub struct SceneContextEnvelope {
     pub context_markdown: Option<String>,
 }
 
+/// Supported intent modes for `prepare_scene`.
+pub const PREPARE_SCENE_INTENTS: [&str; 3] = ["draft", "revise", "continue"];
+
+/// Scene preparation mode (`draft`, `revise`, or `continue`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PrepareSceneIntent {
+    #[default]
+    Draft,
+    Revise,
+    Continue,
+}
+
+impl PrepareSceneIntent {
+    /// Canonical lowercase string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Revise => "revise",
+            Self::Continue => "continue",
+        }
+    }
+}
+
+impl std::str::FromStr for PrepareSceneIntent {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "draft" => Ok(Self::Draft),
+            "revise" => Ok(Self::Revise),
+            "continue" => Ok(Self::Continue),
+            other => Err(format!(
+                "unsupported prepare_scene intent '{other}'; expected one of: {}",
+                PREPARE_SCENE_INTENTS.join(", ")
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PrepareSceneIntent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Input parameters for `prepare_scene`, assembling a bounded scene preparation packet.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneInput {
+    /// Project identifier.
+    pub project_id: String,
+    /// Branch identifier; defaults to the session or project active branch when omitted.
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    /// Existing scene identifier to prepare; resolves placement, cast, and setting when present.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Chapter identifier used to resolve book and chapter numbers when `scene_id` is omitted.
+    #[serde(default)]
+    pub chapter_id: Option<String>,
+    /// Book number (1-based) when targeting by placement or falling back to the writer cursor.
+    #[serde(default)]
+    pub book_number: Option<i32>,
+    /// Chapter number (1-based) when targeting by placement or falling back to the writer cursor.
+    #[serde(default)]
+    pub chapter_number: Option<i32>,
+    /// Scene order within the chapter (1-based).
+    #[serde(default)]
+    pub scene_order: Option<i32>,
+    /// Character identifiers present in the scene; resolved from the scene or chapter plan when omitted.
+    #[serde(default)]
+    pub character_ids: Vec<String>,
+    /// Location identifier for the scene setting; resolved from the scene or chapter plan when omitted.
+    #[serde(default)]
+    pub location_id: Option<String>,
+    /// Preparation intent (`draft`, `revise`, or `continue`); defaults to `draft`.
+    #[serde(default)]
+    pub intent: Option<PrepareSceneIntent>,
+    /// Token budget cap for assembled scene context; hard constraints must fit within this budget.
+    #[serde(default)]
+    pub budget_tokens: Option<usize>,
+    /// Optional research query to attach relevant project research claims and artifacts.
+    #[serde(default)]
+    pub research_query: Option<String>,
+}
+
+/// Dependency hashes captured when a scene preparation packet is assembled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScenePreparationDependencies {
+    /// Content hash of the persisted scene prose at preparation time, if a scene exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_text_hash: Option<String>,
+    /// Content hash of the branch-visible canon state for this placement.
+    pub canon_snapshot_hash: String,
+    /// Content hash of the project reader contract, narrator voice, style rules, and active style profile.
+    pub style_revision_hash: String,
+    /// Content hash of the chapter plan and outline covering this placement.
+    pub plan_revision_hash: String,
+}
+
+/// Freshness evaluation comparing a prepared scene packet against current project state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScenePreparationFreshness {
+    /// True when all dependency hashes match current project state.
+    pub fresh: bool,
+    /// Recomputed composite context revision token for the current state.
+    pub current_context_revision_token: String,
+    /// Current dependency hashes for scene text, canon, style, and plan.
+    pub current_dependencies: ScenePreparationDependencies,
+    /// Names of dependency components that changed (`scene_text`, `canon`, `style`, `plan`).
+    #[serde(default)]
+    pub stale_components: Vec<String>,
+}
+
+/// Read-only snapshot of the writer cursor and next-scene recommendation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneCursor {
+    /// Scene identifier currently recorded on the writer cursor, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_scene_id: Option<String>,
+    /// Story placement currently recorded on the writer cursor, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_placement: Option<StoryPlacement>,
+    /// Next recommended scene identifier from writer state, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_scene_id: Option<String>,
+    /// Current writer intent stored on the project cursor, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_intent: Option<WriterIntent>,
+    /// Writer notes attached to the current cursor, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Resolved scene purpose, cast, setting, beats, and active narrative threads.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareScenePurpose {
+    /// Synopsis of the enclosing chapter from the chapter record or chapter plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_synopsis: Option<String>,
+    /// Title of the target scene when persisted or planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_title: Option<String>,
+    /// Summary of the target scene when persisted or planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_summary: Option<String>,
+    /// Point-of-view character identifier for the scene, if assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pov_character_id: Option<String>,
+    /// Resolved location identifier where the scene takes place.
+    pub location_id: String,
+    /// Resolved character identifiers participating in the scene.
+    #[serde(default)]
+    pub character_ids: Vec<String>,
+    /// Effective content rating for the scene.
+    pub content_rating: ContentRating,
+    /// Expected chapter or scene beats to advance in this scene.
+    #[serde(default)]
+    pub expected_beats: Vec<String>,
+    /// Active themes, conflicts, plot lines, and motifs targeted by this chapter.
+    #[serde(default)]
+    pub active_threads: Vec<ActiveThreadSummary>,
+}
+
+/// Compact reference to a canon, plan, or research record included in the preparation packet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneEvidenceRef {
+    /// Record or section identifier.
+    pub id: String,
+    /// Evidence category (`character`, `location`, `world_rule`, `canonical_fact`, `chapter_plan`, `scene`, `research`).
+    pub kind: String,
+    /// Human-readable title or summary label.
+    pub label: String,
+}
+
+/// Report of an optional or degraded retrieval pass during scene preparation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneUnavailablePass {
+    /// Name of the retrieval pass (`semantic_references`, `research_recall`, `drafting_packet_v1`).
+    pub pass: String,
+    /// Explanation of why the pass was degraded or unavailable.
+    pub reason: String,
+}
+
+/// Relevant research claim or artifact surfaced for the scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneResearchItem {
+    /// Research claim or artifact identifier.
+    pub id: String,
+    /// Item kind (`claim` or `artifact`).
+    pub kind: String,
+    /// Statement or title/excerpt summary.
+    pub summary: String,
+    /// Associated research source identifier, if linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+}
+
+/// Budget, section inclusion/omission, evidence, and degraded-pass report for `prepare_scene`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneCoverage {
+    /// Token budget applied to the scene preparation packet.
+    pub budget_tokens: usize,
+    /// Estimated token count of the assembled scene context after trimming.
+    pub estimated_tokens: usize,
+    /// Estimated token cost of non-truncatable hard constraints.
+    pub hard_constraint_tokens: usize,
+    /// Context sections retained within the token budget.
+    #[serde(default)]
+    pub included_sections: Vec<String>,
+    /// Context sections omitted or truncated to respect the token budget.
+    #[serde(default)]
+    pub truncated_sections: Vec<String>,
+    /// Compact evidence references backing the prepared packet.
+    #[serde(default)]
+    pub evidence_references: Vec<PrepareSceneEvidenceRef>,
+    /// Retrieval passes that were unavailable or degraded during assembly.
+    #[serde(default)]
+    pub unavailable_passes: Vec<PrepareSceneUnavailablePass>,
+}
+
+/// Assembled scene preparation packet returned by `prepare_scene`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSceneOutput {
+    /// Unique identifier for this preparation packet (`prep:<hash>`).
+    pub preparation_id: String,
+    /// Project identifier.
+    pub project_id: String,
+    /// Resolved branch identifier.
+    pub branch_id: String,
+    /// Resolved branch name.
+    pub branch_name: String,
+    /// Effective preparation intent (`draft`, `revise`, or `continue`).
+    pub intent: PrepareSceneIntent,
+    /// Resolved story placement (`book_number`, `chapter_number`, `scene_order`).
+    pub placement: StoryPlacement,
+    /// Enclosing chapter identifier, if a chapter record exists for this placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_id: Option<String>,
+    /// Persisted scene identifier, if a scene record exists at this placement on the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    /// Current persisted scene version (`revision_count`), if a scene record exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_version: Option<i32>,
+    /// Composite freshness token over scene text, canon, style, and plan dependencies.
+    pub context_revision_token: String,
+    /// Individual dependency hashes for staleness detection at commit time.
+    pub dependency_tokens: ScenePreparationDependencies,
+    /// Read-only snapshot of the writer cursor and next-scene recommendation.
+    pub writer_cursor: PrepareSceneCursor,
+    /// Scene purpose, cast, setting, beats, and active narrative threads.
+    pub scene_purpose: PrepareScenePurpose,
+    /// Non-truncatable hard constraints (story so far, temporal anchor, quantities, world rules, canonical facts, secret envelopes).
+    #[serde(default)]
+    pub hard_constraints: Vec<HardConstraint>,
+    /// Project reader contract.
+    pub reader_contract: ReaderContract,
+    /// Active genre/style directive, when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_directive: Option<crate::style::StyleDirective>,
+    /// Budget-capped fiction shelf digest for the active genre/style profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_shelf_digest: Option<crate::style::antislop::CompactShelfDigest>,
+    /// Project-local on-voice excerpts from style-profile guidance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_samples: Vec<crate::style::antislop::VoiceSample>,
+    /// Compact do-not-repeat notes from style-profile avoid rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scene_negatives: Vec<crate::style::antislop::SceneNegative>,
+    /// Assembled novel-layer context (world rules, subjects, timeline, knowledge, promises, pacing, threads, previous scene tail).
+    pub novel: SceneContextNovelLayer,
+    /// Assembled scene-layer context (location, world state, character states, relationships, agency check).
+    pub scene: SceneContextSceneLayer,
+    /// Existing scene prose when `intent` is `revise` or `continue` and a persisted scene exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_prose: Option<String>,
+    /// Relevant research claims and artifacts when `research_query` is provided.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub research: Vec<PrepareSceneResearchItem>,
+    /// Optional `DraftingPacketV1` contract when a persisted scene and chapter record exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drafting_packet_v1: Option<crate::drafting::DraftingPacketV1>,
+    /// Coverage, budget, omission, evidence, and degraded-pass report.
+    pub coverage: PrepareSceneCoverage,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetChapterBriefingInput {
     /// Record id returned by create_project (e.g. "project:abc123def")
@@ -8806,5 +9097,34 @@ mod tests {
             .expect("round-trip checkpoint policy");
             assert_eq!(round_tripped, expected);
         }
+    }
+
+    #[test]
+    fn prepare_scene_intent_round_trips_and_rejects_unknown_values() {
+        for (raw, expected) in [
+            ("draft", PrepareSceneIntent::Draft),
+            ("  DRAFT ", PrepareSceneIntent::Draft),
+            ("revise", PrepareSceneIntent::Revise),
+            ("  Revise ", PrepareSceneIntent::Revise),
+            ("continue", PrepareSceneIntent::Continue),
+            ("  CONTINUE ", PrepareSceneIntent::Continue),
+        ] {
+            let parsed: PrepareSceneIntent =
+                serde_json::from_value(serde_json::json!(raw)).expect("parse prepare_scene intent");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.as_str(), expected.as_str());
+            let round_tripped: PrepareSceneIntent = serde_json::from_str(
+                &serde_json::to_string(&parsed).expect("serialize prepare_scene intent"),
+            )
+            .expect("round-trip prepare_scene intent");
+            assert_eq!(round_tripped, expected);
+        }
+
+        let err = serde_json::from_value::<PrepareSceneIntent>(serde_json::json!("unknown"))
+            .expect_err("unknown prepare_scene intent must be rejected");
+        assert!(
+            err.to_string()
+                .contains("unsupported prepare_scene intent 'unknown'")
+        );
     }
 }

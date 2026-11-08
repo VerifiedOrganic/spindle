@@ -1179,13 +1179,24 @@ impl Repository {
         project_id: &str,
     ) -> Result<Vec<ChapterPlan>> {
         let branch_id = self.active_branch_id(project_id).await?;
+        self.list_chapter_plans_by_project_and_branch(project_id, &branch_id)
+            .await
+    }
+
+    /// Branch-resolved list of every chapter_plan in a project, ordered by
+    /// (book#, chapter#).
+    pub async fn list_chapter_plans_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<ChapterPlan>> {
         let mut plans = list_branch_scoped(
             &self.inner.pool,
             CHAPTER_PLAN_COLUMNS,
             "chapter_plan",
             "book_number, chapter_number",
             project_id,
-            &branch_id,
+            branch_id,
             |r| ChapterPlan::try_from(r),
             |p| (p.book_number, p.chapter_number),
         )
@@ -1223,13 +1234,22 @@ impl Repository {
         project_id: &str,
     ) -> Result<Vec<ChapterSummary>> {
         let branch_id = self.active_branch_id(project_id).await?;
+        self.list_chapter_summaries_by_project_and_branch(project_id, &branch_id)
+            .await
+    }
+
+    pub async fn list_chapter_summaries_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<ChapterSummary>> {
         let mut summaries = list_branch_scoped(
             &self.inner.pool,
             CHAPTER_SUMMARY_COLUMNS,
             "chapter_summary",
             "book_number, chapter_number",
             project_id,
-            &branch_id,
+            branch_id,
             |r| ChapterSummary::try_from(r),
             |s| (s.book_number, s.chapter_number),
         )
@@ -1267,24 +1287,28 @@ impl Repository {
         project_id: &str,
     ) -> Result<Vec<SceneBeatAnnotation>> {
         let branch_id = self.active_branch_id(project_id).await?;
-        let project_id = project_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {SCENE_BEAT_ANNOTATION_COLUMNS} FROM scene_beat_annotation \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY scene_id"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        SceneBeatAnnotation::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
+        self.list_scene_beat_annotations_by_project_and_branch(project_id, &branch_id)
             .await
+    }
+
+    pub async fn list_scene_beat_annotations_by_project_and_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<SceneBeatAnnotation>> {
+        let mut annotations = list_branch_scoped(
+            &self.inner.pool,
+            SCENE_BEAT_ANNOTATION_COLUMNS,
+            "scene_beat_annotation",
+            "scene_id",
+            project_id,
+            branch_id,
+            |r| SceneBeatAnnotation::try_from(r),
+            |a| a.scene_id.clone(),
+        )
+        .await?;
+        annotations.sort_by(|a, b| a.scene_id.cmp(&b.scene_id));
+        Ok(annotations)
     }
 
     pub async fn get_chapter_plan(&self, id: &str) -> Result<ChapterPlan> {

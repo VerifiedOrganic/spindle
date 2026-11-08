@@ -533,6 +533,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "get_scene_context",
             "Assemble standards, novel, and scene context using chapter_id or explicit book_number and chapter_number",
         ),
+        tool::<PrepareSceneInput, PrepareSceneOutput>(
+            "prepare_scene",
+            "Assemble a bounded, read-only scene preparation packet combining cursor state, scene purpose, branch-visible context, secret-gated canon, style guidance, optional research, and freshness tokens",
+        ),
         tool::<GetEntityInput, EntitySubjectSnapshot>(
             "get_entity",
             "Resolve one entity by table and record id as a polymorphic subject snapshot",

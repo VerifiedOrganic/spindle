@@ -109,6 +109,7 @@ pub(super) fn tool_requires_session_serialization(name: &str) -> bool {
             | "get_writer_state"
             | "get_chapter_briefing"
             | "get_scene_context"
+            | "prepare_scene"
             | "get_entity"
             | "find_entity"
             | "get_character_snapshot"
