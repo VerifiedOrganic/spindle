@@ -219,6 +219,18 @@ impl SqliteSpindleService {
         &self,
         input: SaveSceneDraftInput,
     ) -> Result<SaveSceneDraftOutput> {
+        self.save_scene_draft_with_seam(input, || async {}).await
+    }
+
+    pub async fn save_scene_draft_with_seam<H, Fut>(
+        &self,
+        input: SaveSceneDraftInput,
+        before_scene_write: H,
+    ) -> Result<SaveSceneDraftOutput>
+    where
+        H: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         // Resolve placement BEFORE anything else runs. `chapter_id` is
         // documented as sufficient: derive the numeric placement from the
         // existing chapter. Naming neither is a validation error — silently
@@ -469,6 +481,8 @@ impl SqliteSpindleService {
                 }
             }
         }
+
+        before_scene_write().await;
 
         let (mut scene, created) = match receipt_claim {
             Some((receipt_id, scene_key)) => {

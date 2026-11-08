@@ -195,6 +195,19 @@ impl ToolRouter {
         &self,
         input: AuthoringExecuteNextInput,
     ) -> anyhow::Result<AuthoringExecuteNextOutput> {
+        self.handle_authoring_execute_next_with_seam(input, || async {})
+            .await
+    }
+
+    pub(crate) async fn handle_authoring_execute_next_with_seam<H, Fut>(
+        &self,
+        input: AuthoringExecuteNextInput,
+        mut before_handoff_persist: H,
+    ) -> anyhow::Result<AuthoringExecuteNextOutput>
+    where
+        H: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         let project_id = input.project_id.clone();
         let agent_mode = authoring_execute_uses_agent_drafting(input.mode);
         let repo = self.service.repository();
@@ -207,100 +220,176 @@ impl ToolRouter {
                 .context("No active or latest authoring run found for project")?,
         };
 
-        let (run, chapters, scenes, checkpoints) = repo
-            .get_authoring_run(&run_id)
-            .await?
-            .with_context(|| format!("Authoring run {} not found", run_id))?;
-
-        if run.status == "completed" {
-            return Ok(AuthoringExecuteNextOutput {
-                run_id: run_id.clone(),
-                next_action: "complete".to_string(),
-                executed_action: "none".to_string(),
-                message: "Authoring run is already completed.".to_string(),
-                status: run.status,
-            });
-        }
-        if run.status == "paused" {
-            return Ok(AuthoringExecuteNextOutput {
-                run_id: run_id.clone(),
-                next_action: "paused".to_string(),
-                executed_action: "none".to_string(),
-                message: "Authoring run is paused; start or select another run before executing."
-                    .to_string(),
-                status: run.status,
-            });
-        }
-
-        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
-
         let data_dir = repo.data_dir();
-        let snapshot = self.authoring_project_snapshot(&harness_state).await?;
-        let outcome = reconcile_state(harness_state.clone(), &snapshot);
+        let mut handoff_seam_fired = false;
+        let mut attempts = 0usize;
 
-        if outcome.has_errors() {
-            let (updated_run, updated_ch, updated_sc, updated_cp) =
-                map_harness_to_records(&run_id, &outcome.state, "blocked", Some(run.created_at));
-            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                .await?;
-            return Ok(AuthoringExecuteNextOutput {
-                run_id: run_id.clone(),
-                next_action: outcome.next_action.to_string(),
-                executed_action: "none".to_string(),
-                message: "Execution blocked by errors.".to_string(),
-                status: "blocked".to_string(),
-            });
-        }
+        let (run, dispatch_state, action_to_execute) = loop {
+            attempts += 1;
+            if attempts > 4 {
+                anyhow::bail!(
+                    "authoring_execute_next failed to persist a consistent run/plan handoff snapshot after {} attempts due to concurrent plan or run updates",
+                    attempts - 1
+                );
+            }
 
-        // Auto-checkpoint interception (evolution §3.3, K3). A run whose
-        // checkpoint_policy is auto_advisory/auto_strict does NOT surface
-        // `AwaitCheckpointReview` — instead the harness performs the checkpoint
-        // work in-process (deep consistency + sampled dual-persona reviews) and
-        // self-clears on a severity threshold. `manual` (None) is untouched and
-        // byte-identical to today (I1). Runs before the block match so an
-        // approval lets the loop continue in the same call; a block falls
-        // through to the existing AwaitCheckpointReview path.
-        if let NextAction::AwaitCheckpointReview {
-            start_chapter,
-            end_chapter,
-            ..
-        } = &outcome.next_action
-            && let Some(policy) = auto_checkpoint_policy(run.checkpoint_policy.as_deref())
-        {
-            let start_chapter = *start_chapter;
-            let end_chapter = *end_chapter;
-            let mut auto_state = outcome.state.clone();
-            let auto = Box::pin(self.run_auto_checkpoint(
-                &run_id,
-                policy,
-                &mut auto_state,
-                start_chapter,
-                end_chapter,
-            ))
-            .await?;
+            let (run, chapters, scenes, checkpoints, run_updated_at_micros, plan_revisions) = repo
+                .get_authoring_run_with_plan_revisions(&run_id)
+                .await?
+                .with_context(|| format!("Authoring run {} not found", run_id))?;
 
-            if auto.approved {
-                // The checkpoint self-cleared. Re-reconcile the post-review state
-                // and persist; the run continues (or completes) exactly as a
-                // manual review would leave it. Journal the auto-approval.
-                let auto_snapshot = self.authoring_project_snapshot(&auto_state).await?;
-                let auto_outcome = reconcile_state(auto_state.clone(), &auto_snapshot);
-                let auto_status = if auto_outcome.next_action == NextAction::Complete {
-                    "completed"
-                } else if matches!(
-                    auto_outcome.next_action,
-                    NextAction::AwaitCheckpointReview { .. } | NextAction::AwaitResearch { .. }
-                ) {
-                    "blocked"
-                } else {
-                    "active"
-                };
+            if run.status == "completed" {
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: "complete".to_string(),
+                    executed_action: "none".to_string(),
+                    message: "Authoring run is already completed.".to_string(),
+                    status: run.status,
+                });
+            }
+            if run.status == "paused" {
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: "paused".to_string(),
+                    executed_action: "none".to_string(),
+                    message:
+                        "Authoring run is paused; start or select another run before executing."
+                            .to_string(),
+                    status: run.status,
+                });
+            }
+
+            let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+
+            let snapshot = self.authoring_project_snapshot(&harness_state).await?;
+            let outcome = reconcile_state(harness_state.clone(), &snapshot);
+
+            if outcome.has_errors() {
                 let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
                     &run_id,
-                    &auto_outcome.state,
-                    auto_status,
+                    &outcome.state,
+                    "blocked",
                     Some(run.created_at),
                 );
+                repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                    .await?;
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: outcome.next_action.to_string(),
+                    executed_action: "none".to_string(),
+                    message: "Execution blocked by errors.".to_string(),
+                    status: "blocked".to_string(),
+                });
+            }
+
+            // Auto-checkpoint interception (evolution §3.3, K3). A run whose
+            // checkpoint_policy is auto_advisory/auto_strict does NOT surface
+            // `AwaitCheckpointReview` — instead the harness performs the checkpoint
+            // work in-process (deep consistency + sampled dual-persona reviews) and
+            // self-clears on a severity threshold. `manual` (None) is untouched and
+            // byte-identical to today (I1). Runs before the block match so an
+            // approval lets the loop continue in the same call; a block falls
+            // through to the existing AwaitCheckpointReview path.
+            if let NextAction::AwaitCheckpointReview {
+                start_chapter,
+                end_chapter,
+                ..
+            } = &outcome.next_action
+                && let Some(policy) = auto_checkpoint_policy(run.checkpoint_policy.as_deref())
+            {
+                let start_chapter = *start_chapter;
+                let end_chapter = *end_chapter;
+                let mut auto_state = outcome.state.clone();
+                let auto = Box::pin(self.run_auto_checkpoint(
+                    &run_id,
+                    policy,
+                    &mut auto_state,
+                    start_chapter,
+                    end_chapter,
+                ))
+                .await?;
+
+                if auto.approved {
+                    // The checkpoint self-cleared. Re-reconcile the post-review state
+                    // and persist; the run continues (or completes) exactly as a
+                    // manual review would leave it. Journal the auto-approval.
+                    let auto_snapshot = self.authoring_project_snapshot(&auto_state).await?;
+                    let auto_outcome = reconcile_state(auto_state.clone(), &auto_snapshot);
+                    let auto_status = if auto_outcome.next_action == NextAction::Complete {
+                        "completed"
+                    } else if matches!(
+                        auto_outcome.next_action,
+                        NextAction::AwaitCheckpointReview { .. } | NextAction::AwaitResearch { .. }
+                    ) {
+                        "blocked"
+                    } else {
+                        "active"
+                    };
+                    let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                        &run_id,
+                        &auto_outcome.state,
+                        auto_status,
+                        Some(run.created_at),
+                    );
+                    repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                        .await?;
+
+                    let journal = RunJournal::new(repo);
+                    journal
+                        .emit(
+                            &run_id,
+                            "checkpoint_auto_approved",
+                            run_journal::checkpoint_auto_approved_payload(
+                                start_chapter,
+                                end_chapter,
+                                policy,
+                                &auto.finding_counts,
+                            ),
+                        )
+                        .await;
+                    if run.status == "blocked" || run.status == "paused" {
+                        journal
+                            .emit(
+                                &run_id,
+                                "run_resumed",
+                                run_journal::run_status_payload(None),
+                            )
+                            .await;
+                    }
+                    if auto_status == "completed" {
+                        journal
+                            .emit(
+                                &run_id,
+                                "run_completed",
+                                run_journal::run_status_payload(None),
+                            )
+                            .await;
+                    }
+
+                    return Ok(AuthoringExecuteNextOutput {
+                        run_id: run_id.clone(),
+                        next_action: auto_outcome.next_action.to_string(),
+                        executed_action: format!(
+                            "auto-checkpoint approved chapters {start_chapter}-{end_chapter} under {policy}"
+                        ),
+                        message: format!(
+                            "Checkpoint {start_chapter}-{end_chapter} auto-approved under {policy} (0 blocking findings)."
+                        ),
+                        status: auto_status.to_string(),
+                    });
+                }
+
+                // Not approved: the checkpoint stays pending_review exactly as
+                // manual, with the auto_outcome + pending-manual scenes stamped on
+                // it. Persist and journal `checkpoint_blocked`, then return blocked
+                // with the prose-free reason. The manual escape hatch still works —
+                // an operator can still call authoring_review_checkpoint.
+                let reason = auto
+                    .blocked_reason
+                    .clone()
+                    .unwrap_or_else(|| "auto_checkpoint_blocked".to_string());
+                let (updated_run, updated_ch, updated_sc, updated_cp) =
+                    map_harness_to_records(&run_id, &auto_state, "blocked", Some(run.created_at));
                 repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
                     .await?;
 
@@ -308,375 +397,354 @@ impl ToolRouter {
                 journal
                     .emit(
                         &run_id,
-                        "checkpoint_auto_approved",
-                        run_journal::checkpoint_auto_approved_payload(
+                        "checkpoint_blocked",
+                        run_journal::checkpoint_blocked_payload(
                             start_chapter,
                             end_chapter,
-                            policy,
-                            &auto.finding_counts,
+                            &reason,
                         ),
                     )
                     .await;
-                if run.status == "blocked" || run.status == "paused" {
+                if run.status != "blocked" {
                     journal
                         .emit(
                             &run_id,
-                            "run_resumed",
-                            run_journal::run_status_payload(None),
-                        )
-                        .await;
-                }
-                if auto_status == "completed" {
-                    journal
-                        .emit(
-                            &run_id,
-                            "run_completed",
-                            run_journal::run_status_payload(None),
+                            "run_blocked",
+                            run_journal::run_status_payload(Some("blocked")),
                         )
                         .await;
                 }
 
-                return Ok(AuthoringExecuteNextOutput {
-                    run_id: run_id.clone(),
-                    next_action: auto_outcome.next_action.to_string(),
-                    executed_action: format!(
-                        "auto-checkpoint approved chapters {start_chapter}-{end_chapter} under {policy}"
-                    ),
-                    message: format!(
-                        "Checkpoint {start_chapter}-{end_chapter} auto-approved under {policy} (0 blocking findings)."
-                    ),
-                    status: auto_status.to_string(),
-                });
-            }
-
-            // Not approved: the checkpoint stays pending_review exactly as
-            // manual, with the auto_outcome + pending-manual scenes stamped on
-            // it. Persist and journal `checkpoint_blocked`, then return blocked
-            // with the prose-free reason. The manual escape hatch still works —
-            // an operator can still call authoring_review_checkpoint.
-            let reason = auto
-                .blocked_reason
-                .clone()
-                .unwrap_or_else(|| "auto_checkpoint_blocked".to_string());
-            let (updated_run, updated_ch, updated_sc, updated_cp) =
-                map_harness_to_records(&run_id, &auto_state, "blocked", Some(run.created_at));
-            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                .await?;
-
-            let journal = RunJournal::new(repo);
-            journal
-                .emit(
-                    &run_id,
-                    "checkpoint_blocked",
-                    run_journal::checkpoint_blocked_payload(start_chapter, end_chapter, &reason),
-                )
-                .await;
-            if run.status != "blocked" {
-                journal
-                    .emit(
-                        &run_id,
-                        "run_blocked",
-                        run_journal::run_status_payload(Some("blocked")),
+                let manual_note = if auto.pending_manual_scene_ids.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Scenes awaiting manual dual-persona review: [{}].",
+                        auto.pending_manual_scene_ids.join(", ")
                     )
-                    .await;
-            }
-
-            let manual_note = if auto.pending_manual_scene_ids.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " Scenes awaiting manual dual-persona review: [{}].",
-                    auto.pending_manual_scene_ids.join(", ")
-                )
-            };
-            return Ok(AuthoringExecuteNextOutput {
-                run_id: run_id.clone(),
-                next_action: outcome.next_action.to_string(),
-                executed_action: format!(
-                    "auto-checkpoint blocked chapters {start_chapter}-{end_chapter} under {policy}"
-                ),
-                message: format!(
-                    "Checkpoint {start_chapter}-{end_chapter} blocked under {policy}: {reason}.{manual_note} \
-                     Review it manually with authoring_review_checkpoint."
-                ),
-                status: "blocked".to_string(),
-            });
-        }
-
-        match &outcome.next_action {
-            NextAction::Blocked
-            | NextAction::AwaitCheckpointReview { .. }
-            | NextAction::AwaitResearch { .. }
-            | NextAction::Complete => {
-                let status_str = match &outcome.next_action {
-                    NextAction::Complete => "completed",
-                    NextAction::Blocked => "blocked",
-                    NextAction::AwaitCheckpointReview { .. } => "blocked",
-                    NextAction::AwaitResearch { .. } => "blocked",
-                    _ => &run.status,
                 };
-                if status_str != run.status {
-                    let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
-                        &run_id,
-                        &outcome.state,
-                        status_str,
-                        Some(run.created_at),
-                    );
-                    repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                        .await?;
-
-                    // Journal (ADR D2): a genuine run-status transition persisted
-                    // WITHOUT executing a step. Diff-derived from prev vs new
-                    // status; emitted AFTER the save commits (D3.3). An
-                    // AwaitCheckpointReview block is a `checkpoint_blocked`;
-                    // Complete is `run_completed`; any other block is
-                    // `run_blocked`.
-                    let journal = RunJournal::new(repo);
-                    match &outcome.next_action {
-                        NextAction::AwaitCheckpointReview {
-                            start_chapter,
-                            end_chapter,
-                            ..
-                        } => {
-                            journal
-                                .emit(
-                                    &run_id,
-                                    "checkpoint_blocked",
-                                    run_journal::checkpoint_blocked_payload(
-                                        *start_chapter,
-                                        *end_chapter,
-                                        "await_checkpoint_review",
-                                    ),
-                                )
-                                .await;
-                        }
-                        NextAction::Complete => {
-                            journal
-                                .emit(
-                                    &run_id,
-                                    "run_completed",
-                                    run_journal::run_status_payload(None),
-                                )
-                                .await;
-                        }
-                        _ => {
-                            let reason = match &outcome.next_action {
-                                NextAction::AwaitResearch { .. } => "await_research",
-                                _ => "blocked",
-                            };
-                            journal
-                                .emit(
-                                    &run_id,
-                                    "run_blocked",
-                                    run_journal::run_status_payload(Some(reason)),
-                                )
-                                .await;
-                        }
-                    }
-                }
                 return Ok(AuthoringExecuteNextOutput {
                     run_id: run_id.clone(),
                     next_action: outcome.next_action.to_string(),
-                    executed_action: "none".to_string(),
-                    message: format!(
-                        "No action executed (action state is {:?})",
-                        outcome.next_action
+                    executed_action: format!(
+                        "auto-checkpoint blocked chapters {start_chapter}-{end_chapter} under {policy}"
                     ),
-                    status: status_str.to_string(),
+                    message: format!(
+                        "Checkpoint {start_chapter}-{end_chapter} blocked under {policy}: {reason}.{manual_note} \
+                         Review it manually with authoring_review_checkpoint."
+                    ),
+                    status: "blocked".to_string(),
                 });
             }
-            _ => {}
-        }
 
-        let action_to_execute = outcome.next_action.clone();
-        if let NextAction::DraftScene {
-            chapter_number,
-            scene_order,
-        } = &action_to_execute
-            && !agent_mode
-            && let Some(scene) = find_harness_scene(&outcome.state, *chapter_number, *scene_order)
-            && scene.content_rating != spindle_core::models::ContentRating::Explicit
-        {
-            let scene_rating = scene.content_rating.as_str().to_string();
-            let current_plan_revision = repo
-                .list_chapter_plans_by_project(&project_id)
-                .await?
-                .into_iter()
-                .find(|p| {
-                    p.branch_id == outcome.state.active_branch_id
-                        && p.book_number == outcome.state.book_number
-                        && p.chapter_number == *chapter_number
-                })
-                .and_then(|p| p.plan_revision)
-                .unwrap_or(0);
-            let mut handoff_state = outcome.state.clone();
-            if let Some(ch_state) = handoff_state
-                .chapters
-                .iter_mut()
-                .find(|ch| ch.chapter_number == *chapter_number)
-            {
-                for sc_state in &mut ch_state.scenes {
-                    if let Some(ref mut diag) = sc_state.draft_diagnostics {
-                        diag.superseded_handoff_plan_revision = None;
+            match &outcome.next_action {
+                NextAction::Blocked
+                | NextAction::AwaitCheckpointReview { .. }
+                | NextAction::AwaitResearch { .. }
+                | NextAction::Complete => {
+                    let status_str = match &outcome.next_action {
+                        NextAction::Complete => "completed",
+                        NextAction::Blocked => "blocked",
+                        NextAction::AwaitCheckpointReview { .. } => "blocked",
+                        NextAction::AwaitResearch { .. } => "blocked",
+                        _ => &run.status,
+                    };
+                    if status_str != run.status {
+                        let (updated_run, updated_ch, updated_sc, updated_cp) =
+                            map_harness_to_records(
+                                &run_id,
+                                &outcome.state,
+                                status_str,
+                                Some(run.created_at),
+                            );
+                        repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                            .await?;
+
+                        // Journal (ADR D2): a genuine run-status transition persisted
+                        // WITHOUT executing a step. Diff-derived from prev vs new
+                        // status; emitted AFTER the save commits (D3.3). An
+                        // AwaitCheckpointReview block is a `checkpoint_blocked`;
+                        // Complete is `run_completed`; any other block is
+                        // `run_blocked`.
+                        let journal = RunJournal::new(repo);
+                        match &outcome.next_action {
+                            NextAction::AwaitCheckpointReview {
+                                start_chapter,
+                                end_chapter,
+                                ..
+                            } => {
+                                journal
+                                    .emit(
+                                        &run_id,
+                                        "checkpoint_blocked",
+                                        run_journal::checkpoint_blocked_payload(
+                                            *start_chapter,
+                                            *end_chapter,
+                                            "await_checkpoint_review",
+                                        ),
+                                    )
+                                    .await;
+                            }
+                            NextAction::Complete => {
+                                journal
+                                    .emit(
+                                        &run_id,
+                                        "run_completed",
+                                        run_journal::run_status_payload(None),
+                                    )
+                                    .await;
+                            }
+                            _ => {
+                                let reason = match &outcome.next_action {
+                                    NextAction::AwaitResearch { .. } => "await_research",
+                                    _ => "blocked",
+                                };
+                                journal
+                                    .emit(
+                                        &run_id,
+                                        "run_blocked",
+                                        run_journal::run_status_payload(Some(reason)),
+                                    )
+                                    .await;
+                            }
+                        }
                     }
-                    if sc_state.scene_order == *scene_order {
-                        let current_plan_revision: i64 = current_plan_revision;
-                        let diag = sc_state
-                            .draft_diagnostics
-                            .get_or_insert_with(Default::default);
-                        diag.handoff_plan_revision = Some(current_plan_revision);
-                        diag.superseded_handoff_plan_revision = None;
+                    return Ok(AuthoringExecuteNextOutput {
+                        run_id: run_id.clone(),
+                        next_action: outcome.next_action.to_string(),
+                        executed_action: "none".to_string(),
+                        message: format!(
+                            "No action executed (action state is {:?})",
+                            outcome.next_action
+                        ),
+                        status: status_str.to_string(),
+                    });
+                }
+                _ => {}
+            }
+
+            let action_to_execute = outcome.next_action.clone();
+            if let NextAction::DraftScene {
+                chapter_number,
+                scene_order,
+            } = &action_to_execute
+                && !agent_mode
+                && let Some(scene) =
+                    find_harness_scene(&outcome.state, *chapter_number, *scene_order)
+                && scene.content_rating != spindle_core::models::ContentRating::Explicit
+            {
+                let scene_rating = scene.content_rating.as_str().to_string();
+                let current_plan_revision =
+                    plan_revisions.get(chapter_number).copied().unwrap_or(0);
+                let mut handoff_state = outcome.state.clone();
+                if let Some(ch_state) = handoff_state
+                    .chapters
+                    .iter_mut()
+                    .find(|ch| ch.chapter_number == *chapter_number)
+                {
+                    for sc_state in &mut ch_state.scenes {
+                        if let Some(ref mut diag) = sc_state.draft_diagnostics {
+                            diag.superseded_handoff_plan_revision = None;
+                        }
+                        if sc_state.scene_order == *scene_order {
+                            let diag = sc_state
+                                .draft_diagnostics
+                                .get_or_insert_with(Default::default);
+                            diag.handoff_plan_revision = Some(current_plan_revision);
+                            diag.superseded_handoff_plan_revision = None;
+                        }
                     }
                 }
-            }
-            let (updated_run, updated_ch, updated_sc, updated_cp) =
-                map_harness_to_records(&run_id, &handoff_state, &run.status, Some(run.created_at));
-            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                .await?;
-            return Ok(AuthoringExecuteNextOutput {
-                run_id: run_id.clone(),
-                next_action: action_to_execute.to_string(),
-                executed_action: "none".to_string(),
-                message: format!(
-                    "Host draft required for non-explicit scene {chapter_number}.{scene_order}. \
-                     Draft this scene in the active assistant chat using Spindle context, then call authoring_save_scene_draft \
-                     with project_id={}, run_id={}, book_number={}, chapter_number={}, \
-                     scene_order={}, content_rating={}, full_text, summary, character_states, canonical_facts, \
-                     relationship_updates, beats, and continuity_notes. This structured continuity package is required; \
-                     use continuity_notes to explicitly say when the scene introduces no durable canon changes. \
-                     Then call authoring_execute_next again. Use mode='agent' only when you explicitly \
-                     want Spindle to offload non-explicit drafting to the configured draft route.",
-                    project_id,
-                    run_id,
-                    outcome.state.book_number,
-                    chapter_number,
-                    scene_order,
-                    scene_rating
-                ),
-                status: run.status.clone(),
-            });
-        }
-
-        // Hybrid-mode revision hand-off (evolution §3.2, I2). VerifyScene runs
-        // host-independently (it falls through to the executor below), but a
-        // ReviseScene in hybrid mode means the HOST is the revision agent: list
-        // the scene-scoped findings and instruct a revise + re-save. The re-save
-        // through authoring_save_scene_draft resets verify_status and counts the
-        // attempt, so the loop re-verifies exactly as the agent path does. In
-        // agent mode this arm is skipped and ReviseScene re-drafts automatically.
-        if let NextAction::ReviseScene {
-            chapter_number,
-            scene_order,
-            attempt,
-        } = &action_to_execute
-            && !agent_mode
-        {
-            let current_plan_revision = repo
-                .list_chapter_plans_by_project(&project_id)
-                .await?
-                .into_iter()
-                .find(|p| {
-                    p.branch_id == outcome.state.active_branch_id
-                        && p.book_number == outcome.state.book_number
-                        && p.chapter_number == *chapter_number
-                })
-                .and_then(|p| p.plan_revision)
-                .unwrap_or(0);
-            let mut handoff_state = outcome.state.clone();
-            if let Some(ch_state) = handoff_state
-                .chapters
-                .iter_mut()
-                .find(|ch| ch.chapter_number == *chapter_number)
-            {
-                for sc_state in &mut ch_state.scenes {
-                    if let Some(ref mut diag) = sc_state.draft_diagnostics {
-                        diag.superseded_handoff_plan_revision = None;
-                    }
-                    if sc_state.scene_order == *scene_order {
-                        let current_plan_revision: i64 = current_plan_revision;
-                        let diag = sc_state
-                            .draft_diagnostics
-                            .get_or_insert_with(Default::default);
-                        diag.handoff_plan_revision = Some(current_plan_revision);
-                        diag.superseded_handoff_plan_revision = None;
-                    }
-                }
-            }
-            let (updated_run, updated_ch, updated_sc, updated_cp) =
-                map_harness_to_records(&run_id, &handoff_state, &run.status, Some(run.created_at));
-            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                .await?;
-            let findings = self
-                .authoring_scene_verify_findings(
-                    data_dir,
-                    &project_id,
-                    outcome.state.book_number,
-                    *chapter_number,
-                    *scene_order,
-                )
-                .await
-                .unwrap_or_default();
-            let findings_block = if findings.is_empty() {
-                "(no findings resolved at read time)".to_string()
-            } else {
-                findings
-                    .iter()
-                    .take(12)
-                    .map(|(check_type, message)| format!("- [{check_type}] {message}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            return Ok(AuthoringExecuteNextOutput {
-                run_id: run_id.clone(),
-                next_action: action_to_execute.to_string(),
-                executed_action: "none".to_string(),
-                message: format!(
-                    "Host revision required for scene {chapter_number}.{scene_order} \
-                     (revision attempt {attempt}). The saved draft tripped these scene-scoped \
-                     checks:\n{findings_block}\n\nRevise the scene to resolve each finding, then \
-                     re-save it with authoring_save_scene_draft (project_id={project_id}, \
-                     run_id={run_id}, book_number={}, chapter_number={chapter_number}, \
-                     scene_order={scene_order}) and call authoring_execute_next again. The re-save \
-                     re-verifies the revised draft; if the same findings persist the scene is \
-                     parked at the checkpoint rather than revised again.",
-                    outcome.state.book_number,
-                ),
-                status: run.status.clone(),
-            });
-        }
-
-        let mut dispatch_state = outcome.state;
-        if let NextAction::DraftScene { chapter_number, .. }
-        | NextAction::ReviseScene { chapter_number, .. } = &action_to_execute
-        {
-            let mut cleared = false;
-            if let Some(ch_state) = dispatch_state
-                .chapters
-                .iter_mut()
-                .find(|ch| ch.chapter_number == *chapter_number)
-            {
-                for sc_state in &mut ch_state.scenes {
-                    if let Some(ref mut diag) = sc_state.draft_diagnostics
-                        && (diag.handoff_plan_revision.is_some()
-                            || diag.superseded_handoff_plan_revision.is_some())
-                    {
-                        diag.handoff_plan_revision = None;
-                        diag.superseded_handoff_plan_revision = None;
-                        cleared = true;
-                    }
-                }
-            }
-            if cleared {
                 let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
                     &run_id,
-                    &dispatch_state,
+                    &handoff_state,
                     &run.status,
                     Some(run.created_at),
                 );
-                repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
-                    .await?;
+                if !handoff_seam_fired {
+                    handoff_seam_fired = true;
+                    before_handoff_persist().await;
+                }
+                if !repo
+                    .try_save_authoring_run_handoff(
+                        updated_run,
+                        updated_ch,
+                        updated_sc,
+                        updated_cp,
+                        run_updated_at_micros,
+                        plan_revisions,
+                    )
+                    .await?
+                {
+                    continue;
+                }
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: action_to_execute.to_string(),
+                    executed_action: "none".to_string(),
+                    message: format!(
+                        "Host draft required for non-explicit scene {chapter_number}.{scene_order}. \
+                         Draft this scene in the active assistant chat using Spindle context, then call authoring_save_scene_draft \
+                         with project_id={}, run_id={}, book_number={}, chapter_number={}, \
+                         scene_order={}, content_rating={}, full_text, summary, character_states, canonical_facts, \
+                         relationship_updates, beats, and continuity_notes. This structured continuity package is required; \
+                         use continuity_notes to explicitly say when the scene introduces no durable canon changes. \
+                         Then call authoring_execute_next again. Use mode='agent' only when you explicitly \
+                         want Spindle to offload non-explicit drafting to the configured draft route.",
+                        project_id,
+                        run_id,
+                        outcome.state.book_number,
+                        chapter_number,
+                        scene_order,
+                        scene_rating
+                    ),
+                    status: run.status.clone(),
+                });
             }
-        }
+
+            // Hybrid-mode revision hand-off (evolution §3.2, I2). VerifyScene runs
+            // host-independently (it falls through to the executor below), but a
+            // ReviseScene in hybrid mode means the HOST is the revision agent: list
+            // the scene-scoped findings and instruct a revise + re-save. The re-save
+            // through authoring_save_scene_draft resets verify_status and counts the
+            // attempt, so the loop re-verifies exactly as the agent path does. In
+            // agent mode this arm is skipped and ReviseScene re-drafts automatically.
+            if let NextAction::ReviseScene {
+                chapter_number,
+                scene_order,
+                attempt,
+            } = &action_to_execute
+                && !agent_mode
+            {
+                let current_plan_revision =
+                    plan_revisions.get(chapter_number).copied().unwrap_or(0);
+                let mut handoff_state = outcome.state.clone();
+                if let Some(ch_state) = handoff_state
+                    .chapters
+                    .iter_mut()
+                    .find(|ch| ch.chapter_number == *chapter_number)
+                {
+                    for sc_state in &mut ch_state.scenes {
+                        if let Some(ref mut diag) = sc_state.draft_diagnostics {
+                            diag.superseded_handoff_plan_revision = None;
+                        }
+                        if sc_state.scene_order == *scene_order {
+                            let diag = sc_state
+                                .draft_diagnostics
+                                .get_or_insert_with(Default::default);
+                            diag.handoff_plan_revision = Some(current_plan_revision);
+                            diag.superseded_handoff_plan_revision = None;
+                        }
+                    }
+                }
+                let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                    &run_id,
+                    &handoff_state,
+                    &run.status,
+                    Some(run.created_at),
+                );
+                if !handoff_seam_fired {
+                    handoff_seam_fired = true;
+                    before_handoff_persist().await;
+                }
+                if !repo
+                    .try_save_authoring_run_handoff(
+                        updated_run,
+                        updated_ch,
+                        updated_sc,
+                        updated_cp,
+                        run_updated_at_micros,
+                        plan_revisions,
+                    )
+                    .await?
+                {
+                    continue;
+                }
+                let findings = self
+                    .authoring_scene_verify_findings(
+                        data_dir,
+                        &project_id,
+                        outcome.state.book_number,
+                        *chapter_number,
+                        *scene_order,
+                    )
+                    .await
+                    .unwrap_or_default();
+                let findings_block = if findings.is_empty() {
+                    "(no findings resolved at read time)".to_string()
+                } else {
+                    findings
+                        .iter()
+                        .take(12)
+                        .map(|(check_type, message)| format!("- [{check_type}] {message}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                return Ok(AuthoringExecuteNextOutput {
+                    run_id: run_id.clone(),
+                    next_action: action_to_execute.to_string(),
+                    executed_action: "none".to_string(),
+                    message: format!(
+                        "Host revision required for scene {chapter_number}.{scene_order} \
+                         (revision attempt {attempt}). The saved draft tripped these scene-scoped \
+                         checks:\n{findings_block}\n\nRevise the scene to resolve each finding, then \
+                         re-save it with authoring_save_scene_draft (project_id={project_id}, \
+                         run_id={run_id}, book_number={}, chapter_number={chapter_number}, \
+                         scene_order={scene_order}) and call authoring_execute_next again. The re-save \
+                         re-verifies the revised draft; if the same findings persist the scene is \
+                         parked at the checkpoint rather than revised again.",
+                        outcome.state.book_number,
+                    ),
+                    status: run.status.clone(),
+                });
+            }
+
+            let mut dispatch_state = outcome.state;
+            if let NextAction::DraftScene { chapter_number, .. }
+            | NextAction::ReviseScene { chapter_number, .. } = &action_to_execute
+            {
+                let mut cleared = false;
+                if let Some(ch_state) = dispatch_state
+                    .chapters
+                    .iter_mut()
+                    .find(|ch| ch.chapter_number == *chapter_number)
+                {
+                    for sc_state in &mut ch_state.scenes {
+                        if let Some(ref mut diag) = sc_state.draft_diagnostics
+                            && (diag.handoff_plan_revision.is_some()
+                                || diag.superseded_handoff_plan_revision.is_some())
+                        {
+                            diag.handoff_plan_revision = None;
+                            diag.superseded_handoff_plan_revision = None;
+                            cleared = true;
+                        }
+                    }
+                }
+                if cleared {
+                    let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                        &run_id,
+                        &dispatch_state,
+                        &run.status,
+                        Some(run.created_at),
+                    );
+                    if !repo
+                        .try_save_authoring_run_handoff(
+                            updated_run,
+                            updated_ch,
+                            updated_sc,
+                            updated_cp,
+                            run_updated_at_micros,
+                            plan_revisions,
+                        )
+                        .await?
+                    {
+                        continue;
+                    }
+                }
+            }
+
+            break (run, dispatch_state, action_to_execute);
+        };
 
         let state_path = authoring_state_path(data_dir, &run_id);
         dispatch_state.save(&state_path)?;
@@ -816,8 +884,21 @@ impl ToolRouter {
 
     pub(super) async fn handle_authoring_save_scene_draft(
         &self,
-        mut input: AuthoringSaveSceneDraftInput,
+        input: AuthoringSaveSceneDraftInput,
     ) -> anyhow::Result<AuthoringSaveSceneDraftOutput> {
+        self.handle_authoring_save_scene_draft_with_seam(input, || async {})
+            .await
+    }
+
+    pub(crate) async fn handle_authoring_save_scene_draft_with_seam<H, Fut>(
+        &self,
+        mut input: AuthoringSaveSceneDraftInput,
+        before_scene_write: H,
+    ) -> anyhow::Result<AuthoringSaveSceneDraftOutput>
+    where
+        H: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         let structured_update_count = authoring_structured_update_count(&input);
         if structured_update_count == 0 {
             anyhow::bail!(
@@ -850,7 +931,7 @@ impl ToolRouter {
             );
         }
 
-        let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+        let harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
         let (chapter_index, scene_index) =
             authoring_scene_indices(&harness_state, input.chapter_number, input.scene_order)
                 .with_context(|| {
@@ -905,8 +986,22 @@ impl ToolRouter {
 
         let save_output = self
             .service
-            .save_scene_draft(authoring_save_scene_input(&input))
+            .save_scene_draft_with_seam(authoring_save_scene_input(&input), before_scene_write)
             .await?;
+
+        let (run, chapters, scenes, checkpoints) = repo
+            .get_authoring_run(&run_id)
+            .await?
+            .with_context(|| format!("Authoring run {} not found", run_id))?;
+        let mut harness_state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
+        let (chapter_index, scene_index) =
+            authoring_scene_indices(&harness_state, input.chapter_number, input.scene_order)
+                .with_context(|| {
+                    format!(
+                        "scene {}.{} not found in authoring run {}",
+                        input.chapter_number, input.scene_order, run_id
+                    )
+                })?;
 
         let state_path = authoring_state_path(repo.data_dir(), &run_id);
         let artifact_store =

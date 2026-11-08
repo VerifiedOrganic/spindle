@@ -149,7 +149,7 @@ impl Repository {
                     artifacts_dir = excluded.artifacts_dir,
                     editorial_directives = excluded.editorial_directives,
                     status = excluded.status,
-                    updated_at = excluded.updated_at,
+                    updated_at = MAX(authoring_run.updated_at + 1, excluded.updated_at),
                     mining_policy = excluded.mining_policy,
                     max_revise_attempts = excluded.max_revise_attempts,
                     checkpoint_policy = excluded.checkpoint_policy,
@@ -469,7 +469,7 @@ impl Repository {
                     }
 
                     tx.execute(
-                        "UPDATE authoring_run SET updated_at = ?1 WHERE id = ?2",
+                        "UPDATE authoring_run SET updated_at = MAX(updated_at + 1, ?1) WHERE id = ?2",
                         rusqlite::params![updated_at_micros, &run_id],
                     )?;
                     reseeded_runs += 1;
@@ -488,6 +488,295 @@ impl Repository {
             .await
     }
 
+    #[allow(clippy::type_complexity)]
+    pub async fn get_authoring_run_with_plan_revisions(
+        &self,
+        run_id: &str,
+    ) -> Result<
+        Option<(
+            super::records::AuthoringRun,
+            Vec<super::records::AuthoringRunChapter>,
+            Vec<super::records::AuthoringRunScene>,
+            Vec<super::records::AuthoringCheckpoint>,
+            i64,
+            std::collections::BTreeMap<i32, i64>,
+        )>,
+    > {
+        let run_id = run_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let run_sql = format!(
+                    "SELECT {} FROM authoring_run WHERE id = ?1",
+                    super::records::AUTHORING_RUN_COLUMNS
+                );
+                let mut run_stmt = conn.prepare_cached(&run_sql)?;
+                let run_pair: Option<(super::records::AuthoringRun, i64)> = run_stmt
+                    .query_row([&run_id], |r| {
+                        Ok((
+                            super::records::AuthoringRun::try_from(r)?,
+                            r.get::<_, i64>(12)?,
+                        ))
+                    })
+                    .optional_inner()?;
+                let Some((run, raw_updated_at)) = run_pair else {
+                    return Ok(None);
+                };
+
+                let ch_sql = format!(
+                    "SELECT {} FROM authoring_run_chapter WHERE authoring_run_id = ?1 ORDER BY chapter_number",
+                    super::records::AUTHORING_RUN_CHAPTER_COLUMNS
+                );
+                let mut ch_stmt = conn.prepare_cached(&ch_sql)?;
+                let chapters = ch_stmt
+                    .query_map([&run_id], |r| super::records::AuthoringRunChapter::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                let sc_sql = format!(
+                    "SELECT {} FROM authoring_run_scene WHERE authoring_run_id = ?1 ORDER BY chapter_number, scene_order",
+                    super::records::AUTHORING_RUN_SCENE_COLUMNS
+                );
+                let mut sc_stmt = conn.prepare_cached(&sc_sql)?;
+                let scenes = sc_stmt
+                    .query_map([&run_id], |r| super::records::AuthoringRunScene::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                let cp_sql = format!(
+                    "SELECT {} FROM authoring_checkpoint WHERE authoring_run_id = ?1 ORDER BY start_chapter",
+                    super::records::AUTHORING_CHECKPOINT_COLUMNS
+                );
+                let mut cp_stmt = conn.prepare_cached(&cp_sql)?;
+                let checkpoints = cp_stmt
+                    .query_map([&run_id], |r| super::records::AuthoringCheckpoint::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                let mut rev_stmt = conn.prepare_cached(
+                    "SELECT chapter_number, COALESCE(plan_revision, 0)
+                     FROM chapter_plan
+                     WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3",
+                )?;
+                let plan_revisions = rev_stmt
+                    .query_map(
+                        rusqlite::params![&run.project_id, &run.active_branch_id, run.book_number],
+                        |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i64>(1)?)),
+                    )?
+                    .collect::<rusqlite::Result<std::collections::BTreeMap<i32, i64>>>()?;
+
+                Ok(Some((
+                    run,
+                    chapters,
+                    scenes,
+                    checkpoints,
+                    raw_updated_at,
+                    plan_revisions,
+                )))
+            })
+            .await
+    }
+
+    pub async fn try_save_authoring_run_handoff(
+        &self,
+        run: super::records::AuthoringRun,
+        chapters: Vec<super::records::AuthoringRunChapter>,
+        scenes: Vec<super::records::AuthoringRunScene>,
+        checkpoints: Vec<super::records::AuthoringCheckpoint>,
+        expected_run_updated_at: i64,
+        expected_plan_revisions: std::collections::BTreeMap<i32, i64>,
+    ) -> Result<bool> {
+        let directives_json = serde_json::to_string(&run.editorial_directives)
+            .context("serializing editorial directives")?;
+        let created_at_micros = super::row::timestamp_to_micros(run.created_at);
+        let updated_at_micros = super::row::timestamp_to_micros(run.updated_at);
+
+        let mut scene_data = Vec::new();
+        for sc in scenes {
+            let char_ids_json =
+                serde_json::to_string(&sc.character_ids).context("serializing character_ids")?;
+            let research_tags_json =
+                serde_json::to_string(&sc.research_tags).context("serializing research_tags")?;
+            let diagnostics_json = sc
+                .draft_diagnostics
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .context("serializing draft diagnostics")?;
+            scene_data.push((sc, char_ids_json, research_tags_json, diagnostics_json));
+        }
+
+        self.inner
+            .pool
+            .write(move |conn| {
+                let tx = conn.savepoint()?;
+                let current_updated_at: Option<i64> = tx
+                    .query_row(
+                        "SELECT updated_at FROM authoring_run WHERE id = ?1",
+                        [&run.id],
+                        |r| r.get(0),
+                    )
+                    .optional_inner()?;
+                if current_updated_at != Some(expected_run_updated_at) {
+                    return Ok(false);
+                }
+
+                let current_plan_revisions: std::collections::BTreeMap<i32, i64> = {
+                    let mut stmt = tx.prepare_cached(
+                        "SELECT chapter_number, COALESCE(plan_revision, 0)
+                         FROM chapter_plan
+                         WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3",
+                    )?;
+                    let rows = stmt.query_map(
+                        rusqlite::params![&run.project_id, &run.active_branch_id, run.book_number],
+                        |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i64>(1)?)),
+                    )?;
+                    rows.collect::<rusqlite::Result<std::collections::BTreeMap<i32, i64>>>()?
+                };
+                if current_plan_revisions != expected_plan_revisions {
+                    return Ok(false);
+                }
+
+                tx.execute(
+                    "INSERT INTO authoring_run (
+                    id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
+                    checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
+                    editorial_directives, status, created_at, updated_at, mining_policy,
+                    max_revise_attempts, checkpoint_policy, replan_policy
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                ON CONFLICT(id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    active_branch_id = excluded.active_branch_id,
+                    book_number = excluded.book_number,
+                    start_chapter = excluded.start_chapter,
+                    end_chapter = excluded.end_chapter,
+                    checkpoint_interval = excluded.checkpoint_interval,
+                    last_checkpoint_end_chapter = excluded.last_checkpoint_end_chapter,
+                    artifacts_dir = excluded.artifacts_dir,
+                    editorial_directives = excluded.editorial_directives,
+                    status = excluded.status,
+                    updated_at = MAX(authoring_run.updated_at + 1, excluded.updated_at),
+                    mining_policy = excluded.mining_policy,
+                    max_revise_attempts = excluded.max_revise_attempts,
+                    checkpoint_policy = excluded.checkpoint_policy,
+                    replan_policy = excluded.replan_policy",
+                    rusqlite::params![
+                        run.id,
+                        run.project_id,
+                        run.active_branch_id,
+                        run.book_number,
+                        run.start_chapter,
+                        run.end_chapter,
+                        run.checkpoint_interval,
+                        run.last_checkpoint_end_chapter,
+                        run.artifacts_dir,
+                        directives_json,
+                        run.status,
+                        created_at_micros,
+                        updated_at_micros,
+                        run.mining_policy,
+                        run.max_revise_attempts,
+                        run.checkpoint_policy,
+                        run.replan_policy,
+                    ],
+                )?;
+
+                tx.execute(
+                    "DELETE FROM authoring_checkpoint WHERE authoring_run_id = ?1",
+                    [&run.id],
+                )?;
+                tx.execute(
+                    "DELETE FROM authoring_run_chapter WHERE authoring_run_id = ?1",
+                    [&run.id],
+                )?;
+
+                for ch in chapters {
+                    tx.execute(
+                        "INSERT INTO authoring_run_chapter (
+                        authoring_run_id, chapter_number, planned, synopsis, pov_character_id,
+                        status, summary_saved, summary_artifact_path, replan_status, replan_detail
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        rusqlite::params![
+                            ch.authoring_run_id,
+                            ch.chapter_number,
+                            ch.planned as i32,
+                            ch.synopsis,
+                            ch.pov_character_id,
+                            ch.status,
+                            ch.summary_saved as i32,
+                            ch.summary_artifact_path,
+                            ch.replan_status,
+                            ch.replan_detail,
+                        ],
+                    )?;
+                }
+
+                for (sc, char_ids_json, research_tags_json, diagnostics_json) in scene_data {
+                    tx.execute(
+                        "INSERT INTO authoring_run_scene (
+                        authoring_run_id, chapter_number, scene_order, character_ids, location_id,
+                        content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
+                        draft_diagnostics, blocked_reason, research_required, research_tags,
+                        explicit_query, mine_status, mine_detail, verify_status, verify_detail,
+                        revise_attempts, last_finding_fingerprint
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                        rusqlite::params![
+                            sc.authoring_run_id,
+                            sc.chapter_number,
+                            sc.scene_order,
+                            char_ids_json,
+                            sc.location_id,
+                            sc.content_rating,
+                            sc.tone,
+                            sc.source_path,
+                            sc.phase,
+                            sc.scene_id,
+                            sc.scene_artifact_path,
+                            diagnostics_json,
+                            sc.blocked_reason,
+                            sc.research_required.map(|required| required as i32),
+                            research_tags_json,
+                            sc.explicit_query,
+                            sc.mine_status,
+                            sc.mine_detail,
+                            sc.verify_status,
+                            sc.verify_detail,
+                            sc.revise_attempts,
+                            sc.last_finding_fingerprint,
+                        ],
+                    )?;
+                }
+
+                for cp in checkpoints {
+                    let pending_manual_json = if cp.pending_manual_scene_ids.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            serde_json::to_string(&cp.pending_manual_scene_ids)
+                                .expect("serializing pending_manual_scene_ids"),
+                        )
+                    };
+                    tx.execute(
+                        "INSERT INTO authoring_checkpoint (
+                        authoring_run_id, start_chapter, end_chapter, save_point_id, status,
+                        report_artifact_path, auto_outcome, pending_manual_scene_ids
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            cp.authoring_run_id,
+                            cp.start_chapter,
+                            cp.end_chapter,
+                            cp.save_point_id,
+                            cp.status,
+                            cp.report_artifact_path,
+                            cp.auto_outcome,
+                            pending_manual_json,
+                        ],
+                    )?;
+                }
+
+                tx.commit()?;
+                Ok(true)
+            })
+            .await
+    }
+
     pub async fn get_authoring_run(
         &self,
         run_id: &str,
@@ -499,54 +788,11 @@ impl Repository {
             Vec<super::records::AuthoringCheckpoint>,
         )>,
     > {
-        let run_id = run_id.to_string();
-        let run_id_clone = run_id.clone();
-
-        let run_opt: Option<super::records::AuthoringRun> = self
-            .inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {} FROM authoring_run WHERE id = ?1",
-                    super::records::AUTHORING_RUN_COLUMNS
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row([&run_id], |r| super::records::AuthoringRun::try_from(r))
-                    .optional_inner()
-            })
-            .await?;
-
-        let Some(run) = run_opt else {
+        let Some((run, chapters, scenes, checkpoints, _, _)) =
+            self.get_authoring_run_with_plan_revisions(run_id).await?
+        else {
             return Ok(None);
         };
-
-        let run_id_ch = run_id_clone.clone();
-        let chapters = self.inner.pool.read(move |conn| {
-            let sql = format!("SELECT {} FROM authoring_run_chapter WHERE authoring_run_id = ?1 ORDER BY chapter_number", super::records::AUTHORING_RUN_CHAPTER_COLUMNS);
-            let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map([&run_id_ch], |r| super::records::AuthoringRunChapter::try_from(r))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        }).await?;
-
-        let run_id_sc = run_id_clone.clone();
-        let scenes = self.inner.pool.read(move |conn| {
-            let sql = format!("SELECT {} FROM authoring_run_scene WHERE authoring_run_id = ?1 ORDER BY chapter_number, scene_order", super::records::AUTHORING_RUN_SCENE_COLUMNS);
-            let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map([&run_id_sc], |r| super::records::AuthoringRunScene::try_from(r))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        }).await?;
-
-        let run_id_cp = run_id_clone.clone();
-        let checkpoints = self.inner.pool.read(move |conn| {
-            let sql = format!("SELECT {} FROM authoring_checkpoint WHERE authoring_run_id = ?1 ORDER BY start_chapter", super::records::AUTHORING_CHECKPOINT_COLUMNS);
-            let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map([&run_id_cp], |r| super::records::AuthoringCheckpoint::try_from(r))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        }).await?;
-
         Ok(Some((run, chapters, scenes, checkpoints)))
     }
 
@@ -572,65 +818,83 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
-                let current_plan_revision: Option<i64> = conn
-                    .query_row(
-                        "SELECT COALESCE(plan_revision, 0) FROM chapter_plan WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3 AND chapter_number = ?4",
-                        rusqlite::params![&project_id, &branch_id, book_number, chapter_number],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .optional_inner()?;
-
-                let mut stmt = conn.prepare_cached(
-                    "SELECT s.draft_diagnostics
-                     FROM authoring_run r
-                     JOIN authoring_run_scene s ON s.authoring_run_id = r.id
-                     WHERE r.project_id = ?1
-                       AND r.active_branch_id = ?2
-                       AND r.book_number = ?3
-                       AND r.status IN ('active', 'blocked')
-                       AND s.chapter_number = ?4
-                       AND s.scene_order = ?5
-                     ORDER BY r.updated_at DESC",
-                )?;
-                let diag_rows = stmt
-                    .query_map(
-                        rusqlite::params![
-                            &project_id,
-                            &branch_id,
-                            book_number,
-                            chapter_number,
-                            scene_order
-                        ],
-                        |r| r.get::<_, Option<String>>(0),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-
-                for diag_str in diag_rows.into_iter().flatten() {
-                    if let Ok(diag_val) = serde_json::from_str::<serde_json::Value>(&diag_str) {
-                        if let Some(stale_rev) = diag_val
-                            .get("superseded_handoff_plan_revision")
-                            .and_then(|v| v.as_i64())
-                        {
-                            let cur_rev = current_plan_revision.unwrap_or(stale_rev + 1);
-                            return Ok(Err(anyhow::anyhow!(
-                                "stale host draft handoff for chapter {chapter_number} scene {scene_order}: handoff was issued at plan_revision {stale_rev}, which was superseded by plan_revision {cur_rev}; call authoring_execute_next again before saving a draft"
-                            )));
-                        }
-                        if let (Some(handoff_rev), Some(cur_rev)) = (
-                            diag_val
-                                .get("handoff_plan_revision")
-                                .and_then(|v| v.as_i64()),
-                            current_plan_revision,
-                        ) && handoff_rev != cur_rev
-                        {
-                            return Ok(Err(anyhow::anyhow!(
-                                "stale host draft handoff for chapter {chapter_number} scene {scene_order}: handoff was issued at plan_revision {handoff_rev}, but current chapter_plan.plan_revision is {cur_rev}; call authoring_execute_next again before saving a draft"
-                            )));
-                        }
-                    }
-                }
-                Ok(Ok(()))
+                Ok(check_active_run_scene_handoff_plan_revision_in_conn(
+                    conn,
+                    &project_id,
+                    &branch_id,
+                    book_number,
+                    chapter_number,
+                    scene_order,
+                ))
             })
             .await?
     }
+}
+
+pub(crate) fn check_active_run_scene_handoff_plan_revision_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+    book_number: i32,
+    chapter_number: i32,
+    scene_order: i32,
+) -> Result<()> {
+    let current_plan_revision: Option<i64> = conn
+        .query_row(
+            "SELECT COALESCE(plan_revision, 0) FROM chapter_plan WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3 AND chapter_number = ?4",
+            rusqlite::params![project_id, branch_id, book_number, chapter_number],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional_inner()?;
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT s.draft_diagnostics
+         FROM authoring_run r
+         JOIN authoring_run_scene s ON s.authoring_run_id = r.id
+         WHERE r.project_id = ?1
+           AND r.active_branch_id = ?2
+           AND r.book_number = ?3
+           AND r.status IN ('active', 'blocked')
+           AND s.chapter_number = ?4
+           AND s.scene_order = ?5
+         ORDER BY r.updated_at DESC",
+    )?;
+    let diag_rows = stmt
+        .query_map(
+            rusqlite::params![
+                project_id,
+                branch_id,
+                book_number,
+                chapter_number,
+                scene_order
+            ],
+            |r| r.get::<_, Option<String>>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for diag_str in diag_rows.into_iter().flatten() {
+        if let Ok(diag_val) = serde_json::from_str::<serde_json::Value>(&diag_str) {
+            if let Some(stale_rev) = diag_val
+                .get("superseded_handoff_plan_revision")
+                .and_then(|v| v.as_i64())
+            {
+                let cur_rev = current_plan_revision.unwrap_or(stale_rev + 1);
+                anyhow::bail!(
+                    "stale host draft handoff for chapter {chapter_number} scene {scene_order}: handoff was issued at plan_revision {stale_rev}, which was superseded by plan_revision {cur_rev}; call authoring_execute_next again before saving a draft"
+                );
+            }
+            if let (Some(handoff_rev), Some(cur_rev)) = (
+                diag_val
+                    .get("handoff_plan_revision")
+                    .and_then(|v| v.as_i64()),
+                current_plan_revision,
+            ) && handoff_rev != cur_rev
+            {
+                anyhow::bail!(
+                    "stale host draft handoff for chapter {chapter_number} scene {scene_order}: handoff was issued at plan_revision {handoff_rev}, but current chapter_plan.plan_revision is {cur_rev}; call authoring_execute_next again before saving a draft"
+                );
+            }
+        }
+    }
+    Ok(())
 }
