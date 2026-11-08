@@ -26,6 +26,124 @@ struct Reference {
     trigger: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Composition {
+    version: u32,
+    profiles: Vec<ProfileSpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileSpec {
+    name: String,
+    description: String,
+    units: Vec<String>,
+}
+
+struct CompiledProfile {
+    name: String,
+    description: String,
+    units: BTreeSet<String>,
+    tools: BTreeSet<String>,
+}
+
+fn collect_unit(
+    name: &str,
+    manifests: &BTreeMap<String, Manifest>,
+    units: &mut BTreeSet<String>,
+    tools: &mut BTreeSet<String>,
+) {
+    let (skill_name, reference) = name
+        .split_once('/')
+        .map_or((name, None), |(s, r)| (s, Some(r)));
+    let skill = manifests
+        .get(skill_name)
+        .unwrap_or_else(|| panic!("unknown profile skill {skill_name}"));
+    if units.insert(skill_name.to_owned()) {
+        tools.extend(skill.tools.iter().cloned());
+        for dependency in &skill.requires_skills {
+            collect_unit(dependency, manifests, units, tools);
+        }
+    }
+    if let Some(reference) = reference {
+        let reference = skill
+            .references
+            .iter()
+            .find(|r| r.name == reference)
+            .unwrap_or_else(|| panic!("unknown profile reference {name}"));
+        units.insert(name.to_owned());
+        tools.extend(reference.tools.iter().cloned());
+    }
+}
+
+fn compile_profiles(
+    composition: Composition,
+    manifests: &BTreeMap<String, Manifest>,
+) -> Vec<CompiledProfile> {
+    assert_eq!(
+        composition.version, 1,
+        "unsupported profile composition version"
+    );
+    let mut profiles = BTreeMap::new();
+    for profile in composition.profiles {
+        assert!(
+            identifier(&profile.name)
+                && ![
+                    "default",
+                    "legacy-all",
+                    "minimal",
+                    "write",
+                    "import",
+                    "authoring"
+                ]
+                .contains(&profile.name.as_str()),
+            "invalid or reserved generated profile name"
+        );
+        assert!(!profile.description.trim().is_empty() && !profile.units.is_empty());
+        let mut declared = BTreeSet::new();
+        for unit in &profile.units {
+            assert!(declared.insert(unit), "duplicate profile unit");
+        }
+        let mut units = BTreeSet::new();
+        let mut tools = BTreeSet::new();
+        collect_unit("spindle", manifests, &mut units, &mut tools);
+        for unit in profile.units {
+            collect_unit(&unit, manifests, &mut units, &mut tools);
+        }
+        let compiled = CompiledProfile {
+            name: profile.name.clone(),
+            description: profile.description,
+            units,
+            tools,
+        };
+        assert!(
+            profiles.insert(profile.name, compiled).is_none(),
+            "duplicate generated profile"
+        );
+    }
+    profiles.into_values().collect()
+}
+
+fn supported_profiles(
+    unit: &str,
+    compatibility: &[String],
+    profiles: &[CompiledProfile],
+) -> Vec<String> {
+    compatibility
+        .iter()
+        .cloned()
+        .chain(
+            profiles
+                .iter()
+                .filter(|p| p.units.contains(unit))
+                .map(|p| p.name.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -140,6 +258,11 @@ fn main() {
     for name in manifests.keys() {
         visit(name, &manifests, &mut BTreeSet::new(), &mut done);
     }
+    let composition: Composition = toml::from_str(
+        &fs::read_to_string(skills_dir.join("profiles.toml")).expect("profile composition"),
+    )
+    .expect("valid profile composition");
+    let profiles = compile_profiles(composition, &manifests);
     let mut generated = String::from("pub const EMBEDDED_SKILLS: &[EmbeddedSkill] = &[\n");
     for manifest in manifests.values() {
         let path = skills_dir.join(&manifest.name);
@@ -159,7 +282,7 @@ fn main() {
                 declared_paths.insert(reference_path.clone()),
                 "duplicate reference path"
             );
-            references.push_str(&format!("EmbeddedReference {{ name: {:?}, markdown: include_str!({:?}), tools: &{:?}, profiles: &{:?}, trigger: {:?} }},", format!("{}/{}", manifest.name, reference.name), reference_path, reference.tools, reference.profiles, reference.trigger));
+            references.push_str(&format!("EmbeddedReference {{ name: {:?}, markdown: include_str!({:?}), tools: &{:?}, profiles: &{:?}, trigger: {:?} }},", format!("{}/{}", manifest.name, reference.name), reference_path, reference.tools, supported_profiles(&format!("{}/{}", manifest.name, reference.name), &reference.profiles, &profiles), reference.trigger));
         }
         let mut actual_paths = BTreeSet::new();
         markdown_files(&path.join("references"), &mut actual_paths);
@@ -168,7 +291,18 @@ fn main() {
             "every nested Markdown reference must be declared"
         );
         references.push(']');
-        generated.push_str(&format!("EmbeddedSkill {{ name: {:?}, markdown: include_str!({:?}), manifest: SkillManifest {{ version: 1, name: {:?}, tools: &{:?}, profiles: &{:?}, requires_skills: &{:?}, references: {} }} }},\n", manifest.name, path.join("SKILL.md"), manifest.name, manifest.tools, manifest.profiles, manifest.requires_skills, references));
+        generated.push_str(&format!("EmbeddedSkill {{ name: {:?}, markdown: include_str!({:?}), manifest: SkillManifest {{ version: 1, name: {:?}, tools: &{:?}, profiles: &{:?}, requires_skills: &{:?}, references: {} }} }},\n", manifest.name, path.join("SKILL.md"), manifest.name, manifest.tools, supported_profiles(&manifest.name, &manifest.profiles, &profiles), manifest.requires_skills, references));
+    }
+    generated.push_str("];\n");
+    generated.push_str("pub const GENERATED_PROFILES: &[GeneratedProfile] = &[\n");
+    for profile in profiles {
+        generated.push_str(&format!(
+            "GeneratedProfile {{ name: {:?}, description: {:?}, units: &{:?}, tools: &{:?} }},\n",
+            profile.name,
+            profile.description,
+            profile.units.into_iter().collect::<Vec<_>>(),
+            profile.tools.into_iter().collect::<Vec<_>>()
+        ));
     }
     generated.push_str("];\n");
     fs::write(
@@ -244,6 +378,38 @@ mod tests {
             assert!(
                 std::panic::catch_unwind(|| reference_path(root.path(), name)).is_err(),
                 "{name}"
+            );
+        }
+    }
+    #[test]
+    fn compiler_rejects_bad_composition_units_and_names() {
+        let mut root = manifest("spindle");
+        root.name = "spindle".into();
+        root.requires_skills.clear();
+        let manifests = BTreeMap::from([("spindle".into(), root)]);
+        let spec = |name: &str, units: &[&str]| ProfileSpec {
+            name: name.into(),
+            description: "A workflow.".into(),
+            units: units.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let invalid = [
+            vec![spec("write", &["spindle"])],
+            vec![spec("custom", &["missing"])],
+            vec![spec("custom", &["spindle/missing"])],
+            vec![spec("custom", &["spindle", "spindle"])],
+            vec![spec("custom", &[])],
+            vec![spec("custom", &["spindle"]), spec("custom", &["spindle"])],
+        ];
+        for profiles in invalid {
+            assert!(
+                std::panic::catch_unwind(|| compile_profiles(
+                    Composition {
+                        version: 1,
+                        profiles
+                    },
+                    &manifests
+                ))
+                .is_err()
             );
         }
     }
