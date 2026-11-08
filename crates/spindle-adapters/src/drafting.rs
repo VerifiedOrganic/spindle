@@ -115,13 +115,13 @@ fn validate(packet: &DraftingPacketV1) -> Result<(), PacketError> {
         nonempty(&c.id, "constraint.id")?;
         nonempty(&c.statement, "constraint.statement")?;
         source(packet, &c.source)?;
-        if let Some(previous) = constraint_ids.insert(&c.id, (&c.kind, &c.statement, &c.scope)) {
-            if previous != (&c.kind, &c.statement, &c.scope) {
-                return Err(PacketError::Incomplete(format!(
-                    "conflicting constraint: {}",
-                    c.id
-                )));
-            }
+        if let Some(previous) = constraint_ids.insert(&c.id, (&c.kind, &c.statement, &c.scope))
+            && previous != (&c.kind, &c.statement, &c.scope)
+        {
+            return Err(PacketError::Incomplete(format!(
+                "conflicting constraint: {}",
+                c.id
+            )));
         }
     }
     for e in &packet.voice.exemplars {
