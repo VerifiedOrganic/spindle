@@ -185,8 +185,10 @@ is available.
 `spindle-core/src/drafting.rs` owns `DraftingPacketV1`, the scene card, source
 provenance and assembly report contracts. `spindle-adapters/src/drafting.rs`
 selects whole records and renders exact messages with a model-verified tokenizer
-interface. It rejects unknown token budgets and mandatory overflow. This API is
-not yet connected to authoring runs; legacy generation remains unchanged. See
+interface. It rejects unknown token budgets and mandatory overflow. An internal opt-in HTTP drafting path now persists exact-byte artifacts and
+defines a consumer-side accepted-text extractor trait for P2. It requires a
+model-verified tokenizer and is not exposed through authoring runs; legacy
+generation remains unchanged. See
 `docs/drafting-and-revision-design.md` for the staged integration and release gates.
 
 ## The authoring-run editorial loop
