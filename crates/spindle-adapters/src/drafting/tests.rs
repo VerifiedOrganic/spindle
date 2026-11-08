@@ -660,3 +660,341 @@ fn extraction_task_identity_includes_exact_dispatched_packet_hash() {
     assert_eq!(a.text_sha256, b.text_sha256);
     assert_ne!(a.artifact_id, b.artifact_id);
 }
+
+pub(crate) fn valid_critique_fixture(
+    base_text: &str,
+    base_text_hash: &str,
+    packet_hash: &str,
+    scene_id: Option<String>,
+) -> CritiqueV1 {
+    let quote_end = base_text.lines().next().unwrap_or(base_text).len();
+    let exact_quote = base_text[..quote_end].to_string();
+    let evidence_anchor = CritiqueAnchor {
+        scene_id: scene_id.clone(),
+        base_text_hash: base_text_hash.into(),
+        start_byte: 0,
+        end_byte: quote_end,
+        exact_quote: exact_quote.clone(),
+        context_before: None,
+        context_after: None,
+    };
+    let dimensions = CriticDimension::ALL
+        .iter()
+        .map(|&dim| CriticDimensionScore {
+            dimension: dim,
+            score_1_to_5: 4,
+            evidence_spans: vec![evidence_anchor.clone()],
+            rationale: format!("Solid {} execution.", dim.as_str()),
+        })
+        .collect();
+    CritiqueV1 {
+        schema_version: CRITIQUE_SCHEMA_VERSION.into(),
+        base_text_hash: base_text_hash.into(),
+        packet_hash: packet_hash.into(),
+        rubric_version: critique::CRITIC_RUBRIC_VERSION.into(),
+        dimensions,
+        directives: vec![CritiqueDirective {
+            id: "dir-1".into(),
+            dimension: CriticDimension::TensionTurn,
+            severity: DirectiveSeverity::Major,
+            priority: 1,
+            anchor: evidence_anchor,
+            diagnosis: "The opening inventories gear before the flood wave hits.".into(),
+            requested_change: "Start directly with the timber groaning under the flood.".into(),
+            preserve: vec!["Maë's sensory focus on the cold spray".into()],
+            success_test: "Opening sentence places Maë in immediate physical motion.".into(),
+            source_finding_ids: vec!["f-1".into()],
+            scope: DirectiveScope::Span,
+        }],
+        strengths_to_preserve: vec!["Sharp river imagery.".into()],
+        requires_author_decision: vec![],
+        no_edit_reason: None,
+    }
+}
+
+#[test]
+fn critique_v1_validates_utf8_byte_spans_quotes_and_zero_width_insertions() {
+    use critique::*;
+    let base_text = "Maë watched 雪が降る across the swollen river.\nThe bridge groaned.";
+    let base_hash = format!("{:x}", Sha256::digest(base_text.as_bytes()));
+    let mut pkt = fixture();
+    pkt.scene_id = Some("scene-1".into());
+
+    // Valid multi-byte UTF-8 span ("雪が降る")
+    let snow_start = base_text.find("雪が降る").unwrap();
+    let snow_end = snow_start + "雪が降る".len();
+    let valid_anchor = CritiqueAnchor {
+        scene_id: Some("scene-1".into()),
+        base_text_hash: base_hash.clone(),
+        start_byte: snow_start,
+        end_byte: snow_end,
+        exact_quote: "雪が降る".into(),
+        context_before: None,
+        context_after: None,
+    };
+    assert!(validate_anchor(&valid_anchor, base_text, &base_hash, Some("scene-1")).is_ok());
+
+    // Mid-codepoint non-char-boundary offset must fail
+    let mut bad_boundary = valid_anchor.clone();
+    bad_boundary.start_byte = snow_start + 1; // inside 3-byte UTF-8 '雪'
+    assert!(matches!(
+        validate_anchor(&bad_boundary, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::NonCharBoundaryAnchor { .. })
+    ));
+
+    // Quote mismatch must fail
+    let mut bad_quote = valid_anchor.clone();
+    bad_quote.exact_quote = "wrong quote".into();
+    assert!(matches!(
+        validate_anchor(&bad_quote, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::AnchorQuoteMismatch { .. })
+    ));
+
+    // Stale base_text_hash must fail
+    let mut stale_hash = valid_anchor.clone();
+    stale_hash.base_text_hash = "stale-hash".into();
+    assert!(matches!(
+        validate_anchor(&stale_hash, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::StaleAnchorHash { .. })
+    ));
+
+    // Mismatched scene_id must fail
+    let mut wrong_scene = valid_anchor.clone();
+    wrong_scene.scene_id = Some("scene-other".into());
+    assert!(matches!(
+        validate_anchor(&wrong_scene, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::AnchorSceneMismatch { .. })
+    ));
+
+    // Out-of-bounds byte span must fail
+    let mut out_of_bounds = valid_anchor.clone();
+    out_of_bounds.end_byte = base_text.len() + 4;
+    assert!(matches!(
+        validate_anchor(&out_of_bounds, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::InvalidAnchorSpan { .. })
+    ));
+
+    // Zero-width insertion requires matching context_before or context_after
+    let mut zero_width = CritiqueAnchor {
+        scene_id: Some("scene-1".into()),
+        base_text_hash: base_hash.clone(),
+        start_byte: snow_start,
+        end_byte: snow_start,
+        exact_quote: String::new(),
+        context_before: None,
+        context_after: None,
+    };
+    assert!(matches!(
+        validate_anchor(&zero_width, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::UnanchoredInsertion { .. })
+    ));
+
+    zero_width.context_before = Some("Maë watched ".into());
+    zero_width.context_after = Some("雪が降る".into());
+    assert!(validate_anchor(&zero_width, base_text, &base_hash, Some("scene-1")).is_ok());
+
+    zero_width.context_after = Some("mismatched context".into());
+    assert!(matches!(
+        validate_anchor(&zero_width, base_text, &base_hash, Some("scene-1")),
+        Err(CritiqueError::UnanchoredInsertion { .. })
+    ));
+}
+
+#[test]
+fn feedback_ingestion_deduplicates_deterministic_and_reader_findings_and_merges_sources() {
+    use critique::*;
+    let base_text = "Maë stepped onto the collapsing span and called to the sentry.";
+    let base_hash = format!("{:x}", Sha256::digest(base_text.as_bytes()));
+    let anchor = CritiqueAnchor {
+        scene_id: Some("scene-1".into()),
+        base_text_hash: base_hash.clone(),
+        start_byte: 0,
+        end_byte: 36,
+        exact_quote: base_text[..36].into(),
+        context_before: None,
+        context_after: None,
+    };
+
+    let f_det = CriticFindingInput {
+        finding_id: "det-1".into(),
+        source: FeedbackSourceKind::Continuity,
+        check_type: "timeline_coherence".into(),
+        dimension: CriticDimension::Continuity,
+        severity: DirectiveSeverity::Major,
+        message: "Bridge span already collapsed before Maë stepped onto it.".into(),
+        anchor: Some(anchor.clone()),
+        suggested_fix: None,
+    };
+    let f_reader = CriticFindingInput {
+        finding_id: "reader-1".into(),
+        source: FeedbackSourceKind::ReaderPersona,
+        check_type: "reader_confusion".into(),
+        dimension: CriticDimension::Continuity,
+        severity: DirectiveSeverity::Blocker,
+        message: "Bridge span already collapsed before Maë stepped onto it!".into(),
+        anchor: Some(anchor),
+        suggested_fix: Some("Show Maë leaping from the remaining pier.".into()),
+    };
+
+    let (deduped, omitted_ids) = ingest_and_dedup_findings(
+        vec![f_det, f_reader],
+        base_text,
+        &base_hash,
+        Some("scene-1"),
+    )
+    .unwrap();
+    assert_eq!(deduped.len(), 1);
+    assert_eq!(omitted_ids, vec!["reader-1"]);
+    assert_eq!(deduped[0].merged_finding_ids, vec!["det-1", "reader-1"]);
+    assert_eq!(deduped[0].severity, DirectiveSeverity::Blocker);
+    assert_eq!(
+        deduped[0].sources,
+        vec![
+            FeedbackSourceKind::Continuity,
+            FeedbackSourceKind::ReaderPersona
+        ]
+    );
+    assert_eq!(
+        deduped[0].suggested_fix.as_deref(),
+        Some("Show Maë leaping from the remaining pier.")
+    );
+}
+
+#[test]
+fn critique_quarantines_author_lock_prohibited_outcome_and_canon_conflicts_and_caps_directives_at_five()
+ {
+    use critique::*;
+    assert!(CRITIC_RUBRIC.contains("0.36"));
+    assert!(CRITIC_RUBRIC.contains("0.42"));
+    assert!(CRITIC_RUBRIC.contains("0.56"));
+
+    let base_text = "Paragraph one opens on the river.\nParagraph two tests the bridge.\nParagraph three turns on the flood.\nParagraph four holds the bank.\nParagraph five watches the lantern.\nParagraph six closes in silence.";
+    let base_hash = format!("{:x}", Sha256::digest(base_text.as_bytes()));
+    let mut pkt = fixture();
+    pkt.scene_id = Some("scene-1".into());
+    pkt.scene_card.prohibited_outcomes = vec!["Maë crosses safely to the far tower".into()];
+    pkt.hard_constraints.push(PacketConstraint {
+        id: "lock-bridge".into(),
+        kind: ConstraintKind::AuthorLock,
+        statement: "The timber bridge collapses before anyone reaches the far bank".into(),
+        source: pkt.scene_card.source.clone(),
+        scope: "scene".into(),
+    });
+
+    let mut raw =
+        valid_critique_fixture(base_text, &base_hash, "pkt-hash-1", Some("scene-1".into()));
+    raw.directives.clear();
+
+    let lines: Vec<&str> = base_text.lines().collect();
+    let mut byte_cursor = 0usize;
+    let dims = [
+        (CriticDimension::Freshness, DirectiveSeverity::Polish, 4),
+        (CriticDimension::Voice, DirectiveSeverity::Minor, 3),
+        (CriticDimension::Dialogue, DirectiveSeverity::Minor, 2),
+        (CriticDimension::Length, DirectiveSeverity::Polish, 5),
+        (CriticDimension::ScenePurpose, DirectiveSeverity::Major, 2),
+        (CriticDimension::Continuity, DirectiveSeverity::Blocker, 1),
+    ];
+    for (idx, (line, (dim, sev, prio))) in lines.iter().zip(dims.iter()).enumerate() {
+        let start = byte_cursor;
+        let end = start + line.len();
+        byte_cursor = end + 1;
+        raw.directives.push(CritiqueDirective {
+            id: format!("dir-{}", idx + 1),
+            dimension: *dim,
+            severity: *sev,
+            priority: *prio,
+            anchor: CritiqueAnchor {
+                scene_id: Some("scene-1".into()),
+                base_text_hash: base_hash.clone(),
+                start_byte: start,
+                end_byte: end,
+                exact_quote: (*line).into(),
+                context_before: None,
+                context_after: None,
+            },
+            diagnosis: format!("Distinct diagnosis number {} on {}", idx + 1, dim.as_str()),
+            requested_change: format!("Targeted revision number {} on {}", idx + 1, line),
+            preserve: vec![],
+            success_test: format!("Verify fix {}", idx + 1),
+            source_finding_ids: vec![],
+            scope: DirectiveScope::Span,
+        });
+    }
+
+    // Add a directive that conflicts with AuthorLock ("lock-bridge")
+    let first_line = lines[0];
+    raw.directives.push(CritiqueDirective {
+        id: "dir-lock-conflict".into(),
+        dimension: CriticDimension::TensionTurn,
+        severity: DirectiveSeverity::Major,
+        priority: 1,
+        anchor: CritiqueAnchor {
+            scene_id: Some("scene-1".into()),
+            base_text_hash: base_hash.clone(),
+            start_byte: 0,
+            end_byte: first_line.len(),
+            exact_quote: first_line.into(),
+            context_before: None,
+            context_after: None,
+        },
+        diagnosis: "The timber bridge collapses too soon (lock:lock-bridge).".into(),
+        requested_change: "Instead of collapsing the timber bridge, keep it standing.".into(),
+        preserve: vec![],
+        success_test: "Bridge stays up.".into(),
+        source_finding_ids: vec!["f-lock".into()],
+        scope: DirectiveScope::Scene,
+    });
+
+    // Add a directive that requests a prohibited outcome
+    raw.directives.push(CritiqueDirective {
+        id: "dir-prohibited".into(),
+        dimension: CriticDimension::ScenePurpose,
+        severity: DirectiveSeverity::Major,
+        priority: 1,
+        anchor: CritiqueAnchor {
+            scene_id: Some("scene-1".into()),
+            base_text_hash: base_hash.clone(),
+            start_byte: 0,
+            end_byte: first_line.len(),
+            exact_quote: first_line.into(),
+            context_before: None,
+            context_after: None,
+        },
+        diagnosis: "Ending feels bleak.".into(),
+        requested_change: "Have Maë crosses safely to the far tower at the end.".into(),
+        preserve: vec![],
+        success_test: "She reaches the tower.".into(),
+        source_finding_ids: vec![],
+        scope: DirectiveScope::Scene,
+    });
+
+    let validated =
+        validate_and_normalize_critique(raw, &pkt, "pkt-hash-1", base_text, &base_hash).unwrap();
+
+    // Both conflicting directives were quarantined into requires_author_decision
+    assert_eq!(validated.requires_author_decision.len(), 2);
+    assert_eq!(
+        validated.requires_author_decision[0]
+            .blocking_constraint_id
+            .as_deref(),
+        Some("lock-bridge")
+    );
+    assert_eq!(
+        validated.requires_author_decision[1]
+            .blocking_constraint_id
+            .as_deref(),
+        Some("scene_card.prohibited_outcomes")
+    );
+
+    // Actionable directives capped at MAX_ACTIONABLE_DIRECTIVES (5) and ordered with Continuity first, ScenePurpose second
+    assert_eq!(validated.directives.len(), MAX_ACTIONABLE_DIRECTIVES);
+    assert_eq!(
+        validated.directives[0].dimension,
+        CriticDimension::Continuity
+    );
+    assert_eq!(
+        validated.directives[1].dimension,
+        CriticDimension::ScenePurpose
+    );
+}

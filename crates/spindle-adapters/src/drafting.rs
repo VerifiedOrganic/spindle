@@ -1,5 +1,6 @@
 //! Pure packet preparation and the local accepted-text artifact lifecycle.
 pub mod artifact;
+pub mod critique;
 
 use sha2::{Digest, Sha256};
 use spindle_core::drafting::*;
