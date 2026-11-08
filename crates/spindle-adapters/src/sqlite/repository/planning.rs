@@ -66,6 +66,12 @@ impl Repository {
             premise: input.premise,
             scope: input.scope,
             policy: PlanningPolicy::default(),
+            horizon: PlanningTargetRange::default(),
+            budget: PlanningBudget::default(),
+            usage: PlanningBudgetUsage::default(),
+            rating_ceiling: None,
+            allow_review_backend: false,
+            last_outcome: None,
             created_at: timestamp_to_micros(chrono::Utc::now()),
         };
         self.pool()
@@ -335,6 +341,7 @@ fn check_refs(
                     "connected_theme_ids" | "target_theme_ids" => Some("theme"),
                     "connected_conflict_ids" | "target_conflict_ids" => Some("conflict"),
                     "target_plot_line_ids" => Some("plot_line"),
+                    "promise_ref" => Some("narrative_promise"),
                     "character_arc_id" => Some("character_arc"),
                     "book_id" => Some("book"),
                     "entity_id" => Some("chapter"),
@@ -451,6 +458,15 @@ fn stage_in_transaction(
         )?;
         available.extend(output_refs(item));
     }
+    if !input.schedule.is_empty() {
+        check_refs(
+            &tx,
+            &serde_json::to_value(&input.schedule)?,
+            &available,
+            &s.scope,
+            None,
+        )?;
+    }
     let captured_base_state = apply::base_state(&tx, &s.scope, &input)?;
     let p = PlanningProposal {
         id: mint_id("planning_proposal"),
@@ -459,6 +475,8 @@ fn stage_in_transaction(
         status: PlanningProposalStatus::Staged,
         policy_snapshot: s.policy,
         base_state: captured_base_state,
+        generation_receipt: None,
+        findings: Vec::new(),
         decided_by: None,
         decision_note: None,
         decided_at: None,
@@ -480,7 +498,7 @@ fn begin_in_transaction(
     Ok(s)
 }
 
-fn output_refs(item: &PlanningOperationItem) -> Vec<(String, &'static str)> {
+pub(crate) fn output_refs(item: &PlanningOperationItem) -> Vec<(String, &'static str)> {
     let mut out = vec![(item.output_ref.clone(), output_type(&item.operation))];
     if matches!(item.operation, PlanningOperation::CreateProject(_)) {
         for (suffix, kind) in [
@@ -498,4 +516,539 @@ fn output_refs(item: &PlanningOperationItem) -> Vec<(String, &'static str)> {
         ));
     }
     out
+}
+
+fn rating_rank(rating: &spindle_core::models::ContentRating) -> u8 {
+    use spindle_core::models::ContentRating::*;
+    match rating {
+        General => 0,
+        Teen => 1,
+        Mature => 2,
+        Explicit => 3,
+    }
+}
+
+fn placement_key(p: &PlanningStoryPlacement) -> (i32, i32, i32) {
+    (p.book_number, p.chapter_number, p.scene_order.unwrap_or(0))
+}
+
+fn collect_ref_findings(
+    conn: &rusqlite::Connection,
+    v: &Value,
+    path: &str,
+    available: &std::collections::BTreeMap<String, &str>,
+    scope: &Option<PlanningScope>,
+    expected: Option<&str>,
+    findings: &mut Vec<PlanningFinding>,
+) {
+    match v {
+        Value::Object(m) if m.get("kind").and_then(Value::as_str) == Some("proposal_ref") => {
+            let key = m.get("value").and_then(Value::as_str).unwrap_or("");
+            if key.is_empty() || !available.contains_key(key) {
+                findings.push(PlanningFinding {
+                    code: "unresolved_proposal_ref".to_string(),
+                    severity: PlanningFindingSeverity::Blocking,
+                    path: path.to_string(),
+                    related_refs: vec![key.to_string()],
+                    expected: expected.unwrap_or("valid proposal_ref").to_string(),
+                    actual: format!("proposal_ref:{key}"),
+                    repair_hint: format!(
+                        "Reference an output_ref declared in an accepted/staged parent proposal or an earlier operation in this artifact (available: {:?}).",
+                        available.keys().collect::<Vec<_>>()
+                    ),
+                });
+            } else if let Some(exp) = expected
+                && available.get(key) != Some(&exp)
+            {
+                findings.push(PlanningFinding {
+                    code: "wrong_proposal_ref_type".to_string(),
+                    severity: PlanningFindingSeverity::Blocking,
+                    path: path.to_string(),
+                    related_refs: vec![key.to_string()],
+                    expected: exp.to_string(),
+                    actual: available.get(key).copied().unwrap_or("unknown").to_string(),
+                    repair_hint: format!(
+                        "Proposal reference '{key}' produces a '{}' record, but '{exp}' is required at {path}.",
+                        available.get(key).copied().unwrap_or("unknown")
+                    ),
+                });
+            }
+        }
+        Value::Object(m) if m.get("kind").and_then(Value::as_str) == Some("existing_record_id") => {
+            let id = m.get("value").and_then(Value::as_str).unwrap_or("");
+            if let Err(err) = check_refs(conn, v, available, scope, expected) {
+                findings.push(PlanningFinding {
+                    code: "invalid_existing_record_ref".to_string(),
+                    severity: PlanningFindingSeverity::Blocking,
+                    path: path.to_string(),
+                    related_refs: vec![id.to_string()],
+                    expected: expected.unwrap_or("existing visible record").to_string(),
+                    actual: format!("{id} ({err})"),
+                    repair_hint: "Use only existing_record_id values from the attached project/branch digest, or use proposal_ref for newly planned entities.".to_string(),
+                });
+            }
+        }
+        Value::Object(m) => {
+            for (key, child) in m {
+                let field_type = match key.as_str() {
+                    "character_id" | "character_a_id" | "character_b_id" | "character_ids"
+                    | "pov_character_id" => Some("character"),
+                    "location_id" => Some("location"),
+                    "connected_theme_ids" | "target_theme_ids" => Some("theme"),
+                    "connected_conflict_ids" | "target_conflict_ids" => Some("conflict"),
+                    "target_plot_line_ids" => Some("plot_line"),
+                    "promise_ref" => Some("narrative_promise"),
+                    "character_arc_id" => Some("character_arc"),
+                    "book_id" => Some("book"),
+                    "entity_id" => Some("chapter"),
+                    "controlling_faction" => Some("faction"),
+                    _ => None,
+                };
+                let child_path = format!("{path}/{key}");
+                collect_ref_findings(
+                    conn,
+                    child,
+                    &child_path,
+                    available,
+                    scope,
+                    field_type,
+                    findings,
+                );
+            }
+        }
+        Value::Array(a) => {
+            for (idx, child) in a.iter().enumerate() {
+                let child_path = format!("{path}/{idx}");
+                collect_ref_findings(
+                    conn,
+                    child,
+                    &child_path,
+                    available,
+                    scope,
+                    expected,
+                    findings,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_stage_input_in_conn(
+    conn: &rusqlite::Connection,
+    input: &StagePlanningInput,
+    rating_ceiling: Option<spindle_core::models::ContentRating>,
+) -> Result<Vec<PlanningFinding>> {
+    let s = check_session(conn, &input.session_id, &input.scope)?;
+    let effective_ceiling = rating_ceiling.or(s.rating_ceiling);
+    let mut findings = Vec::new();
+    if input.schema_version != 1 {
+        findings.push(PlanningFinding {
+            code: "invalid_schema_version".to_string(),
+            severity: PlanningFindingSeverity::Blocking,
+            path: "/schema_version".to_string(),
+            related_refs: Vec::new(),
+            expected: "1".to_string(),
+            actual: input.schema_version.to_string(),
+            repair_hint: "Set schema_version to 1.".to_string(),
+        });
+    }
+    if input.operations.is_empty() || input.operations.len() > 128 {
+        findings.push(PlanningFinding {
+            code: "invalid_operation_count".to_string(),
+            severity: PlanningFindingSeverity::Blocking,
+            path: "/operations".to_string(),
+            related_refs: Vec::new(),
+            expected: "1..=128 operations".to_string(),
+            actual: input.operations.len().to_string(),
+            repair_hint: "Include between 1 and 128 operations for the requested level."
+                .to_string(),
+        });
+    }
+    if input.rationale.trim().is_empty() || input.rationale.len() > 8_000 {
+        findings.push(PlanningFinding {
+            code: "invalid_rationale".to_string(),
+            severity: PlanningFindingSeverity::Blocking,
+            path: "/rationale".to_string(),
+            related_refs: Vec::new(),
+            expected: "1..=8000 non-whitespace bytes".to_string(),
+            actual: format!("{} bytes", input.rationale.trim().len()),
+            repair_hint: "Provide a non-empty rationale up to 8000 bytes.".to_string(),
+        });
+    }
+    let old = proposals(conn, &s.id)?;
+    let mut available = std::collections::BTreeMap::new();
+    let mut reserved = std::collections::BTreeSet::new();
+    let mut planted_promises = std::collections::BTreeMap::new();
+    for p in &old {
+        if matches!(
+            p.status,
+            PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
+        ) {
+            for op in &p.artifact.operations {
+                for (key, _) in output_refs(op) {
+                    reserved.insert(key);
+                }
+                if input.parents.contains_key(&p.id) {
+                    available.extend(output_refs(op));
+                    if let PlanningOperation::CreateNarrativePromise(np) = &op.operation {
+                        planted_promises.insert(op.output_ref.clone(), np.planted_at.clone());
+                    }
+                }
+            }
+        }
+    }
+    for (idx, item) in input.operations.iter().enumerate() {
+        let item_path = format!("/operations/{idx}");
+        let valid_ref = !item.output_ref.is_empty()
+            && item.output_ref.len() <= 128
+            && item
+                .output_ref
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b));
+        if !valid_ref {
+            findings.push(PlanningFinding {
+                code: "invalid_output_ref".to_string(),
+                severity: PlanningFindingSeverity::Blocking,
+                path: format!("{item_path}/output_ref"),
+                related_refs: vec![item.output_ref.clone()],
+                expected: "1..=128 ASCII alphanumeric or -_: characters".to_string(),
+                actual: item.output_ref.clone(),
+                repair_hint: "Use a non-empty proposal-local identifier such as 'cast:protagonist' or 'chapter:1'.".to_string(),
+            });
+        }
+        let collides = output_refs(item)
+            .iter()
+            .any(|(k, _)| reserved.contains(k) || available.contains_key(k));
+        if collides {
+            findings.push(PlanningFinding {
+                code: "duplicate_output_ref".to_string(),
+                severity: PlanningFindingSeverity::Blocking,
+                path: format!("{item_path}/output_ref"),
+                related_refs: vec![item.output_ref.clone()],
+                expected: "unique output_ref in session".to_string(),
+                actual: item.output_ref.clone(),
+                repair_hint: "Choose a unique output_ref that does not collide with earlier operations or active proposals.".to_string(),
+            });
+        }
+        if let Err(err) = check_level(input.level, &item.operation, s.scope.is_some()) {
+            let msg = err.to_string();
+            let code = if msg.contains("realized") {
+                "realized_event_in_initial_plan"
+            } else {
+                "operation_not_allowed_for_level"
+            };
+            findings.push(PlanningFinding {
+                code: code.to_string(),
+                severity: PlanningFindingSeverity::Blocking,
+                path: format!("{item_path}/operation"),
+                related_refs: vec![item.output_ref.clone()],
+                expected: format!("valid operation for level {:?}", input.level),
+                actual: msg,
+                repair_hint: "Emit only operations permitted at this planning level/scope, and keep reached_at/established_in_scene_id/scene_id null and delivered=false.".to_string(),
+            });
+        }
+        if let PlanningOperation::CreateNarrativePromise(np) = &item.operation {
+            planted_promises.insert(item.output_ref.clone(), np.planted_at.clone());
+        }
+        if let (Some(ceiling), PlanningOperation::PlanChapter(plan)) =
+            (effective_ceiling.as_ref(), &item.operation)
+        {
+            for (s_idx, scene) in plan.scenes.iter().enumerate() {
+                if let Some(scene_rating) = scene.content_rating.as_ref()
+                    && rating_rank(scene_rating) > rating_rank(ceiling)
+                {
+                    findings.push(PlanningFinding {
+                        code: "scene_rating_exceeds_ceiling".to_string(),
+                        severity: PlanningFindingSeverity::Blocking,
+                        path: format!("{item_path}/operation/input/scenes/{s_idx}/content_rating"),
+                        related_refs: vec![item.output_ref.clone()],
+                        expected: format!("<= {ceiling:?}"),
+                        actual: format!("{scene_rating:?}"),
+                        repair_hint: "Lower the planned scene content_rating within the session's rating_ceiling.".to_string(),
+                    });
+                }
+            }
+        }
+        let op_val = serde_json::to_value(&item.operation)?;
+        collect_ref_findings(
+            conn,
+            &op_val,
+            &format!("{item_path}/operation"),
+            &available,
+            &s.scope,
+            None,
+            &mut findings,
+        );
+        available.extend(output_refs(item));
+    }
+    if !input.schedule.is_empty() {
+        let sched_val = serde_json::to_value(&input.schedule)?;
+        collect_ref_findings(
+            conn,
+            &sched_val,
+            "/schedule",
+            &available,
+            &s.scope,
+            None,
+            &mut findings,
+        );
+        for ev in &input.schedule.promise_events {
+            if ev.action == PlannedPromiseAction::Plant
+                && let PlanningRef::ProposalRef(k) = &ev.promise_ref
+            {
+                planted_promises
+                    .entry(k.clone())
+                    .or_insert_with(|| ev.placement.clone());
+            }
+        }
+        for (idx, ev) in input.schedule.promise_events.iter().enumerate() {
+            if ev.action == PlannedPromiseAction::Payoff
+                && let PlanningRef::ProposalRef(k) = &ev.promise_ref
+                && let Some(planted_at) = planted_promises.get(k)
+                && placement_key(&ev.placement) < placement_key(planted_at)
+            {
+                findings.push(PlanningFinding {
+                    code: "promise_payoff_before_plant".to_string(),
+                    severity: PlanningFindingSeverity::Blocking,
+                    path: format!("/schedule/promise_events/{idx}/placement"),
+                    related_refs: vec![k.clone()],
+                    expected: format!(
+                        "placement >= book {} chapter {}",
+                        planted_at.book_number, planted_at.chapter_number
+                    ),
+                    actual: format!(
+                        "book {} chapter {}",
+                        ev.placement.book_number, ev.placement.chapter_number
+                    ),
+                    repair_hint:
+                        "Ensure a promise payoff placement never precedes its planted_at placement."
+                            .to_string(),
+                });
+            }
+        }
+        for (idx, intensity) in input.schedule.intensity_targets.iter().enumerate() {
+            if intensity.target_intensity.is_nan()
+                || !(0.0..=1.0).contains(&intensity.target_intensity)
+            {
+                findings.push(PlanningFinding {
+                    code: "intensity_out_of_range".to_string(),
+                    severity: PlanningFindingSeverity::Blocking,
+                    path: format!("/schedule/intensity_targets/{idx}/target_intensity"),
+                    related_refs: Vec::new(),
+                    expected: "0.0..=1.0".to_string(),
+                    actual: intensity.target_intensity.to_string(),
+                    repair_hint: "Keep target_intensity within [0.0, 1.0].".to_string(),
+                });
+            }
+        }
+    }
+    Ok(findings)
+}
+
+impl Repository {
+    pub async fn validate_planning_stage_input(
+        &self,
+        input: StagePlanningInput,
+        rating_ceiling: Option<spindle_core::models::ContentRating>,
+    ) -> Result<Vec<PlanningFinding>> {
+        self.pool()
+            .read(move |conn| Ok(validate_stage_input_in_conn(conn, &input, rating_ceiling)))
+            .await?
+    }
+
+    pub async fn find_planning_generation_attempt(
+        &self,
+        session_id: &str,
+        retry_key: &str,
+    ) -> Result<Option<PlanningAdvanceReport>> {
+        let session_id = session_id.to_owned();
+        let retry_key = retry_key.to_owned();
+        self.pool()
+            .read(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![session_id, retry_key])?;
+                let Some(row) = rows.next()? else {
+                    return Ok(Ok(None));
+                };
+                let data: String = row.get(0)?;
+                Ok((|| -> Result<_> { Ok(Some(serde_json::from_str(&data)?)) })())
+            })
+            .await?
+    }
+
+    pub async fn list_planning_generation_attempts(
+        &self,
+        session_id: &str,
+        scope: Option<PlanningScope>,
+    ) -> Result<Vec<PlanningAdvanceReport>> {
+        let session_id = session_id.to_owned();
+        self.pool()
+            .read(move |conn| {
+                Ok((|| -> Result<_> {
+                    check_session(conn, &session_id, &scope)?;
+                    let mut stmt = conn.prepare(
+                        "SELECT data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
+                    )?;
+                    let rows = stmt
+                        .query_map([&session_id], |r| r.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    rows.into_iter()
+                        .map(|d| Ok(serde_json::from_str(&d)?))
+                        .collect()
+                })())
+            })
+            .await?
+    }
+
+    pub async fn describe_planning_scope_digest(
+        &self,
+        scope: Option<PlanningScope>,
+    ) -> Result<Vec<String>> {
+        let Some(scope) = scope else {
+            return Ok(Vec::new());
+        };
+        self.pool()
+            .read(move |conn| {
+                Ok((|| -> Result<Vec<String>> {
+                    let mut out = Vec::new();
+                    let project_row: Option<(String, String)> = conn
+                        .query_row(
+                            "SELECT name, genre FROM project WHERE id=?1",
+                            [&scope.project_id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .ok();
+                    if let Some((name, genre)) = project_row {
+                        out.push(format!("project {} ({name}, genre={genre})", scope.project_id));
+                    }
+                    for (table, label_col) in [
+                        ("book", "book_number"),
+                        ("chapter", "chapter_number"),
+                        ("character", "name"),
+                        ("location", "name"),
+                        ("world_rule", "rule_name"),
+                        ("plot_line", "name"),
+                        ("conflict", "name"),
+                        ("theme", "theme_statement"),
+                        ("motif", "name"),
+                        ("narrative_promise", "description"),
+                        ("character_arc", "arc_type"),
+                    ] {
+                        let sql = if matches!(table, "book" | "chapter") {
+                            format!(
+                                "SELECT id, CAST({label_col} AS TEXT) FROM {table} WHERE project_id=?1 ORDER BY id LIMIT 32"
+                            )
+                        } else {
+                            format!(
+                                "SELECT id, CAST({label_col} AS TEXT) FROM {table} WHERE project_id=?1 AND branch_id=?2 ORDER BY id LIMIT 32"
+                            )
+                        };
+                        let mut stmt = conn.prepare(&sql)?;
+                        let rows = if matches!(table, "book" | "chapter") {
+                            stmt.query_map([&scope.project_id], |r| {
+                                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                            })?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                        } else {
+                            stmt.query_map(
+                                [&scope.project_id, &scope.branch_id],
+                                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                            )?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                        };
+                        for (id, label) in rows {
+                            out.push(format!("{table} {id} ({label})"));
+                        }
+                    }
+                    Ok(out)
+                })())
+            })
+            .await?
+    }
+
+    pub async fn commit_planning_generation(
+        &self,
+        updated_session: PlanningSession,
+        staged: Option<(
+            StagePlanningInput,
+            PlanningGenerationReceipt,
+            Vec<PlanningFinding>,
+        )>,
+        mut report: PlanningAdvanceReport,
+    ) -> Result<PlanningAdvanceReport> {
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<PlanningAdvanceReport> {
+                    let tx = conn.transaction()?;
+                    check_session(&tx, &updated_session.id, &updated_session.scope)?;
+                    let proposal_id = if let Some((input, receipt, findings)) = staged {
+                        let captured_base_state =
+                            apply::base_state(&tx, &updated_session.scope, &input)?;
+                        let p = PlanningProposal {
+                            id: mint_id("planning_proposal"),
+                            payload_hash: hash(&input)?,
+                            artifact: input,
+                            status: PlanningProposalStatus::Staged,
+                            policy_snapshot: updated_session.policy.clone(),
+                            base_state: captured_base_state,
+                            generation_receipt: Some(receipt),
+                            findings,
+                            decided_by: None,
+                            decision_note: None,
+                            decided_at: None,
+                            created_at: report.created_at,
+                        };
+                        tx.execute(
+                            "INSERT INTO planning_proposal(id,session_id,payload_hash,status,data,created_at) VALUES(?1,?2,?3,'staged',?4,?5)",
+                            rusqlite::params![
+                                p.id,
+                                p.artifact.session_id,
+                                p.payload_hash,
+                                serde_json::to_string(&p)?,
+                                p.created_at
+                            ],
+                        )?;
+                        let pid = p.id.clone();
+                        report.proposal = Some(p);
+                        Some(pid)
+                    } else {
+                        None
+                    };
+                    tx.execute(
+                        "UPDATE planning_session SET data=?2 WHERE id=?1",
+                        rusqlite::params![
+                            updated_session.id,
+                            serde_json::to_string(&updated_session)?
+                        ],
+                    )?;
+                    let level_str = serde_json::to_value(report.level)?
+                        .as_str()
+                        .unwrap_or("contract")
+                        .to_string();
+                    let outcome_str = serde_json::to_value(report.outcome)?
+                        .as_str()
+                        .unwrap_or("staged")
+                        .to_string();
+                    tx.execute(
+                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                        rusqlite::params![
+                            report.attempt_id,
+                            report.session_id,
+                            level_str,
+                            report.retry_key,
+                            outcome_str,
+                            proposal_id,
+                            serde_json::to_string(&report)?,
+                            report.created_at
+                        ],
+                    )?;
+                    tx.commit()?;
+                    Ok(report)
+                })())
+            })
+            .await?
+    }
 }

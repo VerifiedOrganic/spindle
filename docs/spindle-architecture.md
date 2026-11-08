@@ -573,6 +573,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0048 | branch-scoped canon uniqueness, per-scene relationship delta ledger, and fact replacement links (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
 | V0049 | initial-planning sessions/proposals and operation receipt foundation (ADR 0004) |
 | V0050 | planning apply attempts, operation audit/output fields and deferred semantic-index refresh queue |
+| V0051 | planning route-generation attempt ledger (`planning_generation_attempt`) with prompt/schema hashes, usage receipts, JSON-pointer findings and host-fallback envelopes |
 
 ## Where to make changes
 
@@ -649,14 +650,31 @@ Run this sequence when you start a new implementation task.
   product locks, writing-packet digest, Phase 3 critic / revise loop).
   Scanner + rewrite-from-beats contracts: `spindle-core` `style/antislop/`.
 
-## Initial planning foundation (Phases A–B)
+## Initial planning foundation (Phases A–C)
 
 Core `planning` contracts define closed operations with typed existing/proposal
-references. V0049 adds pre-project sessions, proposals and the operation ledger;
-V0050 adds apply attempt history, operation audit/output fields and a deferred
-search-index queue. `sqlite/service/planning/apply.rs` translates the allowlist
-through existing service methods. No planning model generation or MCP entry
-tools are exposed yet, and application success is never drafting readiness.
+references, `PlanningArtifactV1` envelopes, structured schedules (`promise_events`,
+`pov_plan`, `intensity_targets`), RFC 6901 JSON-pointer validation findings, and
+session/call budget receipts. V0049 adds pre-project sessions, proposals and the
+operation ledger; V0050 adds apply attempt history, operation audit/output fields
+and a deferred search-index queue; V0051 adds `planning_generation_attempt` for
+durable route-generation attempts and `retry_key` idempotency.
+`sqlite/service/planning/apply.rs` translates the allowlist through existing
+service methods, and `sqlite/service/planning/generate.rs` drives bounded
+generation across `plan` (`contract`, `cast_world`, `series_arc`) and `outline`
+(`book`, `chapter`, `scene`) routes using versioned prompt IDs
+(`planning_contract_v1`, `planning_seed_v1`, `planning_series_arc_v1`,
+`outline_book_v1`, `outline_chapters_v1`, `outline_manifest_v1`,
+`planning_repair_v1`). Built-in local stubs and `adapter_kind == "local"` are
+rejected for creative planning; a real `review` agent is used only on explicit
+`allow_review_backend` opt-in. Call, token and optional external USD ceilings are
+checked before dispatch, with at most one repair attempt on validation failure.
+Missing routes, stubs, rejected outputs and exhausted budgets return honest
+outcomes (`needs_route`, `model_output_rejected`, `budget_exhausted`) with a
+`PlanningHostRequest` fallback; host and labeled `fixture` submissions run
+through the same staging validator and all output lands only as staged proposals.
+No MCP planning entry tools are exposed yet, and application success is never
+drafting readiness.
 
 Human acceptance preflights the complete selected dependency closure in a
 rollback-only application transaction, then commits one domain operation and

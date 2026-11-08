@@ -328,9 +328,13 @@ as `bible://references/<name>` resources:
 
 ## Initial planning rollout
 
-The planning-engine staging foundation (ADR 0004) is internal; new-book agent
-entry tools are not shipped yet. Continue using the existing planning tools.
-A staged artifact is intent, never a draftable-plan or applied-canon verdict.
+The planning-engine staging, apply and route-generation foundation (ADR 0004,
+Phases A–C) is internal; new-book agent entry tools are not shipped yet.
+Continue using the existing planning tools. Route generation (`plan` and
+`outline`) stages `PlanningArtifactV1` proposals with versioned prompt/schema
+hashes, pre-dispatch token/cost ceilings, at most one `planning_repair_v1`
+attempt, and host-fallback requests when routes are missing or rejected. A
+staged artifact is intent, never a draftable-plan or applied-canon verdict.
 Acceptance is a separate author decision; interrupted application resumes
 from durable receipts and reports partial progress. Accepting a plan does not
 start a drafting run. All initial gates default to human. Only an explicit author delegation may

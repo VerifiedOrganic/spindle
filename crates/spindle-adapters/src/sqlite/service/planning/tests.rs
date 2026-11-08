@@ -36,6 +36,10 @@ fn artifact(s: &PlanningSession, key: &str) -> StagePlanningInput {
             }),
         }],
         rationale: "Review the promise before creating the project".into(),
+        target_range: None,
+        schedule: PlanningSchedule::default(),
+        assumptions: Vec::new(),
+        author_questions: Vec::new(),
     }
 }
 fn decision(s: &PlanningSession, p: &PlanningProposal) -> DecidePlanningInput {
@@ -1583,5 +1587,1644 @@ async fn approved_outline_does_not_refresh_an_unrelated_externally_changed_plan(
             .unwrap()
             .synopsis,
         "External author edit"
+    );
+}
+
+fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let mut data = Vec::new();
+    let mut buf = [0_u8; 8192];
+    let mut expected_total = None;
+    loop {
+        let n = stream.read(&mut buf).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n]);
+        if expected_total.is_none()
+            && let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n")
+        {
+            let headers = String::from_utf8_lossy(&data[..pos]);
+            let content_len = headers
+                .lines()
+                .find_map(|line| {
+                    let (k, v) = line.split_once(':')?;
+                    k.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            expected_total = Some(pos + 4 + content_len);
+        }
+        if let Some(total) = expected_total
+            && data.len() >= total
+        {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&data).to_string()
+}
+
+fn spawn_planning_http_server(
+    responses: Vec<(u16, serde_json::Value)>,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::thread::JoinHandle<usize>,
+) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind planning test listener");
+    let addr = listener.local_addr().unwrap();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured_clone = std::sync::Arc::clone(&captured);
+    let handle = std::thread::spawn(move || {
+        let mut count = 0usize;
+        for (status, body_json) in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let req = read_full_http_request(&mut stream);
+            let req_body = req
+                .split_once("\r\n\r\n")
+                .map(|(_, b)| b.to_string())
+                .unwrap_or_default();
+            captured_clone.lock().unwrap().push(req_body);
+            let body = body_json.to_string();
+            let status_text = if status == 200 { "OK" } else { "Error" };
+            let resp = format!(
+                "HTTP/1.1 {status} {status_text}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            count += 1;
+        }
+        count
+    });
+    (format!("http://{addr}/v1"), captured, handle)
+}
+
+async fn service_with_toml(config_toml: &str) -> (tempfile::TempDir, SqliteSpindleService) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let pool = crate::sqlite::SqlitePool::open(&tmp.path().join("planning.db"))
+        .await
+        .unwrap();
+    let config_path = tmp.path().join("spindle.toml");
+    std::fs::write(&config_path, config_toml).unwrap();
+    let router = crate::ai::ModelRouter::local_only();
+    router
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let repo = Repository::with_model_router(pool, tmp.path().join("data"), router);
+    (tmp, SqliteSpindleService::new(repo))
+}
+
+#[tokio::test]
+async fn route_generation_real_agent_stages_all_levels_and_applies_only_on_human_accept() {
+    use serde_json::json;
+    let contract_payload = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Establish the harbor mystery contract.",
+        "assumptions": ["Single-POV close third mystery"],
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Salt Harbor",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {
+                        "promise": "Uncover the vanished heir",
+                        "style_notes": ["Close atmospheric tension"],
+                        "boundaries": ["No omniscient reveals"]
+                    }
+                }
+            }
+        }]
+    });
+    let seed_payload = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Introduce protagonist, rival, harbor location, and tide rule.",
+        "operations": [
+            {
+                "output_ref": "cast:ada",
+                "operation": {
+                    "operation": "create_character",
+                    "input": {
+                        "name": "Ada Venn",
+                        "summary": "Harbor chart-keeper",
+                        "role": "protagonist",
+                        "realm": null
+                    }
+                }
+            },
+            {
+                "output_ref": "cast:corin",
+                "operation": {
+                    "operation": "create_character",
+                    "input": {
+                        "name": "Corin Vale",
+                        "summary": "Harbor magistrate",
+                        "role": "antagonist",
+                        "realm": null
+                    }
+                }
+            },
+            {
+                "output_ref": "place:pier",
+                "operation": {
+                    "operation": "create_location",
+                    "input": {
+                        "name": "North Pier",
+                        "kind": "harbor",
+                        "realm": null,
+                        "summary": "Fog-bound stone pier"
+                    }
+                }
+            },
+            {
+                "output_ref": "rule:tide",
+                "operation": {
+                    "operation": "create_world_rule",
+                    "input": {
+                        "rule_name": "Floodgate Lock",
+                        "rule_type": "physical",
+                        "description": "The inner basin cannot open at low tide",
+                        "established_in": {"book_number": 1, "chapter_number": 1, "note": null}
+                    }
+                }
+            },
+            {
+                "output_ref": "rel:ada-corin",
+                "operation": {
+                    "operation": "create_relationship",
+                    "input": {
+                        "character_a_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                        "character_b_id": {"kind": "proposal_ref", "value": "cast:corin"},
+                        "relationship_type": "rivalry",
+                        "initial_trust": 20,
+                        "initial_tension": 75,
+                        "dynamics": ["Guarded suspicion"]
+                    }
+                }
+            }
+        ]
+    });
+    let series_arc_payload = json!({
+        "schema_version": 1,
+        "level": "series_arc",
+        "rationale": "Bind theme, conflict, plot line, promise, arc, and pacing.",
+        "operations": [
+            {
+                "output_ref": "theme:truth",
+                "operation": {
+                    "operation": "create_theme",
+                    "input": {
+                        "theme_statement": "Truth costs safety",
+                        "thesis_antithesis": "Silence preserves order vs exposure frees the harbor",
+                        "introduction_point": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": null},
+                        "resolution_point": {"book_number": 1, "chapter_number": 3, "scene_order": 2, "note": null}
+                    }
+                }
+            },
+            {
+                "output_ref": "conflict:ledger",
+                "operation": {
+                    "operation": "create_conflict",
+                    "input": {
+                        "name": "The Altered Ledger",
+                        "conflict_type": "investigation",
+                        "stakes": "Ada's livelihood and the heir's survival",
+                        "escalation_stages": ["Missing page", "Forged seal"],
+                        "expected_total_cycles": 2,
+                        "try_fail_cycles": [{"attempt_order": 1, "label": "Inspect manifest", "outcome": "Locked by magistrate", "cost": "Ada flagged", "revelation": "Seal was forged"}],
+                        "stated_consequences": [{"description": "Harbor charter revoked", "stated_at": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": null}, "must_demonstrate_by": "chapter 3", "delivered": false}]
+                    }
+                }
+            },
+            {
+                "output_ref": "plot:main",
+                "operation": {
+                    "operation": "create_plot_line",
+                    "input": {
+                        "name": "Vanished Heir",
+                        "plot_type": "main",
+                        "summary": "Trace the forged manifest to the hidden heir",
+                        "status": "active",
+                        "convergence_points": [{"book_number": 1, "chapter_number": 3, "scene_order": 2, "note": "Basin confrontation"}],
+                        "connected_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:ledger"}],
+                        "connected_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}]
+                    }
+                }
+            },
+            {
+                "output_ref": "promise:seal",
+                "operation": {
+                    "operation": "create_narrative_promise",
+                    "input": {
+                        "promise_type": "clue",
+                        "description": "The wax seal impression matches the magistrate's ring",
+                        "planted_at": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": null},
+                        "planned_payoff": {"book_number": 1, "chapter_number": 3, "scene_order": 2, "note": null},
+                        "notes": ["Planted in Ch1"]
+                    }
+                }
+            },
+            {
+                "output_ref": "arc:ada",
+                "operation": {
+                    "operation": "create_character_arc",
+                    "input": {
+                        "character_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                        "arc_type": "positive_change",
+                        "starting_state": "Complicit silence",
+                        "ending_state": "Public witness",
+                        "milestones": [{"label": "Break seal", "placement": {"book_number": 1, "chapter_number": 2, "scene_order": 1, "note": null}, "description": "Copies the hidden ledger", "unlocks": ["Confront Corin"], "reached_at": null}],
+                        "thematic_purpose": "Chooses truth over safety",
+                        "connected_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}]
+                    }
+                }
+            }
+        ],
+        "schedule": {
+            "promise_events": [
+                {
+                    "promise_ref": {"kind": "proposal_ref", "value": "promise:seal"},
+                    "action": "plant",
+                    "placement": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": null}
+                },
+                {
+                    "promise_ref": {"kind": "proposal_ref", "value": "promise:seal"},
+                    "action": "payoff",
+                    "placement": {"book_number": 1, "chapter_number": 3, "scene_order": 2, "note": null}
+                }
+            ]
+        }
+    });
+    let book_payload = json!({
+        "schema_version": 1,
+        "level": "book",
+        "rationale": "Set Book 1 outline.",
+        "operations": [{
+            "output_ref": "outline:book1",
+            "operation": {
+                "operation": "set_book_outline",
+                "input": {
+                    "book_number": 1,
+                    "book_id": {"kind": "proposal_ref", "value": "contract:project:book"},
+                    "format": "markdown",
+                    "content": "# Book 1\n- Act I: Missing manifest\n- Act II: Basin lock\n- Act III: Public reckoning"
+                }
+            }
+        }]
+    });
+    let chapter_payload = json!({
+        "schema_version": 1,
+        "level": "chapter",
+        "rationale": "Outline Chapter 1 beats and POV/intensity schedule.",
+        "operations": [{
+            "output_ref": "outline:ch1",
+            "operation": {
+                "operation": "set_chapter_outline",
+                "input": {
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "entity_id": {"kind": "proposal_ref", "value": "contract:project:chapter"},
+                    "content": "Ada inspects the night manifest at North Pier.",
+                    "beats": [
+                        {"order": 1, "summary": "Discover missing page", "scene_id": null, "status": "planned"},
+                        {"order": 2, "summary": "Spot Corin's wax seal", "scene_id": null, "status": "planned"}
+                    ]
+                }
+            }
+        }],
+        "schedule": {
+            "pov_plan": [{
+                "book_number": 1,
+                "chapter_number": 1,
+                "scene_order": 1,
+                "pov_character_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                "rationale": "Ada discovers the discrepancy firsthand"
+            }],
+            "intensity_targets": [{
+                "book_number": 1,
+                "chapter_number": 1,
+                "target_intensity": 0.65,
+                "recovery_beat": false,
+                "note": "Rising opening tension"
+            }]
+        }
+    });
+    let scene_payload = json!({
+        "schema_version": 1,
+        "level": "scene",
+        "rationale": "Concrete scene manifests for Chapter 1.",
+        "operations": [{
+            "output_ref": "plan:ch1-scenes",
+            "operation": {
+                "operation": "plan_chapter",
+                "input": {
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "pov_character_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                    "synopsis": "Ada finds the altered manifest and forged wax seal at North Pier.",
+                    "target_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                    "target_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:ledger"}],
+                    "target_plot_line_ids": [{"kind": "proposal_ref", "value": "plot:main"}],
+                    "scenes": [
+                        {
+                            "scene_order": 1,
+                            "summary": "Ada checks the tide ledger at North Pier and finds a torn leaf.",
+                            "beat_structure": ["Open ledger", "Find missing page"],
+                            "character_ids": [{"kind": "proposal_ref", "value": "cast:ada"}],
+                            "location_id": {"kind": "proposal_ref", "value": "place:pier"},
+                            "content_rating": "teen",
+                            "purpose": "Plant the altered ledger mystery"
+                        },
+                        {
+                            "scene_order": 2,
+                            "summary": "Corin interrupts Ada and locks the registry chest with his ring seal.",
+                            "beat_structure": ["Corin arrives", "Seal impression"],
+                            "character_ids": [
+                                {"kind": "proposal_ref", "value": "cast:ada"},
+                                {"kind": "proposal_ref", "value": "cast:corin"}
+                            ],
+                            "location_id": {"kind": "proposal_ref", "value": "place:pier"},
+                            "content_rating": "teen",
+                            "purpose": "Establish rivalry and plant the wax seal clue"
+                        }
+                    ]
+                }
+            }
+        }]
+    });
+
+    let wrap = |content: serde_json::Value| {
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": content.to_string()}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 80}
+            }),
+        )
+    };
+    let (plan_endpoint, plan_reqs, plan_handle) = spawn_planning_http_server(vec![
+        wrap(contract_payload),
+        wrap(seed_payload),
+        wrap(series_arc_payload),
+    ]);
+    let (outline_endpoint, outline_reqs, outline_handle) = spawn_planning_http_server(vec![
+        wrap(book_payload),
+        wrap(chapter_payload),
+        wrap(scene_payload),
+    ]);
+
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "planner-agent"
+name = "Planner Agent"
+provider = "openai-compatible"
+endpoint = "{plan_endpoint}"
+model = "planner-v1"
+ratings = ["general", "teen", "mature"]
+
+[[agents]]
+id = "outliner-agent"
+name = "Outliner Agent"
+provider = "openai-compatible"
+endpoint = "{outline_endpoint}"
+model = "outliner-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "planner-agent"
+
+[[routing]]
+route = "outline"
+agent = "outliner-agent"
+"#
+    ))
+    .await;
+
+    let session = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "A harbor chart-keeper discovers a forged manifest hiding a missing heir."
+                .into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    for expected_level in PlanningLevel::all() {
+        let report = svc
+            .advance_planning(AdvancePlanningInput {
+                session_id: session.id.clone(),
+                scope: None,
+                level: None,
+                parents: None,
+                target_range: None,
+                allow_review_backend: None,
+                rating_ceiling: Some(spindle_core::models::ContentRating::Mature),
+                budget: None,
+                host_submission: None,
+                retry_key: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.level, expected_level);
+        assert_eq!(report.outcome, PlanningSessionOutcome::Staged);
+        let prop = report.proposal.as_ref().expect("staged proposal");
+        assert_eq!(prop.status, PlanningProposalStatus::Staged);
+        let receipt = prop.generation_receipt.as_ref().expect("receipt");
+        assert_eq!(receipt.source, PlanningOutputSource::Model);
+        assert_eq!(receipt.prompt_id, expected_level.prompt_id());
+        assert_eq!(receipt.attempts_used, 1);
+        assert!(!receipt.repaired);
+        assert_eq!(receipt.calls.len(), 1);
+    }
+
+    assert_eq!(plan_handle.join().unwrap(), 3);
+    assert_eq!(outline_handle.join().unwrap(), 3);
+    assert_eq!(plan_reqs.lock().unwrap().len(), 3);
+    assert_eq!(outline_reqs.lock().unwrap().len(), 3);
+
+    // Zero direct bible writes while proposals remain staged.
+    assert!(
+        svc.list_projects().await.unwrap().projects.is_empty(),
+        "model output must land only as staged proposals, never directly in bible tables"
+    );
+
+    let staged = svc
+        .list_planning_proposals(&session.id, None)
+        .await
+        .unwrap();
+    assert_eq!(staged.len(), 6);
+
+    // Accept the contract root first, binding the session to the created project/branch.
+    let root = &staged[0];
+    let root_apply = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: session.id.clone(),
+            scope: None,
+            expected_hashes: BTreeMap::from([(root.id.clone(), root.payload_hash.clone())]),
+            decision: PlanningDecision::Accept,
+            actor: "author".into(),
+            note: "Accept contract".into(),
+        })
+        .await
+        .unwrap();
+    assert!(root_apply.complete, "{:?}", root_apply.error);
+
+    let bound_session = svc.get_planning_session(&session.id).await.unwrap();
+    let scope = bound_session.scope.clone().expect("bound scope");
+    assert_eq!(bound_session.usage.model_calls, 6);
+    assert_eq!(bound_session.usage.input_tokens, 720);
+    assert_eq!(bound_session.usage.output_tokens, 480);
+
+    // Now accept all remaining 5 levels in dependency order.
+    let remaining_hashes: BTreeMap<String, String> = staged[1..]
+        .iter()
+        .map(|p| (p.id.clone(), p.payload_hash.clone()))
+        .collect();
+    let rest_apply = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: session.id.clone(),
+            scope: Some(scope.clone()),
+            expected_hashes: remaining_hashes,
+            decision: PlanningDecision::Accept,
+            actor: "author".into(),
+            note: "Accept seed, series arc, book, chapter, and scene manifests".into(),
+        })
+        .await
+        .unwrap();
+    assert!(rest_apply.complete, "{:?}", rest_apply.error);
+    assert_eq!(
+        svc.list_projects().await.unwrap().projects.len(),
+        1,
+        "human acceptance commits planned project and downstream bible entities"
+    );
+}
+
+#[tokio::test]
+async fn route_generation_missing_routes_and_local_stubs_report_honestly_with_host_fallback() {
+    // 1. Default local_only router: missing `plan` route, allow_review_backend=false
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "A lighthouse keeper hears a bell underwater.".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let r1 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(r1.outcome, PlanningSessionOutcome::NeedsRoute);
+    assert!(r1.proposal.is_none());
+    assert!(matches!(
+        r1.route_problem,
+        Some(PlanningRouteProblem::MissingRoute {
+            ref route_task,
+            allow_review_backend: false
+        }) if route_task == "plan"
+    ));
+    let host_req = r1.host_request.expect("host fallback request");
+    assert_eq!(host_req.prompt_id, PlanningPromptId::PlanningContractV1);
+    assert!(!host_req.prompt_hash.is_empty());
+    assert!(!host_req.schema_hash.is_empty());
+
+    // 2. allow_review_backend=true when `review` is still the built-in local stub -> LocalStubRejected
+    let r2 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(true),
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(r2.outcome, PlanningSessionOutcome::NeedsRoute);
+    assert!(matches!(
+        r2.route_problem,
+        Some(PlanningRouteProblem::LocalStubRejected {
+            ref route_task,
+            ref resolved_route,
+            builtin_default: true,
+            ..
+        }) if route_task == "plan" && resolved_route == "review"
+    ));
+
+    // 3. Operator-configured local stub bound to `plan` -> LocalStubRejected
+    let (_tmp_local, svc_local_stub) = service_with_toml(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "local-stub-planner"
+name = "Local Stub Planner"
+provider = "local"
+endpoint = "local://stub"
+model = "stub-v1"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "plan"
+agent = "local-stub-planner"
+"#,
+    )
+    .await;
+    let s_stub = svc_local_stub
+        .begin_planning(BeginPlanningInput {
+            premise: "Stub test premise".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let r3 = svc_local_stub
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_stub.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(r3.outcome, PlanningSessionOutcome::NeedsRoute);
+    assert!(matches!(
+        r3.route_problem,
+        Some(PlanningRouteProblem::LocalStubRejected {
+            ref agent_name,
+            ref adapter_kind,
+            builtin_default: false,
+            ..
+        }) if agent_name == "local-stub-planner" && adapter_kind == "local"
+    ));
+
+    // 4. Missing API key env and RatingNotCovered on configured HTTP agent
+    let (_tmp_key, svc_key) = service_with_toml(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "missing-key-planner"
+name = "Missing Key Planner"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:9/v1"
+model = "planner-v1"
+api_key_env = "SPINDLE_MISSING_PLANNING_KEY_ENV_TEST_ONLY"
+ratings = ["general"]
+
+[[routing]]
+route = "plan"
+agent = "missing-key-planner"
+"#,
+    )
+    .await;
+    let s_key = svc_key
+        .begin_planning(BeginPlanningInput {
+            premise: "Missing key premise".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let r4 = svc_key
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_key.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(r4.outcome, PlanningSessionOutcome::NeedsRoute);
+    assert!(matches!(
+        r4.route_problem,
+        Some(PlanningRouteProblem::MissingApiKey {
+            ref env_var,
+            ..
+        }) if env_var == "SPINDLE_MISSING_PLANNING_KEY_ENV_TEST_ONLY"
+    ));
+
+    let (_tmp_rating, svc_rating) = service_with_toml(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "tame-planner"
+name = "Tame Planner"
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:9/v1"
+model = "planner-v1"
+ratings = ["general", "teen"]
+
+[[routing]]
+route = "plan"
+agent = "tame-planner"
+"#,
+    )
+    .await;
+    let s_rating = svc_rating
+        .begin_planning(BeginPlanningInput {
+            premise: "Explicit ceiling premise".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let r5 = svc_rating
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_rating.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: Some(spindle_core::models::ContentRating::Explicit),
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(r5.outcome, PlanningSessionOutcome::NeedsRoute);
+    assert!(matches!(
+        r5.route_problem,
+        Some(PlanningRouteProblem::RatingNotCovered {
+            rating_ceiling: spindle_core::models::ContentRating::Explicit,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn route_generation_explicit_review_backend_opt_in_and_no_implicit_fallback() {
+    use serde_json::json;
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Contract via explicit review backend.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Review Backend Novel",
+                    "project_type": "novel",
+                    "genre": "drama",
+                    "reader_contract": {
+                        "promise": "Character study",
+                        "style_notes": [],
+                        "boundaries": []
+                    }
+                }
+            }
+        }]
+    });
+    let (endpoint, _reqs, handle) = spawn_planning_http_server(vec![(
+        200,
+        json!({
+            "choices": [{"message": {"content": valid_contract.to_string()}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 40}
+        }),
+    )]);
+
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "real-review-agent"
+name = "Real Review Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "reviewer-pro"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "review"
+agent = "real-review-agent"
+"#
+    ))
+    .await;
+
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "An archivist reconstructs a lost treaty.".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // Without explicit opt-in, `review` is NOT used for `plan`.
+    let denied = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(denied.outcome, PlanningSessionOutcome::NeedsRoute);
+    assert!(denied.proposal.is_none());
+
+    // With explicit `allow_review_backend: Some(true)`, the configured real `review` agent serves.
+    let allowed = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(true),
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(allowed.outcome, PlanningSessionOutcome::Staged);
+    let receipt = allowed.generation_receipt.expect("receipt");
+    assert_eq!(receipt.route_task.as_deref(), Some("plan"));
+    assert_eq!(receipt.resolved_route.as_deref(), Some("review"));
+    assert_eq!(receipt.agent_name.as_deref(), Some("real-review-agent"));
+    assert_eq!(handle.join().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn route_generation_repairs_once_with_json_pointer_findings_and_rejects_second_invalid_output()
+ {
+    use serde_json::json;
+    // 1. First response has an unresolved proposal_ref; repair response fixes it.
+    let bad_seed = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Introduce cast with broken relationship ref.",
+        "operations": [
+            {
+                "output_ref": "cast:ada",
+                "operation": {
+                    "operation": "create_character",
+                    "input": {"name": "Ada", "summary": "Seeker", "role": "lead", "realm": null}
+                }
+            },
+            {
+                "output_ref": "rel:broken",
+                "operation": {
+                    "operation": "create_relationship",
+                    "input": {
+                        "character_a_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                        "character_b_id": {"kind": "proposal_ref", "value": "cast:missing_partner"},
+                        "relationship_type": "ally",
+                        "initial_trust": 50,
+                        "initial_tension": 10
+                    }
+                }
+            }
+        ]
+    });
+    let repaired_seed = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Introduce both characters before linking relationship.",
+        "operations": [
+            {
+                "output_ref": "cast:ada",
+                "operation": {
+                    "operation": "create_character",
+                    "input": {"name": "Ada", "summary": "Seeker", "role": "lead", "realm": null}
+                }
+            },
+            {
+                "output_ref": "cast:bram",
+                "operation": {
+                    "operation": "create_character",
+                    "input": {"name": "Bram", "summary": "Guide", "role": "support", "realm": null}
+                }
+            },
+            {
+                "output_ref": "rel:fixed",
+                "operation": {
+                    "operation": "create_relationship",
+                    "input": {
+                        "character_a_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                        "character_b_id": {"kind": "proposal_ref", "value": "cast:bram"},
+                        "relationship_type": "ally",
+                        "initial_trust": 50,
+                        "initial_tension": 10
+                    }
+                }
+            }
+        ]
+    });
+    // 2. For SeriesArc: both initial and repair responses are invalid (3rd response must NEVER be requested).
+    let invalid_arc_1 = "not valid json at all";
+    let invalid_arc_2 = json!({
+        "schema_version": 1,
+        "level": "series_arc",
+        "rationale": "Asserts a realized milestone in initial planning",
+        "operations": [{
+            "output_ref": "arc:illegal",
+            "operation": {
+                "operation": "create_character_arc",
+                "input": {
+                    "character_id": {"kind": "proposal_ref", "value": "cast:ada"},
+                    "arc_type": "growth",
+                    "starting_state": "Doubt",
+                    "ending_state": "Conviction",
+                    "milestones": [{
+                        "label": "Already happened",
+                        "placement": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": null},
+                        "description": "Illegally marked reached",
+                        "unlocks": [],
+                        "reached_at": {"book_number": 1, "chapter_number": 1, "scene_order": 1, "note": null}
+                    }],
+                    "thematic_purpose": "Trust"
+                }
+            }
+        }]
+    });
+
+    let (endpoint, captured_reqs, handle) = spawn_planning_http_server(vec![
+        (
+            200,
+            json!({"choices": [{"message": {"content": bad_seed.to_string()}}], "usage": {"prompt_tokens": 100, "completion_tokens": 60}}),
+        ),
+        (
+            200,
+            json!({"choices": [{"message": {"content": repaired_seed.to_string()}}], "usage": {"prompt_tokens": 140, "completion_tokens": 70}}),
+        ),
+        (
+            200,
+            json!({"choices": [{"message": {"content": invalid_arc_1}}], "usage": {"prompt_tokens": 100, "completion_tokens": 20}}),
+        ),
+        (
+            200,
+            json!({"choices": [{"message": {"content": invalid_arc_2.to_string()}}], "usage": {"prompt_tokens": 140, "completion_tokens": 60}}),
+        ),
+    ]);
+
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "repair-test-agent"
+name = "Repair Test Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "planner-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "repair-test-agent"
+"#
+    ))
+    .await;
+
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Repair loop test".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // Advance CastWorld: Call 1 fails -> Call 2 repairs and stages.
+    let seed_report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::CastWorld),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(seed_report.outcome, PlanningSessionOutcome::Staged);
+    let seed_receipt = seed_report.generation_receipt.expect("seed receipt");
+    assert_eq!(seed_receipt.attempts_used, 2);
+    assert!(seed_receipt.repaired);
+    assert_eq!(seed_receipt.prompt_id, PlanningPromptId::PlanningRepairV1);
+    assert_eq!(seed_receipt.calls.len(), 2);
+    assert_eq!(
+        seed_receipt.calls[0].prompt_id,
+        PlanningPromptId::PlanningSeedV1
+    );
+    assert_eq!(
+        seed_receipt.calls[1].prompt_id,
+        PlanningPromptId::PlanningRepairV1
+    );
+
+    // Verify the repair prompt sent to the model carried the exact JSON pointer.
+    {
+        let reqs = captured_reqs.lock().unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert!(
+            reqs[1].contains("planning_repair_v1")
+                && reqs[1].contains("/operations/1/operation/input/character_b_id")
+                && reqs[1].contains("unresolved_proposal_ref"),
+            "repair prompt must include exact RFC 6901 JSON-pointer finding: {}",
+            reqs[1]
+        );
+    }
+
+    // Advance SeriesArc: Call 1 fails (malformed JSON) -> Call 2 fails (realized_event_in_initial_plan) -> stops at 2 attempts!
+    let arc_report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::SeriesArc),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        arc_report.outcome,
+        PlanningSessionOutcome::ModelOutputRejected
+    );
+    assert!(
+        arc_report.proposal.is_none(),
+        "rejected model output must never be staged"
+    );
+    let arc_receipt = arc_report.generation_receipt.expect("arc receipt");
+    assert_eq!(arc_receipt.attempts_used, 2);
+    assert!(!arc_receipt.repaired);
+    assert_eq!(arc_receipt.calls.len(), 2);
+    assert!(
+        arc_report
+            .findings
+            .iter()
+            .any(|f| f.code == "realized_event_in_initial_plan"
+                && f.path == "/operations/0/operation")
+    );
+    let parked_host = arc_report
+        .host_request
+        .expect("level parked for host after 2nd invalid output");
+    assert_eq!(parked_host.prior_findings.len(), 1);
+    assert_eq!(handle.join().unwrap(), 4);
+
+    // Only the repaired CastWorld proposal was staged (total 1 proposal in session).
+    let proposals = svc.list_planning_proposals(&s.id, None).await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0].artifact.level, PlanningLevel::CastWorld);
+}
+
+#[tokio::test]
+async fn route_generation_host_and_fixture_submissions_use_same_validator_and_label_source() {
+    use serde_json::json;
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Host fallback & fixture labeling test.".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // Claiming source="model" on a host submission is rejected.
+    let spoofed = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Model,
+                payload: json!({}),
+            }),
+            retry_key: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(spoofed.to_string().contains("never 'model'"));
+
+    // Invalid host submission fails closed through the same validator.
+    let invalid_host = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Host,
+                payload: json!({
+                    "schema_version": 1,
+                    "level": "contract",
+                    "rationale": "Wrong operation for level",
+                    "operations": [{
+                        "output_ref": "book:wrong",
+                        "operation": {"operation": "create_book", "input": {"title": "Wrong"}}
+                    }]
+                }),
+            }),
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        invalid_host.outcome,
+        PlanningSessionOutcome::ModelOutputRejected
+    );
+    assert!(invalid_host.proposal.is_none());
+    assert!(
+        invalid_host
+            .findings
+            .iter()
+            .any(|f| f.code == "operation_not_allowed_for_level")
+    );
+
+    // Valid host submission stages with source="host".
+    let valid_host = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Host,
+                payload: json!({
+                    "schema_version": 1,
+                    "level": "contract",
+                    "rationale": "Host-supplied contract",
+                    "operations": [{
+                        "output_ref": "contract:project",
+                        "operation": {
+                            "operation": "create_project",
+                            "input": {
+                                "name": "Host Project",
+                                "project_type": "novel",
+                                "genre": "sci-fi",
+                                "reader_contract": {"promise": "First contact", "style_notes": [], "boundaries": []}
+                            }
+                        }
+                    }]
+                }),
+            }),
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(valid_host.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(
+        valid_host.generation_receipt.as_ref().unwrap().source,
+        PlanningOutputSource::Host
+    );
+
+    // Valid fixture submission with author_questions stages with source="fixture" and outcome="needs_author".
+    let valid_fixture = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::CastWorld),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Fixture,
+                payload: json!({
+                    "schema_version": 1,
+                    "level": "cast_world",
+                    "rationale": "Deterministic fixture cast",
+                    "author_questions": [{
+                        "id": "q-antagonist",
+                        "question": "Should the envoy be sympathetic or implacable?",
+                        "choices": ["Sympathetic", "Implacable"],
+                        "recommended": "Sympathetic"
+                    }],
+                    "operations": [{
+                        "output_ref": "cast:envoy",
+                        "operation": {
+                            "operation": "create_character",
+                            "input": {"name": "Vael", "summary": "Envoy", "role": "protagonist", "realm": null}
+                        }
+                    }]
+                }),
+            }),
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(valid_fixture.outcome, PlanningSessionOutcome::NeedsAuthor);
+    assert_eq!(valid_fixture.author_questions.len(), 1);
+    let fixture_prop = valid_fixture.proposal.expect("staged fixture proposal");
+    assert_eq!(
+        fixture_prop.generation_receipt.as_ref().unwrap().source,
+        PlanningOutputSource::Fixture
+    );
+}
+
+#[tokio::test]
+async fn route_generation_enforces_token_call_and_cost_ceilings_before_dispatch_and_never_persists_secrets()
+ {
+    use serde_json::json;
+    let secret_value = "sk-super-secret-planning-token-never-persist";
+    let env_name = "SPINDLE_PLANNING_SECRET_TEST_TOKEN_V1";
+    // SAFETY: test-scoped unique env var name not read concurrently elsewhere.
+    unsafe {
+        std::env::set_var(env_name, secret_value);
+    }
+
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Contract within budget.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Budgeted Novel",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {"promise": "Tightly budgeted", "style_notes": [], "boundaries": []}
+                }
+            }
+        }]
+    });
+    // Response 1: valid contract WITH provider usage.
+    // Response 2: valid cast_world WITHOUT provider usage (`usage` omitted).
+    // Response 3: invalid series_arc when max_model_calls is reached before repair.
+    let valid_seed = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Seed without provider usage.",
+        "operations": [{
+            "output_ref": "cast:hero",
+            "operation": {
+                "operation": "create_character",
+                "input": {"name": "Iris", "summary": "Investigator", "role": "protagonist", "realm": null}
+            }
+        }]
+    });
+
+    let (endpoint, _reqs, handle) = spawn_planning_http_server(vec![
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": valid_contract.to_string()}}],
+                "usage": {"prompt_tokens": 200, "completion_tokens": 100}
+            }),
+        ),
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": valid_seed.to_string()}}]
+            }),
+        ),
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": "invalid json requiring repair"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50}
+            }),
+        ),
+    ]);
+
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "budget-agent"
+name = "Budget Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "budget-v1"
+api_key_env = "{env_name}"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "budget-agent"
+"#
+    ))
+    .await;
+
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Budget and secret-hygiene verification".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // 1. Pre-dispatch output token ceiling check: max_output_tokens (500) < max_output_tokens_per_call (2000)
+    let out_exhausted = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(PlanningBudget {
+                max_output_tokens: 500,
+                max_output_tokens_per_call: 2000,
+                ..PlanningBudget::default()
+            }),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        out_exhausted.outcome,
+        PlanningSessionOutcome::BudgetExhausted
+    );
+    assert_eq!(out_exhausted.usage.model_calls, 0);
+
+    // 2. Pre-dispatch USD cost ceiling check: max_cost_usd too small to cover call reserve
+    let cost_exhausted = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(PlanningBudget {
+                max_cost_usd: Some(0.0001),
+                input_cost_per_million_usd: Some(500.0),
+                output_cost_per_million_usd: Some(1500.0),
+                ..PlanningBudget::default()
+            }),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        cost_exhausted.outcome,
+        PlanningSessionOutcome::BudgetExhausted
+    );
+    assert_eq!(cost_exhausted.usage.model_calls, 0);
+
+    // 3. Call 1 with external prices configured -> EstimatedFromConfiguredPrices
+    let priced_budget = PlanningBudget {
+        max_model_calls: 3,
+        max_input_tokens: 48_000,
+        max_output_tokens: 24_000,
+        max_total_tokens: 72_000,
+        max_output_tokens_per_call: 2_000,
+        max_cost_usd: Some(10.0),
+        input_cost_per_million_usd: Some(10.0),
+        output_cost_per_million_usd: Some(30.0),
+    };
+    let c1 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(priced_budget.clone()),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(c1.outcome, PlanningSessionOutcome::Staged);
+    let call_1_receipt = &c1.generation_receipt.as_ref().unwrap().calls[0];
+    assert!(call_1_receipt.provider_reported_usage);
+    assert_eq!(
+        call_1_receipt.cost_status,
+        PlanningCostStatus::EstimatedFromConfiguredPrices
+    );
+    assert!(call_1_receipt.estimated_cost_usd.unwrap() > 0.0);
+
+    // 4. Call 2 omits provider usage -> UnknownMissingProviderUsage and None cost
+    let unpriced_budget = PlanningBudget {
+        max_model_calls: 3,
+        ..PlanningBudget::default()
+    };
+    let c2 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::CastWorld),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(unpriced_budget),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(c2.outcome, PlanningSessionOutcome::Staged);
+    let call_2_receipt = &c2.generation_receipt.as_ref().unwrap().calls[0];
+    assert!(!call_2_receipt.provider_reported_usage);
+    assert_eq!(call_2_receipt.estimated_cost_usd, None);
+    assert_eq!(
+        call_2_receipt.cost_status,
+        PlanningCostStatus::UnknownMissingProviderUsage
+    );
+
+    // 5. Call 3 returns invalid JSON, and max_model_calls=3 prevents repair Call 4 from dispatching!
+    let c3 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::SeriesArc),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(c3.outcome, PlanningSessionOutcome::BudgetExhausted);
+    assert_eq!(c3.usage.model_calls, 3);
+    assert_eq!(c3.generation_receipt.as_ref().unwrap().attempts_used, 1);
+    assert_eq!(handle.join().unwrap(), 3);
+
+    // Verify secret value never appears anywhere in persisted SQLite rows.
+    let dump: Vec<String> = svc
+        .repository
+        .pool()
+        .read(move |conn| {
+            let mut out = Vec::new();
+            for table in [
+                "planning_session",
+                "planning_proposal",
+                "planning_generation_attempt",
+            ] {
+                let mut stmt = conn.prepare(&format!("SELECT data FROM {table}"))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                out.extend(rows);
+            }
+            let mut stmt = conn.prepare("SELECT payload FROM model_call")?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            out.extend(rows);
+            Ok(Ok::<_, anyhow::Error>(out))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!dump.is_empty());
+    for row in &dump {
+        assert!(
+            !row.contains(secret_value),
+            "persisted planning/telemetry row leaked secret credential"
+        );
+    }
+}
+
+#[tokio::test]
+async fn route_generation_retry_key_is_idempotent_and_v0050_database_upgrades_cleanly() {
+    use serde_json::json;
+    // Part 1: V0050 database upgrades cleanly to V0051 and preserves Phase A/B proposal hashes.
+    let tmp_upg = tempfile::TempDir::new().unwrap();
+    let db_path = tmp_upg.path().join("upgrade_v0050.db");
+    {
+        let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::sqlite::migrations::runner()
+            .set_target(refinery::Target::Version(50))
+            .run(&mut conn)
+            .unwrap();
+    }
+    let pool = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Idempotent contract generation.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Idempotent Harbor",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {"promise": "Idempotent", "style_notes": [], "boundaries": []}
+                }
+            }
+        }]
+    });
+    let (endpoint, _reqs, handle) = spawn_planning_http_server(vec![(
+        200,
+        json!({
+            "choices": [{"message": {"content": valid_contract.to_string()}}],
+            "usage": {"prompt_tokens": 90, "completion_tokens": 50}
+        }),
+    )]);
+    let config_path = tmp_upg.path().join("spindle.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "idem-agent"
+name = "Idem Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "idem-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "idem-agent"
+"#
+        ),
+    )
+    .unwrap();
+    let router = crate::ai::ModelRouter::local_only();
+    router
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let repo = Repository::with_model_router(pool, tmp_upg.path().join("data"), router);
+    let svc = SqliteSpindleService::new(repo);
+
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Retry key idempotency".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    let first = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("retry-contract-001".into()),
+        })
+        .await
+        .unwrap();
+    let second = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("retry-contract-001".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.attempt_id, second.attempt_id);
+    assert_eq!(
+        first.proposal.as_ref().unwrap().id,
+        second.proposal.as_ref().unwrap().id
+    );
+    assert_eq!(handle.join().unwrap(), 1);
+    assert_eq!(
+        svc.list_planning_proposals(&s.id, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        svc.list_planning_generation_attempts(&s.id, None)
+            .await
+            .unwrap()
+            .len(),
+        1
     );
 }

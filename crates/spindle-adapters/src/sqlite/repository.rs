@@ -640,6 +640,7 @@ mod imports;
 mod narrative;
 mod planning;
 pub(crate) use planning::apply::resolve_operation as resolve_planning_operation;
+pub(crate) use planning::output_refs as planning_output_refs;
 mod plans;
 mod projects;
 mod quantity;

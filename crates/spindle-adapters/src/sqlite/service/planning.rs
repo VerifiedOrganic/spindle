@@ -1,7 +1,8 @@
-//! Initial planning staging and human ratification; no creative model dispatch.
+//! Initial planning staging, bounded route generation and human ratification.
 use super::*;
 use spindle_core::planning::*;
 mod apply;
+mod generate;
 
 impl SqliteSpindleService {
     pub async fn begin_planning(&self, input: BeginPlanningInput) -> Result<PlanningSession> {
