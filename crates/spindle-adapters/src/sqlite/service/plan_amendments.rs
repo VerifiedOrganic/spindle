@@ -108,6 +108,10 @@ impl SqliteSpindleService {
             .as_deref()
             .unwrap_or("operator")
             .to_string();
+        anyhow::ensure!(
+            !decided_by.trim_start().starts_with("policy:"),
+            "decide_plan_amendments requires a human operator decision actor; delegated policy actors ('{decided_by}') cannot ratify living-outline plan amendments"
+        );
 
         // ── Pre-flight ALL ───────────────────────────────────────────────────
         struct Preflighted {
@@ -260,6 +264,14 @@ impl SqliteSpindleService {
                                     PlanAmendmentDecision::Applied,
                                     &decided_by,
                                     prior_state,
+                                )
+                                .await?;
+                            self.repository
+                                .reconcile_planning_sessions_for_amendment(
+                                    &item.amendment,
+                                    &item.effective_payload,
+                                    &active_branch.id,
+                                    &decided_by,
                                 )
                                 .await?;
                             applied_count += 1;
