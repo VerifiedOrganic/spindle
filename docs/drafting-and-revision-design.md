@@ -495,3 +495,21 @@ No built-in production tokenizer is assumed verified. Without one, a live
 packet-vs-baseline experiment cannot pass admission; G remains unpassed and no
 quality win is claimed. Public host/agent scheduling and CLI integration remain
 later steps, coordinated with P2 and P4.
+
+## Implementation status: verified-tokenizer prerequisite (PR 3)
+
+The orchestrator inserted this prerequisite after PR 2 and before the critic
+(previous PR 3). Subsequent sequence numbers advance by one; public scheduling
+integration remains deferred until its designated integration PR. No run policy
+is activated by this prerequisite.
+
+Pinned `tokenizer.json` encoders now implement assembly-time counting, with
+provider-bound calibration certificates and explicit bounded tolerance. Ollama
+Cloud calibration uses authorized one-token count probes; local zero-output
+probes require zero-generation proof. Counts are cached and attributed to the
+existing model-usage ledger. The internal packet route resolves the configured
+encoder when no caller-supplied counter is provided and verifies final-message
+counts before prose dispatch by default. See `spindle-agent-config.md` for the
+verified Gemma profile, operator CLI, recovery behavior and billing details.
+Legacy remains default; calibration is evidence of token counting, not prose
+quality or completion of release gate G.

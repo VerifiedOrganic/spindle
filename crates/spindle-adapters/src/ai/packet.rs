@@ -6,7 +6,7 @@ use spindle_core::drafting::{DraftingPacketV1, EditorialPolicy};
 
 impl ModelRouter {
     /// Opt-in packet generation; existing complete/legacy package paths are unchanged.
-    /// A verified tokenizer is supplied by the caller, never inferred from a name.
+    /// Uses a caller-supplied verified counter or an explicitly calibrated profile.
     pub async fn draft_packet(
         &self,
         policy: EditorialPolicy,
@@ -55,6 +55,26 @@ impl ModelRouter {
         if route.max_tokens.is_none() {
             route.max_tokens = Some(reserve);
         }
+        let scope = if tokenizer.is_none() {
+            Some(self.counter_scope(&runtime, &route)?)
+        } else {
+            None
+        };
+        if let Some(scope) = &scope {
+            anyhow::ensure!(
+                budget.context_window <= scope.max_context,
+                "packet window exceeds configured model context"
+            );
+        }
+        let configured = scope
+            .as_ref()
+            .map(|scope| self.configured_tokenizer(scope))
+            .transpose()?;
+        let tokenizer = tokenizer.or_else(|| {
+            configured
+                .as_deref()
+                .map(|encoder| encoder as &dyn DraftTokenizer)
+        });
         let system = system_prompt_for_request(&route, Some(rating));
         let prepared = assemble_packet_with_system(packet.clone(), budget, tokenizer, &system)?;
         route.system_prompt = prepared.messages.system.clone();
@@ -73,6 +93,19 @@ impl ModelRouter {
             }),
         };
         before_dispatch(&prepared)?;
+        if let (Some(scope), Some(encoder)) = (&scope, &configured)
+            && encoder.config().verify_each_prompt
+        {
+            let receipt = self
+                .probe_count(
+                    scope,
+                    &prepared.messages,
+                    Some(rating),
+                    request.context.as_ref(),
+                )
+                .await?;
+            encoder.verify_count(&prepared.messages, receipt.input_tokens)?;
+        }
         #[cfg(any(test, feature = "test-support"))]
         self.record_dispatch(DispatchRecord::Dispatch {
             route: request.route.clone(),

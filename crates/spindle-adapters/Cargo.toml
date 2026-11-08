@@ -33,6 +33,9 @@ toml.workspace = true
 tracing.workspace = true
 zip.workspace = true
 
+# Pinned stable parser; no model downloads or native oniguruma build.
+tokenizers = { version = "=0.22.2", default-features = false, features = ["fancy-regex"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 

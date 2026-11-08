@@ -64,8 +64,16 @@ impl ModelRouter {
             scene_id: context.and_then(|c| c.scene_id.clone()),
             run_id: context.and_then(|c| c.run_id.clone()),
             route: route.to_string(),
-            adapter_kind: result.as_ref().ok().map(|r| r.adapter_kind.clone()),
-            model_name: result.as_ref().ok().map(|r| r.model_name.clone()),
+            adapter_kind: result
+                .as_ref()
+                .ok()
+                .map(|r| r.adapter_kind.clone())
+                .or_else(|| resolved_route.map(|r| r.adapter_kind.clone())),
+            model_name: result
+                .as_ref()
+                .ok()
+                .map(|r| r.model_name.clone())
+                .or_else(|| resolved_route.map(|r| r.model_name.clone())),
             prompt_template_id,
             prompt_version,
             context_packet_hash,

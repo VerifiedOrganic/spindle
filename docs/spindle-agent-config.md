@@ -752,3 +752,78 @@ Natural follow-up work, if you want to continue from here, is:
 2. add MCP or SSE notifications for health-state transitions
 3. add per-route timeout, temperature, and token controls
 4. add persisted audit or status snapshots if runtime history becomes useful
+
+## Verified token counting for internal packet drafts
+
+Packet drafting remains opt-in and internal; legacy authoring stays the default.
+Configured HTTP routes can use a local Hugging Face `tokenizer.json` through the
+pinned Rust `tokenizers` 0.22.2 engine. The encoder counts every assembly step
+offline, including the complete system/user framing. No character estimate is
+used. Padding/truncation-enabled assets and checksum mismatches are rejected.
+CLI adapters without a verified counter still return `budget_unknown`.
+
+The following profile was calibrated against Ollama Cloud `gemma4:31b` with
+**zero-token tolerance**: four synthetic probes returned 26, 33, 30 and 790
+prompt tokens, exactly matching local counts. Download only the tokenizer asset
+from the immutable [Gemma revision](https://huggingface.co/google/gemma-4-31b-it/tree/842da3794eaa0b77d5f08bae87a17459d91ff475),
+verify the SHA below, and put this table after that agent's ordinary fields and
+before the next agent/routing table. Use the same exact model ID, deployment and
+`max_context` for calibration and drafting. Framing is the published text-only,
+non-thinking template; another template/model must be calibrated separately.
+
+```toml
+[agents.tokenizer]
+tokenizer_json = "tokenizers/gemma4.json"
+tokenizer_sha256 = "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+model_revision = "842da3794eaa0b77d5f08bae87a17459d91ff475"
+calibration_file = "tokenizers/gemma4-calibration.json"
+cache_dir = "tokenizers/count-cache"
+probe_mode = "cloud_one_token"
+tolerance_tokens = 0
+verify_each_prompt = true
+[agents.tokenizer.framing]
+prefix = "<bos><|turn>system\n"
+between = "<turn|>\n<|turn>user\n"
+suffix = "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+trim_system = true
+trim_user = true
+```
+
+Relative paths resolve against the config file. Assets are operator-provided;
+Spindle never downloads model files implicitly. After configuring the cleared
+`draft` route, calibrate explicitly (the usage database is required):
+
+```sh
+cargo build -p spindle-adapters --bin spindle-tokenizer
+ai run OLLAMA_API_KEY -- target/debug/spindle-tokenizer calibrate spindle.toml usage.db draft general
+target/debug/spindle-tokenizer count spindle.toml draft general messages.json
+```
+
+`messages.json` contains `{"system":"…","user":"…"}`. `count` needs no key or
+network. Certificates bind engine, checksum, revision, framing, tolerance and
+provider deployment. Calibration fails closed if any required sample differs;
+there is no estimate fallback. Explicit tolerances up to 16 tokens are supported;
+the tolerance is added to offline message counts as a conservative budget margin.
+Use zero unless measured evidence justifies another bound.
+
+Provider probes use native Ollama `/api/chat`, `stream=false`, `truncate=false`
+and the configured context window. Cloud uses bounded `num_predict=1`; only
+`prompt_eval_count` supplies the count, and the generated token is discarded.
+Each actual probe is recorded in the existing `model_call` ledger with
+`prompt_template_id=token_count.ollama_probe`, route, exact model and reported
+input/output usage. Local `probe_mode="local_zero_output"` uses `num_predict=0`
+only if the response proves positive `prompt_eval_count`, `eval_count=0`, and
+empty generated text. Missing counts, model mismatches and excess generation
+fail closed. Probes do consume provider capacity and may incur charges.
+
+Counts are cached by exact model ID and message-byte hash, additionally scoped
+to endpoint, revision, probe mode and context window. Concurrent identical probes
+coalesce; disk cache survives restarts. Cache stores counts and call IDs, never
+prompt/generated text. Interrupted or uncertain probes retain a recovery marker;
+inspect provider/usage state before explicitly recovering it, rather than
+silently paying for another attempt. Cache/probe artifacts belong outside Git.
+The default final-message verification checks the actual assembled prompt once
+before a draft dispatch; assembly itself performs no provider calls. Keep this
+verification enabled for mutable provider model aliases; a changed deployment
+requires a new revision/cache scope and recalibration. Disabling it opts into
+certificate-only offline counting for a pinned deployment.

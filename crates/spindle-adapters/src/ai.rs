@@ -1,4 +1,5 @@
 mod packet;
+mod tokenization;
 
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -653,6 +654,14 @@ pub struct ModelRouter {
     http_client: reqwest::Client,
     health_generation: Arc<AtomicU64>,
     usage_pool: Option<crate::sqlite::SqlitePool>,
+    token_count_cache: Arc<
+        std::sync::Mutex<
+            BTreeMap<String, Arc<tokio::sync::OnceCell<crate::tokenization::ProbeReceipt>>>,
+        >,
+    >,
+    tokenizer_cache:
+        Arc<std::sync::Mutex<BTreeMap<String, Arc<crate::tokenization::CalibratedTokenizer>>>>,
+
     /// Test-only dispatch recorder (evolution §4 rule 2 recording seam). When
     /// installed via [`ModelRouter::install_dispatch_recorder`], every attempted
     /// dispatch past the clearance gate — and every clearance rejection — is
@@ -745,6 +754,8 @@ impl ModelRouter {
             http_client,
             health_generation: Arc::new(AtomicU64::new(0)),
             usage_pool: None,
+            token_count_cache: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            tokenizer_cache: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             dispatch_log: Arc::new(RwLock::new(None)),
         };
@@ -822,6 +833,14 @@ impl ModelRouter {
             .runtime
             .write()
             .map_err(|_| poisoned_lock("model router write lock"))? = runtime;
+        self.token_count_cache
+            .lock()
+            .map_err(|_| poisoned_lock("token count cache"))?
+            .clear();
+        self.tokenizer_cache
+            .lock()
+            .map_err(|_| poisoned_lock("tokenizer cache"))?
+            .clear();
         self.refresh_health_heartbeat();
         Ok(ConfigureAgentsOutput {
             source_path: loaded.source_path,
@@ -4723,6 +4742,7 @@ enabled = false
             rating: None,
         };
         let agent = ConfiguredAgent {
+            tokenizer: None,
             id: "test-agent".to_string(),
             name: "Test Agent".to_string(),
             provider: "openai-compatible".to_string(),
@@ -4778,6 +4798,8 @@ enabled = false
             http_client: reqwest::Client::new(),
             health_generation: Arc::new(AtomicU64::new(0)),
             usage_pool: None,
+            token_count_cache: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            tokenizer_cache: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             dispatch_log: Arc::new(RwLock::new(None)),
         }
     }
@@ -5041,6 +5063,7 @@ enabled = false
     #[test]
     fn adapter_kind_for_grok_cli_provider_overrides_endpoint_sniffing() {
         let agent = ConfiguredAgent {
+            tokenizer: None,
             id: "grok-local".to_string(),
             name: "Local Grok".to_string(),
             provider: "grok-cli".to_string(),
@@ -5067,6 +5090,7 @@ enabled = false
     #[test]
     fn adapter_kind_for_non_grok_provider_still_sniffs_endpoint() {
         let mut agent = ConfiguredAgent {
+            tokenizer: None,
             id: "x".to_string(),
             name: "x".to_string(),
             provider: "openai-compatible".to_string(),
