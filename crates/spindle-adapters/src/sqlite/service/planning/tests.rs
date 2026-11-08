@@ -3104,13 +3104,13 @@ agent = "budget-agent"
 #[tokio::test]
 async fn route_generation_retry_key_is_idempotent_and_v0050_database_upgrades_cleanly() {
     use serde_json::json;
-    // Part 1: V0050 database upgrades cleanly to V0051 and preserves Phase A/B proposal hashes.
+    // Part 1: V0051 database upgrades cleanly to V0052 and preserves Phase A/B proposal hashes.
     let tmp_upg = tempfile::TempDir::new().unwrap();
     let db_path = tmp_upg.path().join("upgrade_v0050.db");
     {
         let mut conn = rusqlite::Connection::open(&db_path).unwrap();
         crate::sqlite::migrations::runner()
-            .set_target(refinery::Target::Version(50))
+            .set_target(refinery::Target::Version(51))
             .run(&mut conn)
             .unwrap();
     }

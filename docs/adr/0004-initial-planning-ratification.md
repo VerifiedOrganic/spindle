@@ -74,7 +74,7 @@ service paths, revalidates hashes/branch/prose guards, and records sequential
 progress without claiming one atomic transaction across the selected batch.
 
 The additions are opt-in and additive. Existing runs and clients remain
-unchanged. V0051 adds `planning_generation_attempt` for bounded `plan`/`outline`
+unchanged. V0052 adds `planning_generation_attempt` for bounded `plan`/`outline`
 route generation (`planning_contract_v1`, `planning_seed_v1`,
 `planning_series_arc_v1`, `outline_book_v1`, `outline_chapters_v1`,
 `outline_manifest_v1`, and a single `planning_repair_v1` pass), pre-dispatch
