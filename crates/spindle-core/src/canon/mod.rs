@@ -19,6 +19,10 @@ macro_rules! vocabulary {
         pub enum $name { $($variant),+ }
     };
 }
+mod events;
+mod reducer;
+pub use events::*;
+pub use reducer::*;
 vocabulary!(ClaimFamily {
     LifeAction,
     LocationClock,

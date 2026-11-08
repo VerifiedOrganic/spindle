@@ -353,3 +353,70 @@ async fn pre_v0037_database_applies_later_migrations_with_secret_facts() {
         .unwrap();
     assert_eq!(cache_exists, 1, "V0039 must create deep_check_cache");
 }
+
+#[tokio::test]
+async fn pre_v0051_database_upgrades_additively() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("legacy50.db");
+    let _warm = SqlitePool::open(&tmp.path().join("warm50.db"))
+        .await
+        .unwrap();
+
+    {
+        let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::sqlite::migrations::runner()
+            .set_target(refinery::Target::Version(50))
+            .run(&mut conn)
+            .unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='canon_event'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0, "canon_event must not exist before V0051");
+
+        let now = timestamp_to_micros(chrono::Utc::now());
+        conn.execute(
+            "INSERT INTO project (id, name, project_type, genre, reader_contract, \
+                 created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "project:legacy50",
+                "Legacy50",
+                "novel",
+                "fantasy",
+                r#"{"promise":"p","style_notes":[],"boundaries":[]}"#,
+                now,
+                now
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bible_branch (id, project_id, name, status, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                "bible_branch:legacy50",
+                "project:legacy50",
+                "main",
+                "active",
+                now
+            ],
+        )
+        .unwrap();
+    }
+
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let repo = Repository::new(pool, data_dir);
+
+    let again = repo.get_project("project:legacy50").await.unwrap();
+    assert_eq!(again.name, "Legacy50");
+
+    let events = repo
+        .list_canon_events_for_lineage("project:legacy50", "bible_branch:legacy50")
+        .await
+        .unwrap();
+    assert!(events.is_empty());
+}
