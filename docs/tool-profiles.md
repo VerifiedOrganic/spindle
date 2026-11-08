@@ -21,16 +21,16 @@ as unset. New generated profiles are opt-in:
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + setup | 45 | 50,064 | 103,725 |
-| workflow-authoring | Scene-writer + authoring-supervisor + setup | 70 | 74,469 | 160,027 |
-| workflow-import | Manuscript importer and source sync | 27 | 26,748 | 62,888 |
-| revision | Branch/revision/history workflow | 38 | 32,735 | 83,514 |
-| worldbuilding | Worldbuilder + character creator | 48 | 51,723 | 90,560 |
-| planning | Plot architect | 39 | 39,800 | 80,892 |
-| research | Researcher | 22 | 21,797 | 51,963 |
-| style | Editor core + style reference | 48 | 41,648 | 106,579 |
-| release | Editor + bible librarian | 65 | 57,699 | 118,742 |
-| setup | New-book setup reference | 16 | 18,393 | 40,986 |
+| workflow-write | Scene-writer core + setup | 45 | 48,810 | 101,367 |
+| workflow-authoring | Scene-writer + authoring-supervisor + setup | 70 | 67,904 | 148,840 |
+| workflow-import | Manuscript importer and source sync | 27 | 25,793 | 60,829 |
+| revision | Branch/revision/history workflow | 38 | 32,040 | 81,715 |
+| worldbuilding | Worldbuilder + character creator | 48 | 50,469 | 88,202 |
+| planning | Plot architect | 39 | 38,043 | 78,031 |
+| research | Researcher | 22 | 21,071 | 50,133 |
+| style | Editor core + style reference | 48 | 40,953 | 104,780 |
+| release | Editor + bible librarian | 65 | 54,388 | 114,368 |
+| setup | New-book setup reference | 16 | 17,667 | 39,156 |
 
 Every generated profile includes the shared entry core. These are **transitional
 closures over current long-form skills and schemas**, not the final canonical

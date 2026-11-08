@@ -579,10 +579,14 @@ impl ToolRouter {
                 .await
             }
             "authoring_start_run" => {
-                self.invoke(arguments, |input| {
-                    Box::pin(self.handle_authoring_start_run(input))
-                })
-                .await
+                if let Some(rejection) = authoring_start_run_policy_rejection(arguments) {
+                    structured_result(&rejection)
+                } else {
+                    self.invoke(arguments, |input| {
+                        Box::pin(self.handle_authoring_start_run(input))
+                    })
+                    .await
+                }
             }
             "authoring_status" => {
                 self.invoke(arguments, |input| self.handle_authoring_status(input))
@@ -1018,4 +1022,61 @@ impl ToolRouter {
         let output = f(input).await?;
         structured_result(&output)
     }
+}
+
+fn authoring_start_run_policy_rejection(
+    arguments: Option<&rmcp::model::JsonObject>,
+) -> Option<AuthoringStartRunOutput> {
+    let args = arguments?;
+    if let Some(raw) = args.get("mode").and_then(|value| value.as_str())
+        && let Err(rejected) = raw.parse::<AuthoringMode>()
+    {
+        return Some(AuthoringStartRunOutput {
+            run_id: String::new(),
+            status: "blocked".to_string(),
+            message: format!(
+                "Cannot start authoring run: mode must be one of {:?}, got {:?}",
+                AUTHORING_MODES, rejected
+            ),
+        });
+    }
+    if let Some(raw) = args.get("mining_policy").and_then(|value| value.as_str())
+        && let Err(rejected) = raw.parse::<AuthoringMiningPolicy>()
+    {
+        return Some(AuthoringStartRunOutput {
+            run_id: String::new(),
+            status: "blocked".to_string(),
+            message: format!(
+                "Cannot start authoring run: mining_policy must be one of {:?}, got {:?}",
+                AUTHORING_MINING_POLICIES, rejected
+            ),
+        });
+    }
+    if let Some(raw) = args
+        .get("checkpoint_policy")
+        .and_then(|value| value.as_str())
+        && let Err(rejected) = raw.parse::<AuthoringCheckpointPolicy>()
+    {
+        return Some(AuthoringStartRunOutput {
+            run_id: String::new(),
+            status: "blocked".to_string(),
+            message: format!(
+                "Cannot start authoring run: checkpoint_policy must be one of {:?}, got {:?}",
+                AUTHORING_CHECKPOINT_POLICIES, rejected
+            ),
+        });
+    }
+    if let Some(raw) = args.get("replan_policy").and_then(|value| value.as_str())
+        && let Err(rejected) = raw.parse::<AuthoringReplanPolicy>()
+    {
+        return Some(AuthoringStartRunOutput {
+            run_id: String::new(),
+            status: "blocked".to_string(),
+            message: format!(
+                "Cannot start authoring run: replan_policy must be one of {:?}, got {:?}",
+                AUTHORING_REPLAN_POLICIES, rejected
+            ),
+        });
+    }
+    None
 }

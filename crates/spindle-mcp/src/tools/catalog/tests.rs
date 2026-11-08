@@ -49,6 +49,24 @@ async fn tools_list_matches_pre_split_snapshots_for_every_profile() {
         ),
     ];
     let mut router = router().await;
+    if std::env::var("SPINDLE_UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools/snapshots");
+        let mut profiles: Vec<Option<&str>> = vec![None, Some("unknown-profile")];
+        profiles.extend(
+            crate::tools::profile_names()
+                .into_iter()
+                .filter(|name| *name != "legacy-all")
+                .map(Some),
+        );
+        for profile in profiles {
+            router.tool_profile = profile.map(str::to_owned);
+            let result = rmcp::model::ListToolsResult::with_all_items(router.list_tools());
+            let canonical = serde_json::to_value(result).expect("serialize tools/list");
+            let actual = serde_json::to_vec(&canonical).expect("serialize canonical tools/list");
+            let filename = format!("{}.json", profile.unwrap_or("default"));
+            std::fs::write(dir.join(filename), actual).expect("write snapshot");
+        }
+    }
     for (profile, expected) in cases {
         router.tool_profile = profile.map(str::to_owned);
         let result = rmcp::model::ListToolsResult::with_all_items(router.list_tools());

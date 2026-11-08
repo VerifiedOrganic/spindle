@@ -659,7 +659,7 @@ impl ToolRouter {
         // the `mine` route OR the `review` route resolves cleared for the
         // rating. Uncovered ratings push a `missing_requirements` entry so the
         // operator decides before the run starts, not hours in (I8).
-        if input.mining_policy.as_deref() == Some("propose_all") {
+        if input.mining_policy == Some(AuthoringMiningPolicy::ProposeAll) {
             for rating in &planned_ratings {
                 if let Some(preflight) = model_router.mine_fallback_preflight(rating)? {
                     let detail = match preflight.problem {
@@ -696,11 +696,12 @@ impl ToolRouter {
         // runtime explicit-manual-fallback in K3 is defense-in-depth for a
         // mid-run config change, NOT a licence to start uncovered — an auto run
         // must be fully covered at start (I8: fail at prepare, not at 2am).
-        if matches!(
-            input.checkpoint_policy.as_deref(),
-            Some("auto_advisory") | Some("auto_strict")
-        ) {
-            let policy = input.checkpoint_policy.as_deref().unwrap_or("");
+        if let Some(
+            policy @ (AuthoringCheckpointPolicy::AutoAdvisory
+            | AuthoringCheckpointPolicy::AutoStrict),
+        ) = input.checkpoint_policy
+        {
+            let policy = policy.as_str();
             for rating in &planned_ratings {
                 let preflight = model_router.review_route_preflight(rating)?;
                 if let Some(problem) = preflight.problem {
@@ -754,26 +755,12 @@ impl ToolRouter {
             });
         }
 
-        // Validate the opt-in mining policy up front. Canonical `mining_policy`
-        // is None (disabled/default) or Some("propose_all"); an unknown value
-        // is an input error (evolution §3.1). "disabled" canonicalizes to None
-        // so the run persists NULL, matching pre-upgrade runs exactly.
-        let mining_policy = match spindle_core::models::validate_mining_policy(
-            input.mining_policy.as_deref(),
-        ) {
-            Ok(policy) => policy,
-            Err(rejected) => {
-                return Ok(AuthoringStartRunOutput {
-                    run_id: String::new(),
-                    status: "blocked".to_string(),
-                    message: format!(
-                        "Cannot start authoring run: mining_policy must be one of {:?}, got {:?}",
-                        spindle_core::models::AUTHORING_MINING_POLICIES,
-                        rejected
-                    ),
-                });
-            }
-        };
+        // Canonical `mining_policy` is None (disabled/default) or Some("propose_all").
+        // `Disabled` canonicalizes to None so the run persists NULL, matching
+        // pre-upgrade runs exactly.
+        let mining_policy = input
+            .mining_policy
+            .and_then(AuthoringMiningPolicy::into_persisted_option);
 
         // Validate the opt-in bounded-revise budget (evolution §3.2). None/0 =
         // disabled (canonicalized to None so the run persists NULL, matching a
@@ -796,51 +783,18 @@ impl ToolRouter {
             }
         };
 
-        // Validate the opt-in checkpoint policy (evolution §3.3). None/"manual"
-        // canonicalize to None so the run persists NULL, matching a pre-upgrade
-        // row exactly (I1: manual/NULL is byte-identical to today). An auto
-        // policy additionally requires review-route coverage across the run's
-        // ratings, enforced by prepare's preflight below (K2).
-        let checkpoint_policy = match spindle_core::models::validate_checkpoint_policy(
-            input.checkpoint_policy.as_deref(),
-        ) {
-            Ok(policy) => policy,
-            Err(rejected) => {
-                return Ok(AuthoringStartRunOutput {
-                    run_id: String::new(),
-                    status: "blocked".to_string(),
-                    message: format!(
-                        "Cannot start authoring run: checkpoint_policy must be one of {:?}, got {:?}",
-                        spindle_core::models::AUTHORING_CHECKPOINT_POLICIES,
-                        rejected
-                    ),
-                });
-            }
-        };
+        // Canonical `checkpoint_policy` is None (manual/default) or
+        // Some("auto_advisory" | "auto_strict"). `Manual` canonicalizes to None
+        // so the run persists NULL, matching a pre-upgrade row exactly (I1).
+        let checkpoint_policy = input
+            .checkpoint_policy
+            .and_then(AuthoringCheckpointPolicy::into_persisted_option);
 
-        // Validate the opt-in living-outline replan policy (ADR 0003, evolution
-        // §3.5). None/"disabled" canonicalize to None so the run persists NULL,
-        // matching a pre-upgrade row exactly (disabled = never replans). There is
-        // NO route preflight: the replan differ is non-prose-bearing (summaries +
-        // metadata only — ADR D5), so no rating clearance applies, and on a
-        // NoRoute it falls to review then skips honestly. Anything else is an
-        // input error.
-        let replan_policy = match spindle_core::models::validate_replan_policy(
-            input.replan_policy.as_deref(),
-        ) {
-            Ok(policy) => policy,
-            Err(rejected) => {
-                return Ok(AuthoringStartRunOutput {
-                    run_id: String::new(),
-                    status: "blocked".to_string(),
-                    message: format!(
-                        "Cannot start authoring run: replan_policy must be one of {:?}, got {:?}",
-                        spindle_core::models::AUTHORING_REPLAN_POLICIES,
-                        rejected
-                    ),
-                });
-            }
-        };
+        // Canonical `replan_policy` is None (disabled/default) or Some("propose_all").
+        // `Disabled` canonicalizes to None so the run persists NULL.
+        let replan_policy = input
+            .replan_policy
+            .and_then(AuthoringReplanPolicy::into_persisted_option);
 
         let prep_input = AuthoringPrepareRunInput {
             project_id: project_id.clone(),
@@ -850,17 +804,17 @@ impl ToolRouter {
             chapter_count: input.chapter_count,
             // Thread the resolved policy so prepare's mine-route preflight runs
             // only when the run actually opted into propose_all.
-            mining_policy: mining_policy.clone(),
+            mining_policy: input.mining_policy,
             // Threaded for symmetry; prepare adds NO preflight for revise (verify
             // is deterministic and revision reuses the draft route — §3.2).
             max_revise_attempts,
             // Thread the resolved policy so prepare's review-route preflight runs
             // only when the run actually opted into an auto checkpoint policy
             // (evolution §3.3 K2 precondition).
-            checkpoint_policy: checkpoint_policy.clone(),
+            checkpoint_policy: input.checkpoint_policy,
             // Threaded for symmetry; prepare adds NO preflight for replan (the
             // differ is non-prose-bearing and skips honestly on NoRoute — §3.5).
-            replan_policy: replan_policy.clone(),
+            replan_policy: input.replan_policy,
         };
         let prep_report = Box::pin(self.handle_authoring_prepare_run(prep_input)).await?;
         if !prep_report.ready_to_draft {
