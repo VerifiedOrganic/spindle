@@ -291,6 +291,8 @@ pub struct PlanningBudgetUsage {
     pub total_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_cost_usd: Option<f64>,
     #[serde(default)]
     pub cost_status: PlanningCostStatus,
 }

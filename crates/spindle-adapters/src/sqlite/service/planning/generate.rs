@@ -81,21 +81,52 @@ fn build_level_prompt(
         level
     );
 
+    let mut ancestor_ids: std::collections::BTreeSet<String> = parents.keys().cloned().collect();
+    for p in proposals_in_session {
+        if p.status == PlanningProposalStatus::Applied && p.artifact.level < level {
+            ancestor_ids.insert(p.id.clone());
+        }
+    }
+    loop {
+        let before = ancestor_ids.len();
+        for p in proposals_in_session {
+            if ancestor_ids.contains(&p.id) {
+                ancestor_ids.extend(p.artifact.parents.keys().cloned());
+            }
+        }
+        if ancestor_ids.len() == before {
+            break;
+        }
+    }
+
     let mut available_refs = Vec::new();
     let mut parent_summaries = Vec::new();
     let mut unresolved_questions = Vec::new();
     let mut shared_schedules = Vec::new();
     for p in proposals_in_session {
-        if parents.contains_key(&p.id) {
+        if ancestor_ids.contains(&p.id) {
+            let parent_artifact = serde_json::json!({
+                "proposal_id": p.id,
+                "level": p.artifact.level,
+                "status": p.status,
+                "payload_hash": p.payload_hash,
+                "target_range": p.artifact.target_range,
+                "rationale": p.artifact.rationale,
+                "assumptions": p.artifact.assumptions,
+                "decision_note": p.decision_note,
+                "operations": p.artifact.operations,
+                "schedule": p.artifact.schedule,
+                "author_questions": p.artifact.author_questions,
+            });
             parent_summaries.push(format!(
                 "- proposal {} (level={:?}, status={:?}, hash={}): {}",
-                p.id, p.artifact.level, p.status, p.payload_hash, p.artifact.rationale
+                p.id,
+                p.artifact.level,
+                p.status,
+                p.payload_hash,
+                serde_json::to_string(&parent_artifact)
+                    .unwrap_or_else(|_| p.artifact.rationale.clone())
             ));
-            for op in &p.artifact.operations {
-                for (r, kind) in crate::sqlite::repository::planning_output_refs(op) {
-                    available_refs.push(format!("{r} ({kind})"));
-                }
-            }
             for q in &p.artifact.author_questions {
                 unresolved_questions.push(format!("{}: {}", q.id, q.question));
             }
@@ -103,6 +134,13 @@ fn build_level_prompt(
                 && let Ok(sched_json) = serde_json::to_string(&p.artifact.schedule)
             {
                 shared_schedules.push(format!("from {}: {sched_json}", p.id));
+            }
+        }
+        if parents.contains_key(&p.id) {
+            for op in &p.artifact.operations {
+                for (r, kind) in crate::sqlite::repository::planning_output_refs(op) {
+                    available_refs.push(format!("{r} ({kind})"));
+                }
             }
         }
     }
@@ -333,77 +371,15 @@ fn estimate_tokens(text: &str) -> u64 {
     n.max(1)
 }
 
-fn check_budget_before_call(
+fn build_call_receipt(
     budget: &PlanningBudget,
-    usage: &PlanningBudgetUsage,
-    estimated_input_tokens: u64,
-) -> Result<(), String> {
-    if budget.max_output_tokens_per_call == 0 {
-        return Err("max_output_tokens_per_call is 0".to_string());
-    }
-    if usage.model_calls.saturating_add(1) > budget.max_model_calls {
-        return Err(format!(
-            "call ceiling reached ({}/{} model calls used)",
-            usage.model_calls, budget.max_model_calls
-        ));
-    }
-    let next_input = usage.input_tokens.saturating_add(estimated_input_tokens);
-    if next_input > budget.max_input_tokens {
-        return Err(format!(
-            "input token ceiling exceeded (need {}, max {})",
-            next_input, budget.max_input_tokens
-        ));
-    }
-    let reserved_output = u64::from(budget.max_output_tokens_per_call);
-    let next_output = usage.output_tokens.saturating_add(reserved_output);
-    if next_output > budget.max_output_tokens {
-        return Err(format!(
-            "output token ceiling cannot cover max_output_tokens_per_call (used {} + reserve {} > max {})",
-            usage.output_tokens, reserved_output, budget.max_output_tokens
-        ));
-    }
-    let next_total = usage
-        .total_tokens
-        .saturating_add(estimated_input_tokens)
-        .saturating_add(reserved_output);
-    if next_total > budget.max_total_tokens {
-        return Err(format!(
-            "total token ceiling cannot cover call (used {} + input {} + reserve {} > max {})",
-            usage.total_tokens, estimated_input_tokens, reserved_output, budget.max_total_tokens
-        ));
-    }
-    if let Some(max_cost_usd) = budget.max_cost_usd {
-        let (Some(in_price), Some(out_price)) = (
-            budget.input_cost_per_million_usd,
-            budget.output_cost_per_million_usd,
-        ) else {
-            return Err(
-                "max_cost_usd ceiling is set but input_cost_per_million_usd / output_cost_per_million_usd are not configured"
-                    .to_string(),
-            );
-        };
-        let call_reserve_cost = ((estimated_input_tokens as f64) * in_price
-            + (reserved_output as f64) * out_price)
-            / 1_000_000.0;
-        let current_cost = usage.estimated_cost_usd.unwrap_or(0.0);
-        if current_cost + call_reserve_cost > max_cost_usd + 1e-12 {
-            return Err(format!(
-                "USD cost ceiling cannot cover call (used ${current_cost:.6} + reserve ${call_reserve_cost:.6} > max ${max_cost_usd:.6})"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn record_call_usage(
-    budget: &PlanningBudget,
-    usage: &mut PlanningBudgetUsage,
     attempt_number: u32,
     resolved: &PlanningResolvedRoute,
     prompt: &PromptBundle,
     estimated_input: u64,
+    reserved_output: u64,
     response: &crate::ai::ModelResponse,
-) -> PlanningModelCallReceipt {
+) -> (PlanningModelCallReceipt, Option<f64>) {
     let provider_reported_usage = response
         .usage
         .as_ref()
@@ -420,8 +396,25 @@ fn record_call_usage(
         .unwrap_or_else(|| estimate_tokens(&response.output));
     let total_tokens = input_tokens.saturating_add(output_tokens);
 
-    let (estimated_cost_usd, cost_status) = if !provider_reported_usage {
-        (None, PlanningCostStatus::UnknownMissingProviderUsage)
+    let (estimated_cost_usd, conservative_cost_usd, cost_status) = if !provider_reported_usage {
+        let conservative = match (
+            budget.input_cost_per_million_usd,
+            budget.output_cost_per_million_usd,
+        ) {
+            (Some(in_price), Some(out_price)) => {
+                let bounded_out = output_tokens.max(reserved_output);
+                Some(
+                    ((input_tokens as f64) * in_price + (bounded_out as f64) * out_price)
+                        / 1_000_000.0,
+                )
+            }
+            _ => None,
+        };
+        (
+            None,
+            conservative,
+            PlanningCostStatus::UnknownMissingProviderUsage,
+        )
     } else if let (Some(in_price), Some(out_price)) = (
         budget.input_cost_per_million_usd,
         budget.output_cost_per_million_usd,
@@ -430,50 +423,48 @@ fn record_call_usage(
             ((input_tokens as f64) * in_price + (output_tokens as f64) * out_price) / 1_000_000.0;
         (
             Some(cost),
+            Some(cost),
             PlanningCostStatus::EstimatedFromConfiguredPrices,
         )
     } else {
-        (None, PlanningCostStatus::UnknownUnpriced)
+        (None, None, PlanningCostStatus::UnknownUnpriced)
     };
 
-    usage.model_calls = usage.model_calls.saturating_add(1);
-    usage.input_tokens = usage.input_tokens.saturating_add(input_tokens);
-    usage.output_tokens = usage.output_tokens.saturating_add(output_tokens);
-    usage.total_tokens = usage.total_tokens.saturating_add(total_tokens);
-    match (usage.cost_status, cost_status, estimated_cost_usd) {
-        (_, PlanningCostStatus::UnknownMissingProviderUsage, _)
-        | (PlanningCostStatus::UnknownMissingProviderUsage, _, _) => {
-            usage.estimated_cost_usd = None;
-            usage.cost_status = PlanningCostStatus::UnknownMissingProviderUsage;
-        }
-        (_, PlanningCostStatus::UnknownUnpriced, _) => {
-            usage.estimated_cost_usd = None;
-            usage.cost_status = PlanningCostStatus::UnknownUnpriced;
-        }
-        (_, PlanningCostStatus::EstimatedFromConfiguredPrices, Some(c)) => {
-            usage.estimated_cost_usd = Some(usage.estimated_cost_usd.unwrap_or(0.0) + c);
-            usage.cost_status = PlanningCostStatus::EstimatedFromConfiguredPrices;
-        }
-        _ => {}
-    }
+    (
+        PlanningModelCallReceipt {
+            attempt_number,
+            route_task: resolved.route_task.clone(),
+            resolved_route: resolved.resolved_route.clone(),
+            agent_name: resolved.agent_name.clone(),
+            adapter_kind: resolved.adapter_kind.clone(),
+            model: resolved.model.clone(),
+            prompt_id: prompt.prompt_id,
+            prompt_hash: prompt.prompt_hash.clone(),
+            schema_hash: prompt.schema_hash.clone(),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            provider_reported_usage,
+            estimated_cost_usd,
+            cost_status,
+            latency_ms: response.elapsed_ms.unwrap_or(0),
+        },
+        conservative_cost_usd,
+    )
+}
 
-    PlanningModelCallReceipt {
-        attempt_number,
-        route_task: resolved.route_task.clone(),
-        resolved_route: resolved.resolved_route.clone(),
-        agent_name: resolved.agent_name.clone(),
-        adapter_kind: resolved.adapter_kind.clone(),
-        model: resolved.model.clone(),
-        prompt_id: prompt.prompt_id,
-        prompt_hash: prompt.prompt_hash.clone(),
-        schema_hash: prompt.schema_hash.clone(),
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        provider_reported_usage,
-        estimated_cost_usd,
-        cost_status,
-        latency_ms: response.elapsed_ms.unwrap_or(0),
+fn meta_for_session(
+    session: &PlanningSession,
+    last_outcome: PlanningSessionOutcome,
+) -> crate::sqlite::repository::PlanningSessionMetadataUpdate {
+    crate::sqlite::repository::PlanningSessionMetadataUpdate {
+        session_id: session.id.clone(),
+        scope: session.scope.clone(),
+        horizon: session.horizon.clone(),
+        budget: session.budget.clone(),
+        rating_ceiling: session.rating_ceiling.clone(),
+        allow_review_backend: session.allow_review_backend,
+        last_outcome,
     }
 }
 
@@ -539,30 +530,64 @@ impl SqliteSpindleService {
         &self,
         input: AdvancePlanningInput,
     ) -> Result<PlanningAdvanceReport> {
-        if let Some(retry_key) = input.retry_key.as_deref() {
+        let retry_lock = if let Some(retry_key) = input.retry_key.as_deref() {
             anyhow::ensure!(
                 !retry_key.trim().is_empty() && retry_key.len() <= 256,
                 "retry_key must contain 1..=256 non-whitespace bytes"
             );
-            if let Some(existing) = self
-                .repository
-                .find_planning_generation_attempt(&input.session_id, retry_key)
-                .await?
-            {
-                let session = self
+            Some(
+                self.repository
+                    .planning_retry_lock(&input.session_id, retry_key),
+            )
+        } else {
+            None
+        };
+        let _retry_guard = match &retry_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+
+        let (attempt_id, now, session) = match self
+            .repository
+            .claim_planning_generation_attempt(
+                &input.session_id,
+                input.scope.clone(),
+                input.retry_key.clone(),
+            )
+            .await?
+        {
+            crate::sqlite::repository::PlanningAttemptClaim::Existing(existing) => {
+                return Ok(*existing);
+            }
+            crate::sqlite::repository::PlanningAttemptClaim::Claimed {
+                attempt_id,
+                created_at,
+                session,
+            } => (attempt_id, created_at, *session),
+        };
+
+        match self
+            .advance_planning_claimed(input, session, attempt_id.clone(), now)
+            .await
+        {
+            Ok(report) => Ok(report),
+            Err(err) => {
+                let _ = self
                     .repository
-                    .get_planning_session(&input.session_id)
-                    .await?;
-                anyhow::ensure!(session.scope == input.scope, "planning scope mismatch");
-                return Ok(existing);
+                    .abort_planning_generation_attempt(&attempt_id)
+                    .await;
+                Err(err)
             }
         }
+    }
 
-        let mut session = self
-            .repository
-            .get_planning_session(&input.session_id)
-            .await?;
-        anyhow::ensure!(session.scope == input.scope, "planning scope mismatch");
+    async fn advance_planning_claimed(
+        &self,
+        input: AdvancePlanningInput,
+        mut session: PlanningSession,
+        attempt_id: String,
+        now: i64,
+    ) -> Result<PlanningAdvanceReport> {
         let existing_proposals = self
             .repository
             .list_planning_proposals(&session.id, session.scope.clone())
@@ -614,8 +639,6 @@ impl SqliteSpindleService {
             &session.budget,
             &session.usage,
         );
-        let now = chrono::Utc::now().timestamp_micros();
-        let attempt_id = format!("planning_generation_attempt:{}", ulid::Ulid::new());
 
         if let Some(submission) = input.host_submission {
             anyhow::ensure!(
@@ -653,7 +676,6 @@ impl SqliteSpindleService {
                 } else {
                     PlanningSessionOutcome::NeedsAuthor
                 };
-                session.last_outcome = Some(outcome);
                 let report = PlanningAdvanceReport {
                     attempt_id,
                     session_id: session.id.clone(),
@@ -674,13 +696,12 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
-                        session,
+                        meta_for_session(&session, outcome),
                         Some((stage_input, receipt, findings)),
                         report,
                     )
                     .await;
             }
-            session.last_outcome = Some(PlanningSessionOutcome::ModelOutputRejected);
             let host_req = make_host_request(
                 &session,
                 level,
@@ -708,7 +729,11 @@ impl SqliteSpindleService {
             };
             return self
                 .repository
-                .commit_planning_generation(session, None, report)
+                .commit_planning_generation(
+                    meta_for_session(&session, PlanningSessionOutcome::ModelOutputRejected),
+                    None,
+                    report,
+                )
                 .await;
         }
 
@@ -720,7 +745,6 @@ impl SqliteSpindleService {
         )? {
             Ok(resolved) => resolved,
             Err(problem) => {
-                session.last_outcome = Some(PlanningSessionOutcome::NeedsRoute);
                 let host_req = make_host_request(
                     &session,
                     level,
@@ -750,40 +774,62 @@ impl SqliteSpindleService {
                 };
                 return self
                     .repository
-                    .commit_planning_generation(session, None, report)
+                    .commit_planning_generation(
+                        meta_for_session(&session, PlanningSessionOutcome::NeedsRoute),
+                        None,
+                        report,
+                    )
                     .await;
             }
         };
 
         let est_input_1 =
             estimate_tokens(&base_prompt.system_prompt) + estimate_tokens(&base_prompt.user_prompt);
-        if let Err(reason) = check_budget_before_call(&session.budget, &session.usage, est_input_1)
+        let reservation_1 = match self
+            .repository
+            .reserve_planning_model_call(
+                &session.id,
+                session.scope.clone(),
+                session.budget.clone(),
+                est_input_1,
+            )
+            .await?
         {
-            session.last_outcome = Some(PlanningSessionOutcome::BudgetExhausted);
-            let host_req =
-                make_host_request(&session, level, &base_prompt, &parents, None, Vec::new());
-            let report = PlanningAdvanceReport {
-                attempt_id,
-                session_id: session.id.clone(),
-                level,
-                retry_key: input.retry_key,
-                outcome: PlanningSessionOutcome::BudgetExhausted,
-                proposal: None,
-                generation_receipt: None,
-                findings: Vec::new(),
-                author_questions: Vec::new(),
-                host_request: Some(host_req),
-                route_problem: None,
-                usage: session.usage.clone(),
-                budget: session.budget.clone(),
-                message: Some(reason),
-                created_at: now,
-            };
-            return self
-                .repository
-                .commit_planning_generation(session, None, report)
-                .await;
-        }
+            Ok((res, _usage_before, reserved_usage)) => {
+                session.usage = reserved_usage;
+                res
+            }
+            Err((reason, live_usage)) => {
+                session.usage = live_usage;
+                let host_req =
+                    make_host_request(&session, level, &base_prompt, &parents, None, Vec::new());
+                let report = PlanningAdvanceReport {
+                    attempt_id,
+                    session_id: session.id.clone(),
+                    level,
+                    retry_key: input.retry_key,
+                    outcome: PlanningSessionOutcome::BudgetExhausted,
+                    proposal: None,
+                    generation_receipt: None,
+                    findings: Vec::new(),
+                    author_questions: Vec::new(),
+                    host_request: Some(host_req),
+                    route_problem: None,
+                    usage: session.usage.clone(),
+                    budget: session.budget.clone(),
+                    message: Some(reason),
+                    created_at: now,
+                };
+                return self
+                    .repository
+                    .commit_planning_generation(
+                        meta_for_session(&session, PlanningSessionOutcome::BudgetExhausted),
+                        None,
+                        report,
+                    )
+                    .await;
+            }
+        };
 
         let ctx_1 = RequestContext {
             project_id: session.scope.as_ref().map(|s| s.project_id.clone()),
@@ -807,13 +853,19 @@ impl SqliteSpindleService {
         {
             Ok(resp) => resp,
             Err(err) => {
+                self.repository
+                    .release_planning_model_call_reservation(
+                        &session.id,
+                        session.scope.clone(),
+                        reservation_1,
+                    )
+                    .await?;
                 let problem = PlanningRouteProblem::DispatchFailed {
                     route_task: route_task.to_string(),
                     resolved_route: resolved_route.resolved_route.clone(),
                     agent_name: resolved_route.agent_name.clone(),
                     message: err.to_string(),
                 };
-                session.last_outcome = Some(PlanningSessionOutcome::NeedsRoute);
                 let host_req = make_host_request(
                     &session,
                     level,
@@ -841,20 +893,39 @@ impl SqliteSpindleService {
                 };
                 return self
                     .repository
-                    .commit_planning_generation(session, None, report)
+                    .commit_planning_generation(
+                        meta_for_session(&session, PlanningSessionOutcome::NeedsRoute),
+                        None,
+                        report,
+                    )
                     .await;
             }
         };
 
-        let call_1 = record_call_usage(
+        let (call_1, conservative_cost_1) = build_call_receipt(
             &session.budget,
-            &mut session.usage,
             1,
             &resolved_route,
             &base_prompt,
-            est_input_1,
+            reservation_1.estimated_input_tokens,
+            reservation_1.reserved_output_tokens,
             &resp_1,
         );
+        session.usage = self
+            .repository
+            .reconcile_planning_model_call(
+                &session.id,
+                session.scope.clone(),
+                reservation_1,
+                call_1.input_tokens,
+                call_1.output_tokens,
+                call_1.total_tokens,
+                call_1.estimated_cost_usd,
+                conservative_cost_1,
+                call_1.cost_status,
+            )
+            .await?;
+
         let (candidate_1, findings_1) = self
             .validate_raw_model_output(&session, level, &parents, &resp_1.output)
             .await?;
@@ -884,7 +955,6 @@ impl SqliteSpindleService {
             } else {
                 PlanningSessionOutcome::NeedsAuthor
             };
-            session.last_outcome = Some(outcome);
             let report = PlanningAdvanceReport {
                 attempt_id,
                 session_id: session.id.clone(),
@@ -905,7 +975,7 @@ impl SqliteSpindleService {
             return self
                 .repository
                 .commit_planning_generation(
-                    session,
+                    meta_for_session(&session, outcome),
                     Some((stage_input, receipt, findings_1)),
                     report,
                 )
@@ -916,54 +986,72 @@ impl SqliteSpindleService {
         let repair_prompt = build_repair_prompt(&base_prompt, &resp_1.output, &findings_1);
         let est_input_2 = estimate_tokens(&repair_prompt.system_prompt)
             + estimate_tokens(&repair_prompt.user_prompt);
-        if let Err(reason) = check_budget_before_call(&session.budget, &session.usage, est_input_2)
+        let reservation_2 = match self
+            .repository
+            .reserve_planning_model_call(
+                &session.id,
+                session.scope.clone(),
+                session.budget.clone(),
+                est_input_2,
+            )
+            .await?
         {
-            let receipt = PlanningGenerationReceipt {
-                source: PlanningOutputSource::Model,
-                prompt_id: base_prompt.prompt_id,
-                prompt_hash: base_prompt.prompt_hash.clone(),
-                schema_hash: base_prompt.schema_hash.clone(),
-                route_task: Some(resolved_route.route_task),
-                resolved_route: Some(resolved_route.resolved_route),
-                agent_name: Some(resolved_route.agent_name),
-                adapter_kind: Some(resolved_route.adapter_kind),
-                model: Some(resolved_route.model),
-                attempts_used: 1,
-                repaired: false,
-                calls: vec![call_1],
-                recorded_at: now,
-            };
-            session.last_outcome = Some(PlanningSessionOutcome::BudgetExhausted);
-            let host_req = make_host_request(
-                &session,
-                level,
-                &base_prompt,
-                &parents,
-                None,
-                findings_1.clone(),
-            );
-            let report = PlanningAdvanceReport {
-                attempt_id,
-                session_id: session.id.clone(),
-                level,
-                retry_key: input.retry_key,
-                outcome: PlanningSessionOutcome::BudgetExhausted,
-                proposal: None,
-                generation_receipt: Some(receipt),
-                findings: findings_1,
-                author_questions: Vec::new(),
-                host_request: Some(host_req),
-                route_problem: None,
-                usage: session.usage.clone(),
-                budget: session.budget.clone(),
-                message: Some(format!("budget exhausted before repair attempt: {reason}")),
-                created_at: now,
-            };
-            return self
-                .repository
-                .commit_planning_generation(session, None, report)
-                .await;
-        }
+            Ok((res, _usage_before, reserved_usage)) => {
+                session.usage = reserved_usage;
+                res
+            }
+            Err((reason, live_usage)) => {
+                session.usage = live_usage;
+                let receipt = PlanningGenerationReceipt {
+                    source: PlanningOutputSource::Model,
+                    prompt_id: base_prompt.prompt_id,
+                    prompt_hash: base_prompt.prompt_hash.clone(),
+                    schema_hash: base_prompt.schema_hash.clone(),
+                    route_task: Some(resolved_route.route_task),
+                    resolved_route: Some(resolved_route.resolved_route),
+                    agent_name: Some(resolved_route.agent_name),
+                    adapter_kind: Some(resolved_route.adapter_kind),
+                    model: Some(resolved_route.model),
+                    attempts_used: 1,
+                    repaired: false,
+                    calls: vec![call_1],
+                    recorded_at: now,
+                };
+                let host_req = make_host_request(
+                    &session,
+                    level,
+                    &base_prompt,
+                    &parents,
+                    None,
+                    findings_1.clone(),
+                );
+                let report = PlanningAdvanceReport {
+                    attempt_id,
+                    session_id: session.id.clone(),
+                    level,
+                    retry_key: input.retry_key,
+                    outcome: PlanningSessionOutcome::BudgetExhausted,
+                    proposal: None,
+                    generation_receipt: Some(receipt),
+                    findings: findings_1,
+                    author_questions: Vec::new(),
+                    host_request: Some(host_req),
+                    route_problem: None,
+                    usage: session.usage.clone(),
+                    budget: session.budget.clone(),
+                    message: Some(format!("budget exhausted before repair attempt: {reason}")),
+                    created_at: now,
+                };
+                return self
+                    .repository
+                    .commit_planning_generation(
+                        meta_for_session(&session, PlanningSessionOutcome::BudgetExhausted),
+                        None,
+                        report,
+                    )
+                    .await;
+            }
+        };
 
         let ctx_2 = RequestContext {
             project_id: session.scope.as_ref().map(|s| s.project_id.clone()),
@@ -987,6 +1075,13 @@ impl SqliteSpindleService {
         {
             Ok(resp) => resp,
             Err(err) => {
+                self.repository
+                    .release_planning_model_call_reservation(
+                        &session.id,
+                        session.scope.clone(),
+                        reservation_2,
+                    )
+                    .await?;
                 let problem = PlanningRouteProblem::DispatchFailed {
                     route_task: route_task.to_string(),
                     resolved_route: resolved_route.resolved_route.clone(),
@@ -1008,7 +1103,6 @@ impl SqliteSpindleService {
                     calls: vec![call_1],
                     recorded_at: now,
                 };
-                session.last_outcome = Some(PlanningSessionOutcome::NeedsRoute);
                 let host_req = make_host_request(
                     &session,
                     level,
@@ -1036,20 +1130,39 @@ impl SqliteSpindleService {
                 };
                 return self
                     .repository
-                    .commit_planning_generation(session, None, report)
+                    .commit_planning_generation(
+                        meta_for_session(&session, PlanningSessionOutcome::NeedsRoute),
+                        None,
+                        report,
+                    )
                     .await;
             }
         };
 
-        let call_2 = record_call_usage(
+        let (call_2, conservative_cost_2) = build_call_receipt(
             &session.budget,
-            &mut session.usage,
             2,
             &resolved_route,
             &repair_prompt,
-            est_input_2,
+            reservation_2.estimated_input_tokens,
+            reservation_2.reserved_output_tokens,
             &resp_2,
         );
+        session.usage = self
+            .repository
+            .reconcile_planning_model_call(
+                &session.id,
+                session.scope.clone(),
+                reservation_2,
+                call_2.input_tokens,
+                call_2.output_tokens,
+                call_2.total_tokens,
+                call_2.estimated_cost_usd,
+                conservative_cost_2,
+                call_2.cost_status,
+            )
+            .await?;
+
         let (candidate_2, findings_2) = self
             .validate_raw_model_output(&session, level, &parents, &resp_2.output)
             .await?;
@@ -1080,7 +1193,6 @@ impl SqliteSpindleService {
             } else {
                 PlanningSessionOutcome::NeedsAuthor
             };
-            session.last_outcome = Some(outcome);
             let report = PlanningAdvanceReport {
                 attempt_id,
                 session_id: session.id.clone(),
@@ -1101,7 +1213,7 @@ impl SqliteSpindleService {
             return self
                 .repository
                 .commit_planning_generation(
-                    session,
+                    meta_for_session(&session, outcome),
                     Some((stage_input, receipt_2, findings_2)),
                     report,
                 )
@@ -1109,7 +1221,6 @@ impl SqliteSpindleService {
         }
 
         // Second invalid response: stop immediately and park the level for the host.
-        session.last_outcome = Some(PlanningSessionOutcome::ModelOutputRejected);
         let host_req = make_host_request(
             &session,
             level,
@@ -1139,7 +1250,11 @@ impl SqliteSpindleService {
             created_at: now,
         };
         self.repository
-            .commit_planning_generation(session, None, report)
+            .commit_planning_generation(
+                meta_for_session(&session, PlanningSessionOutcome::ModelOutputRejected),
+                None,
+                report,
+            )
             .await
     }
 

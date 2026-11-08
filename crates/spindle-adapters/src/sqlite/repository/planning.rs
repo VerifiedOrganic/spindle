@@ -846,6 +846,122 @@ fn validate_stage_input_in_conn(
     Ok(findings)
 }
 
+pub(crate) enum PlanningAttemptClaim {
+    Existing(Box<PlanningAdvanceReport>),
+    Claimed {
+        attempt_id: String,
+        created_at: i64,
+        session: Box<PlanningSession>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlanningCallReservation {
+    pub estimated_input_tokens: u64,
+    pub reserved_output_tokens: u64,
+    pub reserved_total_tokens: u64,
+    pub reserved_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlanningSessionMetadataUpdate {
+    pub session_id: String,
+    pub scope: Option<PlanningScope>,
+    pub horizon: PlanningTargetRange,
+    pub budget: PlanningBudget,
+    pub rating_ceiling: Option<spindle_core::models::ContentRating>,
+    pub allow_review_backend: bool,
+    pub last_outcome: PlanningSessionOutcome,
+}
+
+fn check_budget_in_conn(
+    budget: &PlanningBudget,
+    usage: &PlanningBudgetUsage,
+    estimated_input_tokens: u64,
+) -> std::result::Result<PlanningCallReservation, String> {
+    if budget.max_output_tokens_per_call == 0 {
+        return Err("max_output_tokens_per_call is 0".to_string());
+    }
+    if usage.model_calls.saturating_add(1) > budget.max_model_calls {
+        return Err(format!(
+            "call ceiling reached ({}/{} model calls used)",
+            usage.model_calls, budget.max_model_calls
+        ));
+    }
+    let next_input = usage.input_tokens.saturating_add(estimated_input_tokens);
+    if next_input > budget.max_input_tokens {
+        return Err(format!(
+            "input token ceiling exceeded (need {}, max {})",
+            next_input, budget.max_input_tokens
+        ));
+    }
+    let reserved_output = u64::from(budget.max_output_tokens_per_call);
+    let next_output = usage.output_tokens.saturating_add(reserved_output);
+    if next_output > budget.max_output_tokens {
+        return Err(format!(
+            "output token ceiling cannot cover max_output_tokens_per_call (used {} + reserve {} > max {})",
+            usage.output_tokens, reserved_output, budget.max_output_tokens
+        ));
+    }
+    let reserved_total = estimated_input_tokens.saturating_add(reserved_output);
+    let next_total = usage.total_tokens.saturating_add(reserved_total);
+    if next_total > budget.max_total_tokens {
+        return Err(format!(
+            "total token ceiling cannot cover call (used {} + input {} + reserve {} > max {})",
+            usage.total_tokens, estimated_input_tokens, reserved_output, budget.max_total_tokens
+        ));
+    }
+    let reserved_cost_usd = match (
+        budget.input_cost_per_million_usd,
+        budget.output_cost_per_million_usd,
+    ) {
+        (Some(in_price), Some(out_price)) => Some(
+            ((estimated_input_tokens as f64) * in_price + (reserved_output as f64) * out_price)
+                / 1_000_000.0,
+        ),
+        _ => None,
+    };
+    if let Some(max_cost_usd) = budget.max_cost_usd {
+        let (Some(in_price), Some(out_price)) = (
+            budget.input_cost_per_million_usd,
+            budget.output_cost_per_million_usd,
+        ) else {
+            return Err(
+                "max_cost_usd ceiling is set but input_cost_per_million_usd / output_cost_per_million_usd are not configured"
+                    .to_string(),
+            );
+        };
+        let call_reserve_cost = reserved_cost_usd.unwrap_or(0.0);
+        let conservative_prior_output =
+            if usage.cost_status == PlanningCostStatus::UnknownMissingProviderUsage {
+                usage
+                    .output_tokens
+                    .max(u64::from(usage.model_calls).saturating_mul(reserved_output))
+            } else {
+                usage.output_tokens
+            };
+        let token_floor_cost = ((usage.input_tokens as f64) * in_price
+            + (conservative_prior_output as f64) * out_price)
+            / 1_000_000.0;
+        let current_cost = usage
+            .reserved_cost_usd
+            .or(usage.estimated_cost_usd)
+            .unwrap_or(0.0)
+            .max(token_floor_cost);
+        if current_cost + call_reserve_cost > max_cost_usd + 1e-12 {
+            return Err(format!(
+                "USD cost ceiling cannot cover call (used ${current_cost:.6} + reserve ${call_reserve_cost:.6} > max ${max_cost_usd:.6})"
+            ));
+        }
+    }
+    Ok(PlanningCallReservation {
+        estimated_input_tokens,
+        reserved_output_tokens: reserved_output,
+        reserved_total_tokens: reserved_total,
+        reserved_cost_usd,
+    })
+}
+
 impl Repository {
     pub async fn validate_planning_stage_input(
         &self,
@@ -867,7 +983,7 @@ impl Repository {
         self.pool()
             .read(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                    "SELECT data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 AND outcome != 'in_progress' LIMIT 1",
                 )?;
                 let mut rows = stmt.query(rusqlite::params![session_id, retry_key])?;
                 let Some(row) = rows.next()? else {
@@ -890,7 +1006,7 @@ impl Repository {
                 Ok((|| -> Result<_> {
                     check_session(conn, &session_id, &scope)?;
                     let mut stmt = conn.prepare(
-                        "SELECT data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
+                        "SELECT data FROM planning_generation_attempt WHERE session_id=?1 AND outcome != 'in_progress' ORDER BY created_at, id",
                     )?;
                     let rows = stmt
                         .query_map([&session_id], |r| r.get::<_, String>(0))?
@@ -898,6 +1014,236 @@ impl Repository {
                     rows.into_iter()
                         .map(|d| Ok(serde_json::from_str(&d)?))
                         .collect()
+                })())
+            })
+            .await?
+    }
+
+    pub(crate) async fn claim_planning_generation_attempt(
+        &self,
+        session_id: &str,
+        scope: Option<PlanningScope>,
+        retry_key: Option<String>,
+    ) -> Result<PlanningAttemptClaim> {
+        let session_id = session_id.to_owned();
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<PlanningAttemptClaim> {
+                    let tx = conn.transaction()?;
+                    let s = check_session(&tx, &session_id, &scope)?;
+                    if let Some(rk) = retry_key.as_deref() {
+                        let existing: Option<(String, String)> = tx
+                            .query_row(
+                                "SELECT outcome, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                                rusqlite::params![session_id, rk],
+                                |r| Ok((r.get(0)?, r.get(1)?)),
+                            )
+                            .optional_inner()?;
+                        if let Some((outcome, data)) = existing {
+                            anyhow::ensure!(
+                                outcome != "in_progress",
+                                "planning generation attempt for retry_key '{rk}' is already in progress"
+                            );
+                            let report: PlanningAdvanceReport = serde_json::from_str(&data)?;
+                            return Ok(PlanningAttemptClaim::Existing(Box::new(report)));
+                        }
+                    }
+                    let attempt_id = mint_id("planning_generation_attempt");
+                    let created_at = timestamp_to_micros(chrono::Utc::now());
+                    tx.execute(
+                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,'contract',?3,'in_progress',NULL,'{}',?4)",
+                        rusqlite::params![attempt_id, session_id, retry_key, created_at],
+                    )?;
+                    tx.commit()?;
+                    Ok(PlanningAttemptClaim::Claimed {
+                        attempt_id,
+                        created_at,
+                        session: Box::new(s),
+                    })
+                })())
+            })
+            .await?
+    }
+
+    pub(crate) async fn abort_planning_generation_attempt(&self, attempt_id: &str) -> Result<()> {
+        let attempt_id = attempt_id.to_owned();
+        self.pool()
+            .write(move |conn| {
+                conn.execute(
+                    "DELETE FROM planning_generation_attempt WHERE id=?1 AND outcome='in_progress'",
+                    [attempt_id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub(crate) async fn reserve_planning_model_call(
+        &self,
+        session_id: &str,
+        scope: Option<PlanningScope>,
+        budget: PlanningBudget,
+        estimated_input_tokens: u64,
+    ) -> Result<
+        std::result::Result<
+            (
+                PlanningCallReservation,
+                PlanningBudgetUsage,
+                PlanningBudgetUsage,
+            ),
+            (String, PlanningBudgetUsage),
+        >,
+    > {
+        let session_id = session_id.to_owned();
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<_> {
+                    let tx = conn.transaction()?;
+                    let mut s = check_session(&tx, &session_id, &scope)?;
+                    let usage_before = s.usage.clone();
+                    match check_budget_in_conn(&budget, &s.usage, estimated_input_tokens) {
+                        Err(reason) => Ok(Err((reason, s.usage))),
+                        Ok(res) => {
+                            s.usage.model_calls = s.usage.model_calls.saturating_add(1);
+                            s.usage.input_tokens = s
+                                .usage
+                                .input_tokens
+                                .saturating_add(res.estimated_input_tokens);
+                            s.usage.output_tokens = s
+                                .usage
+                                .output_tokens
+                                .saturating_add(res.reserved_output_tokens);
+                            s.usage.total_tokens = s
+                                .usage
+                                .total_tokens
+                                .saturating_add(res.reserved_total_tokens);
+                            if let Some(rc) = res.reserved_cost_usd {
+                                s.usage.reserved_cost_usd =
+                                    Some(s.usage.reserved_cost_usd.unwrap_or(0.0) + rc);
+                            }
+                            s.budget = budget;
+                            tx.execute(
+                                "UPDATE planning_session SET data=?2 WHERE id=?1",
+                                rusqlite::params![s.id, serde_json::to_string(&s)?],
+                            )?;
+                            tx.commit()?;
+                            Ok(Ok((res, usage_before, s.usage)))
+                        }
+                    }
+                })())
+            })
+            .await?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn reconcile_planning_model_call(
+        &self,
+        session_id: &str,
+        scope: Option<PlanningScope>,
+        reservation: PlanningCallReservation,
+        actual_input_tokens: u64,
+        actual_output_tokens: u64,
+        actual_total_tokens: u64,
+        call_estimated_cost_usd: Option<f64>,
+        conservative_call_cost_usd: Option<f64>,
+        call_cost_status: PlanningCostStatus,
+    ) -> Result<PlanningBudgetUsage> {
+        let session_id = session_id.to_owned();
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<PlanningBudgetUsage> {
+                    let tx = conn.transaction()?;
+                    let mut s = check_session(&tx, &session_id, &scope)?;
+                    s.usage.input_tokens = s
+                        .usage
+                        .input_tokens
+                        .saturating_sub(reservation.estimated_input_tokens)
+                        .saturating_add(actual_input_tokens);
+                    s.usage.output_tokens = s
+                        .usage
+                        .output_tokens
+                        .saturating_sub(reservation.reserved_output_tokens)
+                        .saturating_add(actual_output_tokens);
+                    s.usage.total_tokens = s
+                        .usage
+                        .total_tokens
+                        .saturating_sub(reservation.reserved_total_tokens)
+                        .saturating_add(actual_total_tokens);
+                    if let Some(rc) = reservation.reserved_cost_usd {
+                        let base = (s.usage.reserved_cost_usd.unwrap_or(0.0) - rc).max(0.0);
+                        s.usage.reserved_cost_usd = if base > 0.0 { Some(base) } else { None };
+                    }
+                    if let Some(cc) = conservative_call_cost_usd {
+                        s.usage.reserved_cost_usd =
+                            Some(s.usage.reserved_cost_usd.unwrap_or(0.0) + cc);
+                    }
+                    match (
+                        s.usage.cost_status,
+                        call_cost_status,
+                        call_estimated_cost_usd,
+                    ) {
+                        (_, PlanningCostStatus::UnknownMissingProviderUsage, _)
+                        | (PlanningCostStatus::UnknownMissingProviderUsage, _, _) => {
+                            s.usage.estimated_cost_usd = None;
+                            s.usage.cost_status = PlanningCostStatus::UnknownMissingProviderUsage;
+                        }
+                        (_, PlanningCostStatus::UnknownUnpriced, _) => {
+                            s.usage.estimated_cost_usd = None;
+                            s.usage.cost_status = PlanningCostStatus::UnknownUnpriced;
+                        }
+                        (_, PlanningCostStatus::EstimatedFromConfiguredPrices, Some(c)) => {
+                            s.usage.estimated_cost_usd =
+                                Some(s.usage.estimated_cost_usd.unwrap_or(0.0) + c);
+                            s.usage.cost_status = PlanningCostStatus::EstimatedFromConfiguredPrices;
+                        }
+                        _ => {}
+                    }
+                    tx.execute(
+                        "UPDATE planning_session SET data=?2 WHERE id=?1",
+                        rusqlite::params![s.id, serde_json::to_string(&s)?],
+                    )?;
+                    tx.commit()?;
+                    Ok(s.usage)
+                })())
+            })
+            .await?
+    }
+
+    pub(crate) async fn release_planning_model_call_reservation(
+        &self,
+        session_id: &str,
+        scope: Option<PlanningScope>,
+        reservation: PlanningCallReservation,
+    ) -> Result<()> {
+        let session_id = session_id.to_owned();
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<()> {
+                    let tx = conn.transaction()?;
+                    let mut s = check_session(&tx, &session_id, &scope)?;
+                    s.usage.model_calls = s.usage.model_calls.saturating_sub(1);
+                    s.usage.input_tokens = s
+                        .usage
+                        .input_tokens
+                        .saturating_sub(reservation.estimated_input_tokens);
+                    s.usage.output_tokens = s
+                        .usage
+                        .output_tokens
+                        .saturating_sub(reservation.reserved_output_tokens);
+                    s.usage.total_tokens = s
+                        .usage
+                        .total_tokens
+                        .saturating_sub(reservation.reserved_total_tokens);
+                    if let Some(rc) = reservation.reserved_cost_usd {
+                        let base = (s.usage.reserved_cost_usd.unwrap_or(0.0) - rc).max(0.0);
+                        s.usage.reserved_cost_usd = if base > 0.0 { Some(base) } else { None };
+                    }
+                    tx.execute(
+                        "UPDATE planning_session SET data=?2 WHERE id=?1",
+                        rusqlite::params![s.id, serde_json::to_string(&s)?],
+                    )?;
+                    tx.commit()?;
+                    Ok(())
                 })())
             })
             .await?
@@ -914,40 +1260,94 @@ impl Repository {
             .read(move |conn| {
                 Ok((|| -> Result<Vec<String>> {
                     let mut out = Vec::new();
-                    let project_row: Option<(String, String)> = conn
+                    let project_row: Option<(String, String, String, String)> = conn
                         .query_row(
-                            "SELECT name, genre FROM project WHERE id=?1",
+                            "SELECT name, project_type, genre, reader_contract FROM project WHERE id=?1",
                             [&scope.project_id],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                         )
                         .ok();
-                    if let Some((name, genre)) = project_row {
-                        out.push(format!("project {} ({name}, genre={genre})", scope.project_id));
+                    if let Some((name, project_type, genre, reader_contract)) = project_row {
+                        out.push(format!(
+                            "project {} ({name}, type={project_type}, genre={genre}, reader_contract={reader_contract})",
+                            scope.project_id
+                        ));
                     }
-                    for (table, label_col) in [
-                        ("book", "book_number"),
-                        ("chapter", "chapter_number"),
-                        ("character", "name"),
-                        ("location", "name"),
-                        ("world_rule", "rule_name"),
-                        ("plot_line", "name"),
-                        ("conflict", "name"),
-                        ("theme", "theme_statement"),
-                        ("motif", "name"),
-                        ("narrative_promise", "description"),
-                        ("character_arc", "arc_type"),
+                    let lineage_cte = "WITH RECURSIVE lineage(id,parent_branch_id) AS (SELECT id,parent_branch_id FROM bible_branch WHERE id=?2 AND project_id=?1 UNION SELECT b.id,b.parent_branch_id FROM bible_branch b JOIN lineage l ON b.id=l.parent_branch_id WHERE b.project_id=?1)";
+                    for (table, detail_expr, is_project_scoped) in [
+                        (
+                            "book",
+                            "'book_number=' || CAST(book_number AS TEXT) || ', title=' || COALESCE(title, '')",
+                            true,
+                        ),
+                        (
+                            "chapter",
+                            "'book=' || CAST(book_number AS TEXT) || ', chapter=' || CAST(chapter_number AS TEXT) || ', title=' || COALESCE(title, '')",
+                            true,
+                        ),
+                        (
+                            "character",
+                            "name || ', role=' || role || ', summary=' || summary",
+                            false,
+                        ),
+                        (
+                            "location",
+                            "name || ', kind=' || kind || ', summary=' || summary",
+                            false,
+                        ),
+                        (
+                            "world_rule",
+                            "rule_name || ' (' || rule_type || '): ' || description",
+                            false,
+                        ),
+                        (
+                            "plot_line",
+                            "name || ' (' || plot_type || '): ' || summary || ', convergence=' || convergence_points",
+                            false,
+                        ),
+                        (
+                            "conflict",
+                            "name || ' (' || conflict_type || '): stakes=' || stakes || ', escalation=' || escalation_stages || ', cycles=' || try_fail_cycles",
+                            false,
+                        ),
+                        (
+                            "theme",
+                            "theme_statement || ' | ' || thesis_antithesis",
+                            false,
+                        ),
+                        ("motif", "name || ': ' || description", false),
+                        (
+                            "narrative_promise",
+                            "promise_type || ': ' || description || ', planted=' || planted_at || ', payoff=' || COALESCE(planned_payoff, 'null')",
+                            false,
+                        ),
+                        (
+                            "character_arc",
+                            "character_id || ' (' || arc_type || '): ' || starting_state || ' -> ' || ending_state || ', milestones=' || milestones",
+                            false,
+                        ),
+                        (
+                            "pacing_config",
+                            "'books=' || CAST(total_planned_books AS TEXT) || ', chapters=' || CAST(avg_chapters_per_book AS TEXT) || ', scenes=' || CAST(avg_scenes_per_chapter AS TEXT) || ', model=' || tension_model",
+                            false,
+                        ),
+                        (
+                            "pacing_curve",
+                            "'book=' || CAST(book_number AS TEXT) || ', breakpoints=' || act_breakpoints || ', density=' || scene_type_density",
+                            false,
+                        ),
                     ] {
-                        let sql = if matches!(table, "book" | "chapter") {
+                        let sql = if is_project_scoped {
                             format!(
-                                "SELECT id, CAST({label_col} AS TEXT) FROM {table} WHERE project_id=?1 ORDER BY id LIMIT 32"
+                                "SELECT id, {detail_expr} FROM {table} WHERE project_id=?1 ORDER BY id LIMIT 32"
                             )
                         } else {
                             format!(
-                                "SELECT id, CAST({label_col} AS TEXT) FROM {table} WHERE project_id=?1 AND branch_id=?2 ORDER BY id LIMIT 32"
+                                "{lineage_cte} SELECT id, {detail_expr} FROM {table} WHERE project_id=?1 AND branch_id IN (SELECT id FROM lineage) ORDER BY id LIMIT 32"
                             )
                         };
                         let mut stmt = conn.prepare(&sql)?;
-                        let rows = if matches!(table, "book" | "chapter") {
+                        let rows = if is_project_scoped {
                             stmt.query_map([&scope.project_id], |r| {
                                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
                             })?
@@ -963,15 +1363,37 @@ impl Repository {
                             out.push(format!("{table} {id} ({label})"));
                         }
                     }
+                    let book_outline_sql = format!(
+                        "{lineage_cte} SELECT o.id, 'book=' || CAST(b.book_number AS TEXT) || ', content=' || o.content FROM book_outline o JOIN book b ON b.id=o.book_id WHERE b.project_id=?1 AND o.branch_id IN (SELECT id FROM lineage) ORDER BY b.book_number, o.id LIMIT 32"
+                    );
+                    let mut book_outline_stmt = conn.prepare(&book_outline_sql)?;
+                    for row in book_outline_stmt.query_map(
+                        [&scope.project_id, &scope.branch_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                    )? {
+                        let (id, detail) = row?;
+                        out.push(format!("book_outline {id} ({detail})"));
+                    }
+                    let chapter_outline_sql = format!(
+                        "{lineage_cte} SELECT o.id, 'book=' || CAST(c.book_number AS TEXT) || ', chapter=' || CAST(c.chapter_number AS TEXT) || ', content=' || o.content || ', beats=' || o.beats FROM chapter_outline o JOIN chapter c ON c.id=o.chapter_id WHERE c.project_id=?1 AND o.branch_id IN (SELECT id FROM lineage) ORDER BY c.book_number, c.chapter_number, o.id LIMIT 32"
+                    );
+                    let mut chapter_outline_stmt = conn.prepare(&chapter_outline_sql)?;
+                    for row in chapter_outline_stmt.query_map(
+                        [&scope.project_id, &scope.branch_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                    )? {
+                        let (id, detail) = row?;
+                        out.push(format!("chapter_outline {id} ({detail})"));
+                    }
                     Ok(out)
                 })())
             })
             .await?
     }
 
-    pub async fn commit_planning_generation(
+    pub(crate) async fn commit_planning_generation(
         &self,
-        updated_session: PlanningSession,
+        meta: PlanningSessionMetadataUpdate,
         staged: Option<(
             StagePlanningInput,
             PlanningGenerationReceipt,
@@ -983,16 +1405,23 @@ impl Repository {
             .write(move |conn| {
                 Ok((|| -> Result<PlanningAdvanceReport> {
                     let tx = conn.transaction()?;
-                    check_session(&tx, &updated_session.id, &updated_session.scope)?;
+                    let mut live_session = check_session(&tx, &meta.session_id, &meta.scope)?;
+                    live_session.horizon = meta.horizon;
+                    live_session.budget = meta.budget;
+                    live_session.rating_ceiling = meta.rating_ceiling;
+                    live_session.allow_review_backend = meta.allow_review_backend;
+                    live_session.last_outcome = Some(meta.last_outcome);
+                    report.usage = live_session.usage.clone();
+                    report.budget = live_session.budget.clone();
                     let proposal_id = if let Some((input, receipt, findings)) = staged {
                         let captured_base_state =
-                            apply::base_state(&tx, &updated_session.scope, &input)?;
+                            apply::base_state(&tx, &live_session.scope, &input)?;
                         let p = PlanningProposal {
                             id: mint_id("planning_proposal"),
                             payload_hash: hash(&input)?,
                             artifact: input,
                             status: PlanningProposalStatus::Staged,
-                            policy_snapshot: updated_session.policy.clone(),
+                            policy_snapshot: live_session.policy.clone(),
                             base_state: captured_base_state,
                             generation_receipt: Some(receipt),
                             findings,
@@ -1020,8 +1449,8 @@ impl Repository {
                     tx.execute(
                         "UPDATE planning_session SET data=?2 WHERE id=?1",
                         rusqlite::params![
-                            updated_session.id,
-                            serde_json::to_string(&updated_session)?
+                            live_session.id,
+                            serde_json::to_string(&live_session)?
                         ],
                     )?;
                     let level_str = serde_json::to_value(report.level)?
@@ -1033,7 +1462,8 @@ impl Repository {
                         .unwrap_or("staged")
                         .to_string();
                     tx.execute(
-                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) \
+                         ON CONFLICT(id) DO UPDATE SET level=excluded.level, retry_key=excluded.retry_key, outcome=excluded.outcome, proposal_id=excluded.proposal_id, data=excluded.data, created_at=excluded.created_at",
                         rusqlite::params![
                             report.attempt_id,
                             report.session_id,

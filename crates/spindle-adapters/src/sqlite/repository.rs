@@ -623,10 +623,14 @@ pub struct Repository {
     inner: Arc<Inner>,
 }
 
+type PlanningRetryLockMap =
+    std::sync::Mutex<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
+
 struct Inner {
     pool: SqlitePool,
     data_dir: PathBuf,
     model_router: ModelRouter,
+    planning_retry_locks: PlanningRetryLockMap,
 }
 
 mod authoring;
@@ -641,6 +645,7 @@ mod narrative;
 mod planning;
 pub(crate) use planning::apply::resolve_operation as resolve_planning_operation;
 pub(crate) use planning::output_refs as planning_output_refs;
+pub(crate) use planning::{PlanningAttemptClaim, PlanningSessionMetadataUpdate};
 mod plans;
 mod projects;
 mod quantity;
@@ -672,8 +677,25 @@ impl Repository {
                 pool,
                 data_dir,
                 model_router,
+                planning_retry_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             }),
         }
+    }
+
+    pub(crate) fn planning_retry_lock(
+        &self,
+        session_id: &str,
+        retry_key: &str,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self
+            .inner
+            .planning_retry_locks
+            .lock()
+            .expect("planning_retry_locks poisoned");
+        guard
+            .entry((session_id.to_owned(), retry_key.to_owned()))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn pool(&self) -> &SqlitePool {

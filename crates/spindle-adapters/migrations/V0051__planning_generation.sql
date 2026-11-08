@@ -5,7 +5,7 @@ CREATE TABLE planning_generation_attempt (
  session_id TEXT NOT NULL REFERENCES planning_session(id) ON DELETE CASCADE,
  level TEXT NOT NULL,
  retry_key TEXT,
- outcome TEXT NOT NULL CHECK(outcome IN ('staged','needs_author','needs_route','model_output_rejected','budget_exhausted')),
+ outcome TEXT NOT NULL CHECK(outcome IN ('in_progress','staged','needs_author','needs_route','model_output_rejected','budget_exhausted')),
  proposal_id TEXT REFERENCES planning_proposal(id) ON DELETE SET NULL,
  data TEXT NOT NULL CHECK(json_valid(data)),
  created_at INTEGER NOT NULL

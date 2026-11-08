@@ -3228,3 +3228,679 @@ agent = "idem-agent"
         1
     );
 }
+
+#[tokio::test]
+async fn dependent_prompts_include_parent_operation_inputs_and_accepted_constraints() {
+    use serde_json::json;
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Harbor mystery".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // Stage a Contract proposal where the fair-play alibi rule is ONLY inside the operation input,
+    // not repeated in `rationale`.
+    let contract_only_decision = "The lighthouse keeper's alibi is verified by the brass tide-clock and never broken by supernatural means.";
+    let contract_prop = svc
+        .stage_planning(StagePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            intent_hash: s.intent_hash.clone(),
+            schema_version: 1,
+            level: PlanningLevel::Contract,
+            parents: BTreeMap::new(),
+            operations: vec![PlanningOperationItem {
+                output_ref: "contract:project".into(),
+                operation: PlanningOperation::CreateProject(PlanningCreateProjectInput {
+                    name: "Binnacle Watch".into(),
+                    project_type: "novel".into(),
+                    genre: "mystery".into(),
+                    reader_contract: PlanningReaderContract {
+                        promise: contract_only_decision.into(),
+                        style_notes: vec!["maritime precision".into()],
+                        boundaries: vec!["no supernatural deus ex machina".into()],
+                    },
+                }),
+            }],
+            rationale: "Initial contract.".into(),
+            target_range: None,
+            schedule: PlanningSchedule::default(),
+            assumptions: Vec::new(),
+            author_questions: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    // Stage a Chapter proposal depending on Contract where the chapter beat detail is ONLY inside
+    // `SetChapterOutline` operation input, not in `rationale`.
+    let chapter_only_decision =
+        "Mara discovers the salt-stained ledger hidden inside the hollow binnacle.";
+    let chapter_beat_only =
+        "Comparing the harbourmaster signatures proves the manifest was forged at low tide.";
+    let chapter_prop = svc
+        .stage_planning(StagePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            intent_hash: s.intent_hash.clone(),
+            schema_version: 1,
+            level: PlanningLevel::Chapter,
+            parents: BTreeMap::from([(
+                contract_prop.id.clone(),
+                contract_prop.payload_hash.clone(),
+            )]),
+            operations: vec![PlanningOperationItem {
+                output_ref: "chapter:1:outline".into(),
+                operation: PlanningOperation::SetChapterOutline(PlanningSetChapterOutlineInput {
+                    book_number: 1,
+                    chapter_number: 1,
+                    entity_id: Some(PlanningRef::ProposalRef("contract:project:chapter".into())),
+                    entity_type: Some("chapter".into()),
+                    format: Some("markdown".into()),
+                    content: Some(chapter_only_decision.into()),
+                    beats: vec![PlanningChapterOutlineBeat {
+                        order: 1,
+                        summary: chapter_beat_only.into(),
+                        scene_id: None,
+                        status: "planned".into(),
+                    }],
+                }),
+            }],
+            rationale: "Chapter 1 outline.".into(),
+            target_range: None,
+            schedule: PlanningSchedule::default(),
+            assumptions: Vec::new(),
+            author_questions: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    // Request Scene generation passing only the immediate Chapter parent in `parents`.
+    // Both the Chapter operation inputs AND the transitive ancestor Contract operation inputs
+    // must be serialized into the prompt.
+    let report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Scene),
+            parents: Some(BTreeMap::from([(
+                chapter_prop.id.clone(),
+                chapter_prop.payload_hash.clone(),
+            )])),
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, PlanningSessionOutcome::NeedsRoute);
+    let host_prompt = &report.host_request.as_ref().unwrap().user_prompt;
+    assert!(
+        host_prompt.contains(chapter_only_decision),
+        "dependent prompt must include parent SetChapterOutline content even when absent from rationale"
+    );
+    assert!(
+        host_prompt.contains(chapter_beat_only),
+        "dependent prompt must include parent SetChapterOutline beats even when absent from rationale"
+    );
+    assert!(
+        host_prompt.contains(contract_only_decision),
+        "dependent prompt must include transitive parent reader_contract promise even when absent from rationale"
+    );
+    assert!(
+        host_prompt.contains("no supernatural deus ex machina"),
+        "dependent prompt must include transitive parent reader_contract boundaries"
+    );
+
+    // Apply the root Contract so the session attaches to the real project/branch, and verify
+    // `scoped_existing_record_digest` also serializes the accepted project reader_contract.
+    let applied = svc
+        .decide_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            expected_hashes: BTreeMap::from([(
+                contract_prop.id.clone(),
+                contract_prop.payload_hash.clone(),
+            )]),
+            decision: PlanningDecision::Accept,
+            actor: "author:test".into(),
+            note: "Accept root contract".into(),
+        })
+        .await
+        .unwrap();
+    let attached_scope = svc.get_planning_session(&s.id).await.unwrap().scope;
+    assert!(attached_scope.is_some());
+    let digest = svc
+        .repository
+        .describe_planning_scope_digest(attached_scope)
+        .await
+        .unwrap()
+        .join("\n");
+    assert!(
+        digest.contains(contract_only_decision),
+        "scoped existing-record digest must include accepted reader_contract from project table; got: {digest}"
+    );
+    let _ = (applied, json!({}));
+}
+
+#[tokio::test]
+async fn missing_provider_usage_preserves_conservative_usd_spend_across_repair_and_subsequent_calls()
+ {
+    use serde_json::json;
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Establish mystery contract.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Bound Harbor",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {"promise": "Fair clues", "style_notes": [], "boundaries": []}
+                }
+            }
+        }]
+    });
+    let valid_cast = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Introduce protagonist.",
+        "operations": [{
+            "output_ref": "cast:mara",
+            "operation": {
+                "operation": "create_character",
+                "input": {
+                    "name": "Mara",
+                    "summary": "Investigator",
+                    "role": "protagonist",
+                    "realm": null
+                }
+            }
+        }]
+    });
+
+    // Response 1 (for session A): invalid JSON AND omits provider `usage`!
+    // Response 2 (for session B call 1): valid Contract WITH provider `usage`.
+    // Response 3 (for session B call 2): valid CastWorld WITHOUT provider `usage`.
+    let (endpoint, _reqs, handle) = spawn_planning_http_server(vec![
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": "not valid json"}}],
+            }),
+        ),
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": valid_contract.to_string()}}],
+                "usage": {"prompt_tokens": 1_000, "completion_tokens": 500}
+            }),
+        ),
+        (
+            200,
+            json!({
+                "choices": [{"message": {"content": valid_cast.to_string()}}],
+            }),
+        ),
+    ]);
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "tight-usd-agent"
+name = "Tight USD Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "tight-usd-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "tight-usd-agent"
+"#
+    ))
+    .await;
+
+    // Part A: Repair path under a tight USD ceiling when Call 1 omits provider usage.
+    // With input_cost = $10/1M, output_cost = $1000/1M, max_output_tokens_per_call = 1000:
+    // Each call's output reserve alone is $1.00 (plus ~$0.015 input = ~$1.015).
+    // Setting max_cost_usd = $1.50 allows Call 1 (~$1.015 <= $1.50),
+    // and even though Call 1 omits provider usage, its conservative reserved spend (~$1.015)
+    // is preserved so the repair Call 2 (~$1.015 + ~$1.015 > $1.50) is blocked before dispatch!
+    let s_repair = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Tight USD repair ceiling with missing usage".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let tight_repair_budget = PlanningBudget {
+        max_model_calls: 6,
+        max_input_tokens: 48_000,
+        max_output_tokens: 24_000,
+        max_total_tokens: 72_000,
+        max_output_tokens_per_call: 1_000,
+        max_cost_usd: Some(1.50),
+        input_cost_per_million_usd: Some(10.0),
+        output_cost_per_million_usd: Some(1_000.0),
+    };
+    let repair_blocked = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_repair.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(tight_repair_budget),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        repair_blocked.outcome,
+        PlanningSessionOutcome::BudgetExhausted,
+        "repair call must be blocked by conservative reserved spend when Call 1 omits usage"
+    );
+    assert_eq!(repair_blocked.usage.model_calls, 1);
+    assert_eq!(repair_blocked.usage.estimated_cost_usd, None);
+    assert_eq!(
+        repair_blocked.usage.cost_status,
+        PlanningCostStatus::UnknownMissingProviderUsage
+    );
+    assert!(
+        repair_blocked.usage.reserved_cost_usd.unwrap() >= 1.0,
+        "conservative reserved spend must be preserved even when estimated_cost_usd is None"
+    );
+    assert_eq!(
+        repair_blocked
+            .generation_receipt
+            .as_ref()
+            .unwrap()
+            .attempts_used,
+        1
+    );
+
+    // Part B: Multi-call across advance_planning calls where Call 1 reports usage ($0.51)
+    // and Call 2 omits usage (conservative reserve >= $1.00), so Call 3 is blocked under max_cost_usd = $2.20!
+    let s_multi = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Multi-call tight USD ceiling with mixed usage reporting".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let multi_budget = PlanningBudget {
+        max_model_calls: 6,
+        max_input_tokens: 48_000,
+        max_output_tokens: 24_000,
+        max_total_tokens: 72_000,
+        max_output_tokens_per_call: 1_000,
+        max_cost_usd: Some(2.20),
+        input_cost_per_million_usd: Some(10.0),
+        output_cost_per_million_usd: Some(1_000.0),
+    };
+    let m1 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_multi.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(multi_budget.clone()),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(m1.outcome, PlanningSessionOutcome::Staged);
+    let known_spend_1 = m1.usage.estimated_cost_usd.unwrap();
+    assert!(known_spend_1 > 0.50);
+
+    let m2 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_multi.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::CastWorld),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(multi_budget.clone()),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(m2.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(m2.usage.estimated_cost_usd, None);
+    assert_eq!(
+        m2.usage.cost_status,
+        PlanningCostStatus::UnknownMissingProviderUsage
+    );
+    assert!(
+        m2.usage.reserved_cost_usd.unwrap() >= known_spend_1 + 1.0,
+        "Call 2 omitting usage must add conservative spend on top of Call 1's known spend"
+    );
+
+    // Call 3 must be rejected before network I/O because reserved_cost_usd (~$1.52) + Call 3 reserve (~$1.02) > $2.20!
+    let m3 = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_multi.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::SeriesArc),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: Some(multi_budget),
+            host_submission: None,
+            retry_key: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(m3.outcome, PlanningSessionOutcome::BudgetExhausted);
+    assert_eq!(m3.usage.model_calls, 2);
+    assert_eq!(handle.join().unwrap(), 3);
+}
+
+#[tokio::test]
+async fn simultaneous_advances_reserve_budget_atomically_and_simultaneous_retry_keys_deduplicate() {
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Concurrent contract generation.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Concurrent Harbor",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {"promise": "Atomic budget", "style_notes": [], "boundaries": []}
+                }
+            }
+        }]
+    });
+    let valid_cast = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Concurrent cast generation.",
+        "operations": [{
+            "output_ref": "cast:ivo",
+            "operation": {
+                "operation": "create_character",
+                "input": {
+                    "name": "Ivo",
+                    "summary": "Harbourmaster",
+                    "role": "supporting",
+                    "realm": null
+                }
+            }
+        }]
+    });
+
+    // Spawn a multi-connection HTTP server that adds a small delay on each request so concurrent
+    // advances overlap in flight while talking to the model backend.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let call_counter = Arc::new(AtomicUsize::new(0));
+    let call_counter_srv = call_counter.clone();
+    let responses = vec![
+        // 1: simultaneous retry_key test (only 1 call should arrive)
+        json!({
+            "choices": [{"message": {"content": valid_contract.to_string()}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50}
+        })
+        .to_string(),
+        // 2: simultaneous max_model_calls=1 test (only 1 call should arrive)
+        json!({
+            "choices": [{"message": {"content": valid_contract.to_string()}}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 60}
+        })
+        .to_string(),
+        // 3 & 4: simultaneous max_model_calls=2 test (both calls arrive and overlap)
+        json!({
+            "choices": [{"message": {"content": valid_contract.to_string()}}],
+            "usage": {"prompt_tokens": 110, "completion_tokens": 40}
+        })
+        .to_string(),
+        json!({
+            "choices": [{"message": {"content": valid_cast.to_string()}}],
+            "usage": {"prompt_tokens": 130, "completion_tokens": 60}
+        })
+        .to_string(),
+    ];
+    let srv_handle = std::thread::spawn(move || {
+        let mut worker_threads = Vec::new();
+        for body in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let counter = call_counter_srv.clone();
+            worker_threads.push(std::thread::spawn(move || {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .ok();
+                let mut buf = [0u8; 65536];
+                let mut total = 0usize;
+                loop {
+                    match stream.read(&mut buf[total..]) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            total += n;
+                            let s = String::from_utf8_lossy(&buf[..total]);
+                            if let Some(hdr_end) = s.find("\r\n\r\n") {
+                                let hdrs = &s[..hdr_end];
+                                let content_len = hdrs
+                                    .lines()
+                                    .find_map(|l| {
+                                        let lower = l.to_ascii_lowercase();
+                                        lower
+                                            .strip_prefix("content-length:")
+                                            .and_then(|v| v.trim().parse::<usize>().ok())
+                                    })
+                                    .unwrap_or(0);
+                                if total >= hdr_end + 4 + content_len {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            }));
+        }
+        for w in worker_threads {
+            w.join().unwrap();
+        }
+    });
+
+    let endpoint = format!("http://{addr}/v1");
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "concurrent-agent"
+name = "Concurrent Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "concurrent-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "concurrent-agent"
+"#
+    ))
+    .await;
+
+    // 1. Simultaneous identical retry_keys: only 1 model call is dispatched, both return the same attempt.
+    let s_retry = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Simultaneous retry key deduplication".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let req_a = AdvancePlanningInput {
+        session_id: s_retry.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::Contract),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: None,
+        host_submission: None,
+        retry_key: Some("sim-retry-001".into()),
+    };
+    let req_b = req_a.clone();
+    let (res_a, res_b) = tokio::join!(svc.advance_planning(req_a), svc.advance_planning(req_b));
+    let (res_a, res_b) = (res_a.unwrap(), res_b.unwrap());
+    assert_eq!(res_a.attempt_id, res_b.attempt_id);
+    assert_eq!(
+        res_a.proposal.as_ref().unwrap().id,
+        res_b.proposal.as_ref().unwrap().id
+    );
+    assert_eq!(call_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        svc.get_planning_session(&s_retry.id)
+            .await
+            .unwrap()
+            .usage
+            .model_calls,
+        1
+    );
+
+    // 2. Simultaneous advances with max_model_calls = 1: one succeeds, one hits BudgetExhausted before network I/O.
+    let s_cap1 = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Simultaneous advances under max_model_calls=1".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let cap1_budget = PlanningBudget {
+        max_model_calls: 1,
+        ..PlanningBudget::default()
+    };
+    let c1_a = AdvancePlanningInput {
+        session_id: s_cap1.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::Contract),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: Some(cap1_budget.clone()),
+        host_submission: None,
+        retry_key: None,
+    };
+    let c1_b = AdvancePlanningInput {
+        session_id: s_cap1.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::CastWorld),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: Some(cap1_budget),
+        host_submission: None,
+        retry_key: None,
+    };
+    let (out_1a, out_1b) = tokio::join!(svc.advance_planning(c1_a), svc.advance_planning(c1_b));
+    let (out_1a, out_1b) = (out_1a.unwrap(), out_1b.unwrap());
+    let outcomes = [out_1a.outcome, out_1b.outcome];
+    assert!(outcomes.contains(&PlanningSessionOutcome::Staged));
+    assert!(outcomes.contains(&PlanningSessionOutcome::BudgetExhausted));
+    assert_eq!(call_counter.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        svc.get_planning_session(&s_cap1.id)
+            .await
+            .unwrap()
+            .usage
+            .model_calls,
+        1
+    );
+
+    // 3. Simultaneous advances with max_model_calls = 2: both overlap in flight and reconcile usage without losing either call's tokens!
+    let s_cap2 = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Simultaneous overlapping advances reconcile usage".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let cap2_budget = PlanningBudget {
+        max_model_calls: 2,
+        ..PlanningBudget::default()
+    };
+    let c2_a = AdvancePlanningInput {
+        session_id: s_cap2.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::Contract),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: Some(cap2_budget.clone()),
+        host_submission: None,
+        retry_key: None,
+    };
+    let c2_b = AdvancePlanningInput {
+        session_id: s_cap2.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::CastWorld),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: Some(cap2_budget),
+        host_submission: None,
+        retry_key: None,
+    };
+    let (out_2a, out_2b) = tokio::join!(svc.advance_planning(c2_a), svc.advance_planning(c2_b));
+    let (out_2a, out_2b) = (out_2a.unwrap(), out_2b.unwrap());
+    assert_eq!(out_2a.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(out_2b.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(call_counter.load(Ordering::SeqCst), 4);
+    let final_session = svc.get_planning_session(&s_cap2.id).await.unwrap();
+    assert_eq!(final_session.usage.model_calls, 2);
+    assert_eq!(final_session.usage.input_tokens, 110 + 130);
+    assert_eq!(final_session.usage.output_tokens, 40 + 60);
+    assert_eq!(final_session.usage.total_tokens, 150 + 190);
+    srv_handle.join().unwrap();
+}
