@@ -602,4 +602,131 @@ mod tests {
         assert!(report.structural_observations.is_empty());
         assert_eq!(report.hard_count, 0);
     }
+
+    #[test]
+    fn emotion_cocktail_ignores_literal_mix_equal_parts_and_torn_between() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "He poured a mix of oats and barley into the trough.\n\
+                     They split the money in equal parts on the table.\n\
+                     His coat was torn between the shoulder blades, and she stood torn between the two roads.\n\
+                     A swirl of dust and leaves blew across the threshold.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| hit.shelf_id != "emotion_cocktail"),
+            "literal mixes and non-emotion 'torn between' must not fire emotion_cocktail: {report:?}"
+        );
+        assert_eq!(report.hard_count, 0);
+    }
+
+    #[test]
+    fn contrast_not_x_but_y_ignores_ordinary_dialogue_and_narration() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "\"I'm not going, but I'll call,\" she said. \"It wasn't my idea. It was yours.\"\n\
+                     The road was not long, but it was steep, and the horse was not young, but it was steady.\n\
+                     It was not raining. It was snowing. It was not morning. It was noon.\n\
+                     It wasn't raining. It was snowing. It wasn't morning. It was noon.\n\
+                     That was not the barn. It was the granary.\n\
+                     He did not answer, but turned toward the gate.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| hit.shelf_id != "contrast_not_x_but_y"),
+            "ordinary 'not X, but Y' clauses, literal physical corrections, and dialogue must not fire contrast_not_x_but_y: {report:?}"
+        );
+        assert_eq!(report.hard_count, 0);
+    }
+
+    #[test]
+    fn marker_shelves_respect_word_boundaries_count_repeats_and_avoid_literal_weight() {
+        let pack = ShelfPack::load_default().expect("pack");
+        // Substrings inside words and literal physical "weight of" must not fire.
+        let clean = "The unsighed wind and outshrugged cloak carried the weight of the iron anvil \
+                     and the weight of the wet sack across the yard.";
+        let clean_report = scan(&pack, &fiction(clean));
+        assert!(
+            clean_report.hits.is_empty(),
+            "substrings without word boundaries and literal weight must not fire: {clean_report:?}"
+        );
+
+        // Repeating the same somatic marker twice must count as a cluster (>= 2).
+        let repeated = "Her jaw tightened when the clerk read the sum. A moment later, her jaw tightened again.";
+        let repeated_report = scan(&pack, &fiction(repeated));
+        assert!(
+            repeated_report
+                .hits
+                .iter()
+                .any(|hit| hit.shelf_id == "body_reactions"),
+            "repeated identical marker must count toward cluster threshold: {repeated_report:?}"
+        );
+    }
+
+    #[test]
+    fn marker_scan_preserves_byte_offsets_across_case_length_changing_unicode() {
+        let pack = ShelfPack::load_default().expect("pack");
+        // 'İ' (2 bytes) lowercases to "i\u{307}" (3 bytes); 'K' (Kelvin, 3 bytes) lowercases to "k" (1 byte).
+        for prose in [
+            "İİ her jaw tightened — her stomach dropped.",
+            "KK her jaw tightened — her stomach dropped.",
+        ] {
+            let report = scan(&pack, &fiction(prose));
+            let body_hits: Vec<_> = report
+                .hits
+                .iter()
+                .filter(|hit| hit.shelf_id == "body_reactions")
+                .collect();
+            assert_eq!(
+                body_hits.len(),
+                2,
+                "expected 2 body_reactions hits: {report:?}"
+            );
+            for hit in &body_hits {
+                let sliced = &prose[hit.byte_range.start..hit.byte_range.end];
+                assert_eq!(
+                    sliced, hit.excerpt,
+                    "byte_range must slice original prose accurately"
+                );
+            }
+            assert_eq!(body_hits[0].excerpt, "jaw tightened");
+            assert_eq!(body_hits[1].excerpt, "stomach dropped");
+        }
+    }
+
+    #[test]
+    fn solitary_fade_allows_grounded_temporal_transitions() {
+        let pack = ShelfPack::load_default().expect("pack");
+        let prose = "Hours later, she was still at the kitchen table paring apples into the tin bowl.\n\n\
+                     Two days passed in the saddle before they reached the flooded ford.\n\n\
+                     Later, at the station, he bought a warm loaf and waited under the awning.";
+        let report = scan(&pack, &fiction(prose));
+        assert!(
+            report
+                .hits
+                .iter()
+                .all(|hit| hit.shelf_id != "solitary_fade"),
+            "grounded transitions ('Hours later, ...', 'Two days passed in the saddle...', 'Later, at the station, he bought...') must not fire solitary_fade: {report:?}"
+        );
+
+        for bare_fade in [
+            "Hours passed.",
+            "Days passed.",
+            "Weeks passed.",
+            "Months passed.",
+            "Three days passed.",
+        ] {
+            let fade_report = scan(&pack, &fiction(bare_fade));
+            assert!(
+                fade_report
+                    .hits
+                    .iter()
+                    .any(|hit| hit.shelf_id == "solitary_fade" && hit.severity == Severity::Soft),
+                "bare time-skip fade '{bare_fade}' must still fire solitary_fade: {fade_report:?}"
+            );
+            assert_eq!(fade_report.hard_count, 0);
+        }
+    }
 }

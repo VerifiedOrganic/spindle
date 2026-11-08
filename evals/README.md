@@ -2,25 +2,31 @@
 
 ## Fiction anti-slop (scanner regressions)
 
-Phase 4 locks the twelve fiction shelves against scanner drift. Cases live in
-`evals/anti_slop/cases.json`. Optional `preference_dims` are labeled
-editorial observations (`present` / `absent` / `n/a`) — not a quality
-superiority claim.
+Phase 4 locks the twelve fiction shelves against scanner drift and false
+positives. Regression cases live in `evals/anti_slop/cases.json`, and the
+precision/recall evaluation corpus lives in `evals/anti_slop/corpus.json`
+(160 public-domain human prose passages from Project Gutenberg documented in
+`evals/anti_slop/SOURCES.md` plus 48 synthetic LLM-style positive passages).
+Optional `preference_dims` are labeled editorial observations
+(`present` / `absent` / `n/a`) — not a quality superiority claim.
 
 ```sh
 python3 evals/anti_slop.py self-test
 python3 evals/anti_slop.py drift
 python3 evals/anti_slop.py regress
+python3 evals/anti_slop.py report
 python3 evals/anti_slop.py score
 ```
 
-`self-test` validates case schema, twelve-shelf coverage, and `solitary_fade`
-stability. `drift` fails if catalog markdown, the v0 pack, the scanner
-constant, and the eval manifest disagree. `regress` runs
-`cargo test -p spindle-core --test antislop_eval`. `score` tallies labeled
-dims without ranking writing quality.
+`self-test` validates case and corpus schemas, twelve-shelf coverage, and
+`solitary_fade` stability. `drift` fails if catalog markdown, the v0 pack,
+the scanner constant, and the eval manifest disagree. `regress` runs
+`cargo test -p spindle-core --test antislop_eval`. `report` prints the
+per-shelf precision/recall report on the corpus and enforces that every `hard`
+shelf achieves precision ≥ 0.9. `score` tallies labeled dims without ranking
+writing quality.
 
-CI runs `self-test` and `drift` on every pull request.
+CI runs `self-test`, `drift`, and `report` on every pull request.
 
 ---
 

@@ -947,12 +947,16 @@ sentence later it is night, with no transition and no scene break. This is the t
 White Room Syndrome: just as you ground every scene in *where* it is, ground it in *when* it is.
 Fix: open each scene by anchoring when it takes place relative to the last — the `[IN-WORLD TIME]`
 hard constraint in your scene context gives you the previous scene's end clock as the expected
-start — and give every in-scene time jump beyond a few minutes an explicit transition beat ("Hours
-later,", "By nightfall,", "The next morning,") or a scene break. A scene that declares it spans real
-time (`duration_days` >= 1) must *render* that span with transitions, not read as one unbroken
-block. The related failure, **drifting time**, is prose that contradicts its own established
-time of day (it is night, then a paragraph later the morning sun). The `temporal_coherence` check
-in `check_consistency` flags both; mark a deliberate rewind with `temporal_mode: "flashback"`.
+start — and give every in-scene time jump beyond a few minutes an explicit, **grounded** transition
+beat ("Hours later, she was still at the kitchen table...", "By nightfall, the rain had reached the
+porch...", "The next morning, he...") or a scene break. Root that transition in place, body, and
+mundane task rather than dropping a bare ungrounded time-skip line ("Hours passed." on its own, or
+cutting straight to "Later, at the meeting, she told him everything"), which empties out solitude
+and trips the `solitary_fade` shelf. A scene that declares it spans real time (`duration_days` >= 1)
+must *render* that span with transitions, not read as one unbroken block. The related failure,
+**drifting time**, is prose that contradicts its own established time of day (it is night, then a
+paragraph later the morning sun). The `temporal_coherence` check in `check_consistency` flags both;
+mark a deliberate rewind with `temporal_mode: "flashback"`.
 
 ### "Talking Heads"
 Long stretches of dialogue with no action beats, physical business, or environmental

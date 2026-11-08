@@ -107,19 +107,16 @@ pub async fn connect_to_primary(
         .context("failed to connect to primary")
 }
 
-/// Try to acquire the DB lock. Returns `true` if the lock is available
-/// (primary is gone), `false` if another process grabbed it first.
-/// Caller should exit cleanly — Claude Code will restart us as the new primary.
-pub async fn try_promote(db_path: &Path) -> anyhow::Result<bool> {
-    // SQLite uses file locks rather than an embedded service. Opening the
-    // pool implicitly opens a writer connection which holds the lock until
-    // dropped. If another process holds it we get a SQLITE_BUSY-flavoured
-    // error that is_lock_error matches.
-    match spindle_adapters::SqlitePool::open(db_path).await {
-        Ok(_pool) => Ok(true),
-        Err(e) if crate::is_lock_error(&e) => Ok(false),
-        Err(e) => Err(e),
-    }
+/// Try to acquire the primary election lock and verify the DB is reachable.
+/// Returns `true` if the primary lock is available (primary is gone),
+/// `false` if another process holds it.
+/// Caller should exit cleanly — the MCP client will restart us as the new primary.
+pub async fn try_promote(data_dir: &Path, db_path: &Path) -> anyhow::Result<bool> {
+    let Some(_primary_lock) = crate::try_acquire_primary_lock(data_dir)? else {
+        return Ok(false);
+    };
+    let _pool = spindle_adapters::SqlitePool::open(db_path).await?;
+    Ok(true)
 }
 
 /// Wait for a primary to appear by polling the addr file + health check.

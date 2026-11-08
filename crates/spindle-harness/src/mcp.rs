@@ -685,6 +685,7 @@ mod tests {
             source_path: None,
             health_checks_enabled: false,
             agents: vec![agent("default-draft"), agent("explicit-draft")],
+            config_error: None,
         };
 
         let binding =
@@ -707,6 +708,7 @@ mod tests {
             source_path: None,
             health_checks_enabled: false,
             agents: vec![agent("default-draft")],
+            config_error: None,
         };
 
         let binding =
@@ -737,6 +739,7 @@ mod tests {
             source_path: None,
             health_checks_enabled: false,
             agents: vec![shared_agent],
+            config_error: None,
         };
 
         let binding = select_draft_route_binding(&routes, &routing, &agents, None).unwrap();

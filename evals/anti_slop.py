@@ -2,9 +2,10 @@
 """Fiction anti-slop eval / CI harness (Phase 4).
 
 Commands:
-  self-test  Validate case schema, shelf-ID coverage, and preference-dim labels.
+  self-test  Validate case/corpus schema, shelf-ID coverage, and preference-dim labels.
   drift      Fail if catalog MD, pack TOML, and scanner IDs diverge.
   regress    Run the Rust eval cases (`cargo test -p spindle-core --test antislop_eval`).
+  report     Run the corpus precision/recall evaluation and enforce hard-shelf precision >= 0.9.
   score      Tally optional labeled preference dims (not a quality ranking).
 
 Standard library only. Never dispatches a writing model.
@@ -22,9 +23,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 CASES_PATH = HERE / "anti_slop" / "cases.json"
+CORPUS_PATH = HERE / "anti_slop" / "corpus.json"
+SOURCES_PATH = HERE / "anti_slop" / "SOURCES.md"
 CATALOG = REPO / "references" / "anti-slop.md"
 PACK = REPO / "references" / "anti-slop-shelf-pack.v0.toml"
 SCANNER = REPO / "crates" / "spindle-core" / "src" / "style" / "antislop" / "scan.rs"
+HARD_PRECISION_GATE = 0.9
 
 NON_PORTS = (
     "bluf",
@@ -40,6 +44,10 @@ DIM_VALUES = {"present", "absent", "n/a"}
 
 def read_cases():
     return json.loads(CASES_PATH.read_text())
+
+
+def read_corpus():
+    return json.loads(CORPUS_PATH.read_text())
 
 
 def catalog_shelf_ids(markdown: str) -> list[str]:
@@ -156,9 +164,66 @@ def validate_cases(bundle: dict) -> list[str]:
     return errors
 
 
+def validate_corpus(corpus: dict) -> list[str]:
+    errors = []
+    if not SOURCES_PATH.exists() or not SOURCES_PATH.read_text().strip():
+        errors.append("evals/anti_slop/SOURCES.md missing or empty")
+    shelf_ids = corpus.get("shelf_ids") or []
+    if len(shelf_ids) != 12:
+        errors.append(f"corpus shelf_ids must list 12 shelves, got {len(shelf_ids)}")
+    gate = corpus.get("hard_precision_gate")
+    if gate != HARD_PRECISION_GATE:
+        errors.append(f"corpus hard_precision_gate must be {HARD_PRECISION_GATE}, got {gate}")
+    passages = corpus.get("passages") or []
+    seen_ids = set()
+    neg_count = 0
+    pos_covered = set()
+    for p in passages:
+        pid = p.get("id")
+        if not pid:
+            errors.append("corpus passage missing id")
+            continue
+        if pid in seen_ids:
+            errors.append(f"duplicate corpus passage id {pid}")
+        seen_ids.add(pid)
+        if not (p.get("prose") or "").strip():
+            errors.append(f"{pid}: empty prose")
+        src = p.get("source") or {}
+        for field in ("author", "title", "year", "repository", "license"):
+            if not src.get(field):
+                errors.append(f"{pid}: missing source.{field}")
+        kind = p.get("kind")
+        expected = p.get("expected_shelves") or []
+        if kind == "negative":
+            neg_count += 1
+            if expected:
+                errors.append(f"{pid}: negative passage must have empty expected_shelves")
+            if isinstance(src.get("year"), int) and src["year"] > 1928:
+                errors.append(f"{pid}: negative passage year {src['year']} must be <= 1928 (public domain)")
+        elif kind == "positive":
+            if not expected:
+                errors.append(f"{pid}: positive passage must declare expected_shelves")
+            for s in expected:
+                if s not in shelf_ids:
+                    errors.append(f"{pid}: unknown expected shelf {s}")
+                pos_covered.add(s)
+        else:
+            errors.append(f"{pid}: unknown kind {kind}")
+    if neg_count < 150:
+        errors.append(f"corpus must have >= 150 negative passages, got {neg_count}")
+    missing_pos = [s for s in shelf_ids if s not in pos_covered]
+    if missing_pos:
+        errors.append(f"corpus positive passages missing shelves: {missing_pos}")
+    return errors
+
+
 def self_test() -> None:
     bundle = read_cases()
     errors = validate_cases(bundle)
+    if not CORPUS_PATH.exists():
+        errors.append("evals/anti_slop/corpus.json missing")
+    else:
+        errors.extend(validate_corpus(read_corpus()))
     report = drift()
     if not report["ok"]:
         errors.append(report.get("error") or "drift failed")
@@ -178,7 +243,8 @@ def self_test() -> None:
     assert scored["interpretation"].lower().find("not a quality") >= 0
     assert "superiority" in scored["interpretation"].lower()
     print(
-        "Case schema, twelve-shelf coverage, solitary_fade lock, drift, "
+        "Case schema, corpus schema (>=150 public-domain negative + positive passages), "
+        "twelve-shelf coverage, solitary_fade lock, drift, "
         "and labeled preference dims (no quality claim) passed."
     )
 
@@ -223,12 +289,45 @@ def regress() -> None:
     raise SystemExit(subprocess.call(cmd, cwd=REPO))
 
 
+def precision_report() -> dict:
+    cmd = [
+        "cargo",
+        "test",
+        "-p",
+        "spindle-core",
+        "--test",
+        "antislop_eval",
+        "corpus_precision_recall_report_and_hard_shelf_gate",
+        "--",
+        "--nocapture",
+    ]
+    proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    marker = "ANTISLOP_CORPUS_REPORT_JSON="
+    report_data = None
+    for line in combined.splitlines():
+        if line.startswith(marker):
+            report_data = json.loads(line[len(marker):])
+            break
+    if report_data is None:
+        print(combined, file=sys.stderr)
+        raise SystemExit(proc.returncode or 1)
+    for shelf in report_data.get("shelves", []):
+        if shelf.get("severity") == "hard" and shelf.get("precision", 0.0) < HARD_PRECISION_GATE:
+            report_data["gate_passed"] = False
+    if proc.returncode != 0 or not report_data.get("gate_passed", False):
+        print(json.dumps(report_data, indent=2))
+        raise SystemExit(1)
+    return report_data
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("self-test")
     sub.add_parser("drift")
     sub.add_parser("regress")
+    sub.add_parser("report")
     score_p = sub.add_parser("score")
     score_p.add_argument(
         "--ratings",
@@ -244,6 +343,8 @@ def main() -> None:
             raise SystemExit(1)
     elif args.command == "regress":
         regress()
+    elif args.command == "report":
+        print(json.dumps(precision_report(), indent=2))
     else:
         if args.ratings:
             ratings = json.loads(Path(args.ratings).read_text())

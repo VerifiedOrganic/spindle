@@ -46,7 +46,7 @@ use tokio_util::sync::CancellationToken;
 
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 
-use crate::{addr_file_path, http, read_addr_file, write_addr_file};
+use crate::{addr_file_path, http, read_addr_file, remove_addr_file_if_owner, write_addr_file};
 
 /// A running internal MCP listener. Holding this keeps the accept loop alive;
 /// dropping it (or cancelling the token) shuts the loop down. The `run_primary`
@@ -178,12 +178,12 @@ pub async fn ensure_primary_addr(
     // Atomic election: whoever creates the addr file first wins. A stale file
     // naming a dead listener is reclaimed.
     match claim_addr_file(data_dir, our_addr).await {
-        AddrClaim::Won => {
+        Ok(AddrClaim::Won) => {
             tracing::info!("lazily claimed primacy; internal MCP listener on {our_addr}");
             guard.insert(key, Arc::new(listener));
             Ok(our_addr)
         }
-        AddrClaim::LostTo(winner) => {
+        Ok(AddrClaim::LostTo(winner)) => {
             // Another process holds a LIVE primary. Drop our listener and defer.
             tracing::info!(
                 "lazy primacy claim lost to existing primary at {winner}; proceeding as proxy"
@@ -191,10 +191,15 @@ pub async fn ensure_primary_addr(
             listener.shutdown();
             Ok(winner)
         }
+        Err(err) => {
+            listener.shutdown();
+            Err(err)
+        }
     }
 }
 
-enum AddrClaim {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddrClaim {
     /// We created the addr file (or reclaimed a stale one) — we are primary.
     Won,
     /// A live primary already owns the addr file; connect to it instead.
@@ -214,41 +219,68 @@ enum AddrClaim {
 /// stale addr was never reclaimed. The panic unwound through the MCP tool
 /// handler without producing a response, which the client saw as a ~60s hang
 /// rather than an error, deadlocking the whole authoring loop.
-async fn claim_addr_file(data_dir: &Path, addr: SocketAddr) -> AddrClaim {
+pub(crate) async fn claim_addr_file(
+    data_dir: &Path,
+    addr: SocketAddr,
+) -> anyhow::Result<AddrClaim> {
     let path = addr_file_path(data_dir);
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
     }
 
-    // Atomic create: only one process wins the first create.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => {
-            use std::io::Write;
-            if file.write_all(addr.to_string().as_bytes()).is_ok() {
-                return AddrClaim::Won;
-            }
-            // Write failed after create; fall through to reclaim below.
-        }
-        Err(err) if err.kind() != std::io::ErrorKind::AlreadyExists => {
-            // Unexpected IO error: best-effort overwrite so we still get a listener.
-            let _ = write_addr_file(data_dir, addr);
-            return AddrClaim::Won;
-        }
-        Err(_) => { /* AlreadyExists — someone owns it; check liveness below. */ }
+    // Atomic create under the addr-file lock so a concurrent reader never
+    // observes an empty/partially-written file.
+    if try_create_addr_file_atomically(data_dir, &path, addr)? {
+        return Ok(AddrClaim::Won);
     }
 
     // The file exists. Is its listener alive?
     match read_addr_file(data_dir) {
-        Ok(existing) if probe_health(existing).await => AddrClaim::LostTo(existing),
-        _ => {
-            // Stale file (unparseable or dead listener) — reclaim it.
-            let _ = write_addr_file(data_dir, addr);
-            AddrClaim::Won
+        Ok(existing) if existing == addr || probe_health(existing).await => {
+            if existing == addr {
+                Ok(AddrClaim::Won)
+            } else {
+                Ok(AddrClaim::LostTo(existing))
+            }
         }
+        _ => {
+            // Stale file (unparseable or dead listener) — reclaim it under the
+            // addr file lock if it hasn't already been replaced by a live listener.
+            if let Ok(current) = read_addr_file(data_dir)
+                && current != addr
+                && probe_health(current).await
+            {
+                return Ok(AddrClaim::LostTo(current));
+            }
+            write_addr_file(data_dir, addr)?;
+            Ok(AddrClaim::Won)
+        }
+    }
+}
+
+fn try_create_addr_file_atomically(
+    data_dir: &Path,
+    path: &Path,
+    addr: SocketAddr,
+) -> anyhow::Result<bool> {
+    let _lock = crate::acquire_addr_file_lock(data_dir);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            if file.write_all(addr.to_string().as_bytes()).is_ok() && file.sync_all().is_ok() {
+                Ok(true)
+            } else {
+                let _ = std::fs::remove_file(path);
+                crate::write_addr_file_unlocked(data_dir, addr)?;
+                Ok(true)
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(err) => Err(err).context("failed to create addr file"),
     }
 }
 
@@ -274,9 +306,7 @@ pub async fn shutdown_lazy_listener(data_dir: &Path) {
         listener.shutdown();
         // Only remove the addr file if it still names OUR listener — never yank
         // a successor primary's file.
-        if read_addr_file(data_dir).ok() == Some(ours) {
-            crate::remove_addr_file(data_dir);
-        }
+        remove_addr_file_if_owner(data_dir, ours);
     }
 }
 
@@ -303,7 +333,10 @@ mod tests {
         write_addr_file(&data_dir, dead).unwrap();
         let ours: SocketAddr = "127.0.0.1:55001".parse().unwrap();
         assert!(
-            matches!(claim_addr_file(&data_dir, ours).await, AddrClaim::Won),
+            matches!(
+                claim_addr_file(&data_dir, ours).await.unwrap(),
+                AddrClaim::Won
+            ),
             "a stale/dead addr file must be reclaimable"
         );
         assert_eq!(read_addr_file(&data_dir).unwrap(), ours);
@@ -312,8 +345,48 @@ mod tests {
         // has no listener either), staying idempotent on the winner side.
         let other: SocketAddr = "127.0.0.1:55002".parse().unwrap();
         assert!(matches!(
-            claim_addr_file(&data_dir, other).await,
+            claim_addr_file(&data_dir, other).await.unwrap(),
             AddrClaim::Won
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claim_addr_file_propagates_io_error_without_deadlocking() {
+        let tmp = TempDir::new().unwrap();
+        let addr: SocketAddr = "127.0.0.1:55003".parse().unwrap();
+
+        // Case 1: `spindle.addr` already exists as a directory (so `create_new`
+        // returns `AlreadyExists`, `read_addr_file` fails, and the reclaim write
+        // fails to replace a directory with a file). Must return `Err` promptly.
+        let data_dir_dir_conflict = tmp.path().join("dir_conflict");
+        let addr_dir = crate::addr_file_path(&data_dir_dir_conflict);
+        std::fs::create_dir_all(&addr_dir).unwrap();
+        let res = tokio::time::timeout(
+            Duration::from_secs(2),
+            claim_addr_file(&data_dir_dir_conflict, addr),
+        )
+        .await
+        .expect("claim_addr_file must not deadlock on reclaim write error");
+        assert!(
+            res.is_err(),
+            "claim_addr_file must propagate error when addr path is a directory"
+        );
+
+        // Case 2: `runtime` is a regular file so creating the runtime dir or
+        // `spindle.addr` inside it fails with an I/O error. Must return `Err`
+        // promptly without hanging on `spindle.addr.lock`.
+        let data_dir_file_conflict = tmp.path().join("file_conflict");
+        std::fs::create_dir_all(&data_dir_file_conflict).unwrap();
+        std::fs::write(data_dir_file_conflict.join("runtime"), "not-a-dir").unwrap();
+        let res2 = tokio::time::timeout(
+            Duration::from_secs(2),
+            claim_addr_file(&data_dir_file_conflict, addr),
+        )
+        .await
+        .expect("claim_addr_file must not deadlock when runtime path is a file");
+        assert!(
+            res2.is_err(),
+            "claim_addr_file must propagate error when runtime path is not a directory"
+        );
     }
 }
