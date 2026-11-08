@@ -648,6 +648,7 @@ mod packet_package_tests {
     fn compatibility_package_preserves_only_hash_bound_accepted_prose() {
         let mut artifact: spindle_core::drafting::extraction::PlainTextDraftArtifactV1 = serde_json::from_value(serde_json::json!({
             "schema_version":"plain_text_draft_v1", "artifact_id":"draft1", "project_id":"p", "branch_id":"b", "scene_id":null,
+            "placement":{"book_number":1,"chapter_number":1,"scene_order":1,"note":null},
             "source_packet_sha256":"source-hash", "packet_hash":"packet-hash", "rating":"general", "text":"The bridge fell.\n",
             "text_sha256":"2ff4cd987746a89c8cbbfb4809272c3355f8b9f1766cdb617b9fd5bcc5546598", "truncated":false,
             "receipt":{"generation_id":"receipt1","agent_id":"agent1","normalized_output_sha256":"44f03a62b6376f8c129df5b23dfd835205460f5fd3dec7b8b7205eb7d87858a1"},

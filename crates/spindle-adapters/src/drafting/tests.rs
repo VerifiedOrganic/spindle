@@ -58,6 +58,7 @@ pub(crate) fn fixture() -> DraftingPacketV1 {
                 exit: "afraid".into(),
             },
             chapter: PacketChapter {
+                book_number: 1,
                 number: 1,
                 scene_index: 1,
                 planned_scene_count: None,
@@ -482,6 +483,11 @@ async fn accepted_only_extraction_preserves_prose_across_failure_restart_and_ret
             >,
         > {
             Box::pin(async move {
+                let accepted = serde_json::to_value(&request.accepted).unwrap();
+                assert_eq!(accepted["scene_id"], serde_json::Value::Null);
+                assert_eq!(accepted["placement"]["book_number"], 1);
+                assert_eq!(accepted["placement"]["chapter_number"], 1);
+                assert_eq!(accepted["placement"]["scene_order"], 1);
                 if self.fail {
                     return Err(ExtractionFailure {
                         code: "route_unavailable".into(),
@@ -537,6 +543,15 @@ async fn accepted_only_extraction_preserves_prose_across_failure_restart_and_ret
         .is_err()
     );
     let restarted = artifact::load_artifact(&path).unwrap();
+    let mut changed_placement = restarted.clone();
+    changed_placement.placement.chapter_number = 2;
+    artifact::save_artifact(&path, &changed_placement).unwrap();
+    assert!(
+        artifact::extract_accepted(&path, &Extractor { fail: false }, vec![], vec![])
+            .await
+            .is_err()
+    );
+    artifact::save_artifact(&path, &restarted).unwrap();
     assert_eq!(
         restarted.accepted_text_sha256.as_deref(),
         Some(hash.as_str())
@@ -618,4 +633,27 @@ async fn mismatched_extraction_hash_stays_parked_without_repeated_paid_attempts(
             .generation_id,
         "receipt1"
     );
+}
+
+#[test]
+fn extraction_task_identity_includes_exact_dispatched_packet_hash() {
+    let text = "The bridge fell.";
+    let a = artifact::capture_plain_text(
+        &fixture(),
+        "framing-a",
+        text.into(),
+        false,
+        receipt_for(text),
+    )
+    .unwrap();
+    let b = artifact::capture_plain_text(
+        &fixture(),
+        "framing-b",
+        text.into(),
+        false,
+        receipt_for(text),
+    )
+    .unwrap();
+    assert_eq!(a.text_sha256, b.text_sha256);
+    assert_ne!(a.artifact_id, b.artifact_id);
 }

@@ -92,6 +92,15 @@ fn validate(packet: &DraftingPacketV1) -> Result<(), PacketError> {
     ] {
         nonempty(value, name)?;
     }
+    let chapter = &packet.scene_card.chapter;
+    if [chapter.book_number, chapter.number, chapter.scene_index]
+        .iter()
+        .any(|&n| n == 0 || n > i32::MAX as u32)
+    {
+        return Err(PacketError::Incomplete(
+            "story placement: require positive i32 book/chapter/scene".into(),
+        ));
+    }
     let words = &packet.scene_card.target_words;
     if words.min == 0 || words.min > words.preferred || words.preferred > words.max {
         return Err(PacketError::Incomplete(

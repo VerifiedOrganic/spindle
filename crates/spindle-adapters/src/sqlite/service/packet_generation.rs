@@ -28,7 +28,7 @@ impl SqliteSpindleService {
             branch.id == packet.branch_id,
             "packet branch is no longer active"
         );
-        let _lock = artifact::lock_artifact(path)?;
+        let mut lock = artifact::lock_artifact(path)?;
         if path.exists() {
             let captured = artifact::load_artifact(path)?;
             anyhow::ensure!(
@@ -57,7 +57,9 @@ impl SqliteSpindleService {
         let (prepared, response) = self
             .repository
             .model_router()
-            .draft_packet(policy, packet.clone(), budget, tokenizer)
+            .draft_packet_before_dispatch(policy, packet.clone(), budget, tokenizer, |prepared| {
+                lock.retain_for_recovery(&prepared.messages_hash)
+            })
             .await?;
         let receipt = self
             .register_generation_receipt_with_calls(
@@ -81,6 +83,7 @@ impl SqliteSpindleService {
         )?;
         captured.prepared_packet = Some(prepared);
         artifact::save_artifact(path, &captured)?;
+        lock.captured();
         Ok(captured)
     }
 }

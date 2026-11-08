@@ -3,10 +3,30 @@ use super::*;
 use spindle_core::drafting::extraction::*;
 use std::{io::Write, path::Path};
 
-pub(crate) struct ArtifactLock(std::path::PathBuf);
+pub(crate) struct ArtifactLock {
+    path: std::path::PathBuf,
+    cleanup: bool,
+}
+impl ArtifactLock {
+    pub(crate) fn retain_for_recovery(&mut self, packet_hash: &str) -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+        writeln!(file, "unresolved packet dispatch\n{packet_hash}")?;
+        file.sync_all()?;
+        self.cleanup = false;
+        Ok(())
+    }
+    pub(crate) fn captured(&mut self) {
+        self.cleanup = true;
+    }
+}
 impl Drop for ArtifactLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if self.cleanup {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 pub(crate) fn lock_artifact(path: &Path) -> anyhow::Result<ArtifactLock> {
@@ -23,7 +43,10 @@ pub(crate) fn lock_artifact(path: &Path) -> anyhow::Result<ArtifactLock> {
         .create_new(true)
         .open(&lock)
         .map_err(|e| anyhow::anyhow!("artifact busy or awaiting crash recovery: {e}"))?;
-    Ok(ArtifactLock(lock))
+    Ok(ArtifactLock {
+        path: lock,
+        cleanup: true,
+    })
 }
 
 fn sha(text: &str) -> String {
@@ -41,11 +64,19 @@ pub fn capture_plain_text(
     receipt: DraftReceiptBinding,
 ) -> anyhow::Result<PlainTextDraftArtifactV1> {
     let source_packet_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(packet)?));
+    let chapter = &packet.scene_card.chapter;
+    let placement = spindle_core::models::StoryPlacement {
+        book_number: chapter.book_number.try_into()?,
+        chapter_number: chapter.number.try_into()?,
+        scene_order: Some(chapter.scene_index.try_into()?),
+        note: None,
+    };
     let artifact = PlainTextDraftArtifactV1 {
+        placement,
         prepared_packet: None,
         source_packet_sha256: source_packet_sha256.clone(),
         schema_version: "plain_text_draft_v1".into(),
-        artifact_id: format!("{}:{}", source_packet_sha256, sha(&text)),
+        artifact_id: format!("{}:{}:{}", source_packet_sha256, packet_hash, sha(&text)),
         project_id: packet.project_id.clone(),
         branch_id: packet.branch_id.clone(),
         scene_id: packet.scene_id.clone(),
@@ -82,7 +113,21 @@ pub fn validate_artifact(artifact: &PlainTextDraftArtifactV1) -> anyhow::Result<
         !artifact.receipt.generation_id.is_empty() && !artifact.receipt.agent_id.is_empty(),
         "generation receipt required"
     );
+    anyhow::ensure!(
+        artifact.placement.book_number > 0
+            && artifact.placement.chapter_number > 0
+            && artifact.placement.scene_order.is_some_and(|n| n > 0),
+        "complete positive story placement required"
+    );
     if let Some(prepared) = &artifact.prepared_packet {
+        let chapter = &prepared.packet.scene_card.chapter;
+        anyhow::ensure!(
+            chapter.book_number as i64 == i64::from(artifact.placement.book_number)
+                && chapter.number as i64 == i64::from(artifact.placement.chapter_number)
+                && Some(i64::from(chapter.scene_index))
+                    == artifact.placement.scene_order.map(i64::from),
+            "packet placement mismatch"
+        );
         anyhow::ensure!(
             prepared.messages_hash == artifact.packet_hash
                 && format!(
@@ -179,6 +224,7 @@ pub async fn extract_accepted(
         "only accepted text may be extracted"
     );
     let accepted = AcceptedDraftV1 {
+        placement: artifact.placement.clone(),
         artifact_id: artifact.artifact_id.clone(),
         project_id: artifact.project_id.clone(),
         branch_id: artifact.branch_id.clone(),

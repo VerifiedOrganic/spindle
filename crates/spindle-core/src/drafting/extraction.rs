@@ -2,7 +2,7 @@
 use super::PacketItem;
 use crate::models::{
     AnnotatedBeatInput, CanonicalFactEntry, CharacterStatePatchEntry, ContentRating,
-    RelationshipUpdateEntry,
+    RelationshipUpdateEntry, StoryPlacement,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ pub struct DraftReceiptBinding {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptedDraftV1 {
+    pub placement: StoryPlacement,
     pub artifact_id: String,
     pub project_id: String,
     pub branch_id: String,
@@ -39,6 +40,9 @@ pub struct AcceptedTextExtractionRequestV1 {
     /// Stable across retries; includes the accepted hash, never a candidate's hash.
     pub task_id: String,
     pub accepted: AcceptedDraftV1,
+    /// Preceding ratified evidence only, bounded strictly before accepted.placement.
+    /// Excludes future plans/summaries and drafter assertions. Provisional conflicts
+    /// must not be mixed in; a separately labeled P2 extension may carry them.
     pub selected_canon: Vec<PacketItem>,
     pub known_entities: Vec<ExtractionEntityRef>,
 }
@@ -73,6 +77,7 @@ pub trait AcceptedTextExtractor: Send + Sync {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PlainTextDraftArtifactV1 {
+    pub placement: StoryPlacement,
     pub prepared_packet: Option<super::PreparedDraftingPacket>,
     pub source_packet_sha256: String,
     pub schema_version: String,

@@ -63,6 +63,7 @@ pub struct EmotionShift {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PacketChapter {
+    pub book_number: u32,
     pub number: u32,
     pub scene_index: u32,
     pub planned_scene_count: Option<u32>,

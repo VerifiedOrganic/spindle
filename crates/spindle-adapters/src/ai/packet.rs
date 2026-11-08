@@ -14,6 +14,18 @@ impl ModelRouter {
         budget: &PacketBudget,
         tokenizer: Option<&dyn DraftTokenizer>,
     ) -> anyhow::Result<(PreparedDraftingPacket, ModelResponse)> {
+        self.draft_packet_before_dispatch(policy, packet, budget, tokenizer, |_| Ok(()))
+            .await
+    }
+
+    pub(crate) async fn draft_packet_before_dispatch(
+        &self,
+        policy: EditorialPolicy,
+        packet: DraftingPacketV1,
+        budget: &PacketBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+        before_dispatch: impl FnOnce(&PreparedDraftingPacket) -> anyhow::Result<()> + Send,
+    ) -> anyhow::Result<(PreparedDraftingPacket, ModelResponse)> {
         anyhow::ensure!(
             policy == EditorialPolicy::CritiqueV1,
             "packet drafting requires critique_v1 policy; use legacy completion otherwise"
@@ -60,6 +72,7 @@ impl ModelRouter {
                 ..Default::default()
             }),
         };
+        before_dispatch(&prepared)?;
         #[cfg(any(test, feature = "test-support"))]
         self.record_dispatch(DispatchRecord::Dispatch {
             route: request.route.clone(),
@@ -206,6 +219,20 @@ max_tokens = 123
             .unwrap()
             .id;
         let artifact_path = temp.path().join("draft.json");
+        assert!(
+            service
+                .draft_packet_to_artifact(
+                    EditorialPolicy::CritiqueV1,
+                    packet.clone(),
+                    &b,
+                    None,
+                    &artifact_path
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("budget_unknown")
+        );
         let held_lock = crate::drafting::artifact::lock_artifact(&artifact_path).unwrap();
         assert!(
             service
@@ -299,5 +326,68 @@ max_tokens = 123
             .unwrap_err();
         assert!(format!("{error:#}").contains("500"));
         assert_eq!(failure_server.join().unwrap(), 1);
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let cancel_endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocked_server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 8192];
+            assert!(stream.read(&mut buffer).unwrap() > 0);
+            received_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+        });
+        let cancel_config = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace(&failure_endpoint, &cancel_endpoint);
+        std::fs::write(&path, cancel_config).unwrap();
+        router.configure(Some(path.to_str().unwrap())).unwrap();
+        let service = std::sync::Arc::new(service);
+        let mut cancel_packet = fixture();
+        cancel_packet.project_id = project.project_id.clone();
+        cancel_packet.branch_id = repository
+            .get_active_branch(&project.project_id)
+            .await
+            .unwrap()
+            .id;
+        let cancel_path = temp.path().join("cancelled.json");
+        let spawned_service = service.clone();
+        let spawned_packet = cancel_packet.clone();
+        let spawned_path = cancel_path.clone();
+        let spawned_budget = b.clone();
+        let task = tokio::spawn(async move {
+            spawned_service
+                .draft_packet_to_artifact(
+                    EditorialPolicy::CritiqueV1,
+                    spawned_packet,
+                    &spawned_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    &spawned_path,
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), received_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!cancel_path.exists());
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            service.draft_packet_to_artifact(
+                EditorialPolicy::CritiqueV1,
+                cancel_packet,
+                &b,
+                Some(&VerifiedFixtureTokenizer),
+                &cancel_path,
+            ),
+        )
+        .await
+        .expect("restart must stop without network");
+        assert!(retry.unwrap_err().to_string().contains("busy"));
+        release_tx.send(()).unwrap();
+        blocked_server.join().unwrap();
     }
 }

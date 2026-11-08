@@ -56,7 +56,7 @@ DraftingPacketV1 {
     goal, opposition, turn, intended_outcome,
     value_shift: { axis, before, after },
     emotion: { entry, exit },
-    chapter: { number, scene_index, planned_scene_count?, is_closer },
+    chapter: { book_number, number, scene_index, planned_scene_count?, is_closer },
     target_words: { min, preferred, max },
     location: { id, name }, story_clock, rating, tone?,
     participants: [{ id, display_name, role }],
@@ -467,14 +467,21 @@ or mismatched receipts stop with the artifact retained. Truncated output stays
 staged and cannot be accepted; no continuation or prose re-roll is implicit.
 
 Local JSON snapshots use atomic replacement and a per-path lock. Concurrent
-owners are rejected. A process crash leaves the `.lock` file as an honest
-recovery stop; inspect the artifact and receipt before explicitly recovering the
-lock. This is not the future durable model-call reservation ledger.
+owners are rejected. Immediately before HTTP dispatch, the lock is marked unresolved and synced.
+Cancellation, process crash or any unresolved post-dispatch error retains that
+marker; only durable artifact capture clears it. Budget/tokenizer/clearance
+failures before dispatch release the lock normally. Inspect the artifact, packet
+hash and receipt before explicitly recovering an unresolved lock. This is not the future durable model-call reservation ledger.
 
 `spindle_core::drafting::extraction` defines the consumer-side
 `AcceptedTextExtractor` trait. Its versioned request carries accepted text/hash,
-packet identity, branch, rating, unchanged generation receipt, selected canon
-and known entity IDs. The response supplies only summary/beat/compatibility
+packet identity, branch, immutable `StoryPlacement` (including unsaved scenes),
+rating, unchanged generation receipt, selected canon and known entity IDs. The
+packet chapter carries a book number and one-based scene order; these positive
+coordinates are frozen in the accepted artifact and retry request. Selected
+canon is preceding ratified evidence only, excluding future plans/summaries and
+drafter assertions. Provisional conflicts must be separately labeled by a future
+P2 schema extension rather than mixed into this field. The response supplies only summary/beat/compatibility
 continuity metadata bound to the accepted hash. P2 implements extraction,
 rating clearance and task-id idempotency; no extraction semantics or canon/event
 store are implemented here. `extract_accepted` requires a persisted accepted
