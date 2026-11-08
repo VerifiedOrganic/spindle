@@ -106,3 +106,12 @@ Project selection (`set_active_project`) is available in every named tool profil
 <!-- tool: list_skills -->
 <!-- tool: save_scene_draft -->
 <!-- tool: set_active_project -->
+
+
+Startup profiles are selected before connecting, using `SPINDLE_TOOL_PROFILE`.
+Use `spindle-mcp profiles` to inspect supported units/capabilities; reconnect after
+changing the startup profile. New generated names include `workflow-write`,
+`workflow-authoring`, `workflow-import`, `revision`, `worldbuilding`, `planning`,
+`research`, `style`, `release`, and `setup`. Existing names retain compatibility
+catalogs. Load workflows listed for the connected profile; reading a skill never
+enables missing tools. Unknown profile names are startup errors.

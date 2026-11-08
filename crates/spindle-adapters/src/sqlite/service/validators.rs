@@ -494,8 +494,16 @@ impl SqliteSpindleService {
             .map(|character| (character.id.clone(), character))
             .collect::<BTreeMap<_, _>>();
 
+        let clock = self.repository.get_scene_clock(&scene.id).await?;
+        let is_flashback = clock
+            .as_ref()
+            .and_then(|clock| clock.temporal_mode.as_deref())
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("flashback"));
         for (character_id, character) in &characters_by_id {
-            if !contains_case_insensitive_word_boundary(&scene.full_text, &character.name) {
+            if is_flashback {
+                continue;
+            }
+            if !has_named_character_action(&scene.full_text, &character.name) {
                 continue;
             }
             let latest_state = states
@@ -510,6 +518,16 @@ impl SqliteSpindleService {
             let Some(latest_state) = latest_state else {
                 continue;
             };
+            // A final state cannot tell us whether an action preceded a death
+            // inside this same scene. A current alive state still clears death.
+            if (
+                latest_state.book_number,
+                latest_state.chapter_number,
+                latest_state.scene_order,
+            ) == scene_position
+            {
+                continue;
+            }
             let Some(dead_status) = latest_state
                 .status
                 .iter()
@@ -523,8 +541,12 @@ impl SqliteSpindleService {
                 character_name: character.name.clone(),
                 status: dead_status.clone(),
                 message: format!(
-                    "scene includes '{}' acting after status '{}'",
-                    character.name, dead_status
+                    "book {} chapter {} scene {} includes '{}' acting after status '{}'",
+                    scene.book_number,
+                    scene.chapter_number,
+                    scene.scene_order,
+                    character.name,
+                    dead_status
                 ),
             });
         }
@@ -1813,5 +1835,172 @@ impl SqliteSpindleService {
             }
             _ => None,
         })
+    }
+}
+
+/// Conservative lexical prefilter, not a general prose claim extractor. Only a
+/// named subject followed by an action is evidence; mentions alone are not.
+fn has_named_character_action(text: &str, name: &str) -> bool {
+    if name.trim().is_empty() {
+        return false;
+    }
+    let name = name.trim().to_lowercase();
+    const ACTIONS: &[&str] = &[
+        "said",
+        "says",
+        "asked",
+        "asks",
+        "whispered",
+        "whispers",
+        "shouted",
+        "shouts",
+        "stepped",
+        "steps",
+        "walked",
+        "walks",
+        "ran",
+        "runs",
+        "entered",
+        "enters",
+        "vaulted",
+        "vaults",
+        "loosed",
+        "looses",
+        "locked",
+        "locks",
+        "drew",
+        "draws",
+        "pointed",
+        "points",
+        "fired",
+        "fires",
+        "lifted",
+        "lifts",
+        "opened",
+        "opens",
+        "signed",
+        "signs",
+        "spoke",
+        "speaks",
+        "replied",
+        "replies",
+        "nodded",
+        "nods",
+        "reached",
+        "reaches",
+        "grabbed",
+        "grabs",
+    ];
+    text.split(['.', '!', '?', '\n']).any(|sentence| {
+        let lower = sentence.to_lowercase();
+        lower.match_indices(&name).any(|(start, matched)| {
+            // Exclusions qualify this named action, not arbitrary words in
+            // its objects or another clause (e.g. a recording-room door).
+            let before = lower[..start].rsplit(';').next().unwrap_or_default();
+            let before = before.rsplit(" but ").next().unwrap_or_default();
+            let before = before.rsplit(" yet ").next().unwrap_or_default();
+            let hypothetical = ["if", "unless", "suppose", "supposing"]
+                .iter()
+                .any(|word| contains_case_insensitive_word_boundary(before, word));
+            let framed = [
+                "in a flashback",
+                "years ago",
+                "before the death",
+                "before her death",
+                "before his death",
+                "in her memory",
+                "in his memory",
+                "in the memory",
+                "in a dream",
+                "in her dream",
+                "in his dream",
+                "remembered how",
+                "remembered when",
+                "remembered that",
+                "imagined that",
+                "dreamed that",
+                "the recording played",
+            ]
+            .iter()
+            .any(|frame| {
+                before
+                    .trim_end()
+                    .trim_end_matches([',', ':'])
+                    .trim_end()
+                    .ends_with(frame)
+            });
+            let framed_subject = [
+                "on the recording,",
+                "in the recording,",
+                "a ghost",
+                "the ghost",
+                "a hologram of",
+                "the hologram of",
+            ]
+            .iter()
+            .any(|frame| before.trim_end().ends_with(frame));
+            if hypothetical || framed || framed_subject {
+                return false;
+            }
+            if lower[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric())
+            {
+                return false;
+            }
+            let tail = &lower[start + matched.len()..];
+            if !tail.starts_with(char::is_whitespace) {
+                return false;
+            }
+            let mut words = tail.split_whitespace();
+            let first = words.next().unwrap_or_default();
+            let verb =
+                if ["quietly", "quickly", "slowly", "suddenly", "also", "then"].contains(&first) {
+                    words.next().unwrap_or_default()
+                } else {
+                    first
+                };
+            ACTIONS.contains(&verb.trim_matches(|c: char| !c.is_alphabetic()))
+        })
+    })
+}
+
+#[cfg(test)]
+mod dead_action_tests {
+    use super::has_named_character_action;
+
+    #[test]
+    fn named_actions_require_unqualified_narrative_evidence() {
+        for text in [
+            "Veyra stepped into the hall.",
+            "Veyra quietly opened the door.",
+            "Veyra said, ‘Go.’",
+            "They remembered Veyra. Veyra drew her sword.",
+            "Veyra opened the recording room door.",
+            "Veyra stepped past the ghost town.",
+            "In a dream laboratory, Veyra opened the door.",
+            "In a flashback exhibit room, Veyra opened the door.",
+            "Garrick remembered how Eli died, but Veyra opened the door.",
+        ] {
+            assert!(has_named_character_action(text, "Veyra"), "{text}");
+        }
+        for text in [
+            "Garrick remembered Veyra and whispered a prayer.",
+            "In a flashback, Veyra stepped into the hall.",
+            "Years ago, Veyra drew her sword.",
+            "The recording played: Veyra said, ‘Go.’",
+            "Veyra's ghost opened the door.",
+            "Veyra did not open the door.",
+            "If only Veyra walked beside them.",
+            "If Veyra opened the door, the alarm would sound.",
+            "Unless Veyra opened the door, they would be trapped.",
+            "Garrick remembered how Veyra opened the door.",
+            "Veyra had stepped into the hall.",
+            "Veyra would have opened the door.",
+            "OtherVeyra stepped into the hall.",
+        ] {
+            assert!(!has_named_character_action(text, "Veyra"), "{text}");
+        }
     }
 }

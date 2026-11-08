@@ -148,6 +148,49 @@ pub struct GeneratedScenePackage {
     pub continuity_notes: Vec<String>,
 }
 
+impl GeneratedScenePackage {
+    /// Compatibility adapter only; extraction semantics belong to P2.
+    pub fn from_accepted_packet(
+        artifact: &spindle_core::drafting::extraction::PlainTextDraftArtifactV1,
+    ) -> Result<Self> {
+        use sha2::{Digest, Sha256};
+        anyhow::ensure!(
+            artifact.schema_version == "plain_text_draft_v1" && !artifact.truncated,
+            "complete packet artifact required"
+        );
+        let actual = format!("{:x}", Sha256::digest(artifact.text.as_bytes()));
+        anyhow::ensure!(
+            actual == artifact.text_sha256
+                && artifact.accepted_text_sha256.as_ref() == Some(&actual),
+            "accepted text hash mismatch"
+        );
+        let normalized = artifact.text.replace("\r\n", "\n");
+        anyhow::ensure!(
+            format!("{:x}", Sha256::digest(normalized.trim().as_bytes()))
+                == artifact.receipt.normalized_output_sha256,
+            "receipt text mismatch"
+        );
+        let metadata = artifact
+            .extraction
+            .as_ref()
+            .context("accepted-text extraction pending")?;
+        anyhow::ensure!(
+            metadata.accepted_text_sha256 == actual && !metadata.summary.trim().is_empty(),
+            "extraction is not bound to accepted text"
+        );
+        Ok(Self {
+            full_text: artifact.text.clone(),
+            summary: metadata.summary.clone(),
+            tone: metadata.tone.clone(),
+            character_states: metadata.character_states.clone(),
+            canonical_facts: metadata.canonical_facts.clone(),
+            relationship_updates: metadata.relationship_updates.clone(),
+            beats: metadata.beats.clone(),
+            continuity_notes: metadata.continuity_notes.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChapterSummaryArtifact {
     pub version: u32,
@@ -595,5 +638,34 @@ mod clear_generation_tests {
         assert!(artifact.adapter_kind.is_none());
         assert!(artifact.model_name.is_none());
         assert_eq!(artifact.prompt, "the prompt");
+    }
+}
+
+#[cfg(test)]
+mod packet_package_tests {
+    use super::*;
+    #[test]
+    fn compatibility_package_preserves_only_hash_bound_accepted_prose() {
+        let mut artifact: spindle_core::drafting::extraction::PlainTextDraftArtifactV1 = serde_json::from_value(serde_json::json!({
+            "schema_version":"plain_text_draft_v1", "artifact_id":"draft1", "project_id":"p", "branch_id":"b", "scene_id":null,
+            "placement":{"book_number":1,"chapter_number":1,"scene_order":1,"note":null},
+            "source_packet_sha256":"source-hash", "packet_hash":"packet-hash", "rating":"general", "text":"The bridge fell.\n",
+            "text_sha256":"2ff4cd987746a89c8cbbfb4809272c3355f8b9f1766cdb617b9fd5bcc5546598", "truncated":false,
+            "receipt":{"generation_id":"receipt1","agent_id":"agent1","normalized_output_sha256":"44f03a62b6376f8c129df5b23dfd835205460f5fd3dec7b8b7205eb7d87858a1"},
+            "accepted_text_sha256":"2ff4cd987746a89c8cbbfb4809272c3355f8b9f1766cdb617b9fd5bcc5546598", "extraction_attempts":1, "extraction_request":null,"extraction_failure":null,
+            "extraction":{"accepted_text_sha256":"2ff4cd987746a89c8cbbfb4809272c3355f8b9f1766cdb617b9fd5bcc5546598", "summary":"A crossing fails.","tone":null,
+                "character_states":[], "canonical_facts":[],"relationship_updates":[],"beats":[],"continuity_notes":[]}
+        })).unwrap();
+        let package = GeneratedScenePackage::from_accepted_packet(&artifact).unwrap();
+        assert_eq!(package.full_text.as_bytes(), b"The bridge fell.\n");
+        assert_eq!(package.summary, "A crossing fails.");
+        artifact.extraction.as_mut().unwrap().accepted_text_sha256 = "losing-candidate".into();
+        assert!(GeneratedScenePackage::from_accepted_packet(&artifact).is_err());
+        artifact.extraction.as_mut().unwrap().accepted_text_sha256 = artifact.text_sha256.clone();
+        artifact.truncated = true;
+        assert!(GeneratedScenePackage::from_accepted_packet(&artifact).is_err());
+        artifact.truncated = false;
+        artifact.text = "Edited after acceptance.".into();
+        assert!(GeneratedScenePackage::from_accepted_packet(&artifact).is_err());
     }
 }

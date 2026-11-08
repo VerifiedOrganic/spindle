@@ -1,6 +1,7 @@
 # Drafting packets and critique-driven revision (P1)
 
-Status: proposed; design only. No runtime behavior changes in this PR.
+Status: staged implementation. Legacy remains the public default; release
+gates have not passed. See the implementation status sections below.
 
 ## Evidence baseline and scope
 
@@ -55,7 +56,7 @@ DraftingPacketV1 {
     goal, opposition, turn, intended_outcome,
     value_shift: { axis, before, after },
     emotion: { entry, exit },
-    chapter: { number, scene_index, planned_scene_count?, is_closer },
+    chapter: { book_number, number, scene_index, planned_scene_count?, is_closer },
     target_words: { min, preferred, max },
     location: { id, name }, story_clock, rating, tone?,
     participants: [{ id, display_name, role }],
@@ -435,3 +436,62 @@ messages contain a compact reviewed rubric and plain-prose contract rather than
 skills, standards or extraction instructions. Existing legacy combined-package
 prompts remain until the separately gated plain-text/extraction integration.
 No release quality gate has passed and no default is changed.
+
+## Implementation status: packet draft and extraction boundary (PR 2)
+
+Following the orchestrator's sequencing update, PR 2 connects the packet to the
+real drafting route without waiting for P2's extractor implementation.
+`ModelRouter::draft_packet` and
+`SqliteSpindleService::draft_packet_to_artifact` are opt-in Rust APIs guarded by
+`EditorialPolicy::CritiqueV1`. They do not activate a critic/controller, add an
+MCP tool, or change existing authoring runs. Legacy combined-package generation
+and continuity save/commit workflows remain available and unchanged.
+
+The caller must supply a tokenizer verified for the actual resolved model.
+Only HTTP adapter framing is supported initially; other adapters return
+`budget_unknown`. Counts include the configured route system prompt, applicable
+rating appendix, packet task framing and final user message. The actual HTTP
+body uses those exact messages. Output reservation cannot be smaller than the
+configured route output cap. Packet calls make one HTTP attempt, with no hidden
+transport retries. Existing completion retry behavior is preserved for legacy
+calls. Runtime per-run paid-call/budget admission remains a prerequisite for
+public automated execution in PR 5.
+
+The service persists a `PlainTextDraftArtifactV1` before returning, including
+the prepared packet, assembly/omission report and exact dispatched messages. It preserves
+exact UTF-8 bytes and their SHA-256, separately from the existing normalized
+receipt hash (CRLF normalized and surrounding whitespace trimmed). A source-packet
+fingerprint prevents reuse with changed inputs. Reopening the same captured
+artifact verifies the snapshot and receipt instead of generating again. Expired
+or mismatched receipts stop with the artifact retained. Truncated output stays
+staged and cannot be accepted; no continuation or prose re-roll is implicit.
+
+Local JSON snapshots use atomic replacement and a per-path lock. Concurrent
+owners are rejected. Immediately before HTTP dispatch, the lock is marked unresolved and synced.
+Cancellation, process crash or any unresolved post-dispatch error retains that
+marker; only durable artifact capture clears it. Budget/tokenizer/clearance
+failures before dispatch release the lock normally. Inspect the artifact, packet
+hash and receipt before explicitly recovering an unresolved lock. This is not the future durable model-call reservation ledger.
+
+`spindle_core::drafting::extraction` defines the consumer-side
+`AcceptedTextExtractor` trait. Its versioned request carries accepted text/hash,
+packet identity, branch, immutable `StoryPlacement` (including unsaved scenes),
+rating, unchanged generation receipt, selected canon and known entity IDs. The
+packet chapter carries a book number and one-based scene order; these positive
+coordinates are frozen in the accepted artifact and retry request. Selected
+canon is preceding ratified evidence only, excluding future plans/summaries and
+drafter assertions. Provisional conflicts must be separately labeled by a future
+P2 schema extension rather than mixed into this field. The response supplies only summary/beat/compatibility
+continuity metadata bound to the accepted hash. P2 implements extraction,
+rating clearance and task-id idempotency; no extraction semantics or canon/event
+store are implemented here. `extract_accepted` requires a persisted accepted
+artifact, freezes retry inputs, persists each attempt and failure, and caches
+successful metadata. Failure never clears accepted prose or dispatches a draft.
+`GeneratedScenePackage::from_accepted_packet` adapts accepted metadata into the
+existing package shape while retaining the exact accepted prose. No canon is
+automatically applied by these APIs.
+
+No built-in production tokenizer is assumed verified. Without one, a live
+packet-vs-baseline experiment cannot pass admission; G remains unpassed and no
+quality win is claimed. Public host/agent scheduling and CLI integration remain
+later steps, coordinated with P2 and P4.

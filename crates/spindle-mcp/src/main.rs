@@ -27,7 +27,7 @@ use crate::server::SpindleMcpServer;
 use crate::tools::run_init_grok_skills;
 
 #[derive(Parser, Debug)]
-#[command(name = "spindle-mcp", about = "Spindle MCP server + helper commands")]
+#[command(name = "spindle-mcp", about = "Spindle MCP server + helper commands", after_help = tools::profile_help())]
 struct McpCli {
     #[command(subcommand)]
     command: Option<McpCommand>,
@@ -35,6 +35,11 @@ struct McpCli {
 
 #[derive(Subcommand, Debug)]
 enum McpCommand {
+    /// List startup profiles, enabled workflow units, and required capabilities.
+    Profiles {
+        #[arg(long)]
+        json: bool,
+    },
     /// Install the Spindle writing skill globally for Codex (~/.agents/skills/).
     #[command(name = "init-codex", alias = "init-codex-skills")]
     InitCodexSkills {
@@ -67,6 +72,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = McpCli::parse();
     if let Some(cmd) = cli.command {
         match cmd {
+            McpCommand::Profiles { json } => {
+                tools::print_profiles(json);
+                return Ok(());
+            }
             McpCommand::InitCodexSkills { target_dir } => {
                 print_codex_skill(&init_codex_skill(target_dir.as_deref())?);
                 return Ok(());
@@ -95,6 +104,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+
+    let tool_profile = match std::env::var("SPINDLE_TOOL_PROFILE") {
+        Ok(profile) => Some(profile),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(anyhow::anyhow!("invalid SPINDLE_TOOL_PROFILE: {error}")),
+    };
+    tools::validate_tool_profile(tool_profile.as_deref())?;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let env_data_dir = std::env::var_os("SPINDLE_DATA_DIR").map(PathBuf::from);
@@ -423,7 +439,11 @@ where
     let addr = proxy::wait_for_primary(data_dir).await?;
     let client = proxy::connect_to_primary(addr).await?;
     let failover_signal = tokio_util::sync::CancellationToken::new();
-    let handler = ProxyHandler::new(client.peer().clone(), failover_signal.clone());
+    let handler = ProxyHandler::new(
+        client.peer().clone(),
+        failover_signal.clone(),
+        std::env::var("SPINDLE_TOOL_PROFILE").ok(),
+    );
 
     let running = handler
         .serve(server_io)

@@ -4159,16 +4159,17 @@ impl ConsistencyScopeInput {
 /// `run_phase_four_validator_checks_for_scenes` fan-out under the non-deep path.
 pub const SCENE_VERIFY_CHECKS: &[&str] = &[
     // ── Deterministic, scene-attributed continuity checks ──
-    "knowledge_timing",            // premature-knowledge scan, per scene
-    "chronology",                  // story-time ordering, over the scoped window
-    "temporal_coherence",          // intra-scene time-jump lexical scan (Tier 1)
-    "quantity_drift",              // unexplained multi-band jumps (branch-wide feed)
-    "currency_consistency",        // price facts disagreeing once converted
-    "affordability",               // priced purchase vs a present character's wealth
-    "tone_consistency",            // scene tone vs declared reader-contract boundary
+    "retcon_reachability",  // shared as-of character-state / retcon scanner
+    "knowledge_timing",     // premature-knowledge scan, per scene
+    "chronology",           // story-time ordering, over the scoped window
+    "temporal_coherence",   // intra-scene time-jump lexical scan (Tier 1)
+    "quantity_drift",       // unexplained multi-band jumps (branch-wide feed)
+    "currency_consistency", // price facts disagreeing once converted
+    "affordability",        // priced purchase vs a present character's wealth
+    "tone_consistency",     // scene tone vs declared reader-contract boundary
     "content_boundary_compliance", // explicit-scene review flag, per scene
-    "secret_leak",                 // out-of-circle speaker leaks a secret (Tier 1)
-    "canonical_fact_consistency",  // conflicting active canonical-fact values
+    "secret_leak",          // out-of-circle speaker leaks a secret (Tier 1)
+    "canonical_fact_consistency", // conflicting active canonical-fact values
     // ── Phase-4 validator request names (deterministic, prose-drift) ──
     "canonical_fact_prose_drift", // prose contradicts a registered canonical fact
     "world_rule_semantic_drift",  // prose trips a world-rule scan pattern
@@ -4181,7 +4182,6 @@ pub const SCENE_VERIFY_CHECKS: &[&str] = &[
                                   // "pacing_drift"             — multi-chapter intensity trend
                                   // "research_accuracy"        — corpus-wide provenance audit, not scene-local
                                   // "scene_divergence"         — source-vs-draft, separate bridge
-                                  // "retcon_reachability"      — cross-scene retcon graph, checkpoint-scoped
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -7830,13 +7830,13 @@ mod tests {
             "pacing_drift",
             "research_accuracy",
             "scene_divergence",
-            "retcon_reachability",
         ] {
             assert!(
                 !SCENE_VERIFY_CHECKS.contains(&excluded),
                 "scene-verify subset must exclude {excluded}"
             );
         }
+        assert!(SCENE_VERIFY_CHECKS.contains(&"retcon_reachability"));
         assert!(
             SCENE_VERIFY_CHECKS.contains(&"anti_slop"),
             "Phase 3: hard shelves join the scene-scoped verify set"

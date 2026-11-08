@@ -44,7 +44,7 @@ async fn tools_list_matches_pre_split_snapshots_for_every_profile() {
             Some("unknown-profile"),
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/src/tools/snapshots/default.json"
+                "/src/tools/snapshots/unknown-profile.json"
             )),
         ),
     ];

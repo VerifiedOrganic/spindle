@@ -4,6 +4,10 @@
 It connects your existing book, installs the `$spindle` skill, and keeps Codex as
 the writer. Host drafting needs no Spindle API key.
 
+For generated workflow/specialist profiles, run `spindle-mcp profiles` and see
+[profile selection](docs/tool-profiles.md). Existing profile names retain their
+compatibility catalogs.
+
 For focused serial-fiction work, run the MCP server with `SPINDLE_TOOL_PROFILE=authoring`
 and load the `authoring-supervisor` skill. This smaller tool set covers planning,
 drafting, continuity, checkpoint review, recovery, and manuscript export. Leave

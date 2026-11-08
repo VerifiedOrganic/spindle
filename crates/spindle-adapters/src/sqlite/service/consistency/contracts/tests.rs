@@ -6076,7 +6076,7 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
             chapter_number: 1,
             chapter_id: None,
             scene_order: 2,
-            full_text: "Garrick remembered Veyra and whispered a prayer.".to_string(),
+            full_text: "Garrick remembered the courtyard. Veyra stepped into the hall.".to_string(),
             summary: "Garrick remembers Veyra.".to_string(),
             content_rating: ContentRating::General,
             tone: None,
@@ -6113,6 +6113,43 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
     assert_eq!(dead_issues[0].severity, "warning");
     assert!(dead_issues[0].message.contains("Veyra"));
     assert!(!dead_issues[0].message.contains("Garrick"));
+
+    // Both broad consistency and the actual verify subset surface the same
+    // finding once, attributed to this scene (including a warm cache hit).
+    assert_eq!(scene2.retcon_findings.len(), 1);
+    for checks in [
+        vec!["retcon_reachability".to_string()],
+        spindle_core::models::SCENE_VERIFY_CHECKS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    ] {
+        let mut scope = spindle_core::models::ConsistencyScopeInput::chapter_range(1, 1, 1, 1);
+        scope.scene_order = Some(2);
+        let report = svc
+            .check_consistency(spindle_core::models::CheckConsistencyInput {
+                project_id: project.project_id.clone(),
+                scope,
+                checks,
+                deep_scan_offset: None,
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        let hits: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "retcon_reachability")
+            .collect();
+        assert_eq!(hits.len(), 1, "{:?}", report.issues);
+        assert_eq!(hits[0].message, dead_issues[0].message);
+        assert_eq!(hits[0].severity, dead_issues[0].severity);
+        assert!(hits[0].entity_ids.contains(&scene2.scene_id));
+    }
 
     // Now mark Veyra with an explicit typed deceased marker ("status:deceased") in scene 2
     // and verify that scene 3 triggers an "error" severity finding that blocks under BlockErrors.
@@ -6163,5 +6200,235 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
     assert!(
         commit_blocked.is_err(),
         "explicit typed marker status:deceased must produce error and block under BlockErrors"
+    );
+
+    for (order, text) in [
+        (4, "Garrick remembered Veyra and whispered a prayer."),
+        (5, "In a flashback, Veyra stepped into the hall."),
+        (6, "On the recording, Veyra said goodbye."),
+    ] {
+        let saved = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: order,
+                full_text: text.into(),
+                summary: "control".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(saved.retcon_findings.is_empty(), "{text}");
+        let scene = svc.repository().get_scene(&saved.scene_id).await.unwrap();
+        assert!(
+            svc.scan_retcon_findings(&project.project_id, &scene)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    // Review regressions: objects named recording/ghost are ordinary action;
+    // an explicit conditional must never become a blocking death error.
+    for (text, blocked) in [
+        ("Veyra opened the recording room door.", true),
+        ("Veyra stepped past the ghost town.", true),
+        ("If Veyra opened the door, the alarm would sound.", false),
+    ] {
+        let saved = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 4,
+                full_text: text.into(),
+                summary: "modality control".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(!saved.retcon_findings.is_empty(), blocked, "{text}");
+        let committed = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: saved.scene_id,
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: None,
+            })
+            .await;
+        assert_eq!(committed.is_err(), blocked, "{text}: {committed:?}");
+    }
+    let scene = svc.repository().get_scene(&scene3.scene_id).await.unwrap();
+    svc.repository()
+        .upsert_scene_clock(
+            &scene.id,
+            &project.project_id,
+            &scene.branch_id,
+            &spindle_core::models::StoryClock {
+                day_index: None,
+                time_of_day: None,
+                duration_days: None,
+                precision: None,
+            },
+            Some("flashback"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        svc.scan_retcon_findings(&project.project_id, &scene)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A resurrection in a later scene clears the prior life state without
+    // retroactively hiding the earlier contradiction.
+    let restored = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 7,
+            full_text: "A resurrection restored Veyra to life.".into(),
+            summary: "resurrection".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    svc.commit_character_state(CommitCharacterStateInput {
+        character_id: char_slain.character_id.clone(),
+        scene_id: restored.scene_id,
+        changes: CharacterStatePatch {
+            status: Some(vec!["alive".into()]),
+            emotional_state: Default::default(),
+            goals: None,
+            notes: None,
+            source_summary: None,
+        },
+    })
+    .await
+    .unwrap();
+    let living = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 8,
+            full_text: "Veyra stepped into the hall.".into(),
+            summary: "alive".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(living.retcon_findings.is_empty());
+    let main_branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let child = svc
+        .create_branch(spindle_core::models::CreateBranchInput {
+            project_id: project.project_id.clone(),
+            parent_branch_id: None,
+            name: "dead-alternative".into(),
+            branch_type: "alternative".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(spindle_core::models::SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: child.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.commit_character_state(CommitCharacterStateInput {
+        character_id: char_slain.character_id.clone(),
+        scene_id: living.scene_id.clone(),
+        changes: CharacterStatePatch {
+            status: Some(vec!["status:deceased".into()]),
+            emotional_state: Default::default(),
+            goals: None,
+            notes: None,
+            source_summary: None,
+        },
+    })
+    .await
+    .unwrap();
+    svc.switch_branch(spindle_core::models::SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: main_branch.id.clone(),
+    })
+    .await
+    .unwrap();
+    let subsequent = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 9,
+            full_text: "Veyra opened the door.".into(),
+            summary: "action".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The same inherited prose sees child-only death, while main stays alive.
+    for (branch, expected) in [(child.branch_id, 1), (main_branch.id, 0)] {
+        svc.switch_branch(spindle_core::models::SwitchBranchInput {
+            project_id: project.project_id.clone(),
+            branch_id: branch,
+        })
+        .await
+        .unwrap();
+        let mut scope = spindle_core::models::ConsistencyScopeInput::chapter_range(1, 1, 1, 1);
+        scope.scene_order = Some(9);
+        let report = svc
+            .check_consistency(spindle_core::models::CheckConsistencyInput {
+                project_id: project.project_id.clone(),
+                scope,
+                checks: vec!["retcon_reachability".into()],
+                deep_scan_offset: None,
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        let hits: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.check_type == "retcon_reachability")
+            .collect();
+        assert_eq!(hits.len(), expected, "{:?}", report.issues);
+        if let Some(hit) = hits.first() {
+            assert!(hit.entity_ids.contains(&subsequent.scene_id));
+        }
+    }
+    let earlier = svc.repository().get_scene(&scene3.scene_id).await.unwrap();
+    svc.repository()
+        .upsert_scene_clock(
+            &earlier.id,
+            &project.project_id,
+            &earlier.branch_id,
+            &spindle_core::models::StoryClock::default(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        svc.scan_retcon_findings(&project.project_id, &earlier)
+            .await
+            .unwrap()
+            .len(),
+        1
     );
 }

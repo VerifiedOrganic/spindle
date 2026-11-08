@@ -24,6 +24,18 @@ pub struct EmbeddedReference {
     pub trigger: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeneratedProfile {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub units: &'static [&'static str],
+    pub tools: &'static [&'static str],
+}
+
+pub fn list_profiles() -> &'static [GeneratedProfile] {
+    GENERATED_PROFILES
+}
+
 pub fn get_reference(name: &str) -> Option<EmbeddedReference> {
     EMBEDDED_SKILLS
         .iter()
@@ -98,3 +110,37 @@ mod manifest_contract_tests {
 #[allow(dead_code)]
 #[path = "../build.rs"]
 mod build_contract;
+
+#[cfg(test)]
+mod profile_contract_tests {
+    use super::*;
+
+    #[test]
+    fn generated_profiles_are_sorted_and_resolve_dependency_closure() {
+        let profiles = list_profiles();
+        assert_eq!(profiles.len(), 10);
+        assert!(profiles.windows(2).all(|p| p[0].name < p[1].name));
+        for profile in profiles {
+            assert!(profile.tools.windows(2).all(|p| p[0] < p[1]));
+            assert!(profile.units.contains(&"spindle"));
+            for name in [
+                "list_projects",
+                "set_active_project",
+                "get_writer_state",
+                "get_skill",
+                "get_reference",
+                "list_skills",
+            ] {
+                assert!(profile.tools.contains(&name), "{}: {name}", profile.name);
+            }
+        }
+        let import = profiles
+            .iter()
+            .find(|p| p.name == "workflow-import")
+            .unwrap();
+        assert!(!import.tools.contains(&"apply_style_profile"));
+        let revision = profiles.iter().find(|p| p.name == "revision").unwrap();
+        assert!(revision.tools.contains(&"create_branch"));
+        assert!(revision.tools.contains(&"revise_scene"));
+    }
+}

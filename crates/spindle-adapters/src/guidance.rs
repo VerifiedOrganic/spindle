@@ -1,6 +1,7 @@
 use spindle_skills::{
     EmbeddedSkill, get_skill as embedded_get_skill, list_skills as embedded_list_skills,
 };
+pub use spindle_skills::{GeneratedProfile, list_profiles};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedReference {
