@@ -318,7 +318,7 @@ async fn existing_project_refs_require_matching_project_branch_and_type() {
 }
 
 #[tokio::test]
-async fn planning_v0060_upgrades_v0048_without_changing_existing_project() {
+async fn planning_v0049_upgrades_v0048_without_changing_existing_project() {
     let tmp = tempfile::TempDir::new().unwrap();
     let _warm = crate::sqlite::SqlitePool::open(&tmp.path().join("warm.db"))
         .await

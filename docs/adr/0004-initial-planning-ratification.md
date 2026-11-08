@@ -4,7 +4,7 @@ Status: accepted for Phase A (contracts and staging).
 
 Initial planning may begin before a project exists. Store premise and intent
 hash in `planning_session`, generated operations in `planning_proposal`, and
-reserve `planning_operation_receipt` for recoverable application (V0060).
+reserve `planning_operation_receipt` for recoverable application (V0049).
 A session binds either no project/branch or an explicit matching pair. No
 provisional project is created to display a contract.
 
