@@ -648,7 +648,9 @@ impl SqliteSpindleService {
             chars_deleted: 0,
             world_rule_hits: Vec::new(),
             voice_drift: Vec::new(),
-            retcon_findings: Vec::new(),
+            retcon_findings: self
+                .scan_retcon_findings(&save_input.project_id, &scene)
+                .await?,
             // A freshly saved scene is not yet clocked, so the scan is prose-only
             // (no suppression to apply). Advisory `warning`s — never blocks a save.
             temporal_findings: scan_temporal_findings(&scene.id, &scene.full_text, None),

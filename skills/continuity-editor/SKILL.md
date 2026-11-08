@@ -487,6 +487,13 @@ Use these shipped Phase 4 validator IDs as your live evidence package:
 - `retcon_reachability`
 - `style_compliance`
 
+`retcon_reachability` also checks named actions against prior-scene deceased
+character state on save/revise, commit, scene verify and broad scans. Mentioning
+a dead person is not an action. Marked flashbacks, memories and recordings are
+excluded by a conservative lexical prefilter scoped to the action; explicit
+conditional actions are excluded too. Review ambiguous cases against the
+prose. Free-text death statuses warn; `status:deceased` is an error.
+
 The deterministic story-time and quantity checks (`chronology`,
 `knowledge_timing`, `pacing_drift`, `quantity_drift`, `currency_consistency`,
 `affordability`), the metadata audits (`motif_usage_audit`,

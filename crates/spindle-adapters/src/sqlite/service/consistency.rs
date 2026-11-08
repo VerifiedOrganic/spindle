@@ -1491,6 +1491,41 @@ impl SqliteSpindleService {
             }
         }
 
+        // The write-time retcon scanner also sees character state (the Phase-4
+        // registry does not). Resolve inherited scenes against the active branch.
+        if should_run_check(&requested_checks_set, "retcon_reachability") {
+            let resolved = self
+                .repository
+                .list_scenes_resolved_for_branch(&project_id, &active_branch.id)
+                .await?;
+            let retcon_scenes = self
+                .narrow_scenes_by_subjects(
+                    &project_id,
+                    &active_branch.id,
+                    scoped_scenes(resolved, &scope),
+                    &input.subjects,
+                )
+                .await?;
+            for scene in &retcon_scenes {
+                let mut effective_scene = scene.clone();
+                effective_scene.branch_id = active_branch.id.clone();
+                for finding in self
+                    .scan_retcon_findings(&project_id, &effective_scene)
+                    .await?
+                {
+                    let mut issue = retcon_finding_to_consistency_issue(&finding);
+                    issue.entity_ids.push(scene.id.clone());
+                    if !issues.iter().any(|existing| {
+                        existing.check_type == issue.check_type
+                            && existing.message == issue.message
+                            && existing.entity_ids == issue.entity_ids
+                    }) {
+                        issues.push(issue);
+                    }
+                }
+            }
+        }
+
         // ── Phase-4 validator fan-out ───────────────────────────────
         // Runs canonical_fact_prose_drift / world_rule_semantic_drift /
         // voice_drift / retcon_reachability across the scoped scenes. The
