@@ -3,6 +3,7 @@ pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'st
         "import" => Some(&[
             "create_project",
             "list_projects",
+            "set_active_project",
             "list_skills",
             "get_skill",
             "get_reference",
@@ -52,6 +53,7 @@ pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'st
             "get_episode_release",
             "create_project",
             "list_projects",
+            "set_active_project",
             "list_skills",
             "get_skill",
             "get_reference",
@@ -167,6 +169,7 @@ pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'st
         "minimal" => Some(&[
             "create_project",
             "list_projects",
+            "set_active_project",
             "list_skills",
             "get_skill",
             "get_reference",

@@ -363,3 +363,31 @@ async fn set_active_project_switches_session_defaults() {
         serde_json::json!(second.project_id)
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn project_selection_is_callable_in_every_profile() {
+    let mut router = router().await;
+    let args = serde_json::json!({
+        "name": "Existing book", "project_type": "novel", "genre": "fantasy",
+        "reader_contract": {"promise": "An existing story", "style_notes": [], "boundaries": []}
+    });
+    let project = structured_json(
+        router
+            .call_tool("create_project", args.as_object())
+            .await
+            .unwrap(),
+    );
+    let selection = serde_json::json!({"project_id": project["project_id"]});
+    for profile in ["minimal", "write", "import", "authoring"] {
+        router.tool_profile = Some(profile.to_owned());
+        assert!(router.has_tool("set_active_project"), "{profile}");
+        let active = structured_json(
+            router
+                .call_tool("set_active_project", selection.as_object())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(active["project_id"], project["project_id"], "{profile}");
+        assert_eq!(active["branch_id"], project["branch_id"], "{profile}");
+    }
+}
