@@ -9,7 +9,8 @@ not automatically enable that specialist or union its tools into the entry skill
 `[[references]]` declares an independently loadable unit with a name, Markdown
 path under `references/`, trigger, direct tools, and supported profiles. Loading a
 reference requires both its tools and its owning core's dependency closure.
-The new units are `spindle/setup` and `editor/style`; load them with
+The nested units are `spindle/setup`, `editor/style`, and the merged P1 rollout
+reference `scene-writer/drafting-packets`; load them with
 `get_reference(name="spindle/setup")` or the equivalent
 `bible://references/spindle/setup` URI. Existing craft names and skill names remain
 valid. Lookups match exact embedded names, with no runtime filesystem access.

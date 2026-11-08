@@ -398,7 +398,16 @@
     "profiles": [
       "default"
     ],
-    "references": [],
+    "references": [
+      {
+        "name": "scene-writer/drafting-packets",
+        "profiles": [
+          "default"
+        ],
+        "tools": [],
+        "trigger": "Load for the typed drafting-packet rollout boundary."
+      }
+    ],
     "requires_skills": [
       "spindle"
     ],
