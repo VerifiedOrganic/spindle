@@ -11,9 +11,9 @@ use crate::drafting::{
 use spindle_core::drafting::{
     CasVersionExpectation, CriticFindingInput, DeblindedArm, DraftingPacketV1, EditorialPolicy,
     EditorialStage, HARD_MAX_REVISION_ROUNDS, HARD_MAX_SCENE_CALLS, HARD_MAX_SCENE_TOKENS,
-    REVISION_LOOP_ARTIFACT_SCHEMA_VERSION, RevisionLoopArtifactV1, RevisionRetentionReason,
-    RevisionRoundRecord, SHADOW_CRITIQUE_ARTIFACT_SCHEMA_VERSION, ShadowCritiqueArtifactV1,
-    ShadowCritiqueOutcome, StageTransitionKey, StageTransitionRecord,
+    PendingRevisionPromotion, REVISION_LOOP_ARTIFACT_SCHEMA_VERSION, RevisionLoopArtifactV1,
+    RevisionRetentionReason, RevisionRoundRecord, SHADOW_CRITIQUE_ARTIFACT_SCHEMA_VERSION,
+    ShadowCritiqueArtifactV1, ShadowCritiqueOutcome, StageTransitionKey, StageTransitionRecord,
     extraction::{DraftReceiptBinding, PlainTextDraftArtifactV1},
 };
 
@@ -345,6 +345,7 @@ impl SqliteSpindleService {
                 parked_for_review: false,
                 broad_edit_flagged_for_review: false,
                 requires_author_decision: Vec::new(),
+                pending_promotion: None,
             };
             record_transition(
                 &mut fresh,
@@ -376,7 +377,17 @@ impl SqliteSpindleService {
         let mut working_receipt = loop_artifact.initial_receipt.clone();
         let mut any_round_accepted = false;
 
+        if let Some(pending) = &loop_artifact.pending_promotion {
+            working_text = pending.candidate_text.clone();
+            working_hash = pending.candidate_text_sha256.clone();
+            working_receipt = pending.candidate_receipt.clone();
+            any_round_accepted = true;
+        }
+
         for round_num in 1..=loop_artifact.max_rounds {
+            if loop_artifact.pending_promotion.is_some() {
+                break;
+            }
             // Ensure a RevisionRoundRecord exists for this round.
             if loop_artifact.rounds.len() < round_num as usize {
                 loop_artifact.rounds.push(RevisionRoundRecord {
@@ -417,6 +428,33 @@ impl SqliteSpindleService {
                         working_hash = ch;
                         working_receipt = cr;
                         any_round_accepted = true;
+                        if round_num < loop_artifact.max_rounds
+                            && let Some(cmp) = &r.candidate_check_comparison
+                        {
+                            let remaining_issues =
+                                !cmp.candidate_report.ingested_findings.is_empty();
+                            let new_fp = !loop_artifact
+                                .seen_finding_fingerprints
+                                .contains(&cmp.candidate_report.normalized_finding_fingerprint);
+                            let budget_allows_round_2 = loop_artifact
+                                .total_calls_used
+                                .saturating_add(4)
+                                <= loop_artifact.max_scene_calls
+                                && loop_artifact.total_tokens_used < loop_artifact.max_scene_tokens;
+                            if !remaining_issues {
+                                break;
+                            }
+                            if !new_fp {
+                                loop_artifact.retention_reason =
+                                    Some(RevisionRetentionReason::RepeatedFindingFingerprint);
+                                break;
+                            }
+                            if !budget_allows_round_2 {
+                                loop_artifact.retention_reason =
+                                    Some(RevisionRetentionReason::BudgetExhausted);
+                                break;
+                            }
+                        }
                         continue;
                     }
                 } else if let Some(stop_reason) = r.round_stop_reason {
@@ -1065,13 +1103,31 @@ impl SqliteSpindleService {
 
         // Terminal Stage: CAS verification and atomic promotion or incumbent retention.
         if any_round_accepted {
-            let final_findings =
-                project_external_findings_to_text(&working_text, &working_hash, &external_findings);
-            let final_det =
-                evaluate_deterministic_checks(packet, &working_text, false, final_findings)?;
-            let unresolved_hard_blockers = !final_det.hard_continuity_blockers.is_empty()
-                || !final_det.hard_rating_violations.is_empty()
-                || !final_det.hard_antislop_blockers.is_empty();
+            let unresolved_hard_blockers = if let Some(pending) = &loop_artifact.pending_promotion {
+                pending.unresolved_hard_blockers
+            } else {
+                let final_findings = project_external_findings_to_text(
+                    &working_text,
+                    &working_hash,
+                    &external_findings,
+                );
+                let final_det =
+                    evaluate_deterministic_checks(packet, &working_text, false, final_findings)?;
+                let blockers = !final_det.hard_continuity_blockers.is_empty()
+                    || !final_det.hard_rating_violations.is_empty()
+                    || !final_det.hard_antislop_blockers.is_empty();
+                // Persist durable promotion intent before touching the draft artifact on disk
+                // so a crash between saving the promoted draft and saving the terminal loop
+                // artifact can recover idempotently on resume.
+                loop_artifact.pending_promotion = Some(PendingRevisionPromotion {
+                    candidate_text: working_text.clone(),
+                    candidate_text_sha256: working_hash.clone(),
+                    candidate_receipt: working_receipt.clone(),
+                    unresolved_hard_blockers: blockers,
+                });
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                blockers
+            };
 
             // Synchronize live repository CAS verification and draft artifact promotion
             // under both the SQLite single-writer lock and the per-path artifact lock.
@@ -1088,6 +1144,20 @@ impl SqliteSpindleService {
                     Ok((|| -> Result<bool> {
                         let _draft_lock = artifact::lock_artifact(&draft_path_owned)?;
                         let current_disk_draft = artifact::load_artifact(&draft_path_owned)?;
+                        // Recognize already-completed draft promotion when recovering from a
+                        // crash between draft save and terminal loop save.
+                        let already_promoted_by_pending = current_disk_draft.text_sha256
+                            == working_hash_for_write
+                            && current_disk_draft.receipt == working_receipt_for_write
+                            && current_disk_draft.accepted_text_sha256.as_deref()
+                                == Some(working_hash_for_write.as_str())
+                            && current_disk_draft.extraction.is_none()
+                            && current_disk_draft.extraction_request.is_none()
+                            && current_disk_draft.extraction_attempts == 0
+                            && current_disk_draft.extraction_failure.is_none();
+                        if already_promoted_by_pending {
+                            return Ok(true);
+                        }
                         let live_cas =
                             resolve_live_cas_expectation_in_conn(conn, &current_disk_draft)?;
                         if live_cas != expected_cas {
@@ -1099,6 +1169,12 @@ impl SqliteSpindleService {
                         promoted_draft.truncated = false;
                         promoted_draft.receipt = working_receipt_for_write;
                         promoted_draft.accepted_text_sha256 = Some(working_hash_for_write);
+                        // Invalidate all text-bound extraction state from the prior draft
+                        // so extraction is required for the newly accepted revision hash.
+                        promoted_draft.extraction = None;
+                        promoted_draft.extraction_request = None;
+                        promoted_draft.extraction_attempts = 0;
+                        promoted_draft.extraction_failure = None;
                         artifact::save_artifact(&draft_path_owned, &promoted_draft)?;
                         Ok(true)
                     })())
@@ -1107,6 +1183,7 @@ impl SqliteSpindleService {
 
             if !cas_ok {
                 // CAS conflict: fail closed, retain incumbent, never overwrite draft_artifact_path.
+                loop_artifact.pending_promotion = None;
                 loop_artifact.accepted_text = loop_artifact.initial_text.clone();
                 loop_artifact.accepted_text_sha256 = loop_artifact.initial_text_sha256.clone();
                 loop_artifact.accepted_receipt = loop_artifact.initial_receipt.clone();
@@ -1127,9 +1204,14 @@ impl SqliteSpindleService {
                 return Ok(loop_artifact);
             }
 
+            if options.crash_after == Some(BoundaryCrashPoint::AfterDraftPromotionSave) {
+                anyhow::bail!("simulated_crash_at_boundary:after_draft_promotion_save");
+            }
+
             if unresolved_hard_blockers {
                 loop_artifact.parked_for_review = true;
             }
+            loop_artifact.pending_promotion = None;
             loop_artifact.accepted_text = working_text;
             loop_artifact.accepted_text_sha256 = working_hash.clone();
             loop_artifact.accepted_receipt = working_receipt.clone();

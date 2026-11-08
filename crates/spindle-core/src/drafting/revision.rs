@@ -427,6 +427,18 @@ pub struct CasVersionExpectation {
     pub incumbent_text_sha256: String,
 }
 
+/// Durable promotion intent persisted to the loop artifact immediately before
+/// updating `PlainTextDraftArtifactV1` on disk, allowing recovery if a crash
+/// or write failure occurs between saving the promoted draft artifact and
+/// saving the terminal `AcceptedRevision` loop artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingRevisionPromotion {
+    pub candidate_text: String,
+    pub candidate_text_sha256: String,
+    pub candidate_receipt: DraftReceiptBinding,
+    pub unresolved_hard_blockers: bool,
+}
+
 /// Complete record of a single critique -> revision -> deterministic check -> double-order judge round.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RevisionRoundRecord {
@@ -515,4 +527,6 @@ pub struct RevisionLoopArtifactV1 {
     pub broad_edit_flagged_for_review: bool,
     #[serde(default)]
     pub requires_author_decision: Vec<AuthorDecisionItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_promotion: Option<PendingRevisionPromotion>,
 }

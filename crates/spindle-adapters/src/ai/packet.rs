@@ -2152,6 +2152,63 @@ max_tokens = 500
             .await
             .unwrap();
         assert_eq!(draft_srv.join().unwrap(), 1);
+
+        struct StubExtractor;
+        impl spindle_core::drafting::extraction::AcceptedTextExtractor for StubExtractor {
+            fn extract<'a>(
+                &'a self,
+                request: &'a spindle_core::drafting::extraction::AcceptedTextExtractionRequestV1,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = std::result::Result<
+                                spindle_core::drafting::extraction::CompatibilityExtractionV1,
+                                spindle_core::drafting::extraction::ExtractionFailure,
+                            >,
+                        > + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    Ok(
+                        spindle_core::drafting::extraction::CompatibilityExtractionV1 {
+                            canon_audit: None,
+                            accepted_text_sha256: request.accepted.text_sha256.clone(),
+                            summary: format!("Extracted {}", &request.accepted.text_sha256[..8]),
+                            tone: Some("tense".into()),
+                            character_states: vec![],
+                            canonical_facts: vec![],
+                            relationship_updates: vec![],
+                            beats: vec![],
+                            continuity_notes: vec![],
+                        },
+                    )
+                })
+            }
+        }
+
+        // Accept and extract the incumbent artifact before revision to verify that winning
+        // promotion invalidates text-bound extraction state and requires fresh extraction.
+        crate::drafting::artifact::accept_artifact(&initial_draft_path, &draft_art.text_sha256)
+            .unwrap();
+        let extracted_incumbent = crate::drafting::artifact::extract_accepted(
+            &initial_draft_path,
+            &StubExtractor,
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            extracted_incumbent
+                .extraction
+                .as_ref()
+                .unwrap()
+                .accepted_text_sha256,
+            draft_art.text_sha256
+        );
+        assert!(extracted_incumbent.extraction_request.is_some());
+        assert_eq!(extracted_incumbent.extraction_attempts, 1);
         let initial_draft_bytes = std::fs::read(&initial_draft_path).unwrap();
 
         let rev_sha = {
@@ -2273,7 +2330,56 @@ max_tokens = 500
             );
         }
 
-        // Now resume with no crash hook: it completes final CAS promotion with 0 extra HTTP calls!
+        // Crash immediately after saving the promoted draft artifact, before persisting the
+        // terminal AcceptedRevision loop snapshot (two-file commit boundary).
+        let mid_commit_err = service
+            .revise_artifact_loop(
+                EditorialPolicy::CritiqueV1,
+                &draft_path,
+                &loop_path,
+                vec![],
+                &critic_budget,
+                &revision_budget,
+                &judge_budget,
+                Some(&VerifiedFixtureTokenizer),
+                RevisionLoopOptions {
+                    crash_after: Some(BoundaryCrashPoint::AfterDraftPromotionSave),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            mid_commit_err
+                .to_string()
+                .contains("simulated_crash_at_boundary:after_draft_promotion_save"),
+            "unexpected error at AfterDraftPromotionSave: {mid_commit_err}"
+        );
+
+        // At this point, the draft on disk is already promoted with extraction invalidated,
+        // while the loop artifact on disk is still non-terminal with pending_promotion recorded.
+        let mid_commit_draft = crate::drafting::artifact::load_artifact(&draft_path).unwrap();
+        assert_eq!(mid_commit_draft.text, revised_prose);
+        assert_eq!(mid_commit_draft.text_sha256, rev_sha);
+        assert_eq!(
+            mid_commit_draft.accepted_text_sha256.as_deref(),
+            Some(rev_sha.as_str())
+        );
+        assert!(mid_commit_draft.extraction.is_none());
+        assert!(mid_commit_draft.extraction_request.is_none());
+        assert_eq!(mid_commit_draft.extraction_attempts, 0);
+        assert!(mid_commit_draft.extraction_failure.is_none());
+
+        let mid_commit_loop =
+            crate::drafting::revision::load_revision_loop_artifact(&loop_path).unwrap();
+        assert_eq!(
+            mid_commit_loop.current_stage,
+            EditorialStage::PairwiseJudged
+        );
+        assert!(mid_commit_loop.pending_promotion.is_some());
+
+        // Now resume with no crash hook: it recognizes the completed promotion, does not false-positive
+        // CAS fail against the already-revised draft, and finalizes AcceptedRevision with 0 extra HTTP calls!
         let final_loop = service
             .revise_artifact_loop(
                 EditorialPolicy::CritiqueV1,
@@ -2292,15 +2398,49 @@ max_tokens = 500
         assert_eq!(final_loop.current_stage, EditorialStage::AcceptedRevision);
         assert!(final_loop.revision_promoted);
         assert_eq!(final_loop.accepted_text, revised_prose);
+        assert_eq!(final_loop.accepted_text_sha256, rev_sha);
         assert_eq!(final_loop.total_calls_used, 4);
         assert_eq!(final_loop.retention_reason, None);
+        assert!(final_loop.pending_promotion.is_none());
 
-        // Verify the draft artifact on disk was promoted to the revised text and accepted
+        // Verify the draft artifact on disk was promoted to the revised text, had its old
+        // extraction state cleared, and can now be extracted for the newly accepted hash.
         let promoted_draft = crate::drafting::artifact::load_artifact(&draft_path).unwrap();
         assert_eq!(promoted_draft.text, revised_prose);
         assert_eq!(
             promoted_draft.accepted_text_sha256.as_deref(),
             Some(rev_sha.as_str())
+        );
+        assert!(promoted_draft.extraction.is_none());
+        assert!(promoted_draft.extraction_request.is_none());
+        assert_eq!(promoted_draft.extraction_attempts, 0);
+        assert!(promoted_draft.extraction_failure.is_none());
+
+        let re_extracted = crate::drafting::artifact::extract_accepted(
+            &draft_path,
+            &StubExtractor,
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(re_extracted.extraction_attempts, 1);
+        assert_eq!(
+            re_extracted
+                .extraction
+                .as_ref()
+                .unwrap()
+                .accepted_text_sha256,
+            rev_sha
+        );
+        assert_eq!(
+            re_extracted
+                .extraction_request
+                .as_ref()
+                .unwrap()
+                .accepted
+                .text_sha256,
+            rev_sha
         );
 
         // Re-running after terminal state is a pure idempotent no-op
@@ -2320,7 +2460,7 @@ max_tokens = 500
             .unwrap();
         assert_eq!(idempotent_rerun, final_loop);
 
-        // Exactly 4 HTTP requests were made across all 7 crash boundaries + resume + idempotent rerun!
+        // Exactly 4 HTTP requests were made across all 8 crash boundaries + resume + idempotent rerun!
         assert_eq!(loop_srv.join().unwrap(), 4);
     }
 

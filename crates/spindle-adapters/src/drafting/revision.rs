@@ -84,6 +84,7 @@ impl JudgeBudget {
 pub enum BoundaryCrashPoint {
     Stage(EditorialStage, u32),
     JudgePass1(u32),
+    AfterDraftPromotionSave,
 }
 
 /// Configuration options for the scene revision and double-order judge loop.
