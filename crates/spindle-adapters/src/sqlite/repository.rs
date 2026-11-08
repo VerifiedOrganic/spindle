@@ -11038,6 +11038,12 @@ impl Repository {
                                 now,
                             ],
                         )?;
+                        tx.execute(
+                            "DELETE FROM relationship_scene_delta \
+                             WHERE branch_id = ?1 \
+                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2))",
+                            rusqlite::params![&branch_id_owned, &a, &b],
+                        )?;
                         (a.clone(), b.clone())
                     };
                     tx.commit()?;
@@ -11072,7 +11078,12 @@ impl Repository {
         let input_owned = input.clone();
         let source_owned = source.to_string();
         self.with_transaction(move |tx| {
-            tx.update_relationship(&branch_id_owned, &input_owned, &source_owned)
+            let effective_branch_id = if let Ok(scene) = tx.get_scene(&input_owned.scene_id) {
+                tx.resolve_effective_scene_branch(&scene.project_id, &branch_id_owned)?
+            } else {
+                branch_id_owned.clone()
+            };
+            tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)
         })
         .await
     }
@@ -12579,6 +12590,7 @@ impl Repository {
             .collect::<Result<Vec<_>>>()?;
 
         struct RelRow {
+            source_branch_id: String,
             in_id: String,
             out_id: String,
             relationship_type: String,
@@ -12592,6 +12604,7 @@ impl Repository {
             .iter()
             .map(|r| {
                 Ok(RelRow {
+                    source_branch_id: r.branch_id.clone(),
                     in_id: r.in_id.clone(),
                     out_id: r.out_id.clone(),
                     relationship_type: r.relationship_type.clone(),
@@ -12766,6 +12779,33 @@ impl Repository {
                             now,
                         ],
                     )?;
+                    if rel.source_branch_id != target_branch_id {
+                        tx.execute(
+                            "DELETE FROM relationship_scene_delta \
+                             WHERE branch_id = ?1 \
+                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2))",
+                            rusqlite::params![&target_branch_id, &rel.in_id, &rel.out_id],
+                        )?;
+                        tx.execute(
+                            "INSERT OR REPLACE INTO relationship_scene_delta ( \
+                                branch_id, in_id, out_id, scene_id, source, \
+                                book_number, chapter_number, scene_order, \
+                                trust_delta, tension_delta, reason, updated_at \
+                             ) \
+                             SELECT ?1, in_id, out_id, scene_id, source, \
+                                    book_number, chapter_number, scene_order, \
+                                    trust_delta, tension_delta, reason, updated_at \
+                             FROM relationship_scene_delta \
+                             WHERE branch_id = ?2 \
+                               AND ((in_id = ?3 AND out_id = ?4) OR (in_id = ?4 AND out_id = ?3))",
+                            rusqlite::params![
+                                &target_branch_id,
+                                &rel.source_branch_id,
+                                &rel.in_id,
+                                &rel.out_id,
+                            ],
+                        )?;
+                    }
                 }
 
                 // pacing_tracker: DELETE-then-INSERT keyed by
@@ -12925,6 +12965,10 @@ impl Repository {
                         tx.execute(&delete_sql, rusqlite::params![&branch_id])?;
                     }
                 }
+                tx.execute(
+                    "DELETE FROM relationship_scene_delta WHERE branch_id = ?1",
+                    rusqlite::params![&branch_id],
+                )?;
 
                 // Phase 2: insert the snapshot rows. For each table we build
                 // an INSERT statement keyed by the union of column names
@@ -15434,10 +15478,15 @@ impl CanonTransaction<'_> {
 
         // If `branch_id` does not yet have a row, check ancestor branches so a
         // child branch inherits the parent baseline before applying deltas.
-        let mut inherited_ancestor: Option<(String, String, String, i32, i32, String)> = None;
+        // When materializing a child row from an ancestor, copy that ancestor's
+        // `relationship_scene_delta` rows onto `branch_id` so the child's local
+        // ledger captures the exact set of inherited scene deltas included in
+        // its materialized baseline (isolating it from later ancestor updates).
+        let mut inherited_ancestor: Option<(String, String, String, String, i32, i32, String)> =
+            None;
         if existing_local.is_none() {
             for ancestor_branch_id in chain.iter().skip(1) {
-                if let Some(row) = self
+                if let Some((anc_in, anc_out, rel_type, base_trust, base_tension, dynamics)) = self
                     .tx
                     .query_row(
                         "SELECT in_id, out_id, relationship_type, trust, tension, dynamics \
@@ -15459,19 +15508,58 @@ impl CanonTransaction<'_> {
                     )
                     .optional_inner()?
                 {
-                    inherited_ancestor = Some(row);
+                    inherited_ancestor = Some((
+                        ancestor_branch_id.clone(),
+                        anc_in,
+                        anc_out,
+                        rel_type,
+                        base_trust,
+                        base_tension,
+                        dynamics,
+                    ));
                     break;
                 }
+            }
+
+            if let Some((ref anc_branch_id, ref anc_in, ref anc_out, ..)) = inherited_ancestor {
+                self.tx.execute(
+                    "DELETE FROM relationship_scene_delta \
+                     WHERE branch_id = ?1 \
+                       AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2))",
+                    rusqlite::params![branch_id, anc_in, anc_out],
+                )?;
+                self.tx.execute(
+                    "INSERT OR REPLACE INTO relationship_scene_delta ( \
+                        branch_id, in_id, out_id, scene_id, source, \
+                        book_number, chapter_number, scene_order, \
+                        trust_delta, tension_delta, reason, updated_at \
+                     ) \
+                     SELECT ?1, in_id, out_id, scene_id, source, \
+                            book_number, chapter_number, scene_order, \
+                            trust_delta, tension_delta, reason, updated_at \
+                     FROM relationship_scene_delta \
+                     WHERE branch_id = ?2 \
+                       AND ((in_id = ?3 AND out_id = ?4) OR (in_id = ?4 AND out_id = ?3))",
+                    rusqlite::params![branch_id, anc_branch_id, anc_in, anc_out],
+                )?;
+            } else {
+                self.tx.execute(
+                    "DELETE FROM relationship_scene_delta \
+                     WHERE branch_id = ?1 \
+                       AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2))",
+                    rusqlite::params![branch_id, a, b],
+                )?;
             }
         }
 
         // Look up any prior delta recorded for this pair + scene (by scene_id or
         // by narrative position when a revised scene replaced the scene row)
-        // across the branch lineage.
-        let mut prior_delta: Option<(i32, i32)> = None;
-        for candidate_branch_id in &chain {
-            let found = if let Some((_, book_num, chap_num, sc_order)) = &scene_pos {
-                self.tx
+        // in `branch_id`'s own ledger, which reflects only the deltas included
+        // in `branch_id`'s effective baseline.
+        let prior_delta: Option<(i32, i32)> = if let Some((_, book_num, chap_num, sc_order)) =
+            &scene_pos
+        {
+            self.tx
                     .query_row(
                         "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
                          WHERE branch_id = ?1 \
@@ -15480,35 +15568,24 @@ impl CanonTransaction<'_> {
                                 OR (book_number = ?5 AND chapter_number = ?6 AND scene_order = ?7)) \
                          ORDER BY updated_at DESC LIMIT 1",
                         rusqlite::params![
-                            candidate_branch_id,
-                            a,
-                            b,
-                            scene_id,
-                            book_num,
-                            chap_num,
-                            sc_order
+                            branch_id, a, b, scene_id, book_num, chap_num, sc_order
                         ],
                         |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i32>(1)?)),
                     )
                     .optional_inner()?
-            } else {
-                self.tx
-                    .query_row(
-                        "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
+        } else {
+            self.tx
+                .query_row(
+                    "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
                          WHERE branch_id = ?1 \
                            AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
                            AND scene_id = ?4 \
                          ORDER BY updated_at DESC LIMIT 1",
-                        rusqlite::params![candidate_branch_id, a, b, scene_id],
-                        |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i32>(1)?)),
-                    )
-                    .optional_inner()?
-            };
-            if let Some(d) = found {
-                prior_delta = Some(d);
-                break;
-            }
-        }
+                    rusqlite::params![branch_id, a, b, scene_id],
+                    |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i32>(1)?)),
+                )
+                .optional_inner()?
+        };
 
         let (prior_trust, prior_tension) = prior_delta.unwrap_or((0, 0));
         let net_trust = trust_delta - prior_trust;
@@ -15535,7 +15612,7 @@ impl CanonTransaction<'_> {
                 ],
             )?;
             (in_id, out_id)
-        } else if let Some((anc_in, anc_out, rel_type, base_trust, base_tension, dynamics)) =
+        } else if let Some((_, anc_in, anc_out, rel_type, base_trust, base_tension, dynamics)) =
             inherited_ancestor
         {
             self.tx.execute(
@@ -15646,6 +15723,333 @@ impl CanonTransaction<'_> {
         })
         .optional_inner()?
         .ok_or_else(|| anyhow!("relationship not found"))
+    }
+
+    /// Resolve the target branch for a canon write anchored to a scene.
+    /// If the project's active branch is `scene_branch_id` or a descendant
+    /// branch that inherits from `scene_branch_id`, write to the active branch;
+    /// otherwise write to `scene_branch_id`.
+    pub fn resolve_effective_scene_branch(
+        &self,
+        project_id: &str,
+        scene_branch_id: &str,
+    ) -> Result<String> {
+        let active_branch_id: Option<String> = self
+            .tx
+            .query_row(
+                "SELECT active_branch_id FROM project WHERE id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional_inner()?
+            .flatten();
+        if let Some(active_id) = active_branch_id {
+            if active_id == scene_branch_id {
+                return Ok(active_id);
+            }
+            let chain = resolve_branch_lineage_in_conn(&self.tx, Some(project_id), &active_id)?;
+            if chain.iter().any(|b| b == scene_branch_id) {
+                return Ok(active_id);
+            }
+        }
+        Ok(scene_branch_id.to_string())
+    }
+
+    /// Reconcile prior `continuity_package` relationship contributions for a
+    /// scene (or its narrative position when a revised scene replaced the scene
+    /// row) against the incoming `keep_pairs` from a newly committed continuity
+    /// package. Any pair that previously received a `continuity_package` delta
+    /// at this scene/position in `branch_id`'s effective baseline and is omitted
+    /// from `keep_pairs` has its contribution reversed and its ledger row
+    /// removed, while preserving deltas whose active source is
+    /// `mined_relationship_shift` (or `scene`).
+    pub fn reconcile_continuity_package_relationships(
+        &self,
+        branch_id: &str,
+        scene_id: &str,
+        keep_pairs: &[(String, String)],
+    ) -> Result<()> {
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let canonical_pair = |a: &str, b: &str| -> (String, String) {
+            if a <= b {
+                (a.to_string(), b.to_string())
+            } else {
+                (b.to_string(), a.to_string())
+            }
+        };
+        let keep_set: std::collections::BTreeSet<(String, String)> = keep_pairs
+            .iter()
+            .map(|(a, b)| canonical_pair(a, b))
+            .collect();
+
+        let scene_pos: Option<(String, i32, i32, i32)> = self
+            .tx
+            .query_row(
+                "SELECT project_id, book_number, chapter_number, scene_order \
+                 FROM scene WHERE id = ?1",
+                [scene_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i32>(1)?,
+                        r.get::<_, i32>(2)?,
+                        r.get::<_, i32>(3)?,
+                    ))
+                },
+            )
+            .optional_inner()?;
+        let project_id_hint = scene_pos.as_ref().map(|(pid, _, _, _)| pid.as_str());
+        let chain = resolve_branch_lineage_in_conn(&self.tx, project_id_hint, branch_id)?;
+
+        // Collect all candidate pairs that have a `continuity_package` delta at
+        // this scene/position on `branch_id` or any ancestor in `chain`.
+        let mut candidate_pairs: Vec<(String, String)> = Vec::new();
+        let mut seen_keys: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        for candidate_branch_id in &chain {
+            let pairs_on_branch: Vec<(String, String)> = if let Some((
+                _,
+                book_num,
+                chap_num,
+                sc_order,
+            )) = &scene_pos
+            {
+                let mut stmt = self.tx.prepare_cached(
+                        "SELECT DISTINCT in_id, out_id FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 AND source = 'continuity_package' \
+                           AND (scene_id = ?2 \
+                                OR (book_number = ?3 AND chapter_number = ?4 AND scene_order = ?5))",
+                    )?;
+                let rows = stmt.query_map(
+                    rusqlite::params![candidate_branch_id, scene_id, book_num, chap_num, sc_order],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            } else {
+                let mut stmt = self.tx.prepare_cached(
+                    "SELECT DISTINCT in_id, out_id FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 AND source = 'continuity_package' \
+                           AND scene_id = ?2",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![candidate_branch_id, scene_id], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for (a, b) in pairs_on_branch {
+                let key = canonical_pair(&a, &b);
+                if !keep_set.contains(&key) && seen_keys.insert(key) {
+                    candidate_pairs.push((a, b));
+                }
+            }
+        }
+
+        for (a, b) in candidate_pairs {
+            let existing_local: Option<(String, String)> = self
+                .tx
+                .query_row(
+                    "SELECT in_id, out_id FROM relates_to \
+                     WHERE branch_id = ?1 \
+                       AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                     LIMIT 1",
+                    rusqlite::params![branch_id, &a, &b],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional_inner()?;
+
+            let (in_id, out_id) = if let Some(local_pair) = existing_local {
+                local_pair
+            } else {
+                struct InheritedRel {
+                    anc_branch_id: String,
+                    anc_in: String,
+                    anc_out: String,
+                    rel_type: String,
+                    base_trust: i32,
+                    base_tension: i32,
+                    dynamics: String,
+                    reason: Option<String>,
+                    last_scene_id: Option<String>,
+                }
+
+                // If `branch_id` has not materialized this relationship yet, find
+                // the nearest ancestor with a `relates_to` row and materialize it
+                // (along with its `relationship_scene_delta` snapshot) so we can
+                // reverse the inherited continuity-package contribution cleanly.
+                let mut inherited: Option<InheritedRel> = None;
+                for ancestor_branch_id in chain.iter().skip(1) {
+                    if let Some(row) = self
+                        .tx
+                        .query_row(
+                            "SELECT in_id, out_id, relationship_type, trust, tension, dynamics, \
+                                    reason, last_scene_id \
+                             FROM relates_to \
+                             WHERE branch_id = ?1 \
+                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                             LIMIT 1",
+                            rusqlite::params![ancestor_branch_id, &a, &b],
+                            |r| {
+                                Ok(InheritedRel {
+                                    anc_branch_id: ancestor_branch_id.clone(),
+                                    anc_in: r.get(0)?,
+                                    anc_out: r.get(1)?,
+                                    rel_type: r.get(2)?,
+                                    base_trust: r.get(3)?,
+                                    base_tension: r.get(4)?,
+                                    dynamics: r.get(5)?,
+                                    reason: r.get(6)?,
+                                    last_scene_id: r.get(7)?,
+                                })
+                            },
+                        )
+                        .optional_inner()?
+                    {
+                        inherited = Some(row);
+                        break;
+                    }
+                }
+
+                let Some(InheritedRel {
+                    anc_branch_id,
+                    anc_in,
+                    anc_out,
+                    rel_type,
+                    base_trust,
+                    base_tension,
+                    dynamics,
+                    reason,
+                    last_scene_id,
+                }) = inherited
+                else {
+                    continue;
+                };
+
+                self.tx.execute(
+                    "INSERT INTO relates_to (in_id, out_id, branch_id, \
+                     relationship_type, trust, tension, dynamics, reason, last_scene_id, \
+                     updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        &anc_in,
+                        &anc_out,
+                        branch_id,
+                        &rel_type,
+                        base_trust,
+                        base_tension,
+                        &dynamics,
+                        &reason,
+                        &last_scene_id,
+                        now,
+                    ],
+                )?;
+                self.tx.execute(
+                    "DELETE FROM relationship_scene_delta \
+                     WHERE branch_id = ?1 \
+                       AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2))",
+                    rusqlite::params![branch_id, &anc_in, &anc_out],
+                )?;
+                self.tx.execute(
+                    "INSERT OR REPLACE INTO relationship_scene_delta ( \
+                        branch_id, in_id, out_id, scene_id, source, \
+                        book_number, chapter_number, scene_order, \
+                        trust_delta, tension_delta, reason, updated_at \
+                     ) \
+                     SELECT ?1, in_id, out_id, scene_id, source, \
+                            book_number, chapter_number, scene_order, \
+                            trust_delta, tension_delta, reason, updated_at \
+                     FROM relationship_scene_delta \
+                     WHERE branch_id = ?2 \
+                       AND ((in_id = ?3 AND out_id = ?4) OR (in_id = ?4 AND out_id = ?3))",
+                    rusqlite::params![branch_id, &anc_branch_id, &anc_in, &anc_out],
+                )?;
+                (anc_in, anc_out)
+            };
+
+            let active_delta: Option<(String, i32, i32)> = if let Some((
+                _,
+                book_num,
+                chap_num,
+                sc_order,
+            )) = &scene_pos
+            {
+                self.tx
+                        .query_row(
+                            "SELECT source, trust_delta, tension_delta \
+                             FROM relationship_scene_delta \
+                             WHERE branch_id = ?1 \
+                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                               AND (scene_id = ?4 \
+                                    OR (book_number = ?5 AND chapter_number = ?6 AND scene_order = ?7)) \
+                             ORDER BY updated_at DESC LIMIT 1",
+                            rusqlite::params![
+                                branch_id, &in_id, &out_id, scene_id, book_num, chap_num, sc_order
+                            ],
+                            |r| {
+                                Ok((
+                                    r.get::<_, String>(0)?,
+                                    r.get::<_, i32>(1)?,
+                                    r.get::<_, i32>(2)?,
+                                ))
+                            },
+                        )
+                        .optional_inner()?
+            } else {
+                self.tx
+                    .query_row(
+                        "SELECT source, trust_delta, tension_delta \
+                             FROM relationship_scene_delta \
+                             WHERE branch_id = ?1 \
+                               AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                               AND scene_id = ?4 \
+                             ORDER BY updated_at DESC LIMIT 1",
+                        rusqlite::params![branch_id, &in_id, &out_id, scene_id],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, i32>(1)?,
+                                r.get::<_, i32>(2)?,
+                            ))
+                        },
+                    )
+                    .optional_inner()?
+            };
+
+            if let Some((active_source, prior_trust, prior_tension)) = active_delta
+                && active_source == "continuity_package"
+            {
+                self.tx.execute(
+                    "UPDATE relates_to SET \
+                        trust = trust - ?1, \
+                        tension = tension - ?2, \
+                        updated_at = ?3 \
+                     WHERE branch_id = ?4 AND in_id = ?5 AND out_id = ?6",
+                    rusqlite::params![prior_trust, prior_tension, now, branch_id, &in_id, &out_id],
+                )?;
+                if let Some((_, book_num, chap_num, sc_order)) = &scene_pos {
+                    self.tx.execute(
+                        "DELETE FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 AND source = 'continuity_package' \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                           AND (scene_id = ?4 \
+                                OR (book_number = ?5 AND chapter_number = ?6 AND scene_order = ?7))",
+                        rusqlite::params![
+                            branch_id, &in_id, &out_id, scene_id, book_num, chap_num, sc_order
+                        ],
+                    )?;
+                } else {
+                    self.tx.execute(
+                        "DELETE FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 AND source = 'continuity_package' \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                           AND scene_id = ?4",
+                        rusqlite::params![branch_id, &in_id, &out_id, scene_id],
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn resolve_validator_findings_for_validator(
