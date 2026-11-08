@@ -1,0 +1,5 @@
+version = 1
+name = "character-creator"
+profiles = ["default"]
+requires_skills = ["spindle"]
+tools = ["batch_set_character_voice_profiles", "check_consistency", "commit_character_state", "create_character", "create_character_arc", "create_relationship", "create_theme", "find_entity", "get_character_snapshot", "get_entity", "get_scene_context", "register_canonical_fact", "set_active_project", "set_character_voice_profile", "update_relationship"]

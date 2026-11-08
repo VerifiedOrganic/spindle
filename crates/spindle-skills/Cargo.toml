@@ -6,3 +6,12 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+
+[build-dependencies]
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+toml.workspace = true
+tempfile.workspace = true

@@ -638,3 +638,34 @@ The shipped craft references most relevant to continuity work:
 - `bible://references/swain-scene-sequel` and `bible://references/mru-guide`
   — Useful when a continuity issue is rooted in poor scene structure rather
   than a true canon contradiction.
+
+<!-- tool: annotate_scene_beats -->
+<!-- tool: bind_canonical_fact_to_scene -->
+<!-- tool: check_consistency -->
+<!-- tool: commit_character_state -->
+<!-- tool: commit_quantity_state -->
+<!-- tool: commit_scene_changes -->
+<!-- tool: derive_quantity_scheme_from_system_overlay -->
+<!-- tool: extract_canonical_facts_from_scene -->
+<!-- tool: find_entity -->
+<!-- tool: find_scenes_referencing -->
+<!-- tool: get_chapter_briefing -->
+<!-- tool: get_character_snapshot -->
+<!-- tool: get_entity -->
+<!-- tool: get_scene_context -->
+<!-- tool: get_writer_state -->
+<!-- tool: migrate_canonical_fact -->
+<!-- tool: plan_chapter -->
+<!-- tool: record_knowledge -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: revise_scene -->
+<!-- tool: save_scene_draft -->
+<!-- tool: scan_scene_prices -->
+<!-- tool: set_active_project -->
+<!-- tool: set_arc_pacing_constraints -->
+<!-- tool: set_project_calendar -->
+<!-- tool: set_project_quantity_scheme -->
+<!-- tool: set_scene_clock -->
+<!-- tool: update_arc_milestone -->
+<!-- tool: update_entity -->
+<!-- tool: update_promise_status -->
