@@ -119,23 +119,38 @@ async fn main() -> anyhow::Result<()> {
     // file is removed on shutdown. (The external harness still reaches the server
     // via --server-url; the addr file serves the server's own dispatch-back.)
     if let Some(addr) = http_listen_addr()? {
+        let _primary_lock = try_acquire_primary_lock(&data_dir)?;
         let db = init_sqlite(&db_path).await?;
         let service = build_service(db, &data_dir, config_path);
-        write_addr_file(&data_dir, addr)?;
-        tracing::info!("http mode: claimed primacy; addr file points at {addr}/mcp");
+        let _addr_guard = match internal_listener::claim_addr_file(&data_dir, addr).await {
+            internal_listener::AddrClaim::Won => {
+                tracing::info!("http mode: claimed primacy; addr file points at {addr}/mcp");
+                Some(AddrFileGuard::new(data_dir.clone(), addr))
+            }
+            internal_listener::AddrClaim::LostTo(existing) => {
+                tracing::warn!(
+                    "http mode: existing primary at {existing} already owns addr file; serving HTTP on {addr} without overwriting addr file"
+                );
+                None
+            }
+        };
         let result = http::serve(service, addr).await;
-        remove_addr_file(&data_dir);
+        drop(_addr_guard);
         return result;
     }
 
-    // Default: try to become primary, fall back to secondary with failover.
-    match init_sqlite(&db_path).await {
-        Ok(db) => run_primary(build_service(db, &data_dir, config_path), &data_dir).await,
-        Err(e) if is_lock_error(&e) => {
-            tracing::info!("database locked, starting in proxy mode");
+    // Default: try to become primary via cross-process runtime lock, fall back
+    // to secondary proxy with failover when another process already holds it.
+    match try_acquire_primary_lock(&data_dir)? {
+        Some(primary_lock) => {
+            let db = init_sqlite(&db_path).await?;
+            let service = build_service(db, &data_dir, config_path);
+            run_primary(service, &data_dir, primary_lock).await
+        }
+        None => {
+            tracing::info!("primary lock held by another process, starting in proxy mode");
             run_secondary(&data_dir, &db_path).await
         }
-        Err(e) => Err(e),
     }
 }
 
@@ -158,7 +173,15 @@ pub fn build_service(
 ) -> SpindleService {
     let repository = SpindleRepository::new(db, data_dir.to_path_buf());
     let service = SpindleService::new(repository);
-    let _ = service.configure_agents(spindle_core::models::ConfigureAgentsInput { config_path });
+    if let Err(err) = service.configure_agents(spindle_core::models::ConfigureAgentsInput {
+        config_path: config_path.clone(),
+    }) {
+        tracing::error!(
+            config_path = config_path.as_deref().unwrap_or("<default>"),
+            error = %err,
+            "failed to load agent configuration; drafting routes will fall back to stub unless reconfigured"
+        );
+    }
     service
 }
 
@@ -243,36 +266,69 @@ const DEFAULT_LOCAL_CONFIG: &str = r#"# Spindle local agent configuration
 /// never tears it down). It runs for the whole process lifetime; the addr file
 /// is written on claim and removed only here on real shutdown (when this
 /// process's own stdio session ends — the primary's exit path).
-async fn run_primary(service: SpindleService, data_dir: &Path) -> anyhow::Result<()> {
-    let listener = internal_listener::spawn_internal_listener(service.clone()).await?;
-    let addr = listener.addr();
-    write_addr_file(data_dir, addr)?;
-    tracing::info!("primary: internal MCP listener on {addr}");
-
+async fn run_primary(
+    service: SpindleService,
+    data_dir: &Path,
+    _primary_lock: PrimaryLock,
+) -> anyhow::Result<()> {
     // Serve over a duplex and bridge the real stdio ourselves so the handshake
     // shim can answer pre-`initialize` vendor probes (Antigravity sends
     // `server/discover` first) that rmcp would otherwise treat as fatal.
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     let stdio_bridge = tokio::spawn(bridge_stdio(client_io));
 
-    let server = SpindleMcpServer::new(service);
-    let running = server
-        .serve(server_io)
-        .await
-        .context("failed to start spindle mcp server")?;
-    let _ = running.waiting().await;
+    let result = run_primary_with_io(service, data_dir, server_io).await;
+
     // Drain the bridge before tearing down: a tool listing is ~500 KB on a
     // single line, and aborting here would truncate a response already handed
     // to the transport. The timeout is a backstop against a wedged client pipe.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), stdio_bridge).await;
+    result
+}
 
-    // Real shutdown: this primary's stdio session ended. Stop the accept loop
-    // and drop the addr file so a successor can claim primacy. Also tear down
-    // any listener this process claimed lazily.
+pub(crate) async fn run_primary_with_io<T, E, A>(
+    service: SpindleService,
+    data_dir: &Path,
+    server_io: T,
+) -> anyhow::Result<()>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let listener = internal_listener::spawn_internal_listener(service.clone()).await?;
+    let addr = listener.addr();
+    let addr_guard = match internal_listener::claim_addr_file(data_dir, addr).await {
+        internal_listener::AddrClaim::Won => {
+            tracing::info!("primary: internal MCP listener on {addr}");
+            Some(AddrFileGuard::new(data_dir.to_path_buf(), addr))
+        }
+        internal_listener::AddrClaim::LostTo(existing) => {
+            tracing::warn!(
+                "primary: internal MCP listener bound on {addr}, but live listener at {existing} already owns addr file"
+            );
+            None
+        }
+    };
+
+    let server = SpindleMcpServer::new(service);
+    let serve_result = async {
+        let running = server
+            .serve(server_io)
+            .await
+            .context("failed to start spindle mcp server")?;
+        let _ = running.waiting().await;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    // Real shutdown (or early-return cleanup if `serve` failed): stop the
+    // accept loop and drop the addr file (only if still owned by `addr`) so a
+    // successor can claim primacy. Also tear down any listener this process
+    // claimed lazily.
     listener.shutdown();
-    remove_addr_file(data_dir);
+    drop(addr_guard);
     internal_listener::shutdown_lazy_listener(data_dir).await;
-    Ok(())
+    serve_result
 }
 
 /// Secondary mode: proxy stdio to the primary's HTTP endpoint.
@@ -283,7 +339,41 @@ async fn run_secondary(data_dir: &Path, db_path: &Path) -> anyhow::Result<()> {
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     let stdio_bridge = tokio::spawn(bridge_stdio(client_io));
 
-    // Initial connection to the primary.
+    run_secondary_with_io(data_dir, server_io).await?;
+
+    // If stdio bridge is still alive, attempt promotion or reconnection.
+    if !stdio_bridge.is_finished() {
+        tracing::info!("primary connection lost, attempting failover");
+        // Small delay to let the old primary release the lock.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        if proxy::try_promote(data_dir, db_path).await? {
+            // Primary lock is available — exit cleanly so the MCP client
+            // restarts us as the new primary.
+            return Ok(());
+        }
+
+        // Another process took the lock. Reconnect as secondary.
+        // At this point we've already consumed our duplex channel, so
+        // we can't transparently re-proxy. Log and exit — Claude Code
+        // will restart us, and we'll reconnect to the new primary.
+        tracing::warn!("could not promote; exiting for restart");
+    }
+
+    let _ = stdio_bridge.await;
+    // Real shutdown: tear down any listener this secondary claimed lazily.
+    internal_listener::shutdown_lazy_listener(data_dir).await;
+    Ok(())
+}
+
+pub(crate) async fn run_secondary_with_io<T, E, A>(
+    data_dir: &Path,
+    server_io: T,
+) -> anyhow::Result<()>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let addr = proxy::wait_for_primary(data_dir).await?;
     let client = proxy::connect_to_primary(addr).await?;
     let failover_signal = tokio_util::sync::CancellationToken::new();
@@ -304,31 +394,7 @@ async fn run_secondary(data_dir: &Path, db_path: &Path) -> anyhow::Result<()> {
         server_cancel.cancel();
     });
 
-    // When the proxy session ends (primary died or stdio closed), the
-    // running service finishes. If stdio is still open, we try to recover.
     let _ = running.waiting().await;
-
-    // If stdio bridge is still alive, attempt promotion or reconnection.
-    if !stdio_bridge.is_finished() {
-        tracing::info!("primary connection lost, attempting failover");
-        // Small delay to let the old primary release the lock.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        if proxy::try_promote(db_path).await? {
-            // Promoted — try_promote blocks until this session ends.
-            return Ok(());
-        }
-
-        // Another process took the lock. Reconnect as secondary.
-        // At this point we've already consumed our duplex channel, so
-        // we can't transparently re-proxy. Log and exit — Claude Code
-        // will restart us, and we'll reconnect to the new primary.
-        tracing::warn!("could not promote; exiting for restart");
-    }
-
-    let _ = stdio_bridge.await;
-    // Real shutdown: tear down any listener this secondary claimed lazily.
-    internal_listener::shutdown_lazy_listener(data_dir).await;
     Ok(())
 }
 
@@ -341,17 +407,118 @@ pub async fn bridge_stdio(duplex: tokio::io::DuplexStream) -> anyhow::Result<()>
     handshake::bridge_with_shim(tokio::io::stdin(), tokio::io::stdout(), duplex).await
 }
 
-// ── Addr file helpers ───────────────────────────────────────────────────────
+// ── Primary election & Addr file helpers ────────────────────────────────────
+
+/// Cross-process primary election guard backed by an advisory OS file lock on
+/// `.spindle/runtime/spindle.lock`.
+///
+/// The lock is held on an open file descriptor for the lifetime of the primary
+/// process (or until dropped in tests) and released automatically by the OS if
+/// the process exits or crashes. The lock file itself is intentionally never
+/// unlinked on drop so concurrent processes always contend on the same inode.
+pub struct PrimaryLock {
+    file: std::fs::File,
+}
+
+impl Drop for PrimaryLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub(crate) fn primary_lock_path(data_dir: &Path) -> PathBuf {
+    spindle_adapters::workspace::runtime_dir(data_dir).join("spindle.lock")
+}
+
+/// Attempt a non-blocking acquisition of the cross-process primary lock for
+/// `data_dir`. Returns `Ok(Some(lock))` if this caller won election, or
+/// `Ok(None)` if another process currently holds the lock.
+pub fn try_acquire_primary_lock(data_dir: &Path) -> anyhow::Result<Option<PrimaryLock>> {
+    let lock_path = primary_lock_path(data_dir);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening primary lock file at {}", lock_path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(PrimaryLock { file })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => Err(err)
+            .with_context(|| format!("locking primary lock file at {}", lock_path.display())),
+    }
+}
+
+pub(crate) struct AddrFileLockGuard {
+    file: std::fs::File,
+}
+
+impl Drop for AddrFileLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub(crate) fn acquire_addr_file_lock(data_dir: &Path) -> Option<AddrFileLockGuard> {
+    let lock_path = spindle_adapters::workspace::runtime_dir(data_dir).join("spindle.addr.lock");
+    if let Some(parent) = lock_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .ok()?;
+    file.lock().ok()?;
+    Some(AddrFileLockGuard { file })
+}
+
+/// RAII guard for `.spindle/runtime/spindle.addr` that removes the addr file on
+/// drop ONLY if it still names `self.addr`.
+pub struct AddrFileGuard {
+    data_dir: PathBuf,
+    addr: SocketAddr,
+}
+
+impl AddrFileGuard {
+    pub fn new(data_dir: PathBuf, addr: SocketAddr) -> Self {
+        Self { data_dir, addr }
+    }
+}
+
+impl Drop for AddrFileGuard {
+    fn drop(&mut self) {
+        remove_addr_file_if_owner(&self.data_dir, self.addr);
+    }
+}
 
 pub(crate) fn addr_file_path(data_dir: &Path) -> PathBuf {
     spindle_adapters::workspace::runtime_dir(data_dir).join("spindle.addr")
 }
 
 pub fn write_addr_file(data_dir: &Path, addr: SocketAddr) -> anyhow::Result<()> {
-    if let Some(parent) = addr_file_path(data_dir).parent() {
-        std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
+    let path = addr_file_path(data_dir);
+    let parent = path
+        .parent()
+        .context("addr file path must have a parent directory")?;
+    std::fs::create_dir_all(parent).context("failed to create runtime directory")?;
+
+    let _lock = acquire_addr_file_lock(data_dir);
+    static NEXT_TMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let seq = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = parent.join(format!("spindle.addr.tmp.{}.{seq}", std::process::id()));
+    std::fs::write(&tmp_path, addr.to_string()).context("failed to write temporary addr file")?;
+    if let Err(err) = std::fs::rename(&tmp_path, &path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).context("failed to atomically replace addr file");
     }
-    std::fs::write(addr_file_path(data_dir), addr.to_string()).context("failed to write addr file")
+    Ok(())
 }
 
 pub fn read_addr_file(data_dir: &Path) -> anyhow::Result<SocketAddr> {
@@ -360,13 +527,27 @@ pub fn read_addr_file(data_dir: &Path) -> anyhow::Result<SocketAddr> {
     content.trim().parse().context("failed to parse addr file")
 }
 
+/// Remove the addr file only if it currently points at `expected_addr`.
+/// Returns `true` if the file was owned by `expected_addr` and removed.
+pub fn remove_addr_file_if_owner(data_dir: &Path, expected_addr: SocketAddr) -> bool {
+    let _lock = acquire_addr_file_lock(data_dir);
+    if read_addr_file(data_dir).ok() == Some(expected_addr) {
+        let _ = std::fs::remove_file(addr_file_path(data_dir));
+        true
+    } else {
+        false
+    }
+}
+
 pub fn remove_addr_file(data_dir: &Path) {
+    let _lock = acquire_addr_file_lock(data_dir);
     let _ = std::fs::remove_file(addr_file_path(data_dir));
 }
 
 pub fn is_lock_error(error: &anyhow::Error) -> bool {
     let msg = format!("{error:?}");
     msg.contains("already locked by another process")
+        || msg.contains("primary lock held by another process")
 }
 
 // ── Config helpers ──────────────────────────────────────────────────────────
@@ -614,5 +795,173 @@ mod tests {
         assert!(
             matches!(cli.command, Some(McpCommand::InitCodexSkills { target_dir: Some(path) }) if path == Path::new("/tmp/book"))
         );
+    }
+
+    #[tokio::test]
+    async fn primary_election_lock_allows_only_one_holder_and_releases_on_drop() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let data_dir = temp.path().join(".spindle");
+        let db_path = data_dir.join("spindle.db");
+
+        let first = try_acquire_primary_lock(&data_dir)
+            .expect("first lock attempt")
+            .expect("first caller must win primary election");
+        assert!(
+            primary_lock_path(&data_dir).exists(),
+            "runtime/spindle.lock should exist once acquired"
+        );
+
+        let second = try_acquire_primary_lock(&data_dir).expect("second lock attempt");
+        assert!(
+            second.is_none(),
+            "concurrent caller on the same data_dir must not become primary"
+        );
+        assert!(
+            !proxy::try_promote(&data_dir, &db_path)
+                .await
+                .expect("try_promote while locked"),
+            "try_promote must return false while primary lock is held"
+        );
+
+        drop(first);
+
+        assert!(
+            proxy::try_promote(&data_dir, &db_path)
+                .await
+                .expect("try_promote after primary lock drop"),
+            "try_promote must succeed once previous primary releases the lock"
+        );
+        let third = try_acquire_primary_lock(&data_dir)
+            .expect("third lock attempt")
+            .expect("successor must acquire primary lock after release");
+        drop(third);
+    }
+
+    #[tokio::test]
+    async fn addr_file_only_removed_by_owner_and_cleaned_up_on_early_return() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let data_dir = temp.path().join(".spindle");
+        let owner_a: SocketAddr = "127.0.0.1:41001".parse().unwrap();
+        let owner_b: SocketAddr = "127.0.0.1:41002".parse().unwrap();
+
+        write_addr_file(&data_dir, owner_a).expect("write owner_a");
+        let guard_a = AddrFileGuard::new(data_dir.clone(), owner_a);
+
+        // Simulate owner_b replacing the addr file; dropping guard_a must NOT
+        // delete owner_b's addr file.
+        write_addr_file(&data_dir, owner_b).expect("write owner_b");
+        drop(guard_a);
+        assert_eq!(
+            read_addr_file(&data_dir).expect("owner_b addr must remain"),
+            owner_b
+        );
+
+        // Removing with wrong owner is a no-op; removing with matching owner deletes it.
+        assert!(!remove_addr_file_if_owner(&data_dir, owner_a));
+        assert!(addr_file_path(&data_dir).exists());
+        assert!(remove_addr_file_if_owner(&data_dir, owner_b));
+        assert!(!addr_file_path(&data_dir).exists());
+
+        // Early-return cleanup in run_primary_with_io: if the stdio transport
+        // closes before handshake completes (`server.serve(server_io).await?`
+        // returns an error), `run_primary_with_io` must remove its addr file
+        // and shut down its internal listener.
+        let db = init_sqlite(&data_dir.join("spindle.db"))
+            .await
+            .expect("init sqlite");
+        let service = build_service(db, &data_dir, None);
+        let (server_io, client_io) = tokio::io::duplex(1024);
+        drop(client_io);
+
+        let err = run_primary_with_io(service, &data_dir, server_io)
+            .await
+            .expect_err("closed client stream must fail MCP handshake");
+        assert!(
+            format!("{err:#}").contains("failed to start spindle mcp server"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            !addr_file_path(&data_dir).exists(),
+            "early return from run_primary must clean up spindle.addr"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn secondary_proxies_tool_calls_to_primary_over_http() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let data_dir = temp.path().join(".spindle");
+        let db_path = data_dir.join("spindle.db");
+
+        // Instance 1 wins primary election and starts `run_primary_with_io`.
+        let primary_lock = try_acquire_primary_lock(&data_dir)
+            .expect("lock attempt")
+            .expect("instance 1 wins primary lock");
+        let db = init_sqlite(&db_path).await.expect("init sqlite");
+        let service = build_service(db, &data_dir, None);
+
+        let (primary_server_io, primary_client_io) = tokio::io::duplex(64 * 1024);
+        let primary_data_dir = data_dir.clone();
+        let primary_service = service.clone();
+        let primary_task = tokio::spawn(async move {
+            let _lock = primary_lock;
+            run_primary_with_io(primary_service, &primary_data_dir, primary_server_io).await
+        });
+
+        let primary_client = ().serve(primary_client_io).await.expect("primary client");
+
+        // Instance 2 sees the primary lock held and starts `run_secondary_with_io`.
+        assert!(
+            try_acquire_primary_lock(&data_dir)
+                .expect("instance 2 lock attempt")
+                .is_none(),
+            "instance 2 must lose primary election and run as secondary"
+        );
+        let (secondary_server_io, secondary_client_io) = tokio::io::duplex(64 * 1024);
+        let secondary_data_dir = data_dir.clone();
+        let secondary_task = tokio::spawn(async move {
+            run_secondary_with_io(&secondary_data_dir, secondary_server_io).await
+        });
+
+        let secondary_client = ().serve(secondary_client_io).await.expect("secondary proxy client");
+        let tools = secondary_client
+            .list_all_tools()
+            .await
+            .expect("list tools via secondary proxy");
+        assert!(
+            tools.iter().any(|t| t.name == "create_project"),
+            "secondary proxy must return primary tool list"
+        );
+
+        let create_result = secondary_client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("create_project").with_arguments(
+                    serde_json::json!({
+                        "name": "Proxied Novel",
+                        "project_type": "novel",
+                        "genre": "fantasy",
+                        "reader_contract": {
+                            "promise": "Created through secondary proxy"
+                        }
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .expect("create_project via secondary proxy");
+        assert_eq!(create_result.is_error, Some(false));
+
+        let projects = service
+            .list_projects()
+            .await
+            .expect("list projects on primary");
+        assert_eq!(projects.projects.len(), 1);
+        assert_eq!(projects.projects[0].name, "Proxied Novel");
+
+        let _ = secondary_client.cancel().await;
+        let _ = secondary_task.await;
+        let _ = primary_client.cancel().await;
+        let _ = primary_task.await;
     }
 }

@@ -169,9 +169,122 @@ pub struct ToolRouter {
 pub struct ToolSerializationState {
     serialization_gate: Arc<RwLock<()>>,
     project_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
+    internal_tokens: Arc<std::sync::Mutex<BTreeMap<String, InternalTokenGrant>>>,
 }
 
-enum ToolSerializationScope {
+#[derive(Clone)]
+struct InternalTokenGrant {
+    scope: ToolSerializationScope,
+    reentrant_lock: Arc<Mutex<()>>,
+}
+
+pub struct InternalCallTokenGuard {
+    state: Arc<ToolSerializationState>,
+    token: String,
+}
+
+impl InternalCallTokenGuard {
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl Drop for InternalCallTokenGuard {
+    fn drop(&mut self) {
+        if let Ok(mut tokens) = self.state.internal_tokens.lock() {
+            tokens.remove(&self.token);
+        }
+    }
+}
+
+impl ToolSerializationState {
+    /// Return the process-wide shared [`ToolSerializationState`] for `service`'s
+    /// workspace (`data_dir`), ensuring stdio, the internal HTTP listener, and
+    /// the operator console all coordinate on the same per-project locks.
+    pub fn for_service(service: &SpindleService) -> Arc<Self> {
+        Self::for_workspace(service.repository().data_dir())
+    }
+
+    pub fn for_workspace(data_dir: &Path) -> Arc<Self> {
+        let key = workspace_serialization_key(data_dir);
+        let mut map = workspace_serialization_states()
+            .lock()
+            .expect("workspace serialization registry mutex poisoned");
+        map.entry(key)
+            .or_insert_with(|| Arc::new(Self::default()))
+            .clone()
+    }
+
+    fn bind_or_share_for_service(service: &SpindleService, candidate: Arc<Self>) -> Arc<Self> {
+        let key = workspace_serialization_key(service.repository().data_dir());
+        let mut map = workspace_serialization_states()
+            .lock()
+            .expect("workspace serialization registry mutex poisoned");
+        map.entry(key).or_insert(candidate).clone()
+    }
+
+    pub(crate) fn issue_internal_token(
+        self: &Arc<Self>,
+        scope: ToolSerializationScope,
+    ) -> InternalCallTokenGuard {
+        static NEXT_TOKEN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let seq = NEXT_TOKEN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let token = format!("spindle-internal-{}-{nanos}-{seq}", std::process::id());
+        let grant = InternalTokenGrant {
+            scope,
+            reentrant_lock: Arc::new(Mutex::new(())),
+        };
+        self.internal_tokens
+            .lock()
+            .expect("internal token mutex poisoned")
+            .insert(token.clone(), grant);
+        InternalCallTokenGuard {
+            state: Arc::clone(self),
+            token,
+        }
+    }
+
+    fn reentrant_lock_for_token(
+        &self,
+        token: Option<&str>,
+        required_scope: &ToolSerializationScope,
+    ) -> Option<Arc<Mutex<()>>> {
+        let token = token?.trim();
+        if token.is_empty() {
+            return None;
+        }
+        let tokens = self.internal_tokens.lock().ok()?;
+        let grant = tokens.get(token)?;
+        let allowed = match (&grant.scope, required_scope) {
+            (ToolSerializationScope::Global, _) => true,
+            (
+                ToolSerializationScope::Project(held_project_id),
+                ToolSerializationScope::Project(req_project_id),
+            ) => held_project_id == req_project_id,
+            (ToolSerializationScope::Project(_), ToolSerializationScope::Global) => false,
+        };
+        allowed.then(|| Arc::clone(&grant.reentrant_lock))
+    }
+}
+
+fn workspace_serialization_states()
+-> &'static std::sync::Mutex<BTreeMap<PathBuf, Arc<ToolSerializationState>>> {
+    static STATES: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<PathBuf, Arc<ToolSerializationState>>>,
+    > = std::sync::OnceLock::new();
+    STATES.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+fn workspace_serialization_key(data_dir: &Path) -> PathBuf {
+    std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ToolSerializationScope {
     Global,
     Project(String),
 }
@@ -184,6 +297,9 @@ enum ToolSerializationGuard {
         _project: OwnedMutexGuard<()>,
         _gate: OwnedRwLockReadGuard<()>,
     },
+    Reentrant {
+        _reentrant: OwnedMutexGuard<()>,
+    },
 }
 
 impl ToolRouter {
@@ -192,12 +308,19 @@ impl ToolRouter {
         tool_profile: Option<String>,
         serialization_state: Arc<ToolSerializationState>,
     ) -> Self {
+        let serialization_state =
+            ToolSerializationState::bind_or_share_for_service(&service, serialization_state);
         Self {
             service,
             session_context: Arc::new(RwLock::new(SessionContext::default())),
             serialization_state,
             tool_profile,
         }
+    }
+
+    #[cfg(test)]
+    pub fn serialization_state(&self) -> &Arc<ToolSerializationState> {
+        &self.serialization_state
     }
 
     /// Borrow the underlying service (test-only accessor for integration tests
@@ -208,954 +331,996 @@ impl ToolRouter {
     }
 
     pub fn list_tools(&self) -> Vec<Tool> {
-        let all = self.all_tools();
+        let all = all_tool_schemas();
         let Some(profile) = self.tool_profile.as_deref() else {
-            return all;
+            return all.to_vec();
         };
-        let allowed: &[&str] = match profile {
-            "import" => &[
-                "create_project",
-                "list_projects",
-                "list_skills",
-                "get_skill",
-                "get_reference",
-                "import_manuscript",
-                "import_status",
-                "import_extract_entities",
-                "import_consolidate_entities",
-                "import_analyze_character",
-                "import_extract_world",
-                "import_analyze_narrative",
-                "import_compute_final_state",
-                "import_hydrate_bible",
-                "import_apply_review_decisions",
-                "record_knowledge",
-                "record_note",
-                "update_writer_position",
-                "search_bible",
-                "find_scenes_referencing",
-                "get_chapter_briefing",
-                "create_style_profile_from_markdown",
-                "list_style_profiles",
-                "get_style_profile",
-                "apply_style_profile",
-                "preview_apply_style_profile",
-                "list_style_profile_applications",
-                "rollback_style_profile_application",
-                "check_style_profile_sources",
-                "preview_refresh_style_profile",
-                "refresh_style_profile",
-                "check_style_against_profile",
-                "plan_style_revision",
-                "compare_style_profiles",
-                "archive_style_profile",
-                "preview_style_revision_patch",
-                "evaluate_style_revision_patch",
-                "list_style_revision_patch_audits",
-                "rollback_style_revision_patch",
-            ],
-            "write" => &[
-                "get_editorial_queue",
-                "decide_editorial_item",
-                "read_episode",
-                "get_model_usage",
-                "get_series_status",
-                "prepare_episode_release",
-                "release_episode",
-                "get_episode_release",
-                "create_project",
-                "list_projects",
-                "list_skills",
-                "get_skill",
-                "get_reference",
-                "create_book",
-                "create_chapter",
-                "create_character",
-                "create_location",
-                "create_faction",
-                "create_religion",
-                "create_economy",
-                "create_term",
-                "batch_create_terms",
-                "create_relationship",
-                "create_world_rule",
-                "update_world_rule",
-                "set_character_voice_profile",
-                "batch_set_character_voice_profiles",
-                "create_save_point",
-                "restore_save_point",
-                "create_plot_line",
-                "create_conflict",
-                "create_theme",
-                "create_motif",
-                "batch_create_motifs",
-                "create_narrative_promise",
-                "update_promise_status",
-                "batch_create_narrative_promises",
-                "create_character_arc",
-                "update_arc_milestone",
-                "create_system_overlay",
-                "preflight_book_export",
-                "compile_manuscript",
-                "export_recap",
-                "export_series_bible",
-                "mine_scene_canon",
-                "list_canon_deltas",
-                "decide_canon_deltas",
-                "replan_chapter",
-                "list_plan_amendments",
-                "decide_plan_amendments",
-                "get_writer_state",
-                "get_scene_context",
-                "get_entity",
-                "find_entity",
-                "get_character_snapshot",
-                "get_chapter_briefing",
-                "list_chapter_scenes",
-                "list_book_chapters",
-                "save_scene_draft",
-                "move_scene",
-                "delete_scene",
-                "operator_delete_scene",
-                "commit_scene_changes",
-                "commit_character_state",
-                "update_relationship",
-                "record_note",
-                "update_writer_position",
-                "save_summary",
-                "plan_chapter",
-                "annotate_scene_beats",
-                "set_book_outline",
-                "set_chapter_outline",
-                "update_entity",
-                "search_bible",
-                "find_scenes_referencing",
-                "check_consistency",
-                "run_dual_persona_review",
-                "backfill_scene_source_offsets",
-                "register_canonical_fact",
-                "extract_canonical_facts_from_scene",
-                "migrate_canonical_fact",
-                "bind_canonical_fact_to_scene",
-                "research_query",
-                "research_add_source",
-                "research_add_note",
-                "research_add_claim",
-                "research_search",
-                "research_pack_for_scene",
-                "research_usage_for_scene",
-                "research_ingest_report",
-                "research_plan_for_scene",
-                "pull_chapter_from_file",
-                "push_chapter_to_file",
-                "authoring_prepare_run",
-                "authoring_start_run",
-                "authoring_status",
-                "authoring_execute_next",
-                "authoring_save_scene_draft",
-                "authoring_record_checkpoint_audit",
-                "authoring_review_checkpoint",
-                "authoring_resolve_block",
-                "authoring_cancel_run",
-                "create_style_profile_from_markdown",
-                "list_style_profiles",
-                "get_style_profile",
-                "apply_style_profile",
-                "preview_apply_style_profile",
-                "list_style_profile_applications",
-                "rollback_style_profile_application",
-                "check_style_profile_sources",
-                "preview_refresh_style_profile",
-                "refresh_style_profile",
-                "check_style_against_profile",
-                "plan_style_revision",
-                "compare_style_profiles",
-                "archive_style_profile",
-                "preview_style_revision_patch",
-                "evaluate_style_revision_patch",
-                "apply_style_revision_patch",
-                "list_style_revision_patch_audits",
-                "rollback_style_revision_patch",
-            ],
-            "minimal" => &[
-                "create_project",
-                "list_projects",
-                "list_skills",
-                "get_skill",
-                "get_reference",
-                "search_bible",
-                "find_scenes_referencing",
-                "get_writer_state",
-                "get_scene_context",
-                "get_entity",
-                "find_entity",
-                "get_character_snapshot",
-                "list_chapter_scenes",
-                "list_book_chapters",
-                "save_scene_draft",
-                "update_writer_position",
-                "import_manuscript",
-                "import_status",
-                "import_hydrate_bible",
-            ],
-            "authoring" => &[
-                "list_agents",
-                "get_character_snapshot",
-                "update_writer_position",
-                "commit_character_state",
-                "register_canonical_fact",
-                "record_knowledge",
-                "create_future_knowledge",
-                "set_project_calendar",
-                "set_scene_clock",
-                "record_note",
-                "update_arc_milestone",
-                "create_character_arc",
-                "create_motif",
-                "create_theme",
-                "create_conflict",
-                "create_plot_line",
-                "annotate_scene_beats",
-                "save_scene_draft",
-                "set_active_project",
-                "get_editorial_queue",
-                "decide_editorial_item",
-                "read_episode",
-                "get_series_status",
-                "prepare_episode_release",
-                "release_episode",
-                "get_episode_release",
-                "get_model_usage",
-                "create_project",
-                "list_projects",
-                "list_skills",
-                "get_skill",
-                "get_reference",
-                "create_book",
-                "create_chapter",
-                "create_character",
-                "create_location",
-                "create_world_rule",
-                "create_narrative_promise",
-                "update_promise_status",
-                "get_writer_state",
-                "get_entity",
-                "find_entity",
-                "search_bible",
-                "get_chapter_briefing",
-                "get_scene_context",
-                "list_chapter_scenes",
-                "list_book_chapters",
-                "plan_chapter",
-                "set_book_outline",
-                "set_chapter_outline",
-                "update_entity",
-                "authoring_prepare_run",
-                "authoring_start_run",
-                "authoring_status",
-                "authoring_execute_next",
-                "authoring_save_scene_draft",
-                "authoring_record_checkpoint_audit",
-                "authoring_review_checkpoint",
-                "authoring_resolve_block",
-                "authoring_cancel_run",
-                "commit_scene_changes",
-                "save_summary",
-                "check_consistency",
-                "run_dual_persona_review",
-                "mine_scene_canon",
-                "list_canon_deltas",
-                "decide_canon_deltas",
-                "replan_chapter",
-                "list_plan_amendments",
-                "decide_plan_amendments",
-                "preflight_book_export",
-                "compile_manuscript",
-                "export_recap",
-                "export_series_bible",
-                "create_save_point",
-                "restore_save_point",
-            ],
-            _ => return all,
+        let Some(allowed) = profile_allowed_tool_names(profile) else {
+            return all.to_vec();
         };
-        all.into_iter()
+        all.iter()
             .filter(|t| allowed.contains(&t.name.as_ref()))
+            .cloned()
             .collect()
     }
 
-    fn all_tools(&self) -> Vec<Tool> {
-        vec![
-            tool::<GetEditorialQueueInput, EditorialQueueOutput>(
-                "get_editorial_queue",
-                "Review reader concerns with chapter evidence, source freshness and author decisions. Default shows unresolved work.",
-            ),
-            tool::<DecideEditorialItemInput, EditorialItem>(
-                "decide_editorial_item",
-                "Accept, defer, resolve, dismiss or reopen an editorial concern against the reviewed source and decision revision. Accepted work enters drafting guidance; never changes prose or canon.",
-            ),
-            tool::<ReadEpisodeInput, ReadEpisodeOutput>(
-                "read_episode",
-                "Read an episode as the promised reader, continuing source-validated memory across runs and books. Reuses unchanged reads and reports gaps and stale memory.",
-            ),
-            tool::<GetSeriesStatusInput, SeriesStatusOutput>(
-                "get_series_status",
-                "Inspect the published cursor, draft and ready backlog, episode revisions, and changes since release.",
-            ),
-            tool::<PrepareEpisodeReleaseInput, EpisodeReleasePreview>(
-                "prepare_episode_release",
-                "Preview one chapter as an episode. Reports missing/stub scenes and returns a source hash for a local immutable release.",
-            ),
-            tool::<ReleaseEpisodeInput, EpisodeRelease>(
-                "release_episode",
-                "Record an immutable local episode snapshot from an unchanged preview. Corrections append revisions. Does not post to any platform.",
-            ),
-            tool::<GetEpisodeReleaseInput, EpisodeRelease>(
-                "get_episode_release",
-                "Read the exact prose and source metadata of an immutable episode release, including the previous revision id.",
-            ),
-            tool::<GetModelUsageInput, GetModelUsageOutput>(
-                "get_model_usage",
-                "Inspect persisted model calls, reported tokens, elapsed time and unknown usage. No prose or credentials are logged.",
-            ),
-            tool::<CreateProjectInput, CreateProjectOutput>(
-                "create_project",
-                "Create a project, book 1, and chapter 1",
-            ),
-            tool::<EmptyInput, ListProjectsOutput>(
-                "list_projects",
-                "List all projects with their record ids",
-            ),
-            tool::<SetActiveProjectInput, SetActiveProjectOutput>(
-                "set_active_project",
-                "Persist the default project and branch for this MCP session so follow-up tool calls can omit project_id and use the current branch by default",
-            ),
-            tool::<CreateBookInput, CreateBookOutput>(
-                "create_book",
-                "Create the next book within a project",
-            ),
-            tool::<CreateChapterInput, CreateChapterOutput>(
-                "create_chapter",
-                "Create the next chapter within a book using book_number or book_id; optional chapter_number may be any unused non-negative number (gaps are allowed, e.g. for restructures) and defaults to one past the current maximum",
-            ),
-            tool::<CreateBranchInput, CreateBranchOutput>(
-                "create_branch",
-                "Create a new project branch from the active or specified parent branch",
-            ),
-            tool::<SwitchBranchInput, SwitchBranchOutput>(
-                "switch_branch",
-                "Switch a project's active branch",
-            ),
-            tool::<SetNarratorVoiceInput, SetNarratorVoiceOutput>(
-                "set_narrator_voice",
-                "Set or clear the project's narrator-voice directive — the prose-level narration style (comedy density, pacing feel, interiority ratio, emotional register, chapter-ending style) that governs the whole reading experience and is distinct from per-character dialogue voice profiles. Enforced across scene context, the save-draft gate, the style_compliance validator, and the review's Target Reader persona",
-            ),
-            tool::<SetProjectCalendarInput, SetProjectCalendarOutput>(
-                "set_project_calendar",
-                "Define the project's in-world calendar (days per week, hours per day, months, days per year, epoch). Enables the chronology check and the in-world-time hard constraint; validated for internal consistency.",
-            ),
-            tool::<SetSceneClockInput, SetSceneClockOutput>(
-                "set_scene_clock",
-                "Place a scene on the in-world story clock (day_index, time_of_day, duration_days, precision), optionally marking temporal_mode (linear|flashback|flashforward|concurrent) and a parallel thread_key. Drives the between-scene chronology check, the intra-scene temporal_coherence check (duration_days sets the expected span; temporal_mode/precision suppress it), and the in-world-time context constraint that feeds the prior scene's end clock forward.",
-            ),
-            tool::<SetTimelineEventClockInput, SetTimelineEventClockOutput>(
-                "set_timeline_event_clock",
-                "Set the in-world time a timeline event occurs (distinct from its manuscript placement) so flashbacks and time-skips are oriented by story time.",
-            ),
-            tool::<SetCharacterBirthInput, SetCharacterBirthOutput>(
-                "set_character_birth",
-                "Anchor a character's birth on the story clock so their age can be derived at any story moment. day_index is a signed offset from the story's opening day, so births before the epoch are negative (e.g. -8913 for a character born ~24 years before day 1).",
-            ),
-            tool::<SetProjectQuantitySchemeInput, SetProjectQuantitySchemeOutput>(
-                "set_project_quantity_scheme",
-                "Declare a per-project quantity scheme for a measure (e.g. wealth, mana, a cultivation ladder): ordered currency denominations and ordered bands/tiers, plus an optional max_band_jump. Validated for internal consistency; fully opt-in. Money and progression systems reuse the same primitive.",
-            ),
-            tool::<CommitQuantityStateInput, CommitQuantityStateOutput>(
-                "commit_quantity_state",
-                "Record a stamped quantity reading for a subject's measure at a story position (band is the primary signal; amount/unit are optional). A change_reason marks a deliberate large jump as legitimate. Validated against the declared scheme when one exists. Manual path; authoring runs with a mining_policy stage quantity_change deltas that apply through this tool after ratification via decide_canon_deltas.",
-            ),
-            tool::<DeriveQuantitySchemeFromOverlayInput, DeriveQuantitySchemeFromOverlayOutput>(
-                "derive_quantity_scheme_from_system_overlay",
-                "Derive a quantity scheme from a system overlay so LitRPG / cultivation progression reuses band-monotonicity: the overlay's advancement_tiers become the scheme's ordered bands (measure = its progression_currency, else its name).",
-            ),
-            tool::<ScanScenePricesInput, ScanScenePricesOutput>(
-                "scan_scene_prices",
-                "Scan a scene's prose for '<number> <unit>' price mentions using the project's declared denominations + economy currencies (review-gated; nothing is auto-registered). Use the results to seed price-canon facts.",
-            ),
-            tool::<CreateSavePointInput, CreateSavePointOutput>(
-                "create_save_point",
-                "Create a save point on the active branch",
-            ),
-            tool::<RestoreSavePointInput, RestoreSavePointOutput>(
-                "restore_save_point",
-                "Restore the active branch from a save point snapshot",
-            ),
-            tool::<DiffBranchesInput, DiffBranchesOutput>(
-                "diff_branches",
-                "Compare two project branches across scenes, states, relationships, and pacing",
-            ),
-            tool::<CreateStyleProfileFromMarkdownInput, CreateStyleProfileFromMarkdownOutput>(
-                "create_style_profile_from_markdown",
-                "Derive a reusable project style profile from user-provided local Markdown files or folders. Persists metadata, hashes, metrics, and generated guidance, but no source text by default. The guidance is synthesized by the routed style_analyze model against an explicit schema; if the model returns no usable guidance the call fails loudly and creates no profile (use metrics_only=true to create a metrics-only profile deliberately).",
-            ),
-            tool::<CheckStyleProfileSourcesInput, CheckStyleProfileSourcesOutput>(
-                "check_style_profile_sources",
-                "Check the staleness of source files for a derived style profile compared to disk. Exposes metadata only.",
-            ),
-            tool::<PreviewRefreshStyleProfileInput, PreviewRefreshStyleProfileOutput>(
-                "preview_refresh_style_profile",
-                "Preview rebuilding/refreshing a style profile from source files without persisting. Exposes metadata only.",
-            ),
-            tool::<RefreshStyleProfileInput, RefreshStyleProfileOutput>(
-                "refresh_style_profile",
-                "Refresh/rebuild a style profile from current local sources, saving a new version linked to the parent.",
-            ),
-            tool::<ListStyleProfilesInput, ListStyleProfilesOutput>(
-                "list_style_profiles",
-                "List derived style profiles saved for a project.",
-            ),
-            tool::<GetStyleProfileInput, GetStyleProfileOutput>(
-                "get_style_profile",
-                "Retrieve a specific derived style profile by its profile_id.",
-            ),
-            tool::<ApplyStyleProfileInput, ApplyStyleProfileOutput>(
-                "apply_style_profile",
-                "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows. Requires the profile to be ready and to carry application guidance; pass force=true to deliberately activate a NeedsReview or metrics-only profile — with no prose guidance, only the profile is activated and the project's narrator voice/style notes are left untouched.",
-            ),
-            tool::<PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput>(
-                "preview_apply_style_profile",
-                "Preview applying a derived style profile's changes without mutating state.",
-            ),
-            tool::<ListStyleProfileApplicationsInput, ListStyleProfileApplicationsOutput>(
-                "list_style_profile_applications",
-                "List the history of applied style profiles and their rollback status.",
-            ),
-            tool::<RollbackStyleProfileApplicationInput, RollbackStyleProfileApplicationOutput>(
-                "rollback_style_profile_application",
-                "Rollback a previously applied style profile, reverting narrator voice, style notes, and conservatively reverting style world rules.",
-            ),
-            tool::<CheckStyleAgainstProfileInput, CheckStyleAgainstProfileOutput>(
-                "check_style_against_profile",
-                "Check a scene or raw text for style drift against a derived style profile.",
-            ),
-            tool::<PlanStyleRevisionInput, PlanStyleRevisionOutput>(
-                "plan_style_revision",
-                "Generate a non-mutating style revision plan for a target (scene, chapter, or raw text) against a derived style profile.",
-            ),
-            tool::<CompareStyleProfilesInput, CompareStyleProfilesOutput>(
-                "compare_style_profiles",
-                "Compare two derived style profiles to report metric deltas, guidance differences, and whether applying the second profile would likely change the project style materially.",
-            ),
-            tool::<ArchiveStyleProfileInput, ArchiveStyleProfileOutput>(
-                "archive_style_profile",
-                "Safer profile deletion/archiving. archived profiles cannot be active or default, but preserve audit history.",
-            ),
-            tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
-                "preview_style_revision_patch",
-                "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",
-            ),
-            tool::<EvaluateStyleRevisionPatchInput, EvaluateStyleRevisionPatchOutput>(
-                "evaluate_style_revision_patch",
-                "Evaluate a proposed style revision patch for alignment improvement and risks without persisting changes.",
-            ),
-            tool::<ApplyStyleRevisionPatchInput, ApplyStyleRevisionPatchOutput>(
-                "apply_style_revision_patch",
-                "Apply proposed style revision patches to target scenes, saving drafts through the standard writing pipeline, invalidating caches, and writing an audit trail.",
-            ),
-            tool::<ListStyleRevisionPatchAuditsInput, ListStyleRevisionPatchAuditsOutput>(
-                "list_style_revision_patch_audits",
-                "List style revision patch audits for a project.",
-            ),
-            tool::<RollbackStyleRevisionPatchInput, RollbackStyleRevisionPatchOutput>(
-                "rollback_style_revision_patch",
-                "Roll back an applied style revision patch, restoring prior prose versions using scene version history.",
-            ),
-            tool::<MergeBranchInput, MergeBranchOutput>(
-                "merge_branch",
-                "Merge a source branch into a target branch for branch-aware story records",
-            ),
-            tool::<ReviseSceneInput, ReviseSceneOutput>(
-                "revise_scene",
-                "Revise a scene on a non-main branch and flag downstream invalidation impact",
-            ),
-            tool::<GenerateAlternativesInput, GenerateAlternativesOutput>(
-                "generate_alternatives",
-                "Generate branch-backed alternative scene drafts from shared context",
-            ),
-            tool::<CompareAlternativesInput, CompareAlternativesOutput>(
-                "compare_alternatives",
-                "Compare generated alternative branches and rank them heuristically",
-            ),
-            tool::<SelectAlternativeInput, SelectAlternativeOutput>(
-                "select_alternative",
-                "Select an alternative branch and merge it into main",
-            ),
-            tool::<ListRevisionMarkersInput, ListRevisionMarkersOutput>(
-                "list_revision_markers",
-                "List persisted revision markers for a scene on the active branch",
-            ),
-            tool::<ResolveRevisionMarkerInput, ResolveRevisionMarkerOutput>(
-                "resolve_revision_marker",
-                "Mark a persisted revision marker as resolved",
-            ),
-            tool::<CreateCharacterInput, CreateCharacterOutput>(
-                "create_character",
-                "Create a character with profiles and baseline state",
-            ),
-            tool::<CreateLocationInput, CreateLocationOutput>(
-                "create_location",
-                "Create a location with optional initial world state; accepts type as an alias for kind and infers a kind when omitted",
-            ),
-            tool::<CreateFactionInput, CreateFactionOutput>(
-                "create_faction",
-                "Create a faction entity",
-            ),
-            tool::<CreateReligionInput, CreateReligionOutput>(
-                "create_religion",
-                "Create a religion entity",
-            ),
-            tool::<CreateEconomyInput, CreateEconomyOutput>(
-                "create_economy",
-                "Create an economy entity",
-            ),
-            tool::<CreateTermInput, CreateTermOutput>("create_term", "Create a glossary term"),
-            tool::<BatchCreateTermsInput, BatchCreateTermsOutput>(
-                "batch_create_terms",
-                "Create multiple glossary terms in one call",
-            ),
-            tool::<CreateRelationshipInput, CreateRelationshipOutput>(
-                "create_relationship",
-                "Create a directed relationship between two characters",
-            ),
-            tool::<CreateWorldRuleInput, CreateWorldRuleOutput>(
-                "create_world_rule",
-                "Create a project world rule",
-            ),
-            tool::<UpdateWorldRuleInput, UpdateWorldRuleOutput>(
-                "update_world_rule",
-                "Update a world rule by record id",
-            ),
-            tool::<BatchSetCharacterVoiceProfilesInput, BatchSetCharacterVoiceProfilesOutput>(
-                "batch_set_character_voice_profiles",
-                "Replace multiple character voice profiles in one call",
-            ),
-            tool::<UpdateEntityInput, UpdateEntityOutput>(
-                "update_entity",
-                "Update a supported entity by record id. Character aliases are settable via changes {\"aliases\": [...]}. Renaming a character (changes {\"name\": ...}) is a controlled operation: pass allow_rename: true to move the name's uniqueness key, keep the old name as an alias, refresh the search index, and get a rename_report listing scenes/facts/knowledge/arcs still referencing the old name. Without allow_rename the rename is rejected. For entity_type=project, the reader contract is updatable via changes {\"reader_contract\": {...}} or the sub-fields {\"promise\", \"style_notes\", \"boundaries\"} (partial merge; unset fields are preserved); if the edit leaves the contract's word-count target contradicting the narrator voice or a style world rule, the response warnings flag it",
-            ),
-            tool::<ArchiveEntityInput, ArchiveEntityOutput>(
-                "archive_entity",
-                "Archive a supported entity by record id",
-            ),
-            tool::<CreatePlotLineInput, CreatePlotLineOutput>(
-                "create_plot_line",
-                "Create a plot line",
-            ),
-            tool::<CreateConflictInput, CreateConflictOutput>(
-                "create_conflict",
-                "Create a conflict record",
-            ),
-            tool::<CreateThemeInput, CreateThemeOutput>("create_theme", "Create a theme record"),
-            tool::<CreateMotifInput, CreateMotifOutput>("create_motif", "Create a motif record"),
-            tool::<BatchCreateMotifsInput, BatchCreateMotifsOutput>(
-                "batch_create_motifs",
-                "Create multiple motif records in one call",
-            ),
-            tool::<CreateNarrativePromiseInput, CreateNarrativePromiseOutput>(
-                "create_narrative_promise",
-                "Create a narrative promise",
-            ),
-            tool::<BatchCreateNarrativePromisesInput, BatchCreateNarrativePromisesOutput>(
-                "batch_create_narrative_promises",
-                "Create multiple narrative promises in one call",
-            ),
-            tool::<UpdatePromiseStatusInput, UpdatePromiseStatusOutput>(
-                "update_promise_status",
-                "Advance a narrative promise lifecycle. Manual path; authoring runs with a mining_policy stage promise_payoff_candidate/promise_reinforced deltas that apply through this tool after ratification via decide_canon_deltas.",
-            ),
-            tool::<CreateCharacterArcInput, CreateCharacterArcOutput>(
-                "create_character_arc",
-                "Create a character arc and pacing tracker",
-            ),
-            tool::<UpdateArcMilestoneInput, UpdateArcMilestoneOutput>(
-                "update_arc_milestone",
-                "Update a single character-arc milestone by label: move its placement and/or stamp reached_at (e.g. after a chapter renumber or when the milestone lands). Only the supplied fields change; description and unlocks are preserved. Read milestones via get_entity(table=\"character_arc\") or get_character_snapshot",
-            ),
-            tool::<CreateFutureKnowledgeInput, CreateFutureKnowledgeOutput>(
-                "create_future_knowledge",
-                "Record future knowledge held by a character",
-            ),
-            tool::<CreateTimelineEventInput, CreateTimelineEventOutput>(
-                "create_timeline_event",
-                "Record a timeline event for time-aware stories",
-            ),
-            tool::<CreateTemporalInterventionInput, CreateTemporalInterventionOutput>(
-                "create_temporal_intervention",
-                "Track a time-travel intervention between timeline events",
-            ),
-            tool::<CreateSystemOverlayInput, CreateSystemOverlayOutput>(
-                "create_system_overlay",
-                "Create a LitRPG or cultivation system overlay",
-            ),
-            tool::<RunDualPersonaReviewInput, RunDualPersonaReviewOutput>(
-                "run_dual_persona_review",
-                "Run a literary and craft review loop for a branch scene",
-            ),
-            tool::<CreatePacingConfigInput, CreatePacingConfigOutput>(
-                "create_pacing_config",
-                "Create pacing configuration for a project",
-            ),
-            tool::<CreatePacingCurveInput, CreatePacingCurveOutput>(
-                "create_pacing_curve",
-                "Create pacing curve for a book",
-            ),
-            tool::<SetArcPacingConstraintsInput, SetArcPacingConstraintsOutput>(
-                "set_arc_pacing_constraints",
-                "Set pacing constraints for a character arc",
-            ),
-            tool::<PlanChapterInput, PlanChapterOutput>("plan_chapter", "Create a chapter plan"),
-            tool::<AnnotateSceneBeatsInput, AnnotateSceneBeatsOutput>(
-                "annotate_scene_beats",
-                "Annotate structural beats for a scene. Manual path; authoring runs with a mining_policy stage beat_annotation deltas that apply through this tool after ratification via decide_canon_deltas.",
-            ),
-            tool::<SaveSummaryInput, SaveSummaryOutput>(
-                "save_summary",
-                "Save a chapter summary using chapter entity_id/chapter_id or explicit book_number and chapter_number",
-            ),
-            tool::<SetBookOutlineInput, SetBookOutlineOutput>(
-                "set_book_outline",
-                "Set or replace a book outline on the active branch using book_id or book_number",
-            ),
-            tool::<SetChapterOutlineInput, SetChapterOutlineOutput>(
-                "set_chapter_outline",
-                "Set or replace a chapter outline on the active branch using chapter_id/entity_id or explicit book_number and chapter_number",
-            ),
-            tool::<CheckConsistencyInput, CheckConsistencyOutput>(
-                "check_consistency",
-                "Run a structured consistency audit (includes scene_divergence and canonical_fact_consistency checks)",
-            ),
-            tool::<RegisterCanonicalFactInput, RegisterCanonicalFactOutput>(
-                "register_canonical_fact",
-                "Register a canonical story fact (pull result, stat change, item, ability) for contradiction detection. scene_id is optional: omit it to register a fact decided during planning but not yet dramatised (placed by book_number/chapter_number only), then attach it later with bind_canonical_fact_to_scene",
-            ),
-            tool::<ExtractCanonicalFactsFromSceneInput, ExtractCanonicalFactsFromSceneOutput>(
-                "extract_canonical_facts_from_scene",
-                "Extract proposed typed canonical facts from committed scene prose without registering them",
-            ),
-            tool::<MigrateCanonicalFactInput, MigrateCanonicalFactOutput>(
-                "migrate_canonical_fact",
-                "Promote a legacy_untyped canonical fact into a typed canonical fact and supersede the legacy row",
-            ),
-            tool::<BindCanonicalFactToSceneInput, BindCanonicalFactToSceneOutput>(
-                "bind_canonical_fact_to_scene",
-                "Attach a planned-and-pending canonical fact (registered without a scene_id) to the scene that dramatises it. The fact and scene must share a project and branch; placement is left untouched",
-            ),
-            tool::<SearchBibleInput, SearchBibleOutput>(
-                "search_bible",
-                "Search project records by meaning, exact text, or fuzzy match",
-            ),
-            tool::<FindScenesReferencingInput, FindScenesReferencingOutput>(
-                "find_scenes_referencing",
-                "Find up to 100 active-branch scenes that reference a subject record id or literal phrase",
-            ),
-            tool::<RebuildSearchIndexInput, RebuildSearchIndexOutput>(
-                "rebuild_search_index",
-                "Rebuild semantic search embeddings for a project",
-            ),
-            tool::<BackfillSceneSourceOffsetsInput, BackfillSceneSourceOffsetsOutput>(
-                "backfill_scene_source_offsets",
-                "Recompute scene_source_link offsets with the import slicer for one project branch",
-            ),
-            tool::<PullChapterFromFileInput, PullReport>(
-                "pull_chapter_from_file",
-                "Import chapter scene text from a source file into active-branch scenes",
-            ),
-            tool::<PushChapterToFileInput, PushReport>(
-                "push_chapter_to_file",
-                "Export active-branch chapter scene text to a source file and store source offsets",
-            ),
-            tool::<ConfigureAgentsInput, ConfigureAgentsOutput>(
-                "configure_agents",
-                "Reload model agent and route configuration from spindle.toml",
-            ),
-            tool::<EmptyInput, ListAgentsOutput>(
-                "list_agents",
-                "List configured model agents and their route assignments",
-            ),
-            tool::<InitGrokSkillsInput, InitGrokSkillsOutput>(
-                "init_grok_skills",
-                "Initialize Grok-compatible Spindle skill adapters. By default installs into ~/.grok/skills/ (global). Pass global=false + target_dir if you want repo-scoped adapters instead. This makes all bible://skills/* (scene-writer, character-creator, etc.) work as first-class skills in Grok.",
-            ),
-            tool::<EmptyInput, ListSkillsOutput>(
-                "list_skills",
-                "List the embedded Spindle workflow skills and craft references. Tool equivalent of browsing bible://skills/* and bible://references/*; use get_skill / get_reference to read one.",
-            ),
-            tool::<GetSkillInput, GetSkillOutput>(
-                "get_skill",
-                "Return the full content of an embedded Spindle skill. Tool equivalent of reading bible://skills/{name}; call this to load a workflow such as scene-writer or character-creator.",
-            ),
-            tool::<GetReferenceInput, GetReferenceOutput>(
-                "get_reference",
-                "Return the full content of an embedded craft reference. Tool equivalent of reading bible://references/{name}.",
-            ),
-            tool::<TestAgentInput, TestAgentOutput>(
-                "test_agent",
-                "Send a test prompt through a configured model agent",
-            ),
-            tool::<ContinueGenerationInput, ContinueGenerationOutput>(
-                "continue_generation",
-                "Continue a model generation and return a server-side generation receipt",
-            ),
-            tool::<ReviseGenerationInput, ReviseGenerationOutput>(
-                "revise_generation",
-                "Revise a server-side generation through the same explicit-capable route and return a new receipt",
-            ),
-            tool::<ResearchQueryInput, ResearchQueryOutput>(
-                "research_query",
-                "Research a factual question using Gemini, grounded in project context from the Bible",
-            ),
-            tool::<ResearchAddSourceInput, ResearchAddSourceOutput>(
-                "research_add_source",
-                "Create new research source metadata and optional summary in the project-local library",
-            ),
-            tool::<ResearchAddNoteInput, ResearchAddNoteOutput>(
-                "research_add_note",
-                "Attach a freeform note and optional quote/locator to a research source",
-            ),
-            tool::<ResearchAddClaimInput, ResearchAddClaimOutput>(
-                "research_add_claim",
-                "Store a distilled factual claim with confidence, topic, location, time period, and tags",
-            ),
-            tool::<ResearchSearchInput, ResearchSearchOutput>(
-                "research_search",
-                "Search the project-local research library for matching sources, notes, and claims",
-            ),
-            tool::<ResearchPackForSceneInput, ResearchPackForSceneOutput>(
-                "research_pack_for_scene",
-                "Retrieve a compact, budget-aware packet of relevant research for a scene or chapter",
-            ),
-            tool::<ResearchUsageForSceneInput, ResearchUsageForSceneOutput>(
-                "research_usage_for_scene",
-                "Retrieve the recorded research usage history for a drafted scene",
-            ),
-            tool::<ResearchIngestReportInput, ResearchIngestReportOutput>(
-                "research_ingest_report",
-                "Ingest and parse a text-based research report, creating sources, notes, and claims in the project-local database",
-            ),
-            tool::<ResearchPlanForSceneInput, ResearchPlanForSceneOutput>(
-                "research_plan_for_scene",
-                "Determine missing research, suggest queries, and check if a scene is blocked on research",
-            ),
-            tool::<ExportEpubInput, ExportEpubOutput>(
-                "export_epub",
-                "Export a project, single book, or inclusive chapter range within a book as an EPUB file",
-            ),
-            tool::<PreflightBookExportInput, PreflightBookExportOutput>(
-                "preflight_book_export",
-                "Validate a project, single book, or inclusive chapter range within a book for EPUB export and return blocking issues or warnings before writing a file",
-            ),
-            tool::<CompileManuscriptInput, CompileManuscriptOutput>(
-                "compile_manuscript",
-                "Assemble the committed prose of a book (or an inclusive chapter range within it) on the active branch into one Markdown read-so-far document, with per-chapter and per-scene headings; planned-but-undrafted scenes render an explicit placeholder and are reported in missing_scenes. Optionally writes the Markdown to the project's workspace artifacts directory.",
-            ),
-            tool::<ExportRecapInput, ExportRecapOutput>(
-                "export_recap",
-                "Assemble a spoiler-bounded, reader-facing \"previously on\" recap of a book up to (and including) through_chapter on the active branch: a story-so-far section from chapter summaries at/under the cursor, a \"paid off\" section of resolved promises, and a \"questions still hanging\" section of open promises. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
-            ),
-            tool::<ExportSeriesBibleInput, ExportSeriesBibleOutput>(
-                "export_series_bible",
-                "Assemble a spoiler-bounded, reader-facing series bible on the active branch as of an optional cursor (through, absent = whole project): character pages with state as-of the cursor and relationship bands, locations, a sorted glossary of terms, and factions/religions when present. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
-            ),
-            tool::<MineSceneCanonInput, MineSceneCanonOutput>(
-                "mine_scene_canon",
-                "Mine one committed scene's prose into proposed canon deltas (staged for operator ratification, never auto-applied). One rating-gated model call; malformed model output is rejected and evidence must appear verbatim in the prose. Re-mining a scene supersedes its prior staged deltas. Returns the staged deltas, discard/supersede counts, and a status of staged, skipped (no cleared route or empty scene), or model_output_rejected.",
-            ),
-            tool::<ListCanonDeltasInput, ListCanonDeltasOutput>(
-                "list_canon_deltas",
-                "List the canon deltas mined for a project's active branch (the ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance — either one scene_id OR a chapter_range { book_number, start, end } (mutually exclusive). Results carry each delta's class, payload, verbatim evidence quote, confidence, and status, in deterministic order. Read this before deciding — never bulk-apply without reading the evidence.",
-            ),
-            tool::<DecideCanonDeltasInput, DecideCanonDeltasOutput>(
-                "decide_canon_deltas",
-                "Ratify a batch of staged canon deltas: each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed in the output; not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, dangling target, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies dispatch to the class's existing write tool (register_canonical_fact, update_promise_status, update_relationship, commit_character_state, record_knowledge, annotate_scene_beats, commit_quantity_state, update_entity for conflict/arc columns, or create_character/location/term). Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
-            ),
-            tool::<ReplanChapterInput, ReplanChapterOutput>(
-                "replan_chapter",
-                "Audit a book's not-yet-drafted chapter plans against the realized reality one just-summarized chapter established, and stage plan-amendment proposals for operator ratification (never auto-applied — ADR 0003 D5). Non-prose-bearing: the differ reads summaries + metadata only (no scene prose), so no rating clearance applies; on a missing route it falls to review then skips honestly, and it never blocks the run. Re-running for the same source chapter supersedes its prior staged amendments. Returns the staged amendments, discard/supersede counts, and a status of staged, no_summary, no_targets, skipped, or model_output_rejected.",
-            ),
-            tool::<ListPlanAmendmentsInput, ListPlanAmendmentsOutput>(
-                "list_plan_amendments",
-                "List the plan amendments staged for a project's active branch (the living-outline ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance (book_number + source_chapter together — the summarized chapter that triggered a replan pass). Each amendment carries its class, the future target_chapter (null for promise_followup), the typed payload, the replanner's rationale (ids/summaries, no prose), confidence, status, and any prior_state snapshot, in deterministic order. Read this — and the rationale — before deciding; never bulk-apply blind.",
-            ),
-            tool::<DecidePlanAmendmentsInput, DecidePlanAmendmentsOutput>(
-                "decide_plan_amendments",
-                "Ratify a batch of staged plan amendments (the living outline). Each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed, not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, a target chapter that already has drafted scenes (the immutability guard: drafted reality is never rewritten), a dangling scene_order/incoherent reorder, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies replay through the existing plan write path (plan_chapter for the chapter classes, create_narrative_promise for promise_followup), snapshot the prior plan into prior_state, and bump plan_revision. Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
-            ),
-            tool::<ExportBibleInput, ExportBibleOutput>(
-                "export_bible",
-                "Export a full project backup as JSON, including branch data",
-            ),
-            tool::<GetWriterStateInput, WriterStateEnvelope>(
-                "get_writer_state",
-                "Return a branch-aware re-anchor packet with current cursor state, constraints, subjects, recent scenes, overlays, divergence warnings, and recent activity",
-            ),
-            tool::<GetSceneContextInput, SceneContextEnvelope>(
-                "get_scene_context",
-                "Assemble standards, novel, and scene context using chapter_id or explicit book_number and chapter_number",
-            ),
-            tool::<GetEntityInput, EntitySubjectSnapshot>(
-                "get_entity",
-                "Resolve one entity by table and record id as a polymorphic subject snapshot",
-            ),
-            tool::<FindEntityInput, FindEntityOutput>(
-                "find_entity",
-                "Resolve entities by name or alias with ExactName/SemanticMatch confidence",
-            ),
-            tool::<GetCharacterSnapshotInput, CharacterSnapshotOutput>(
-                "get_character_snapshot",
-                "Resolve one character snapshot and promote voice profile, current state, and recent appearances",
-            ),
-            tool::<SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput>(
-                "set_character_voice_profile",
-                "Set a character voice profile and append a session activity entry summarizing the change",
-            ),
-            tool::<GetChapterBriefingInput, GetChapterBriefingOutput>(
-                "get_chapter_briefing",
-                "Assemble a compact pre-write briefing with continuity sheets, recent summaries, chapter plans, and lean scene context",
-            ),
-            tool::<ListChapterScenesInput, ListChapterScenesOutput>(
-                "list_chapter_scenes",
-                "List the active-branch scenes in one chapter with canonical order, summary-first-line, word count, and canonical-fact flags",
-            ),
-            tool::<ListBookChaptersInput, ListBookChaptersOutput>(
-                "list_book_chapters",
-                "List the active-branch chapters in one book with nested ordered scene spines",
-            ),
-            tool::<SaveSceneDraftInput, SaveSceneDraftOutput>(
-                "save_scene_draft",
-                "Create or update a scene draft using chapter_id or explicit book_number and chapter_number; accepts content as an alias for full_text",
-            ),
-            tool::<MoveSceneInput, MoveSceneOutput>(
-                "move_scene",
-                "Move an active-branch scene only when its move audit is clear; leaves a gap at the source position",
-            ),
-            tool::<DeleteSceneInput, DeleteSceneOutput>(
-                "delete_scene",
-                "Delete an active-branch scene only when its dependency audit is clear; leaves a gap in scene_order. Address by scene_id (preferred — unambiguous even when duplicates or orphans share a position) or by book_number/chapter_number/scene_order",
-            ),
-            tool::<OperatorDeleteSceneInput, OperatorDeleteSceneOutput>(
-                "operator_delete_scene",
-                "Delete an active-branch scene after removing scene_source_link records and invalidating stale chapter_plan/chapter_summary artifacts, but only when no other blockers or semantic risks remain. Accepts scene_id for unambiguous addressing, like delete_scene",
-            ),
-            tool::<ListSceneVersionsInput, ListSceneVersionsOutput>(
-                "list_scene_versions",
-                "List saved historical versions for a scene",
-            ),
-            tool::<RestoreSceneVersionInput, RestoreSceneVersionOutput>(
-                "restore_scene_version",
-                "Restore a scene from one of its saved historical versions",
-            ),
-            tool::<CommitSceneChangesInput, CommitSceneChangesOutput>(
-                "commit_scene_changes",
-                "Best-effort batch commit of scene character states, canonical facts, and relationship updates; accepts shorthand summary entries for state notes, canonical fact summaries, and relationship summaries",
-            ),
-            tool::<CommitCharacterStateInput, CommitCharacterStateOutput>(
-                "commit_character_state",
-                "Append a character state snapshot from a saved scene. Manual path; authoring runs with a mining_policy stage character_state deltas that apply through this tool after ratification via decide_canon_deltas.",
-            ),
-            tool::<UpdateRelationshipInput, UpdateRelationshipOutput>(
-                "update_relationship",
-                "Update trust and tension for one directed relationship. Manual path; authoring runs with a mining_policy stage relationship_shift deltas that apply through this tool after ratification via decide_canon_deltas.",
-            ),
-            tool::<ImportManuscriptInput, ImportManuscriptOutput>(
-                "import_manuscript",
-                "Create an import session and persist normalized manuscript structure",
-            ),
-            tool::<ImportStatusInput, ImportStatusOutput>(
-                "import_status",
-                "Read the current state of an import session",
-            ),
-            tool::<ImportExtractEntitiesInput, ImportExtractEntitiesOutput>(
-                "import_extract_entities",
-                "Extract candidate entities from imported manuscript scenes",
-            ),
-            tool::<ImportConsolidateEntitiesInput, ImportConsolidateEntitiesOutput>(
-                "import_consolidate_entities",
-                "Consolidate imported entity mentions into canonical clusters",
-            ),
-            tool::<ImportAnalyzeCharacterInput, ImportAnalyzeCharacterOutput>(
-                "import_analyze_character",
-                "Build imported character dossiers from consolidated clusters",
-            ),
-            tool::<ImportExtractWorldInput, ImportExtractWorldOutput>(
-                "import_extract_world",
-                "Build imported world dossier candidates",
-            ),
-            tool::<ImportAnalyzeNarrativeInput, ImportAnalyzeNarrativeOutput>(
-                "import_analyze_narrative",
-                "Build imported narrative dossier candidates",
-            ),
-            tool::<ImportComputeFinalStateInput, ImportComputeFinalStateOutput>(
-                "import_compute_final_state",
-                "Compute the imported manuscript continuation point and final state",
-            ),
-            tool::<ImportHydrateBibleInput, ImportHydrateBibleOutput>(
-                "import_hydrate_bible",
-                "Hydrate an import session into canonical story records",
-            ),
-            tool::<ImportApplyReviewDecisionsInput, ImportApplyReviewDecisionsOutput>(
-                "import_apply_review_decisions",
-                "Resolve persisted import review items and update session readiness",
-            ),
-            tool::<RecordKnowledgeInput, RecordKnowledgeOutput>(
-                "record_knowledge",
-                "Record canonical knowledge for a character. Remains the direct reveal path for circle-of-trust expansion (with secret_of_fact_id + learned_at) alongside the save-draft continuity package and the mined knowledge_learned delta — it is not superseded; those flows apply through this same tool.",
-            ),
-            tool::<RecordNoteInput, RecordNoteOutput>(
-                "record_note",
-                "Append a freeform note to branch session activity",
-            ),
-            tool::<UpdateWriterPositionInput, WriterPosition>(
-                "update_writer_position",
-                "Persist a branch writer cursor position without saving a draft",
-            ),
-            tool::<AuthoringPrepareRunInput, AuthoringPrepareRunOutput>(
-                "authoring_prepare_run",
-                "Inspect the requested chapter range for the project and produce a readiness report before starting",
-            ),
-            tool::<AuthoringStartRunInput, AuthoringStartRunOutput>(
-                "authoring_start_run",
-                "Start a new authoring run for the project and book chapter range",
-            ),
-            tool::<AuthoringStatusInput, AuthoringStatusOutput>(
-                "authoring_status",
-                "Retrieve progress, next action, and status of the active authoring run",
-            ),
-            tool::<AuthoringExecuteNextInput, AuthoringExecuteNextOutput>(
-                "authoring_execute_next",
-                "Execute exactly one safe authoring action for the active run",
-            ),
-            tool::<AuthoringSaveSceneDraftInput, AuthoringSaveSceneDraftOutput>(
-                "authoring_save_scene_draft",
-                "Save a host-drafted authoring scene with its required structured continuity package",
-            ),
-            tool::<AuthoringRecordCheckpointAuditInput, AuthoringRecordCheckpointAuditOutput>(
-                "authoring_record_checkpoint_audit",
-                "Attach a completed deep consistency audit to a pending authoring checkpoint",
-            ),
-            tool::<AuthoringReviewCheckpointInput, AuthoringReviewCheckpointOutput>(
-                "authoring_review_checkpoint",
-                "Mark a checkpoint reviewed after deep consistency and sampled reviews are complete; rejects unresolved/fix-later directives",
-            ),
-            tool::<AuthoringResolveBlockInput, AuthoringResolveBlockOutput>(
-                "authoring_resolve_block",
-                "Clear a blocked scene/run and advance it manually",
-            ),
-            tool::<AuthoringCancelRunInput, AuthoringCancelRunOutput>(
-                "authoring_cancel_run",
-                "Pause/cancel the active authoring run without deleting progress",
-            ),
-        ]
+    pub fn has_tool(&self, name: &str) -> bool {
+        if !static_tool_names().contains(name) {
+            return false;
+        }
+        let Some(profile) = self.tool_profile.as_deref() else {
+            return true;
+        };
+        match profile_allowed_tool_names(profile) {
+            Some(allowed) => allowed.contains(&name),
+            None => true,
+        }
     }
 
+    #[cfg(test)]
+    fn all_tools(&self) -> Vec<Tool> {
+        all_tool_schemas().to_vec()
+    }
+}
+
+pub fn static_tool_names() -> &'static BTreeSet<&'static str> {
+    static NAMES: std::sync::OnceLock<BTreeSet<&'static str>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        all_tool_schemas()
+            .iter()
+            .map(|tool| match &tool.name {
+                std::borrow::Cow::Borrowed(name) => *name,
+                std::borrow::Cow::Owned(name) => Box::leak(name.clone().into_boxed_str()),
+            })
+            .collect()
+    })
+}
+
+fn all_tool_schemas() -> &'static [Tool] {
+    static ALL_TOOLS: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    ALL_TOOLS.get_or_init(build_all_tools)
+}
+
+fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'static str]> {
+    match profile {
+        "import" => Some(&[
+            "create_project",
+            "list_projects",
+            "list_skills",
+            "get_skill",
+            "get_reference",
+            "import_manuscript",
+            "import_status",
+            "import_extract_entities",
+            "import_consolidate_entities",
+            "import_analyze_character",
+            "import_extract_world",
+            "import_analyze_narrative",
+            "import_compute_final_state",
+            "import_hydrate_bible",
+            "import_apply_review_decisions",
+            "record_knowledge",
+            "record_note",
+            "update_writer_position",
+            "search_bible",
+            "find_scenes_referencing",
+            "get_chapter_briefing",
+            "create_style_profile_from_markdown",
+            "list_style_profiles",
+            "get_style_profile",
+            "apply_style_profile",
+            "preview_apply_style_profile",
+            "list_style_profile_applications",
+            "rollback_style_profile_application",
+            "check_style_profile_sources",
+            "preview_refresh_style_profile",
+            "refresh_style_profile",
+            "check_style_against_profile",
+            "plan_style_revision",
+            "compare_style_profiles",
+            "archive_style_profile",
+            "preview_style_revision_patch",
+            "evaluate_style_revision_patch",
+            "list_style_revision_patch_audits",
+            "rollback_style_revision_patch",
+        ]),
+        "write" => Some(&[
+            "get_editorial_queue",
+            "decide_editorial_item",
+            "read_episode",
+            "get_model_usage",
+            "get_series_status",
+            "prepare_episode_release",
+            "release_episode",
+            "get_episode_release",
+            "create_project",
+            "list_projects",
+            "list_skills",
+            "get_skill",
+            "get_reference",
+            "create_book",
+            "create_chapter",
+            "create_character",
+            "create_location",
+            "create_faction",
+            "create_religion",
+            "create_economy",
+            "create_term",
+            "batch_create_terms",
+            "create_relationship",
+            "create_world_rule",
+            "update_world_rule",
+            "set_character_voice_profile",
+            "batch_set_character_voice_profiles",
+            "create_save_point",
+            "restore_save_point",
+            "create_plot_line",
+            "create_conflict",
+            "create_theme",
+            "create_motif",
+            "batch_create_motifs",
+            "create_narrative_promise",
+            "update_promise_status",
+            "batch_create_narrative_promises",
+            "create_character_arc",
+            "update_arc_milestone",
+            "create_system_overlay",
+            "preflight_book_export",
+            "compile_manuscript",
+            "export_recap",
+            "export_series_bible",
+            "mine_scene_canon",
+            "list_canon_deltas",
+            "decide_canon_deltas",
+            "replan_chapter",
+            "list_plan_amendments",
+            "decide_plan_amendments",
+            "get_writer_state",
+            "get_scene_context",
+            "get_entity",
+            "find_entity",
+            "get_character_snapshot",
+            "get_chapter_briefing",
+            "list_chapter_scenes",
+            "list_book_chapters",
+            "save_scene_draft",
+            "move_scene",
+            "delete_scene",
+            "operator_delete_scene",
+            "commit_scene_changes",
+            "commit_character_state",
+            "update_relationship",
+            "record_note",
+            "update_writer_position",
+            "save_summary",
+            "plan_chapter",
+            "annotate_scene_beats",
+            "set_book_outline",
+            "set_chapter_outline",
+            "update_entity",
+            "search_bible",
+            "find_scenes_referencing",
+            "check_consistency",
+            "run_dual_persona_review",
+            "backfill_scene_source_offsets",
+            "register_canonical_fact",
+            "extract_canonical_facts_from_scene",
+            "migrate_canonical_fact",
+            "bind_canonical_fact_to_scene",
+            "research_query",
+            "research_add_source",
+            "research_add_note",
+            "research_add_claim",
+            "research_search",
+            "research_pack_for_scene",
+            "research_usage_for_scene",
+            "research_ingest_report",
+            "research_plan_for_scene",
+            "pull_chapter_from_file",
+            "push_chapter_to_file",
+            "authoring_prepare_run",
+            "authoring_start_run",
+            "authoring_status",
+            "authoring_execute_next",
+            "authoring_save_scene_draft",
+            "authoring_record_checkpoint_audit",
+            "authoring_review_checkpoint",
+            "authoring_resolve_block",
+            "authoring_cancel_run",
+            "create_style_profile_from_markdown",
+            "list_style_profiles",
+            "get_style_profile",
+            "apply_style_profile",
+            "preview_apply_style_profile",
+            "list_style_profile_applications",
+            "rollback_style_profile_application",
+            "check_style_profile_sources",
+            "preview_refresh_style_profile",
+            "refresh_style_profile",
+            "check_style_against_profile",
+            "plan_style_revision",
+            "compare_style_profiles",
+            "archive_style_profile",
+            "preview_style_revision_patch",
+            "evaluate_style_revision_patch",
+            "apply_style_revision_patch",
+            "list_style_revision_patch_audits",
+            "rollback_style_revision_patch",
+        ]),
+        "minimal" => Some(&[
+            "create_project",
+            "list_projects",
+            "list_skills",
+            "get_skill",
+            "get_reference",
+            "search_bible",
+            "find_scenes_referencing",
+            "get_writer_state",
+            "get_scene_context",
+            "get_entity",
+            "find_entity",
+            "get_character_snapshot",
+            "list_chapter_scenes",
+            "list_book_chapters",
+            "save_scene_draft",
+            "update_writer_position",
+            "import_manuscript",
+            "import_status",
+            "import_hydrate_bible",
+        ]),
+        "authoring" => Some(&[
+            "list_agents",
+            "get_character_snapshot",
+            "update_writer_position",
+            "commit_character_state",
+            "register_canonical_fact",
+            "record_knowledge",
+            "create_future_knowledge",
+            "set_project_calendar",
+            "set_scene_clock",
+            "record_note",
+            "update_arc_milestone",
+            "create_character_arc",
+            "create_motif",
+            "create_theme",
+            "create_conflict",
+            "create_plot_line",
+            "annotate_scene_beats",
+            "save_scene_draft",
+            "set_active_project",
+            "get_editorial_queue",
+            "decide_editorial_item",
+            "read_episode",
+            "get_series_status",
+            "prepare_episode_release",
+            "release_episode",
+            "get_episode_release",
+            "get_model_usage",
+            "create_project",
+            "list_projects",
+            "list_skills",
+            "get_skill",
+            "get_reference",
+            "create_book",
+            "create_chapter",
+            "create_character",
+            "create_location",
+            "create_world_rule",
+            "create_narrative_promise",
+            "update_promise_status",
+            "get_writer_state",
+            "get_entity",
+            "find_entity",
+            "search_bible",
+            "get_chapter_briefing",
+            "get_scene_context",
+            "list_chapter_scenes",
+            "list_book_chapters",
+            "plan_chapter",
+            "set_book_outline",
+            "set_chapter_outline",
+            "update_entity",
+            "authoring_prepare_run",
+            "authoring_start_run",
+            "authoring_status",
+            "authoring_execute_next",
+            "authoring_save_scene_draft",
+            "authoring_record_checkpoint_audit",
+            "authoring_review_checkpoint",
+            "authoring_resolve_block",
+            "authoring_cancel_run",
+            "commit_scene_changes",
+            "save_summary",
+            "check_consistency",
+            "run_dual_persona_review",
+            "mine_scene_canon",
+            "list_canon_deltas",
+            "decide_canon_deltas",
+            "replan_chapter",
+            "list_plan_amendments",
+            "decide_plan_amendments",
+            "preflight_book_export",
+            "compile_manuscript",
+            "export_recap",
+            "export_series_bible",
+            "create_save_point",
+            "restore_save_point",
+        ]),
+        _ => None,
+    }
+}
+
+fn build_all_tools() -> Vec<Tool> {
+    vec![
+        tool::<GetEditorialQueueInput, EditorialQueueOutput>(
+            "get_editorial_queue",
+            "Review reader concerns with chapter evidence, source freshness and author decisions. Default shows unresolved work.",
+        ),
+        tool::<DecideEditorialItemInput, EditorialItem>(
+            "decide_editorial_item",
+            "Accept, defer, resolve, dismiss or reopen an editorial concern against the reviewed source and decision revision. Accepted work enters drafting guidance; never changes prose or canon.",
+        ),
+        tool::<ReadEpisodeInput, ReadEpisodeOutput>(
+            "read_episode",
+            "Read an episode as the promised reader, continuing source-validated memory across runs and books. Reuses unchanged reads and reports gaps and stale memory.",
+        ),
+        tool::<GetSeriesStatusInput, SeriesStatusOutput>(
+            "get_series_status",
+            "Inspect the published cursor, draft and ready backlog, episode revisions, and changes since release.",
+        ),
+        tool::<PrepareEpisodeReleaseInput, EpisodeReleasePreview>(
+            "prepare_episode_release",
+            "Preview one chapter as an episode. Reports missing/stub scenes and returns a source hash for a local immutable release.",
+        ),
+        tool::<ReleaseEpisodeInput, EpisodeRelease>(
+            "release_episode",
+            "Record an immutable local episode snapshot from an unchanged preview. Corrections append revisions. Does not post to any platform.",
+        ),
+        tool::<GetEpisodeReleaseInput, EpisodeRelease>(
+            "get_episode_release",
+            "Read the exact prose and source metadata of an immutable episode release, including the previous revision id.",
+        ),
+        tool::<GetModelUsageInput, GetModelUsageOutput>(
+            "get_model_usage",
+            "Inspect persisted model calls, reported tokens, elapsed time and unknown usage. No prose or credentials are logged.",
+        ),
+        tool::<CreateProjectInput, CreateProjectOutput>(
+            "create_project",
+            "Create a project, book 1, and chapter 1",
+        ),
+        tool::<EmptyInput, ListProjectsOutput>(
+            "list_projects",
+            "List all projects with their record ids",
+        ),
+        tool::<SetActiveProjectInput, SetActiveProjectOutput>(
+            "set_active_project",
+            "Persist the default project and branch for this MCP session so follow-up tool calls can omit project_id and use the current branch by default",
+        ),
+        tool::<CreateBookInput, CreateBookOutput>(
+            "create_book",
+            "Create the next book within a project",
+        ),
+        tool::<CreateChapterInput, CreateChapterOutput>(
+            "create_chapter",
+            "Create the next chapter within a book using book_number or book_id; optional chapter_number may be any unused non-negative number (gaps are allowed, e.g. for restructures) and defaults to one past the current maximum",
+        ),
+        tool::<CreateBranchInput, CreateBranchOutput>(
+            "create_branch",
+            "Create a new project branch from the active or specified parent branch",
+        ),
+        tool::<SwitchBranchInput, SwitchBranchOutput>(
+            "switch_branch",
+            "Switch a project's active branch",
+        ),
+        tool::<SetNarratorVoiceInput, SetNarratorVoiceOutput>(
+            "set_narrator_voice",
+            "Set or clear the project's narrator-voice directive — the prose-level narration style (comedy density, pacing feel, interiority ratio, emotional register, chapter-ending style) that governs the whole reading experience and is distinct from per-character dialogue voice profiles. Enforced across scene context, the save-draft gate, the style_compliance validator, and the review's Target Reader persona",
+        ),
+        tool::<SetProjectCalendarInput, SetProjectCalendarOutput>(
+            "set_project_calendar",
+            "Define the project's in-world calendar (days per week, hours per day, months, days per year, epoch). Enables the chronology check and the in-world-time hard constraint; validated for internal consistency.",
+        ),
+        tool::<SetSceneClockInput, SetSceneClockOutput>(
+            "set_scene_clock",
+            "Place a scene on the in-world story clock (day_index, time_of_day, duration_days, precision), optionally marking temporal_mode (linear|flashback|flashforward|concurrent) and a parallel thread_key. Drives the between-scene chronology check, the intra-scene temporal_coherence check (duration_days sets the expected span; temporal_mode/precision suppress it), and the in-world-time context constraint that feeds the prior scene's end clock forward.",
+        ),
+        tool::<SetTimelineEventClockInput, SetTimelineEventClockOutput>(
+            "set_timeline_event_clock",
+            "Set the in-world time a timeline event occurs (distinct from its manuscript placement) so flashbacks and time-skips are oriented by story time.",
+        ),
+        tool::<SetCharacterBirthInput, SetCharacterBirthOutput>(
+            "set_character_birth",
+            "Anchor a character's birth on the story clock so their age can be derived at any story moment. day_index is a signed offset from the story's opening day, so births before the epoch are negative (e.g. -8913 for a character born ~24 years before day 1).",
+        ),
+        tool::<SetProjectQuantitySchemeInput, SetProjectQuantitySchemeOutput>(
+            "set_project_quantity_scheme",
+            "Declare a per-project quantity scheme for a measure (e.g. wealth, mana, a cultivation ladder): ordered currency denominations and ordered bands/tiers, plus an optional max_band_jump. Validated for internal consistency; fully opt-in. Money and progression systems reuse the same primitive.",
+        ),
+        tool::<CommitQuantityStateInput, CommitQuantityStateOutput>(
+            "commit_quantity_state",
+            "Record a stamped quantity reading for a subject's measure at a story position (band is the primary signal; amount/unit are optional). A change_reason marks a deliberate large jump as legitimate. Validated against the declared scheme when one exists. Manual path; authoring runs with a mining_policy stage quantity_change deltas that apply through this tool after ratification via decide_canon_deltas.",
+        ),
+        tool::<DeriveQuantitySchemeFromOverlayInput, DeriveQuantitySchemeFromOverlayOutput>(
+            "derive_quantity_scheme_from_system_overlay",
+            "Derive a quantity scheme from a system overlay so LitRPG / cultivation progression reuses band-monotonicity: the overlay's advancement_tiers become the scheme's ordered bands (measure = its progression_currency, else its name).",
+        ),
+        tool::<ScanScenePricesInput, ScanScenePricesOutput>(
+            "scan_scene_prices",
+            "Scan a scene's prose for '<number> <unit>' price mentions using the project's declared denominations + economy currencies (review-gated; nothing is auto-registered). Use the results to seed price-canon facts.",
+        ),
+        tool::<CreateSavePointInput, CreateSavePointOutput>(
+            "create_save_point",
+            "Create a save point on the active branch",
+        ),
+        tool::<RestoreSavePointInput, RestoreSavePointOutput>(
+            "restore_save_point",
+            "Restore the active branch from a save point snapshot",
+        ),
+        tool::<DiffBranchesInput, DiffBranchesOutput>(
+            "diff_branches",
+            "Compare two project branches across scenes, states, relationships, and pacing",
+        ),
+        tool::<CreateStyleProfileFromMarkdownInput, CreateStyleProfileFromMarkdownOutput>(
+            "create_style_profile_from_markdown",
+            "Derive a reusable project style profile from user-provided local Markdown files or folders. Persists metadata, hashes, metrics, and generated guidance, but no source text by default. The guidance is synthesized by the routed style_analyze model against an explicit schema; if the model returns no usable guidance the call fails loudly and creates no profile (use metrics_only=true to create a metrics-only profile deliberately).",
+        ),
+        tool::<CheckStyleProfileSourcesInput, CheckStyleProfileSourcesOutput>(
+            "check_style_profile_sources",
+            "Check the staleness of source files for a derived style profile compared to disk. Exposes metadata only.",
+        ),
+        tool::<PreviewRefreshStyleProfileInput, PreviewRefreshStyleProfileOutput>(
+            "preview_refresh_style_profile",
+            "Preview rebuilding/refreshing a style profile from source files without persisting. Exposes metadata only.",
+        ),
+        tool::<RefreshStyleProfileInput, RefreshStyleProfileOutput>(
+            "refresh_style_profile",
+            "Refresh/rebuild a style profile from current local sources, saving a new version linked to the parent.",
+        ),
+        tool::<ListStyleProfilesInput, ListStyleProfilesOutput>(
+            "list_style_profiles",
+            "List derived style profiles saved for a project.",
+        ),
+        tool::<GetStyleProfileInput, GetStyleProfileOutput>(
+            "get_style_profile",
+            "Retrieve a specific derived style profile by its profile_id.",
+        ),
+        tool::<ApplyStyleProfileInput, ApplyStyleProfileOutput>(
+            "apply_style_profile",
+            "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows. Requires the profile to be ready and to carry application guidance; pass force=true to deliberately activate a NeedsReview or metrics-only profile — with no prose guidance, only the profile is activated and the project's narrator voice/style notes are left untouched.",
+        ),
+        tool::<PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput>(
+            "preview_apply_style_profile",
+            "Preview applying a derived style profile's changes without mutating state.",
+        ),
+        tool::<ListStyleProfileApplicationsInput, ListStyleProfileApplicationsOutput>(
+            "list_style_profile_applications",
+            "List the history of applied style profiles and their rollback status.",
+        ),
+        tool::<RollbackStyleProfileApplicationInput, RollbackStyleProfileApplicationOutput>(
+            "rollback_style_profile_application",
+            "Rollback a previously applied style profile, reverting narrator voice, style notes, and conservatively reverting style world rules.",
+        ),
+        tool::<CheckStyleAgainstProfileInput, CheckStyleAgainstProfileOutput>(
+            "check_style_against_profile",
+            "Check a scene or raw text for style drift against a derived style profile.",
+        ),
+        tool::<PlanStyleRevisionInput, PlanStyleRevisionOutput>(
+            "plan_style_revision",
+            "Generate a non-mutating style revision plan for a target (scene, chapter, or raw text) against a derived style profile.",
+        ),
+        tool::<CompareStyleProfilesInput, CompareStyleProfilesOutput>(
+            "compare_style_profiles",
+            "Compare two derived style profiles to report metric deltas, guidance differences, and whether applying the second profile would likely change the project style materially.",
+        ),
+        tool::<ArchiveStyleProfileInput, ArchiveStyleProfileOutput>(
+            "archive_style_profile",
+            "Safer profile deletion/archiving. archived profiles cannot be active or default, but preserve audit history.",
+        ),
+        tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
+            "preview_style_revision_patch",
+            "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",
+        ),
+        tool::<EvaluateStyleRevisionPatchInput, EvaluateStyleRevisionPatchOutput>(
+            "evaluate_style_revision_patch",
+            "Evaluate a proposed style revision patch for alignment improvement and risks without persisting changes.",
+        ),
+        tool::<ApplyStyleRevisionPatchInput, ApplyStyleRevisionPatchOutput>(
+            "apply_style_revision_patch",
+            "Apply proposed style revision patches to target scenes, saving drafts through the standard writing pipeline, invalidating caches, and writing an audit trail.",
+        ),
+        tool::<ListStyleRevisionPatchAuditsInput, ListStyleRevisionPatchAuditsOutput>(
+            "list_style_revision_patch_audits",
+            "List style revision patch audits for a project.",
+        ),
+        tool::<RollbackStyleRevisionPatchInput, RollbackStyleRevisionPatchOutput>(
+            "rollback_style_revision_patch",
+            "Roll back an applied style revision patch, restoring prior prose versions using scene version history.",
+        ),
+        tool::<MergeBranchInput, MergeBranchOutput>(
+            "merge_branch",
+            "Merge a source branch into a target branch for branch-aware story records",
+        ),
+        tool::<ReviseSceneInput, ReviseSceneOutput>(
+            "revise_scene",
+            "Revise a scene on a non-main branch and flag downstream invalidation impact",
+        ),
+        tool::<GenerateAlternativesInput, GenerateAlternativesOutput>(
+            "generate_alternatives",
+            "Generate branch-backed alternative scene drafts from shared context",
+        ),
+        tool::<CompareAlternativesInput, CompareAlternativesOutput>(
+            "compare_alternatives",
+            "Compare generated alternative branches and rank them heuristically",
+        ),
+        tool::<SelectAlternativeInput, SelectAlternativeOutput>(
+            "select_alternative",
+            "Select an alternative branch and merge it into main",
+        ),
+        tool::<ListRevisionMarkersInput, ListRevisionMarkersOutput>(
+            "list_revision_markers",
+            "List persisted revision markers for a scene on the active branch",
+        ),
+        tool::<ResolveRevisionMarkerInput, ResolveRevisionMarkerOutput>(
+            "resolve_revision_marker",
+            "Mark a persisted revision marker as resolved",
+        ),
+        tool::<CreateCharacterInput, CreateCharacterOutput>(
+            "create_character",
+            "Create a character with profiles and baseline state",
+        ),
+        tool::<CreateLocationInput, CreateLocationOutput>(
+            "create_location",
+            "Create a location with optional initial world state; accepts type as an alias for kind and infers a kind when omitted",
+        ),
+        tool::<CreateFactionInput, CreateFactionOutput>(
+            "create_faction",
+            "Create a faction entity",
+        ),
+        tool::<CreateReligionInput, CreateReligionOutput>(
+            "create_religion",
+            "Create a religion entity",
+        ),
+        tool::<CreateEconomyInput, CreateEconomyOutput>(
+            "create_economy",
+            "Create an economy entity",
+        ),
+        tool::<CreateTermInput, CreateTermOutput>("create_term", "Create a glossary term"),
+        tool::<BatchCreateTermsInput, BatchCreateTermsOutput>(
+            "batch_create_terms",
+            "Create multiple glossary terms in one call",
+        ),
+        tool::<CreateRelationshipInput, CreateRelationshipOutput>(
+            "create_relationship",
+            "Create a directed relationship between two characters",
+        ),
+        tool::<CreateWorldRuleInput, CreateWorldRuleOutput>(
+            "create_world_rule",
+            "Create a project world rule",
+        ),
+        tool::<UpdateWorldRuleInput, UpdateWorldRuleOutput>(
+            "update_world_rule",
+            "Update a world rule by record id",
+        ),
+        tool::<BatchSetCharacterVoiceProfilesInput, BatchSetCharacterVoiceProfilesOutput>(
+            "batch_set_character_voice_profiles",
+            "Replace multiple character voice profiles in one call",
+        ),
+        tool::<UpdateEntityInput, UpdateEntityOutput>(
+            "update_entity",
+            "Update a supported entity by record id. Character aliases are settable via changes {\"aliases\": [...]}. Renaming a character (changes {\"name\": ...}) is a controlled operation: pass allow_rename: true to move the name's uniqueness key, keep the old name as an alias, refresh the search index, and get a rename_report listing scenes/facts/knowledge/arcs still referencing the old name. Without allow_rename the rename is rejected. For entity_type=project, the reader contract is updatable via changes {\"reader_contract\": {...}} or the sub-fields {\"promise\", \"style_notes\", \"boundaries\"} (partial merge; unset fields are preserved); if the edit leaves the contract's word-count target contradicting the narrator voice or a style world rule, the response warnings flag it",
+        ),
+        tool::<ArchiveEntityInput, ArchiveEntityOutput>(
+            "archive_entity",
+            "Archive a supported entity by record id",
+        ),
+        tool::<CreatePlotLineInput, CreatePlotLineOutput>("create_plot_line", "Create a plot line"),
+        tool::<CreateConflictInput, CreateConflictOutput>(
+            "create_conflict",
+            "Create a conflict record",
+        ),
+        tool::<CreateThemeInput, CreateThemeOutput>("create_theme", "Create a theme record"),
+        tool::<CreateMotifInput, CreateMotifOutput>("create_motif", "Create a motif record"),
+        tool::<BatchCreateMotifsInput, BatchCreateMotifsOutput>(
+            "batch_create_motifs",
+            "Create multiple motif records in one call",
+        ),
+        tool::<CreateNarrativePromiseInput, CreateNarrativePromiseOutput>(
+            "create_narrative_promise",
+            "Create a narrative promise",
+        ),
+        tool::<BatchCreateNarrativePromisesInput, BatchCreateNarrativePromisesOutput>(
+            "batch_create_narrative_promises",
+            "Create multiple narrative promises in one call",
+        ),
+        tool::<UpdatePromiseStatusInput, UpdatePromiseStatusOutput>(
+            "update_promise_status",
+            "Advance a narrative promise lifecycle. Manual path; authoring runs with a mining_policy stage promise_payoff_candidate/promise_reinforced deltas that apply through this tool after ratification via decide_canon_deltas.",
+        ),
+        tool::<CreateCharacterArcInput, CreateCharacterArcOutput>(
+            "create_character_arc",
+            "Create a character arc and pacing tracker",
+        ),
+        tool::<UpdateArcMilestoneInput, UpdateArcMilestoneOutput>(
+            "update_arc_milestone",
+            "Update a single character-arc milestone by label: move its placement and/or stamp reached_at (e.g. after a chapter renumber or when the milestone lands). Only the supplied fields change; description and unlocks are preserved. Read milestones via get_entity(table=\"character_arc\") or get_character_snapshot",
+        ),
+        tool::<CreateFutureKnowledgeInput, CreateFutureKnowledgeOutput>(
+            "create_future_knowledge",
+            "Record future knowledge held by a character",
+        ),
+        tool::<CreateTimelineEventInput, CreateTimelineEventOutput>(
+            "create_timeline_event",
+            "Record a timeline event for time-aware stories",
+        ),
+        tool::<CreateTemporalInterventionInput, CreateTemporalInterventionOutput>(
+            "create_temporal_intervention",
+            "Track a time-travel intervention between timeline events",
+        ),
+        tool::<CreateSystemOverlayInput, CreateSystemOverlayOutput>(
+            "create_system_overlay",
+            "Create a LitRPG or cultivation system overlay",
+        ),
+        tool::<RunDualPersonaReviewInput, RunDualPersonaReviewOutput>(
+            "run_dual_persona_review",
+            "Run a literary and craft review loop for a branch scene",
+        ),
+        tool::<CreatePacingConfigInput, CreatePacingConfigOutput>(
+            "create_pacing_config",
+            "Create pacing configuration for a project",
+        ),
+        tool::<CreatePacingCurveInput, CreatePacingCurveOutput>(
+            "create_pacing_curve",
+            "Create pacing curve for a book",
+        ),
+        tool::<SetArcPacingConstraintsInput, SetArcPacingConstraintsOutput>(
+            "set_arc_pacing_constraints",
+            "Set pacing constraints for a character arc",
+        ),
+        tool::<PlanChapterInput, PlanChapterOutput>("plan_chapter", "Create a chapter plan"),
+        tool::<AnnotateSceneBeatsInput, AnnotateSceneBeatsOutput>(
+            "annotate_scene_beats",
+            "Annotate structural beats for a scene. Manual path; authoring runs with a mining_policy stage beat_annotation deltas that apply through this tool after ratification via decide_canon_deltas.",
+        ),
+        tool::<SaveSummaryInput, SaveSummaryOutput>(
+            "save_summary",
+            "Save a chapter summary using chapter entity_id/chapter_id or explicit book_number and chapter_number",
+        ),
+        tool::<SetBookOutlineInput, SetBookOutlineOutput>(
+            "set_book_outline",
+            "Set or replace a book outline on the active branch using book_id or book_number",
+        ),
+        tool::<SetChapterOutlineInput, SetChapterOutlineOutput>(
+            "set_chapter_outline",
+            "Set or replace a chapter outline on the active branch using chapter_id/entity_id or explicit book_number and chapter_number",
+        ),
+        tool::<CheckConsistencyInput, CheckConsistencyOutput>(
+            "check_consistency",
+            "Run a structured consistency audit (includes scene_divergence and canonical_fact_consistency checks)",
+        ),
+        tool::<RegisterCanonicalFactInput, RegisterCanonicalFactOutput>(
+            "register_canonical_fact",
+            "Register a canonical story fact (pull result, stat change, item, ability) for contradiction detection. scene_id is optional: omit it to register a fact decided during planning but not yet dramatised (placed by book_number/chapter_number only), then attach it later with bind_canonical_fact_to_scene",
+        ),
+        tool::<ExtractCanonicalFactsFromSceneInput, ExtractCanonicalFactsFromSceneOutput>(
+            "extract_canonical_facts_from_scene",
+            "Extract proposed typed canonical facts from committed scene prose without registering them",
+        ),
+        tool::<MigrateCanonicalFactInput, MigrateCanonicalFactOutput>(
+            "migrate_canonical_fact",
+            "Promote a legacy_untyped canonical fact into a typed canonical fact and supersede the legacy row",
+        ),
+        tool::<BindCanonicalFactToSceneInput, BindCanonicalFactToSceneOutput>(
+            "bind_canonical_fact_to_scene",
+            "Attach a planned-and-pending canonical fact (registered without a scene_id) to the scene that dramatises it. The fact and scene must share a project and branch; placement is left untouched",
+        ),
+        tool::<SearchBibleInput, SearchBibleOutput>(
+            "search_bible",
+            "Search project records by meaning, exact text, or fuzzy match",
+        ),
+        tool::<FindScenesReferencingInput, FindScenesReferencingOutput>(
+            "find_scenes_referencing",
+            "Find up to 100 active-branch scenes that reference a subject record id or literal phrase",
+        ),
+        tool::<RebuildSearchIndexInput, RebuildSearchIndexOutput>(
+            "rebuild_search_index",
+            "Rebuild semantic search embeddings for a project",
+        ),
+        tool::<BackfillSceneSourceOffsetsInput, BackfillSceneSourceOffsetsOutput>(
+            "backfill_scene_source_offsets",
+            "Recompute scene_source_link offsets with the import slicer for one project branch",
+        ),
+        tool::<PullChapterFromFileInput, PullReport>(
+            "pull_chapter_from_file",
+            "Import chapter scene text from a source file into active-branch scenes",
+        ),
+        tool::<PushChapterToFileInput, PushReport>(
+            "push_chapter_to_file",
+            "Export active-branch chapter scene text to a source file and store source offsets",
+        ),
+        tool::<ConfigureAgentsInput, ConfigureAgentsOutput>(
+            "configure_agents",
+            "Reload model agent and route configuration from spindle.toml",
+        ),
+        tool::<EmptyInput, ListAgentsOutput>(
+            "list_agents",
+            "List configured model agents and their route assignments",
+        ),
+        tool::<InitGrokSkillsInput, InitGrokSkillsOutput>(
+            "init_grok_skills",
+            "Initialize Grok-compatible Spindle skill adapters. By default installs into ~/.grok/skills/ (global). Pass global=false + target_dir if you want repo-scoped adapters instead. This makes all bible://skills/* (scene-writer, character-creator, etc.) work as first-class skills in Grok.",
+        ),
+        tool::<EmptyInput, ListSkillsOutput>(
+            "list_skills",
+            "List the embedded Spindle workflow skills and craft references. Tool equivalent of browsing bible://skills/* and bible://references/*; use get_skill / get_reference to read one.",
+        ),
+        tool::<GetSkillInput, GetSkillOutput>(
+            "get_skill",
+            "Return the full content of an embedded Spindle skill. Tool equivalent of reading bible://skills/{name}; call this to load a workflow such as scene-writer or character-creator.",
+        ),
+        tool::<GetReferenceInput, GetReferenceOutput>(
+            "get_reference",
+            "Return the full content of an embedded craft reference. Tool equivalent of reading bible://references/{name}.",
+        ),
+        tool::<TestAgentInput, TestAgentOutput>(
+            "test_agent",
+            "Send a test prompt through a configured model agent",
+        ),
+        tool::<ContinueGenerationInput, ContinueGenerationOutput>(
+            "continue_generation",
+            "Continue a model generation and return a server-side generation receipt",
+        ),
+        tool::<ReviseGenerationInput, ReviseGenerationOutput>(
+            "revise_generation",
+            "Revise a server-side generation through the same explicit-capable route and return a new receipt",
+        ),
+        tool::<ResearchQueryInput, ResearchQueryOutput>(
+            "research_query",
+            "Research a factual question using Gemini, grounded in project context from the Bible",
+        ),
+        tool::<ResearchAddSourceInput, ResearchAddSourceOutput>(
+            "research_add_source",
+            "Create new research source metadata and optional summary in the project-local library",
+        ),
+        tool::<ResearchAddNoteInput, ResearchAddNoteOutput>(
+            "research_add_note",
+            "Attach a freeform note and optional quote/locator to a research source",
+        ),
+        tool::<ResearchAddClaimInput, ResearchAddClaimOutput>(
+            "research_add_claim",
+            "Store a distilled factual claim with confidence, topic, location, time period, and tags",
+        ),
+        tool::<ResearchSearchInput, ResearchSearchOutput>(
+            "research_search",
+            "Search the project-local research library for matching sources, notes, and claims",
+        ),
+        tool::<ResearchPackForSceneInput, ResearchPackForSceneOutput>(
+            "research_pack_for_scene",
+            "Retrieve a compact, budget-aware packet of relevant research for a scene or chapter",
+        ),
+        tool::<ResearchUsageForSceneInput, ResearchUsageForSceneOutput>(
+            "research_usage_for_scene",
+            "Retrieve the recorded research usage history for a drafted scene",
+        ),
+        tool::<ResearchIngestReportInput, ResearchIngestReportOutput>(
+            "research_ingest_report",
+            "Ingest and parse a text-based research report, creating sources, notes, and claims in the project-local database",
+        ),
+        tool::<ResearchPlanForSceneInput, ResearchPlanForSceneOutput>(
+            "research_plan_for_scene",
+            "Determine missing research, suggest queries, and check if a scene is blocked on research",
+        ),
+        tool::<ExportEpubInput, ExportEpubOutput>(
+            "export_epub",
+            "Export a project, single book, or inclusive chapter range within a book as an EPUB file",
+        ),
+        tool::<PreflightBookExportInput, PreflightBookExportOutput>(
+            "preflight_book_export",
+            "Validate a project, single book, or inclusive chapter range within a book for EPUB export and return blocking issues or warnings before writing a file",
+        ),
+        tool::<CompileManuscriptInput, CompileManuscriptOutput>(
+            "compile_manuscript",
+            "Assemble the committed prose of a book (or an inclusive chapter range within it) on the active branch into one Markdown read-so-far document, with per-chapter and per-scene headings; planned-but-undrafted scenes render an explicit placeholder and are reported in missing_scenes. Optionally writes the Markdown to the project's workspace artifacts directory.",
+        ),
+        tool::<ExportRecapInput, ExportRecapOutput>(
+            "export_recap",
+            "Assemble a spoiler-bounded, reader-facing \"previously on\" recap of a book up to (and including) through_chapter on the active branch: a story-so-far section from chapter summaries at/under the cursor, a \"paid off\" section of resolved promises, and a \"questions still hanging\" section of open promises. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
+        ),
+        tool::<ExportSeriesBibleInput, ExportSeriesBibleOutput>(
+            "export_series_bible",
+            "Assemble a spoiler-bounded, reader-facing series bible on the active branch as of an optional cursor (through, absent = whole project): character pages with state as-of the cursor and relationship bands, locations, a sorted glossary of terms, and factions/religions when present. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
+        ),
+        tool::<MineSceneCanonInput, MineSceneCanonOutput>(
+            "mine_scene_canon",
+            "Mine one committed scene's prose into proposed canon deltas (staged for operator ratification, never auto-applied). One rating-gated model call; malformed model output is rejected and evidence must appear verbatim in the prose. Re-mining a scene supersedes its prior staged deltas. Returns the staged deltas, discard/supersede counts, and a status of staged, skipped (no cleared route or empty scene), or model_output_rejected.",
+        ),
+        tool::<ListCanonDeltasInput, ListCanonDeltasOutput>(
+            "list_canon_deltas",
+            "List the canon deltas mined for a project's active branch (the ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance — either one scene_id OR a chapter_range { book_number, start, end } (mutually exclusive). Results carry each delta's class, payload, verbatim evidence quote, confidence, and status, in deterministic order. Read this before deciding — never bulk-apply without reading the evidence.",
+        ),
+        tool::<DecideCanonDeltasInput, DecideCanonDeltasOutput>(
+            "decide_canon_deltas",
+            "Ratify a batch of staged canon deltas: each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed in the output; not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, dangling target, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies dispatch to the class's existing write tool (register_canonical_fact, update_promise_status, update_relationship, commit_character_state, record_knowledge, annotate_scene_beats, commit_quantity_state, update_entity for conflict/arc columns, or create_character/location/term). Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
+        ),
+        tool::<ReplanChapterInput, ReplanChapterOutput>(
+            "replan_chapter",
+            "Audit a book's not-yet-drafted chapter plans against the realized reality one just-summarized chapter established, and stage plan-amendment proposals for operator ratification (never auto-applied — ADR 0003 D5). Non-prose-bearing: the differ reads summaries + metadata only (no scene prose), so no rating clearance applies; on a missing route it falls to review then skips honestly, and it never blocks the run. Re-running for the same source chapter supersedes its prior staged amendments. Returns the staged amendments, discard/supersede counts, and a status of staged, no_summary, no_targets, skipped, or model_output_rejected.",
+        ),
+        tool::<ListPlanAmendmentsInput, ListPlanAmendmentsOutput>(
+            "list_plan_amendments",
+            "List the plan amendments staged for a project's active branch (the living-outline ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance (book_number + source_chapter together — the summarized chapter that triggered a replan pass). Each amendment carries its class, the future target_chapter (null for promise_followup), the typed payload, the replanner's rationale (ids/summaries, no prose), confidence, status, and any prior_state snapshot, in deterministic order. Read this — and the rationale — before deciding; never bulk-apply blind.",
+        ),
+        tool::<DecidePlanAmendmentsInput, DecidePlanAmendmentsOutput>(
+            "decide_plan_amendments",
+            "Ratify a batch of staged plan amendments (the living outline). Each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed, not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, a target chapter that already has drafted scenes (the immutability guard: drafted reality is never rewritten), a dangling scene_order/incoherent reorder, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies replay through the existing plan write path (plan_chapter for the chapter classes, create_narrative_promise for promise_followup), snapshot the prior plan into prior_state, and bump plan_revision. Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
+        ),
+        tool::<ExportBibleInput, ExportBibleOutput>(
+            "export_bible",
+            "Export a full project backup as JSON, including branch data",
+        ),
+        tool::<GetWriterStateInput, WriterStateEnvelope>(
+            "get_writer_state",
+            "Return a branch-aware re-anchor packet with current cursor state, constraints, subjects, recent scenes, overlays, divergence warnings, and recent activity",
+        ),
+        tool::<GetSceneContextInput, SceneContextEnvelope>(
+            "get_scene_context",
+            "Assemble standards, novel, and scene context using chapter_id or explicit book_number and chapter_number",
+        ),
+        tool::<GetEntityInput, EntitySubjectSnapshot>(
+            "get_entity",
+            "Resolve one entity by table and record id as a polymorphic subject snapshot",
+        ),
+        tool::<FindEntityInput, FindEntityOutput>(
+            "find_entity",
+            "Resolve entities by name or alias with ExactName/SemanticMatch confidence",
+        ),
+        tool::<GetCharacterSnapshotInput, CharacterSnapshotOutput>(
+            "get_character_snapshot",
+            "Resolve one character snapshot and promote voice profile, current state, and recent appearances",
+        ),
+        tool::<SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput>(
+            "set_character_voice_profile",
+            "Set a character voice profile and append a session activity entry summarizing the change",
+        ),
+        tool::<GetChapterBriefingInput, GetChapterBriefingOutput>(
+            "get_chapter_briefing",
+            "Assemble a compact pre-write briefing with continuity sheets, recent summaries, chapter plans, and lean scene context",
+        ),
+        tool::<ListChapterScenesInput, ListChapterScenesOutput>(
+            "list_chapter_scenes",
+            "List the active-branch scenes in one chapter with canonical order, summary-first-line, word count, and canonical-fact flags",
+        ),
+        tool::<ListBookChaptersInput, ListBookChaptersOutput>(
+            "list_book_chapters",
+            "List the active-branch chapters in one book with nested ordered scene spines",
+        ),
+        tool::<SaveSceneDraftInput, SaveSceneDraftOutput>(
+            "save_scene_draft",
+            "Create or update a scene draft using chapter_id or explicit book_number and chapter_number; accepts content as an alias for full_text",
+        ),
+        tool::<MoveSceneInput, MoveSceneOutput>(
+            "move_scene",
+            "Move an active-branch scene only when its move audit is clear; leaves a gap at the source position",
+        ),
+        tool::<DeleteSceneInput, DeleteSceneOutput>(
+            "delete_scene",
+            "Delete an active-branch scene only when its dependency audit is clear; leaves a gap in scene_order. Address by scene_id (preferred — unambiguous even when duplicates or orphans share a position) or by book_number/chapter_number/scene_order",
+        ),
+        tool::<OperatorDeleteSceneInput, OperatorDeleteSceneOutput>(
+            "operator_delete_scene",
+            "Delete an active-branch scene after removing scene_source_link records and invalidating stale chapter_plan/chapter_summary artifacts, but only when no other blockers or semantic risks remain. Accepts scene_id for unambiguous addressing, like delete_scene",
+        ),
+        tool::<ListSceneVersionsInput, ListSceneVersionsOutput>(
+            "list_scene_versions",
+            "List saved historical versions for a scene",
+        ),
+        tool::<RestoreSceneVersionInput, RestoreSceneVersionOutput>(
+            "restore_scene_version",
+            "Restore a scene from one of its saved historical versions",
+        ),
+        tool::<CommitSceneChangesInput, CommitSceneChangesOutput>(
+            "commit_scene_changes",
+            "Best-effort batch commit of scene character states, canonical facts, and relationship updates; accepts shorthand summary entries for state notes, canonical fact summaries, and relationship summaries",
+        ),
+        tool::<CommitCharacterStateInput, CommitCharacterStateOutput>(
+            "commit_character_state",
+            "Append a character state snapshot from a saved scene. Manual path; authoring runs with a mining_policy stage character_state deltas that apply through this tool after ratification via decide_canon_deltas.",
+        ),
+        tool::<UpdateRelationshipInput, UpdateRelationshipOutput>(
+            "update_relationship",
+            "Update trust and tension for one directed relationship. Manual path; authoring runs with a mining_policy stage relationship_shift deltas that apply through this tool after ratification via decide_canon_deltas.",
+        ),
+        tool::<ImportManuscriptInput, ImportManuscriptOutput>(
+            "import_manuscript",
+            "Create an import session and persist normalized manuscript structure",
+        ),
+        tool::<ImportStatusInput, ImportStatusOutput>(
+            "import_status",
+            "Read the current state of an import session",
+        ),
+        tool::<ImportExtractEntitiesInput, ImportExtractEntitiesOutput>(
+            "import_extract_entities",
+            "Extract candidate entities from imported manuscript scenes",
+        ),
+        tool::<ImportConsolidateEntitiesInput, ImportConsolidateEntitiesOutput>(
+            "import_consolidate_entities",
+            "Consolidate imported entity mentions into canonical clusters",
+        ),
+        tool::<ImportAnalyzeCharacterInput, ImportAnalyzeCharacterOutput>(
+            "import_analyze_character",
+            "Build imported character dossiers from consolidated clusters",
+        ),
+        tool::<ImportExtractWorldInput, ImportExtractWorldOutput>(
+            "import_extract_world",
+            "Build imported world dossier candidates",
+        ),
+        tool::<ImportAnalyzeNarrativeInput, ImportAnalyzeNarrativeOutput>(
+            "import_analyze_narrative",
+            "Build imported narrative dossier candidates",
+        ),
+        tool::<ImportComputeFinalStateInput, ImportComputeFinalStateOutput>(
+            "import_compute_final_state",
+            "Compute the imported manuscript continuation point and final state",
+        ),
+        tool::<ImportHydrateBibleInput, ImportHydrateBibleOutput>(
+            "import_hydrate_bible",
+            "Hydrate an import session into canonical story records",
+        ),
+        tool::<ImportApplyReviewDecisionsInput, ImportApplyReviewDecisionsOutput>(
+            "import_apply_review_decisions",
+            "Resolve persisted import review items and update session readiness",
+        ),
+        tool::<RecordKnowledgeInput, RecordKnowledgeOutput>(
+            "record_knowledge",
+            "Record canonical knowledge for a character. Remains the direct reveal path for circle-of-trust expansion (with secret_of_fact_id + learned_at) alongside the save-draft continuity package and the mined knowledge_learned delta — it is not superseded; those flows apply through this same tool.",
+        ),
+        tool::<RecordNoteInput, RecordNoteOutput>(
+            "record_note",
+            "Append a freeform note to branch session activity",
+        ),
+        tool::<UpdateWriterPositionInput, WriterPosition>(
+            "update_writer_position",
+            "Persist a branch writer cursor position without saving a draft",
+        ),
+        tool::<AuthoringPrepareRunInput, AuthoringPrepareRunOutput>(
+            "authoring_prepare_run",
+            "Inspect the requested chapter range for the project and produce a readiness report before starting",
+        ),
+        tool::<AuthoringStartRunInput, AuthoringStartRunOutput>(
+            "authoring_start_run",
+            "Start a new authoring run for the project and book chapter range",
+        ),
+        tool::<AuthoringStatusInput, AuthoringStatusOutput>(
+            "authoring_status",
+            "Retrieve progress, next action, and status of the active authoring run",
+        ),
+        tool::<AuthoringExecuteNextInput, AuthoringExecuteNextOutput>(
+            "authoring_execute_next",
+            "Execute exactly one safe authoring action for the active run",
+        ),
+        tool::<AuthoringSaveSceneDraftInput, AuthoringSaveSceneDraftOutput>(
+            "authoring_save_scene_draft",
+            "Save a host-drafted authoring scene with its required structured continuity package",
+        ),
+        tool::<AuthoringRecordCheckpointAuditInput, AuthoringRecordCheckpointAuditOutput>(
+            "authoring_record_checkpoint_audit",
+            "Attach a completed deep consistency audit to a pending authoring checkpoint",
+        ),
+        tool::<AuthoringReviewCheckpointInput, AuthoringReviewCheckpointOutput>(
+            "authoring_review_checkpoint",
+            "Mark a checkpoint reviewed after deep consistency and sampled reviews are complete; rejects unresolved/fix-later directives",
+        ),
+        tool::<AuthoringResolveBlockInput, AuthoringResolveBlockOutput>(
+            "authoring_resolve_block",
+            "Clear a blocked scene/run and advance it manually",
+        ),
+        tool::<AuthoringCancelRunInput, AuthoringCancelRunOutput>(
+            "authoring_cancel_run",
+            "Pause/cancel the active authoring run without deleting progress",
+        ),
+    ]
+}
+
+impl ToolRouter {
     async fn set_session_context(&self, project_id: String, branch_id: Option<String>) {
         let mut session = self.session_context.write().await;
         session.active_project_id = Some(project_id);
@@ -1330,7 +1495,7 @@ impl ToolRouter {
                     .await?
                     .get("project_id")
                     .and_then(Value::as_str)
-                    .unwrap_or(entity_id)
+                    .context("entity is missing project_id")?
                     .to_string())
             }
             "update_world_rule" => {
@@ -1439,13 +1604,33 @@ impl ToolRouter {
         }
     }
 
+    #[cfg(test)]
     pub async fn call_tool(
         &self,
         name: &str,
         arguments: Option<&rmcp::model::JsonObject>,
     ) -> anyhow::Result<CallToolResult> {
+        self.call_tool_with_internal_token(name, arguments, None)
+            .await
+    }
+
+    pub async fn call_tool_with_internal_token(
+        &self,
+        name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        internal_token: Option<&str>,
+    ) -> anyhow::Result<CallToolResult> {
+        Box::pin(self.call_tool_with_internal_token_inner(name, arguments, internal_token)).await
+    }
+
+    async fn call_tool_with_internal_token_inner(
+        &self,
+        name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        internal_token: Option<&str>,
+    ) -> anyhow::Result<CallToolResult> {
         let call_started = Instant::now();
-        if !self.list_tools().iter().any(|tool| tool.name == name) {
+        if !self.has_tool(name) {
             return Ok(structured_error_result(&anyhow::anyhow!(
                 "unknown tool: {name}"
             )));
@@ -1463,6 +1648,11 @@ impl ToolRouter {
             Err(error) => return Ok(structured_error_result(&error)),
         };
 
+        let reentrant_lock = scope.as_ref().and_then(|s| {
+            self.serialization_state
+                .reentrant_lock_for_token(internal_token, s)
+        });
+
         // Observability under a long write. Tool calls for a project are
         // serialized, and a drafting/review step can hold that lock for MINUTES
         // when the route points at a reasoning model. `authoring_status` then
@@ -1476,6 +1666,7 @@ impl ToolRouter {
         // reconcile back, which is precisely what makes it safe to run
         // alongside the in-flight writer.
         if name == "authoring_status"
+            && reentrant_lock.is_none()
             && let Some(scope) = scope.as_ref()
             && !self.scope_is_free(scope).await
         {
@@ -1492,9 +1683,12 @@ impl ToolRouter {
             };
         }
 
-        let _serialization_guard = match scope {
-            Some(scope) => Some(self.lock_tool_scope(scope).await),
-            None => None,
+        let _serialization_guard = match (scope, reentrant_lock) {
+            (Some(_), Some(reentrant)) => Some(ToolSerializationGuard::Reentrant {
+                _reentrant: reentrant.lock_owned().await,
+            }),
+            (Some(scope), None) => Some(self.lock_tool_scope(scope).await),
+            (None, _) => None,
         };
         let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
         let arguments = Some(&resolved_arguments);
@@ -2442,12 +2636,7 @@ fn tool_requires_session_serialization(name: &str) -> bool {
 fn tool_requires_global_serialization(name: &str) -> bool {
     matches!(
         name,
-        "create_project"
-            | "configure_agents"
-            | "test_agent"
-            | "continue_generation"
-            | "revise_generation"
-            | "init_grok_skills"
+        "create_project" | "configure_agents" | "init_grok_skills"
     )
 }
 
@@ -2489,7 +2678,17 @@ fn log_tool_call_timing(name: &str, lock_wait_ms: u64, total_ms: u64, is_error: 
 }
 
 fn tool_supports_session_project_default(name: &str) -> bool {
-    name != "set_active_project"
+    !matches!(
+        name,
+        "set_active_project"
+            | "update_entity"
+            | "archive_entity"
+            | "update_world_rule"
+            | "resolve_revision_marker"
+            | "pull_chapter_from_file"
+            | "push_chapter_to_file"
+            | "bind_canonical_fact_to_scene"
+    )
 }
 
 fn tool_requires_project_context(name: &str) -> bool {
@@ -2511,6 +2710,13 @@ fn tool_requires_project_context(name: &str) -> bool {
             | "revise_generation"
             | "configure_agents"
             | "init_grok_skills"
+            | "update_entity"
+            | "archive_entity"
+            | "update_world_rule"
+            | "resolve_revision_marker"
+            | "pull_chapter_from_file"
+            | "push_chapter_to_file"
+            | "bind_canonical_fact_to_scene"
     )
 }
 
@@ -4002,7 +4208,14 @@ impl ToolRouter {
                 // addr file) and proceed. Idempotent + race-safe.
                 let active_addr =
                     crate::internal_listener::ensure_primary_addr(&self.service, data_dir).await?;
-                let url = format!("http://{}/mcp", active_addr);
+                let internal_token_guard = self
+                    .serialization_state
+                    .issue_internal_token(ToolSerializationScope::Project(project_id.clone()));
+                let url = format!(
+                    "http://{}/mcp?internal_token={}",
+                    active_addr,
+                    internal_token_guard.token()
+                );
                 let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
                 execute_one(
                     &state_path,
@@ -4347,7 +4560,14 @@ impl ToolRouter {
         // authoring_execute_next's dispatch arm.
         let active_addr =
             crate::internal_listener::ensure_primary_addr(&self.service, data_dir).await?;
-        let url = format!("http://{}/mcp", active_addr);
+        let internal_token_guard = self
+            .serialization_state
+            .issue_internal_token(ToolSerializationScope::Project(project_id.to_string()));
+        let url = format!(
+            "http://{}/mcp?internal_token={}",
+            active_addr,
+            internal_token_guard.token()
+        );
         let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
         let scope = spindle_core::models::ConsistencyScopeInput {
             scene_order: Some(scene_order),
@@ -8102,10 +8322,21 @@ mod tests {
     fn serialization_scope_uses_global_only_for_process_wide_tools() {
         assert!(tool_requires_global_serialization("create_project"));
         assert!(tool_requires_global_serialization("configure_agents"));
-        assert!(tool_requires_global_serialization("revise_generation"));
         assert!(tool_requires_global_serialization("init_grok_skills"));
+        assert!(!tool_requires_global_serialization("test_agent"));
+        assert!(!tool_requires_global_serialization("continue_generation"));
+        assert!(!tool_requires_global_serialization("revise_generation"));
         assert!(!tool_requires_global_serialization("save_scene_draft"));
         assert!(!tool_requires_global_serialization("record_note"));
+
+        for name in static_tool_names() {
+            if tool_requires_global_serialization(name) {
+                assert!(
+                    tool_requires_session_serialization(name),
+                    "global serialization tool `{name}` must not also appear in the no-serialization list"
+                );
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -10250,6 +10481,291 @@ mod tests {
         assert!(
             !has_range_message(missing),
             "normal range must not report out of bounds: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn static_tool_names_matches_all_tool_schemas() {
+        let schemas = all_tool_schemas();
+        let names = static_tool_names();
+        assert_eq!(
+            names.len(),
+            schemas.len(),
+            "every tool schema must have a unique entry in static_tool_names()"
+        );
+        for tool in schemas {
+            assert!(
+                names.contains(tool.name.as_ref()),
+                "static_tool_names() missing `{}`",
+                tool.name
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transports_share_one_serialization_state_per_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("spindle.db");
+        let pool = SqlitePool::open(&db_path).await.expect("open sqlite pool");
+        let service = crate::build_service(pool, dir.path(), None);
+
+        let stdio_server = crate::server::SpindleMcpServer::new(service.clone());
+        let http_state = crate::http::HttpState::new(service.clone());
+        let console_router = ToolRouter::with_tool_profile_and_serialization(
+            service.clone(),
+            None,
+            Arc::new(ToolSerializationState::default()),
+        );
+
+        assert!(
+            Arc::ptr_eq(
+                stdio_server.serialization_state(),
+                http_state.serialization_state()
+            ),
+            "stdio server and HTTP state must share one ToolSerializationState"
+        );
+        assert!(
+            Arc::ptr_eq(
+                stdio_server.serialization_state(),
+                console_router.serialization_state()
+            ),
+            "console router must share the workspace ToolSerializationState"
+        );
+
+        let guard = console_router
+            .lock_tool_scope(ToolSerializationScope::Project(
+                "project:shared".to_string(),
+            ))
+            .await;
+        assert!(
+            !console_router
+                .scope_is_free(&ToolSerializationScope::Project(
+                    "project:shared".to_string()
+                ))
+                .await
+        );
+        let second_router = ToolRouter::with_tool_profile_and_serialization(
+            service,
+            None,
+            http_state.serialization_state().clone(),
+        );
+        let blocked = timeout(
+            Duration::from_millis(50),
+            second_router.lock_tool_scope(ToolSerializationScope::Project(
+                "project:shared".to_string(),
+            )),
+        )
+        .await;
+        assert!(
+            blocked.is_err(),
+            "mutation on HTTP transport must contend on lock held by stdio/console transport"
+        );
+        drop(guard);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn internal_call_token_allows_reentrant_dispatch_while_blocking_external_callers() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("spindle.db");
+        let pool = SqlitePool::open(&db_path).await.expect("open sqlite pool");
+        let service = crate::build_service(pool, dir.path(), None);
+        let router = ToolRouter::with_tool_profile_and_serialization(
+            service.clone(),
+            None,
+            ToolSerializationState::for_service(&service),
+        );
+
+        let project_id = prepare_run_project(&router, "Reentrant Lock Test").await;
+
+        let listener = crate::internal_listener::spawn_internal_listener(service.clone())
+            .await
+            .expect("spawn internal listener");
+        let addr = listener.addr();
+
+        // Hold the outer project lock (as `authoring_execute_next` does) and
+        // issue an internal call token for `project_id`.
+        let outer_guard = router
+            .lock_tool_scope(ToolSerializationScope::Project(project_id.clone()))
+            .await;
+        let token_guard = router
+            .serialization_state()
+            .issue_internal_token(ToolSerializationScope::Project(project_id.clone()));
+
+        // (1) Internal dispatch carrying `?internal_token=...` succeeds without deadlocking!
+        let internal_url = format!("http://{addr}/mcp?internal_token={}", token_guard.token());
+        let internal_client =
+            McpHarnessClient::connect(&TransportConfig::Http { url: internal_url })
+                .await
+                .expect("connect internal client");
+        let reentrant_res = timeout(
+            Duration::from_secs(2),
+            internal_client.create_save_point(&CreateSavePointInput {
+                project_id: project_id.clone(),
+                name: "reentrant-checkpoint".to_string(),
+                description: Some(
+                    "Dispatched over internal listener while project lock held".to_string(),
+                ),
+            }),
+        )
+        .await
+        .expect("internal dispatch with valid token must not deadlock")
+        .expect("create_save_point via internal token must succeed");
+        assert!(!reentrant_res.save_point_id.is_empty());
+
+        // (2) An external HTTP caller without the token blocks on the held project lock.
+        let external_url = format!("http://{addr}/mcp");
+        let external_client =
+            McpHarnessClient::connect(&TransportConfig::Http { url: external_url })
+                .await
+                .expect("connect external client");
+        let blocked_external = timeout(
+            Duration::from_millis(150),
+            external_client.create_save_point(&CreateSavePointInput {
+                project_id: project_id.clone(),
+                name: "external-checkpoint".to_string(),
+                description: Some("External call without token".to_string()),
+            }),
+        )
+        .await;
+        assert!(
+            blocked_external.is_err(),
+            "external HTTP caller without internal_token must block while project lock is held"
+        );
+
+        // (3) Dropping the token guard invalidates the token immediately.
+        let expired_token = token_guard.token().to_string();
+        drop(token_guard);
+        let expired_call = timeout(
+            Duration::from_millis(100),
+            router.call_tool_with_internal_token(
+                "create_save_point",
+                Some(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "name": "expired-token-checkpoint",
+                        "description": "Call with expired token"
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+                Some(&expired_token),
+            ),
+        )
+        .await;
+        assert!(
+            expired_call.is_err(),
+            "dropped internal token must no longer bypass project lock"
+        );
+
+        drop(outer_guard);
+        listener.shutdown();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_entity_locks_resolved_project_id_when_project_id_omitted() {
+        let router = router().await;
+        let p1 = prepare_run_project(&router, "Project One").await;
+
+        let character = structured_json(
+            router
+                .call_tool(
+                    "create_character",
+                    Some(
+                        serde_json::json!({
+                            "project_id": p1,
+                            "name": "Mira",
+                            "summary": "Protagonist of Project One",
+                            "role": "protagonist"
+                        })
+                        .as_object()
+                        .unwrap(),
+                    ),
+                )
+                .await
+                .expect("create character"),
+        );
+        let character_id = character["character_id"].as_str().unwrap().to_string();
+
+        // Create a second project so it becomes the active session project.
+        let p2 = prepare_run_project(&router, "Project Two").await;
+        assert_ne!(p1, p2);
+
+        // Resolve arguments + serialization scope for `update_entity` with only `entity_id`.
+        let raw_args = serde_json::json!({
+            "entity_id": character_id,
+            "updates": { "summary": "Updated bio" }
+        });
+        let resolved = router
+            .resolve_arguments("update_entity", Some(raw_args.as_object().unwrap()))
+            .await
+            .expect("resolve_arguments for update_entity");
+        let scope = router
+            .tool_serialization_scope("update_entity", &resolved)
+            .await
+            .expect("tool_serialization_scope for update_entity");
+        assert_eq!(
+            scope,
+            Some(ToolSerializationScope::Project(p1.clone())),
+            "update_entity must lock the entity's owning project ({p1}), not the entity_id ({character_id}) or active session project ({p2})"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn broken_config_toml_is_surfaced_in_list_agents_and_health() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("spindle.db");
+        let bad_config_path = dir.path().join("config.toml");
+        std::fs::write(&bad_config_path, "this is = [broken toml\n").expect("write broken config");
+
+        let pool = SqlitePool::open(&db_path).await.expect("open sqlite pool");
+        let service = crate::build_service(
+            pool,
+            dir.path(),
+            Some(bad_config_path.display().to_string()),
+        );
+
+        let router = ToolRouter::with_tool_profile_and_serialization(
+            service.clone(),
+            None,
+            ToolSerializationState::for_service(&service),
+        );
+        let list_agents = structured_json(
+            router
+                .call_tool("list_agents", None)
+                .await
+                .expect("list_agents tool call"),
+        );
+        let config_err = list_agents["config_error"]
+            .as_str()
+            .expect("list_agents must surface config_error when config.toml is broken");
+        assert!(
+            config_err.contains("failed to parse"),
+            "unexpected config_error: {config_err}"
+        );
+
+        let app = crate::http::mcp_router(service, tokio_util::sync::CancellationToken::new());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("GET /health");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read health body");
+        let health_json: Value = serde_json::from_slice(&bytes).expect("parse health json");
+        assert_eq!(
+            health_json["config_error"].as_str(),
+            Some(config_err),
+            "/health must surface config_error when config.toml is broken"
         );
     }
 }

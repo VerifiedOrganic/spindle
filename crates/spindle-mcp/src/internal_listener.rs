@@ -46,7 +46,7 @@ use tokio_util::sync::CancellationToken;
 
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 
-use crate::{addr_file_path, http, read_addr_file, write_addr_file};
+use crate::{addr_file_path, http, read_addr_file, remove_addr_file_if_owner, write_addr_file};
 
 /// A running internal MCP listener. Holding this keeps the accept loop alive;
 /// dropping it (or cancelling the token) shuts the loop down. The `run_primary`
@@ -194,7 +194,8 @@ pub async fn ensure_primary_addr(
     }
 }
 
-enum AddrClaim {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddrClaim {
     /// We created the addr file (or reclaimed a stale one) — we are primary.
     Won,
     /// A live primary already owns the addr file; connect to it instead.
@@ -214,41 +215,63 @@ enum AddrClaim {
 /// stale addr was never reclaimed. The panic unwound through the MCP tool
 /// handler without producing a response, which the client saw as a ~60s hang
 /// rather than an error, deadlocking the whole authoring loop.
-async fn claim_addr_file(data_dir: &Path, addr: SocketAddr) -> AddrClaim {
+pub(crate) async fn claim_addr_file(data_dir: &Path, addr: SocketAddr) -> AddrClaim {
     let path = addr_file_path(data_dir);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Atomic create: only one process wins the first create.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => {
-            use std::io::Write;
-            if file.write_all(addr.to_string().as_bytes()).is_ok() {
-                return AddrClaim::Won;
-            }
-            // Write failed after create; fall through to reclaim below.
-        }
-        Err(err) if err.kind() != std::io::ErrorKind::AlreadyExists => {
-            // Unexpected IO error: best-effort overwrite so we still get a listener.
-            let _ = write_addr_file(data_dir, addr);
-            return AddrClaim::Won;
-        }
-        Err(_) => { /* AlreadyExists — someone owns it; check liveness below. */ }
+    // Atomic create via a temporary file + hard_link (or create_new under lock)
+    // so a concurrent reader never observes an empty/partially-written file.
+    if try_create_addr_file_atomically(data_dir, &path, addr) {
+        return AddrClaim::Won;
     }
 
     // The file exists. Is its listener alive?
     match read_addr_file(data_dir) {
-        Ok(existing) if probe_health(existing).await => AddrClaim::LostTo(existing),
+        Ok(existing) if existing == addr || probe_health(existing).await => {
+            if existing == addr {
+                AddrClaim::Won
+            } else {
+                AddrClaim::LostTo(existing)
+            }
+        }
         _ => {
-            // Stale file (unparseable or dead listener) — reclaim it.
+            // Stale file (unparseable or dead listener) — reclaim it under the
+            // addr file lock if it hasn't already been replaced by a live listener.
+            if let Ok(current) = read_addr_file(data_dir)
+                && current != addr
+                && probe_health(current).await
+            {
+                return AddrClaim::LostTo(current);
+            }
             let _ = write_addr_file(data_dir, addr);
             AddrClaim::Won
         }
+    }
+}
+
+fn try_create_addr_file_atomically(data_dir: &Path, path: &Path, addr: SocketAddr) -> bool {
+    let _lock = crate::acquire_addr_file_lock(data_dir);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            if file.write_all(addr.to_string().as_bytes()).is_ok() && file.sync_all().is_ok() {
+                true
+            } else {
+                let _ = write_addr_file(data_dir, addr);
+                true
+            }
+        }
+        Err(err) if err.kind() != std::io::ErrorKind::AlreadyExists => {
+            let _ = write_addr_file(data_dir, addr);
+            true
+        }
+        Err(_) => false,
     }
 }
 
@@ -274,9 +297,7 @@ pub async fn shutdown_lazy_listener(data_dir: &Path) {
         listener.shutdown();
         // Only remove the addr file if it still names OUR listener — never yank
         // a successor primary's file.
-        if read_addr_file(data_dir).ok() == Some(ours) {
-            crate::remove_addr_file(data_dir);
-        }
+        remove_addr_file_if_owner(data_dir, ours);
     }
 }
 
