@@ -162,22 +162,46 @@ class McpClient:
             self.proc.kill()
 
 
-def resolve_binary(explicit: str | None) -> Path:
+def resolve_binary(explicit: str | None, no_build: bool = False) -> Path:
     if explicit:
         path = Path(explicit).expanduser().resolve()
-        if not path.exists():
+        if not path.is_file():
             raise FileNotFoundError(f"spindle-mcp binary not found at {path}")
         return path
-    for profile in ("debug", "release"):
-        candidate = ROOT / "target" / profile / "spindle-mcp"
-        if candidate.exists():
+    if not no_build:
+        # Cargo knows the executable's actual dependency graph, including build
+        # scripts/assets. Timestamp scans also catch non-build/test-only files
+        # that Cargo rightly leaves out, and can permanently reject a fresh exe.
+        built = subprocess.run(
+            ["cargo", "build", "--quiet", "-p", "spindle-mcp", "--message-format=json"],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        for line in built.stdout.splitlines():
+            artifact = json.loads(line)
+            target = artifact.get("target", {})
+            executable = artifact.get("executable")
+            if (artifact.get("reason") == "compiler-artifact"
+                    and target.get("name") == "spindle-mcp"
+                    and "bin" in target.get("kind", []) and executable):
+                candidate = Path(executable).resolve()
+                if not candidate.is_file():
+                    raise FileNotFoundError(f"Cargo executable not found at {candidate}")
+                return candidate
+        raise RuntimeError("Cargo did not report a spindle-mcp executable; no stale fallback used")
+    target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+    if not target.is_absolute():
+        target = ROOT / target
+    profiles = ("debug", "release") if no_build else ("debug",)
+    for profile in profiles:
+        candidate = target / profile / "spindle-mcp"
+        if candidate.is_file():
             return candidate
-    subprocess.run(
-        ["cargo", "build", "--quiet", "-p", "spindle-mcp"],
-        cwd=ROOT,
-        check=True,
+    raise FileNotFoundError(
+        "spindle-mcp binary not found; build it or pass --binary explicitly"
     )
-    return ROOT / "target" / "debug" / "spindle-mcp"
 
 
 # ---------------------------------------------------------------------------
@@ -2175,6 +2199,68 @@ def run_self_test() -> None:
     )
     assert "SPINDLE_CONFIG" not in isolated_env
     assert "SPINDLE_AGENT_CONFIG" not in isolated_env
+    # Cargo, not file timestamps, decides which edits rebuild the executable.
+    # Mock dispatch so the self-test stays offline and never invokes a compiler.
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "crates" / "core" / "src" / "lib.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("// source")
+        binary = root / "target" / "debug" / "spindle-mcp"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("fixture binary")
+        os.utime(binary, ns=(10_000_000_000, 10_000_000_000))
+        built_binary = root / "cargo-configured-target" / "debug" / "spindle-mcp"
+        built_binary.parent.mkdir(parents=True)
+        built_binary.write_text("cargo-reported binary")
+        test_only = source.with_name("tests.rs")
+        test_only.write_text("// newer test-only source")
+        snapshot = source.with_name("snapshot.json")
+        snapshot.write_text("{}")
+        with patch.object(sys.modules[__name__], "ROOT", root), patch.dict(
+            os.environ, {"CARGO_TARGET_DIR": "target"}
+        ), patch.object(subprocess, "run") as build:
+            build.return_value.stdout = json.dumps({
+                "reason": "compiler-artifact", "target": {"name": "spindle-mcp", "kind": ["bin"]},
+                "executable": str(built_binary), "fresh": True,
+            })
+            # A no-op build may retain an older mtime after non-build edits.
+            # Cargo config can also place the executable outside target/debug.
+            assert resolve_binary(None) == built_binary.resolve()
+            build.assert_called_once_with(
+                ["cargo", "build", "--quiet", "-p", "spindle-mcp", "--message-format=json"],
+                cwd=root, check=True, stdout=subprocess.PIPE, text=True
+            )
+            source.write_text("// changed executable dependency")
+            assert resolve_binary(None) == built_binary.resolve()
+            assert build.call_count == 2  # Real source changes also consult Cargo.
+            assert resolve_binary(str(binary)) == binary.resolve()
+            assert resolve_binary(None, no_build=True) == binary
+            assert build.call_count == 2  # Explicit deliberate bypasses.
+            build.side_effect = subprocess.CalledProcessError(1, ["cargo", "build"])
+            try:
+                resolve_binary(None)
+            except subprocess.CalledProcessError:
+                pass
+            else:
+                raise AssertionError("Failed build reused a potentially stale binary")
+            build.side_effect = None
+            binary.unlink()
+            try:
+                resolve_binary(None, no_build=True)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("Missing selected binary was accepted")
+            assert build.call_count == 3
+            build.return_value.stdout = ""
+            try:
+                resolve_binary(None)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Missing Cargo artifact reused another binary")
     print("continuity_recall.py self-test passed")
 
 
@@ -2185,7 +2271,8 @@ def main() -> int:
 
     run_parser = subparsers.add_parser("run", help="Run continuity recall benchmark against spindle-mcp")
     for p in (parser, run_parser):
-        p.add_argument("--binary", help="Path to spindle-mcp binary")
+        p.add_argument("--binary", help="Explicit benchmark artifact (bypasses automatic build)")
+        p.add_argument("--no-build", action="store_true", default=argparse.SUPPRESS, help="Use an existing binary without building (may be stale)")
         p.add_argument("--output", help="Write JSON report to this file path")
         p.add_argument(
             "--deep",
@@ -2202,7 +2289,7 @@ def main() -> int:
         run_self_test()
         return 0
 
-    binary = resolve_binary(args.binary)
+    binary = resolve_binary(args.binary, no_build=getattr(args, "no_build", False))
     agent_config = Path(args.agent_config).expanduser().resolve() if args.agent_config else None
     report = run_benchmark(binary=binary, deep_check=bool(args.deep), agent_config=agent_config)
     rendered = json.dumps(report, indent=2) + "\n"

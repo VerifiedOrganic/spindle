@@ -312,6 +312,13 @@ reports. Existing callers without an audit retain their legacy serialization.
 See ADR 0005 and `docs/canon-memory-design.md` for the remaining event-store and
 ratification stages.
 
+`spindle_harness::artifacts::LegacyPackageExtractor` implements the same port for
+an existing drafter-supplied `GeneratedScenePackage`. It is bound to one frozen
+request, exact accepted bytes/hash and receipt; retries with changed identity fail.
+Its projection round-trips through the existing package converter without adding
+claims or an independent audit. It makes no model call and applies no canon.
+The legacy authoring default remains unchanged; independent extraction is opt-in.
+
 ## Staging & ratification (canon deltas + plan amendments)
 
 While a drafter's structured continuity package (`character_states`,
