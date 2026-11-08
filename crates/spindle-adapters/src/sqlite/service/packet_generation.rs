@@ -308,14 +308,11 @@ impl SqliteSpindleService {
             }
             existing
         } else {
-            let branch = self.repository.get_active_branch(&draft.project_id).await?;
+            let cas_expectation = self.resolve_live_cas_expectation(&draft).await?;
             anyhow::ensure!(
-                branch.id == draft.branch_id,
+                cas_expectation.branch_id == draft.branch_id,
                 "draft artifact branch is no longer active"
             );
-            let mut source_versions = packet.source_versions.clone();
-            source_versions.sort();
-            source_versions.dedup();
             let mut fresh = RevisionLoopArtifactV1 {
                 schema_version: REVISION_LOOP_ARTIFACT_SCHEMA_VERSION.into(),
                 artifact_id: format!("revision_loop:{}", draft.artifact_id),
@@ -331,13 +328,7 @@ impl SqliteSpindleService {
                 max_scene_tokens: options.max_scene_tokens,
                 total_calls_used: 0,
                 total_tokens_used: 0,
-                cas_expectation: CasVersionExpectation {
-                    branch_id: draft.branch_id.clone(),
-                    canon_snapshot_hash: packet.canon_snapshot_hash.clone(),
-                    plan_revision: packet.plan_revision.clone(),
-                    source_versions,
-                    incumbent_text_sha256: draft.text_sha256.clone(),
-                },
+                cas_expectation,
                 initial_draft_artifact_id: draft.artifact_id.clone(),
                 initial_text: draft.text.clone(),
                 initial_text_sha256: draft.text_sha256.clone(),
@@ -1074,30 +1065,45 @@ impl SqliteSpindleService {
 
         // Terminal Stage: CAS verification and atomic promotion or incumbent retention.
         if any_round_accepted {
-            let active_branch = self
-                .repository
-                .get_active_branch(&loop_artifact.project_id)
-                .await?;
-            let _draft_lock = artifact::lock_artifact(draft_artifact_path)?;
-            let current_disk_draft = artifact::load_artifact(draft_artifact_path)?;
-            let disk_packet = current_disk_draft
-                .prepared_packet
-                .as_ref()
-                .map(|p| &p.packet);
-            let mut disk_sources = disk_packet
-                .map(|p| p.source_versions.clone())
-                .unwrap_or_default();
-            disk_sources.sort();
-            disk_sources.dedup();
+            let final_findings =
+                project_external_findings_to_text(&working_text, &working_hash, &external_findings);
+            let final_det =
+                evaluate_deterministic_checks(packet, &working_text, false, final_findings)?;
+            let unresolved_hard_blockers = !final_det.hard_continuity_blockers.is_empty()
+                || !final_det.hard_rating_violations.is_empty()
+                || !final_det.hard_antislop_blockers.is_empty();
 
-            let cas_ok = active_branch.id == loop_artifact.cas_expectation.branch_id
-                && current_disk_draft.text_sha256
-                    == loop_artifact.cas_expectation.incumbent_text_sha256
-                && disk_packet.is_some_and(|p| {
-                    p.canon_snapshot_hash == loop_artifact.cas_expectation.canon_snapshot_hash
-                        && p.plan_revision == loop_artifact.cas_expectation.plan_revision
+            // Synchronize live repository CAS verification and draft artifact promotion
+            // under both the SQLite single-writer lock and the per-path artifact lock.
+            let draft_path_owned = draft_artifact_path.to_path_buf();
+            let expected_cas = loop_artifact.cas_expectation.clone();
+            let working_text_for_write = working_text.clone();
+            let working_hash_for_write = working_hash.clone();
+            let working_receipt_for_write = working_receipt.clone();
+
+            let cas_ok = self
+                .repository
+                .pool()
+                .write(move |conn| {
+                    Ok((|| -> Result<bool> {
+                        let _draft_lock = artifact::lock_artifact(&draft_path_owned)?;
+                        let current_disk_draft = artifact::load_artifact(&draft_path_owned)?;
+                        let live_cas =
+                            resolve_live_cas_expectation_in_conn(conn, &current_disk_draft)?;
+                        if live_cas != expected_cas {
+                            return Ok(false);
+                        }
+                        let mut promoted_draft = current_disk_draft;
+                        promoted_draft.text = working_text_for_write;
+                        promoted_draft.text_sha256 = working_hash_for_write.clone();
+                        promoted_draft.truncated = false;
+                        promoted_draft.receipt = working_receipt_for_write;
+                        promoted_draft.accepted_text_sha256 = Some(working_hash_for_write);
+                        artifact::save_artifact(&draft_path_owned, &promoted_draft)?;
+                        Ok(true)
+                    })())
                 })
-                && disk_sources == loop_artifact.cas_expectation.source_versions;
+                .await??;
 
             if !cas_ok {
                 // CAS conflict: fail closed, retain incumbent, never overwrite draft_artifact_path.
@@ -1121,25 +1127,9 @@ impl SqliteSpindleService {
                 return Ok(loop_artifact);
             }
 
-            // CAS verified: atomically promote revised draft and mark accepted (unless unresolved hard blockers remain).
-            let final_findings =
-                project_external_findings_to_text(&working_text, &working_hash, &external_findings);
-            let final_det =
-                evaluate_deterministic_checks(packet, &working_text, false, final_findings)?;
-            let unresolved_hard_blockers = !final_det.hard_continuity_blockers.is_empty()
-                || !final_det.hard_rating_violations.is_empty()
-                || !final_det.hard_antislop_blockers.is_empty();
             if unresolved_hard_blockers {
                 loop_artifact.parked_for_review = true;
             }
-            let mut promoted_draft = current_disk_draft;
-            promoted_draft.text = working_text.clone();
-            promoted_draft.text_sha256 = working_hash.clone();
-            promoted_draft.truncated = false;
-            promoted_draft.receipt = working_receipt.clone();
-            promoted_draft.accepted_text_sha256 = Some(working_hash.clone());
-            artifact::save_artifact(draft_artifact_path, &promoted_draft)?;
-
             loop_artifact.accepted_text = working_text;
             loop_artifact.accepted_text_sha256 = working_hash.clone();
             loop_artifact.accepted_receipt = working_receipt.clone();
@@ -1237,6 +1227,279 @@ impl SqliteSpindleService {
         anyhow::ensure!(active.id == branch_id, "packet branch is no longer active");
         Ok(())
     }
+
+    async fn resolve_live_cas_expectation(
+        &self,
+        draft: &PlainTextDraftArtifactV1,
+    ) -> Result<CasVersionExpectation> {
+        let draft_owned = draft.clone();
+        self.repository
+            .pool()
+            .read(move |conn| Ok(resolve_live_cas_expectation_in_conn(conn, &draft_owned)))
+            .await?
+    }
+}
+
+fn query_rows_sorted_json(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+    use rusqlite::types::ValueRef;
+    let mut stmt = conn.prepare(sql)?;
+    let names = stmt
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut rows = stmt
+        .query_map(params, |r| {
+            let mut obj = serde_json::Map::new();
+            for (index, name) in names.iter().enumerate() {
+                let value = match r.get_ref(index)? {
+                    ValueRef::Null => serde_json::Value::Null,
+                    ValueRef::Integer(n) => serde_json::Value::from(n),
+                    ValueRef::Real(n) => serde_json::Value::from(n),
+                    ValueRef::Text(v) => {
+                        serde_json::Value::String(String::from_utf8_lossy(v).into_owned())
+                    }
+                    ValueRef::Blob(b) => serde_json::Value::String(generation_sha256_hex(b)),
+                };
+                obj.insert(name.clone(), value);
+            }
+            Ok(obj)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.sort_by(|a, b| {
+        let sa = serde_json::to_string(a).unwrap_or_default();
+        let sb = serde_json::to_string(b).unwrap_or_default();
+        sa.cmp(&sb)
+    });
+    Ok(rows)
+}
+
+/// Resolve and recompute the live branch, canon snapshot hash, plan revision,
+/// and source versions from the SQLite repository combined with the on-disk
+/// draft artifact packet so any repository mutation to canon, plans, branches,
+/// or source entities invalidates CAS at promotion time.
+fn resolve_live_cas_expectation_in_conn(
+    conn: &rusqlite::Connection,
+    draft: &PlainTextDraftArtifactV1,
+) -> Result<CasVersionExpectation> {
+    use rusqlite::OptionalExtension;
+    use spindle_core::drafting::PacketSource;
+    use std::collections::BTreeMap;
+
+    let packet = &draft
+        .prepared_packet
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("draft artifact missing prepared_packet"))?
+        .packet;
+    let project_id = &draft.project_id;
+    let branch_id = &draft.branch_id;
+
+    let active_branch_id: Option<String> = conn
+        .query_row(
+            "SELECT active_branch_id FROM project WHERE id = ?1",
+            rusqlite::params![project_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let live_branch_id = match active_branch_id {
+        Some(id) => id,
+        None => conn
+            .query_row(
+                "SELECT id FROM bible_branch WHERE project_id = ?1 AND name = 'main' LIMIT 1",
+                rusqlite::params![project_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| branch_id.clone()),
+    };
+
+    let lineage = crate::sqlite::repository::resolve_branch_lineage_in_conn(
+        conn,
+        Some(project_id),
+        branch_id,
+    )?;
+
+    let mut canon_state: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut plan_state: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut live_row_digests: BTreeMap<String, (String, String)> = BTreeMap::new();
+
+    let mut record_rows = |target: &mut BTreeMap<String, serde_json::Value>,
+                           key: String,
+                           default_branch: &str,
+                           rows: Vec<serde_json::Map<String, serde_json::Value>>|
+     -> Result<()> {
+        for row in &rows {
+            if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
+                let row_branch = row
+                    .get("branch_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(default_branch)
+                    .to_string();
+                let digest = generation_sha256_hex(&serde_json::to_vec(row)?);
+                live_row_digests
+                    .entry(id.to_string())
+                    .or_insert((row_branch, digest));
+            }
+        }
+        let vals = rows
+            .into_iter()
+            .map(serde_json::Value::Object)
+            .collect::<Vec<_>>();
+        target.insert(key, serde_json::Value::Array(vals));
+        Ok(())
+    };
+
+    let project_rows = query_rows_sorted_json(
+        conn,
+        "SELECT id, name, project_type, genre, reader_contract, notes, updated_at FROM project WHERE id = ?1",
+        &[&project_id],
+    )?;
+    record_rows(&mut canon_state, "project".into(), branch_id, project_rows)?;
+
+    const CANON_PROJECT_BRANCH_TABLES: &[&str] = &[
+        "canon_claim",
+        "canon_decision",
+        "canon_event",
+        "canon_delta",
+        "canonical_fact",
+        "knowledge_fact",
+        "character",
+        "character_state",
+        "character_arc",
+        "location",
+        "world_rule",
+        "world_state",
+        "faction",
+        "religion",
+        "economy",
+        "plot_line",
+        "conflict",
+        "theme",
+        "motif",
+        "system_overlay",
+        "narrative_promise",
+        "term",
+        "knows",
+        "timeline_event",
+        "temporal_intervention",
+        "progression_event",
+        "scene",
+        "scene_version",
+        "scene_beat_annotation",
+        "revision_marker",
+        "dual_persona_review",
+        "future_knowledge",
+    ];
+    const CANON_BRANCH_ONLY_TABLES: &[&str] = &["relates_to", "relationship_scene_delta"];
+    const CANON_CHARACTER_CHILD_TABLES: &[&str] =
+        &["character_voice_profile", "character_emotional_profile"];
+
+    for b in &lineage {
+        for table in CANON_PROJECT_BRANCH_TABLES {
+            let sql = format!("SELECT * FROM {table} WHERE project_id = ?1 AND branch_id = ?2");
+            let rows = query_rows_sorted_json(conn, &sql, &[&project_id, &b])?;
+            record_rows(&mut canon_state, format!("{b}:{table}"), b, rows)?;
+        }
+        for table in CANON_BRANCH_ONLY_TABLES {
+            let sql = format!("SELECT * FROM {table} WHERE branch_id = ?1");
+            let rows = query_rows_sorted_json(conn, &sql, &[&b])?;
+            record_rows(&mut canon_state, format!("{b}:{table}"), b, rows)?;
+        }
+        for table in CANON_CHARACTER_CHILD_TABLES {
+            let sql = format!(
+                "SELECT * FROM {table} WHERE character_id IN \
+                 (SELECT id FROM character WHERE project_id = ?1 AND branch_id = ?2)"
+            );
+            let rows = query_rows_sorted_json(conn, &sql, &[&project_id, &b])?;
+            record_rows(&mut canon_state, format!("{b}:{table}"), b, rows)?;
+        }
+    }
+
+    const PLAN_PROJECT_TABLES: &[&str] = &["book", "chapter"];
+    const PLAN_PROJECT_BRANCH_TABLES: &[&str] = &[
+        "chapter_plan",
+        "chapter_summary",
+        "plan_amendment",
+        "pacing_config",
+        "pacing_curve",
+        "pacing_tracker",
+        "planning_session",
+    ];
+    const PLAN_BRANCH_ONLY_TABLES: &[&str] = &["book_outline", "chapter_outline"];
+
+    for table in PLAN_PROJECT_TABLES {
+        let sql = format!("SELECT * FROM {table} WHERE project_id = ?1");
+        let rows = query_rows_sorted_json(conn, &sql, &[&project_id])?;
+        record_rows(&mut plan_state, format!("project:{table}"), branch_id, rows)?;
+    }
+    for b in &lineage {
+        for table in PLAN_PROJECT_BRANCH_TABLES {
+            let sql = format!("SELECT * FROM {table} WHERE project_id = ?1 AND branch_id = ?2");
+            let rows = query_rows_sorted_json(conn, &sql, &[&project_id, &b])?;
+            record_rows(&mut plan_state, format!("{b}:{table}"), b, rows)?;
+        }
+        let proposal_rows = query_rows_sorted_json(
+            conn,
+            "SELECT * FROM planning_proposal WHERE session_id IN \
+             (SELECT id FROM planning_session WHERE project_id = ?1 AND branch_id = ?2)",
+            &[&project_id, &b],
+        )?;
+        record_rows(
+            &mut plan_state,
+            format!("{b}:planning_proposal"),
+            b,
+            proposal_rows,
+        )?;
+        for table in PLAN_BRANCH_ONLY_TABLES {
+            let sql = format!("SELECT * FROM {table} WHERE branch_id = ?1");
+            let rows = query_rows_sorted_json(conn, &sql, &[&b])?;
+            record_rows(&mut plan_state, format!("{b}:{table}"), b, rows)?;
+        }
+    }
+
+    let live_canon_hash = generation_sha256_hex(&serde_json::to_vec(&canon_state)?);
+    let live_plan_hash = generation_sha256_hex(&serde_json::to_vec(&plan_state)?);
+
+    let mut source_versions: Vec<PacketSource> = packet
+        .source_versions
+        .iter()
+        .map(|src| {
+            if let Some((_, row_digest)) = live_row_digests.get(&src.source_id) {
+                PacketSource {
+                    branch_id: src.branch_id.clone(),
+                    source_id: src.source_id.clone(),
+                    revision_hash: format!("{}:repo:{row_digest}", src.revision_hash),
+                }
+            } else {
+                src.clone()
+            }
+        })
+        .collect();
+    for (id, (row_branch, row_digest)) in live_row_digests {
+        source_versions.push(PacketSource {
+            branch_id: row_branch,
+            source_id: format!("repo:{id}"),
+            revision_hash: row_digest,
+        });
+    }
+    source_versions.sort();
+    source_versions.dedup();
+
+    Ok(CasVersionExpectation {
+        branch_id: live_branch_id,
+        canon_snapshot_hash: format!(
+            "{}:repo_canon:{live_canon_hash}",
+            packet.canon_snapshot_hash
+        ),
+        plan_revision: format!("{}:repo_plan:{live_plan_hash}", packet.plan_revision),
+        source_versions,
+        incumbent_text_sha256: draft.text_sha256.clone(),
+    })
 }
 
 /// Project external findings onto `target_text` (`target_hash`).

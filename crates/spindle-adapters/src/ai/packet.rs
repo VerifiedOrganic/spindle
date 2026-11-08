@@ -3007,5 +3007,272 @@ max_tokens = 500
             assert_eq!(cmp.resolved_finding_count, 1);
             assert_eq!(srv.join().unwrap(), 4);
         }
+
+        // Case 9: Live repository canon mutation (create_world_rule) while leaving the artifact file on disk untouched triggers StaleCasConflict
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case9_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case9_loop.json");
+
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Mutate canon in the SQLite repository while leaving d_path completely untouched on disk!
+            repository
+                .create_world_rule(&spindle_core::models::CreateWorldRuleInput {
+                    project_id: created.project_id.clone(),
+                    rule_name: "Sluice Gate Hydraulics".into(),
+                    rule_type: "physics".into(),
+                    description: "The stone sluice requires two operators to lift.".into(),
+                    established_in: None,
+                    relevance_tags: vec!["sluice".into()],
+                    scan_pattern: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            assert_eq!(cas_res.accepted_text, draft_prose);
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
+
+        // Case 10: Live repository chapter plan mutation (plan_chapter) while leaving the artifact file on disk untouched triggers StaleCasConflict
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case10_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case10_loop.json");
+
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Mutate chapter plan in the SQLite repository while leaving d_path completely untouched on disk!
+            repository
+                .plan_chapter(&spindle_core::models::PlanChapterInput {
+                    project_id: created.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    pov_character_id: None,
+                    synopsis: "Updated chapter plan synopsis during model calls".into(),
+                    target_theme_ids: vec![],
+                    target_conflict_ids: vec![],
+                    target_plot_line_ids: vec![],
+                    scenes: vec![spindle_core::models::PlanChapterSceneInput {
+                        scene_order: 1,
+                        summary: "Mara crosses the flooded sluice".into(),
+                        beat_structure: vec![],
+                        character_ids: vec![],
+                        location_id: None,
+                        content_rating: None,
+                        purpose: "Establish flood stakes".into(),
+                        research_required: Some(false),
+                        research_tags: vec![],
+                        explicit_query: None,
+                    }],
+                })
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            assert_eq!(cas_res.accepted_text, draft_prose);
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
     }
 }
