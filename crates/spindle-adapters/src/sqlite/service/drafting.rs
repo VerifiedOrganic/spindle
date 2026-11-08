@@ -201,7 +201,7 @@ impl SqliteSpindleService {
 
         let planned = self
             .repository
-            .list_chapter_plans_by_project(project_id)
+            .list_chapter_plans_by_project_and_branch(project_id, branch_id)
             .await?
             .into_iter()
             .find(|plan| plan.book_number == book_number && plan.chapter_number == chapter_number)

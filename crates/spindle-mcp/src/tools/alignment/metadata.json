@@ -514,6 +514,7 @@
       "list_book_chapters",
       "list_chapter_scenes",
       "plan_chapter",
+      "prepare_scene",
       "record_knowledge",
       "record_note",
       "register_canonical_fact",

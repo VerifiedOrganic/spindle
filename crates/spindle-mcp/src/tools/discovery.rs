@@ -20,6 +20,7 @@ const REFERENCED_OUTPUTS: &[&str] = &[
     "import_extract_world",
     "import_status",
     "list_style_profiles",
+    "prepare_scene",
     "preview_refresh_style_profile",
     "refresh_style_profile",
 ];

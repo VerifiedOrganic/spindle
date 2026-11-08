@@ -273,3 +273,6 @@ mod profile_generation;
 
 #[path = "schema/discovery_tests.rs"]
 mod slim_discovery;
+
+#[path = "prepare_scene/tests.rs"]
+mod prepare_scene;
