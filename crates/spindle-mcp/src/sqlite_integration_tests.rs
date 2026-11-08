@@ -8649,3 +8649,217 @@ async fn replan_amendment_invalidates_pending_scene_artifact_before_next_draft()
 
     auto_shutdown(fx).await;
 }
+
+#[tokio::test]
+async fn host_draft_handoff_rejects_save_against_superseded_plan_revision_until_re_executed() {
+    let fx = auto_checkpoint_fixture("manual", true, None, &["general"], false, true)
+        .await
+        .expect("run should start");
+
+    // 1. Call authoring_execute_next in hybrid mode (default): returns a host draft handoff for chapter 1 scene 1 at plan_revision 1.
+    let handoff_res = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(handoff_res["executed_action"].as_str(), Some("none"));
+    assert!(
+        handoff_res["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Host draft required for non-explicit scene 1.1"),
+        "{handoff_res:?}"
+    );
+
+    // 2. Apply a living-outline scene_replace amendment to chapter 1 scene 1, bumping plan_revision to 2 and reseeding the run.
+    let branch = fx
+        .svc
+        .repository()
+        .get_active_branch(&fx.project_id)
+        .await
+        .unwrap();
+    let staged = fx
+        .svc
+        .repository()
+        .stage_plan_amendment(
+            spindle_adapters::sqlite::repository::StagePlanAmendmentParams {
+                project_id: fx.project_id.clone(),
+                branch_id: branch.id.clone(),
+                source_chapter: 0,
+                book_number: 1,
+                authoring_run_id: Some(fx.run_id.clone()),
+                amendment_class: "scene_replace".to_string(),
+                target_chapter: Some(1),
+                payload: serde_json::json!({
+                    "scene_order": 1,
+                    "summary": "Mara inspects the amended signal tower",
+                    "purpose": "amended_signal_opening",
+                    "character_ids": []
+                }),
+                rationale: "Amend chapter 1 scene 1 after host handoff".to_string(),
+                confidence: "high".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let decide_out = fx
+        .svc
+        .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+            project_id: fx.project_id.clone(),
+            decisions: vec![spindle_core::models::PlanAmendmentDecisionInput {
+                amendment_id: staged.id.clone(),
+                action: "apply".to_string(),
+                edit: None,
+                note: None,
+            }],
+            decided_by: Some("operator".to_string()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(decide_out.applied_count, 1);
+
+    // 3. Attempting to save the stale host draft (via authoring_save_scene_draft OR save_scene_draft)
+    // before re-calling authoring_execute_next must be rejected with zero prose persisted in SQLite!
+    let stale_authoring_save = fx
+        .router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id,
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "scene_order": 1,
+                    "content_rating": "general",
+                    "full_text": "Stale host draft against old plan_revision.",
+                    "summary": "Stale summary",
+                    "continuity_notes": ["No durable canon changes."]
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stale_authoring_save.is_error,
+        Some(true),
+        "stale host draft save through authoring_save_scene_draft must be rejected: {stale_authoring_save:?}"
+    );
+    let stale_err_json = serde_json::to_string(&stale_authoring_save).unwrap();
+    assert!(
+        stale_err_json.contains("stale host draft handoff"),
+        "{stale_err_json}"
+    );
+
+    let stale_direct_save = fx
+        .svc
+        .save_scene_draft(spindle_core::models::SaveSceneDraftInput {
+            project_id: fx.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Stale direct save against old plan_revision.".into(),
+            authorship: spindle_core::models::DraftAuthorship::Assistant,
+            summary: "Stale direct summary".into(),
+            content_rating: spindle_core::models::ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            location_id: None,
+            research_source_ids: vec![],
+            research_note_ids: vec![],
+            research_claim_ids: vec![],
+            research_query_pack_input: None,
+            research_context_hash: None,
+            knowledge_learned: vec![],
+        })
+        .await;
+    assert!(
+        stale_direct_save.is_err(),
+        "stale host draft save through save_scene_draft must be rejected"
+    );
+
+    let scenes_after_rejection = fx
+        .svc
+        .repository()
+        .list_scenes_by_project_and_branch(&fx.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert!(
+        scenes_after_rejection.is_empty(),
+        "rejected stale draft save must not create any scene rows in SQLite"
+    );
+
+    // 4. Calling authoring_execute_next again refreshes the handoff to the current plan_revision (2),
+    // after which authoring_save_scene_draft succeeds.
+    let refreshed_handoff = fx
+        .router
+        .call_tool(
+            "authoring_execute_next",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(refreshed_handoff["executed_action"].as_str(), Some("none"));
+
+    let fresh_save_res = fx
+        .router
+        .call_tool(
+            "authoring_save_scene_draft",
+            Some(
+                serde_json::json!({
+                    "project_id": fx.project_id,
+                    "run_id": fx.run_id,
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "scene_order": 1,
+                    "content_rating": "general",
+                    "full_text": "Fresh host draft written against plan_revision 1.",
+                    "summary": "Mara inspects the amended signal tower.",
+                    "continuity_notes": ["No durable canon changes."]
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("fresh host draft save after re-handoff should succeed");
+    assert_ne!(
+        fresh_save_res.is_error,
+        Some(true),
+        "fresh host draft save must succeed: {fresh_save_res:?}"
+    );
+    let fresh_save = fresh_save_res.structured_content.unwrap();
+    assert!(
+        !fresh_save["scene_id"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+
+    auto_shutdown(fx).await;
+}

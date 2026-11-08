@@ -497,6 +497,42 @@ impl ToolRouter {
             && let Some(scene) = find_harness_scene(&outcome.state, *chapter_number, *scene_order)
             && scene.content_rating != spindle_core::models::ContentRating::Explicit
         {
+            let scene_rating = scene.content_rating.as_str().to_string();
+            let current_plan_revision = repo
+                .list_chapter_plans_by_project(&project_id)
+                .await?
+                .into_iter()
+                .find(|p| {
+                    p.branch_id == outcome.state.active_branch_id
+                        && p.book_number == outcome.state.book_number
+                        && p.chapter_number == *chapter_number
+                })
+                .and_then(|p| p.plan_revision)
+                .unwrap_or(0);
+            let mut handoff_state = outcome.state.clone();
+            if let Some(ch_state) = handoff_state
+                .chapters
+                .iter_mut()
+                .find(|ch| ch.chapter_number == *chapter_number)
+            {
+                for sc_state in &mut ch_state.scenes {
+                    if let Some(ref mut diag) = sc_state.draft_diagnostics {
+                        diag.superseded_handoff_plan_revision = None;
+                    }
+                    if sc_state.scene_order == *scene_order {
+                        let current_plan_revision: i64 = current_plan_revision;
+                        let diag = sc_state
+                            .draft_diagnostics
+                            .get_or_insert_with(Default::default);
+                        diag.handoff_plan_revision = Some(current_plan_revision);
+                        diag.superseded_handoff_plan_revision = None;
+                    }
+                }
+            }
+            let (updated_run, updated_ch, updated_sc, updated_cp) =
+                map_harness_to_records(&run_id, &handoff_state, &run.status, Some(run.created_at));
+            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                .await?;
             return Ok(AuthoringExecuteNextOutput {
                 run_id: run_id.clone(),
                 next_action: action_to_execute.to_string(),
@@ -515,7 +551,7 @@ impl ToolRouter {
                     outcome.state.book_number,
                     chapter_number,
                     scene_order,
-                    scene.content_rating.as_str()
+                    scene_rating
                 ),
                 status: run.status.clone(),
             });
@@ -535,6 +571,41 @@ impl ToolRouter {
         } = &action_to_execute
             && !agent_mode
         {
+            let current_plan_revision = repo
+                .list_chapter_plans_by_project(&project_id)
+                .await?
+                .into_iter()
+                .find(|p| {
+                    p.branch_id == outcome.state.active_branch_id
+                        && p.book_number == outcome.state.book_number
+                        && p.chapter_number == *chapter_number
+                })
+                .and_then(|p| p.plan_revision)
+                .unwrap_or(0);
+            let mut handoff_state = outcome.state.clone();
+            if let Some(ch_state) = handoff_state
+                .chapters
+                .iter_mut()
+                .find(|ch| ch.chapter_number == *chapter_number)
+            {
+                for sc_state in &mut ch_state.scenes {
+                    if let Some(ref mut diag) = sc_state.draft_diagnostics {
+                        diag.superseded_handoff_plan_revision = None;
+                    }
+                    if sc_state.scene_order == *scene_order {
+                        let current_plan_revision: i64 = current_plan_revision;
+                        let diag = sc_state
+                            .draft_diagnostics
+                            .get_or_insert_with(Default::default);
+                        diag.handoff_plan_revision = Some(current_plan_revision);
+                        diag.superseded_handoff_plan_revision = None;
+                    }
+                }
+            }
+            let (updated_run, updated_ch, updated_sc, updated_cp) =
+                map_harness_to_records(&run_id, &handoff_state, &run.status, Some(run.created_at));
+            repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                .await?;
             let findings = self
                 .authoring_scene_verify_findings(
                     data_dir,
@@ -574,8 +645,41 @@ impl ToolRouter {
             });
         }
 
+        let mut dispatch_state = outcome.state;
+        if let NextAction::DraftScene { chapter_number, .. }
+        | NextAction::ReviseScene { chapter_number, .. } = &action_to_execute
+        {
+            let mut cleared = false;
+            if let Some(ch_state) = dispatch_state
+                .chapters
+                .iter_mut()
+                .find(|ch| ch.chapter_number == *chapter_number)
+            {
+                for sc_state in &mut ch_state.scenes {
+                    if let Some(ref mut diag) = sc_state.draft_diagnostics
+                        && (diag.handoff_plan_revision.is_some()
+                            || diag.superseded_handoff_plan_revision.is_some())
+                    {
+                        diag.handoff_plan_revision = None;
+                        diag.superseded_handoff_plan_revision = None;
+                        cleared = true;
+                    }
+                }
+            }
+            if cleared {
+                let (updated_run, updated_ch, updated_sc, updated_cp) = map_harness_to_records(
+                    &run_id,
+                    &dispatch_state,
+                    &run.status,
+                    Some(run.created_at),
+                );
+                repo.save_authoring_run(updated_run, updated_ch, updated_sc, updated_cp)
+                    .await?;
+            }
+        }
+
         let state_path = authoring_state_path(data_dir, &run_id);
-        outcome.state.save(&state_path)?;
+        dispatch_state.save(&state_path)?;
 
         let exec_result = match &action_to_execute {
             NextAction::RunCheckpoint {
@@ -584,7 +688,7 @@ impl ToolRouter {
             } => {
                 self.execute_authoring_run_checkpoint(
                     &state_path,
-                    outcome.state,
+                    dispatch_state,
                     *start_chapter,
                     *end_chapter,
                 )
@@ -597,7 +701,7 @@ impl ToolRouter {
             } => {
                 self.execute_authoring_commit_scene_changes(
                     &state_path,
-                    outcome.state,
+                    dispatch_state,
                     *chapter_number,
                     *scene_order,
                 )
@@ -610,7 +714,7 @@ impl ToolRouter {
             } => {
                 self.execute_authoring_annotate_scene_beats(
                     &state_path,
-                    outcome.state,
+                    dispatch_state,
                     *chapter_number,
                     *scene_order,
                 )
@@ -619,7 +723,7 @@ impl ToolRouter {
             NextAction::SaveChapterSummary { chapter_number } => {
                 self.execute_authoring_save_chapter_summary(
                     &state_path,
-                    outcome.state,
+                    dispatch_state,
                     *chapter_number,
                     &run_id,
                 )
@@ -642,7 +746,7 @@ impl ToolRouter {
                 let client = McpHarnessClient::connect(&TransportConfig::Http { url }).await?;
                 execute_one(
                     &state_path,
-                    outcome.state,
+                    dispatch_state,
                     &client,
                     action_to_execute.clone(),
                 )
@@ -790,6 +894,15 @@ impl ToolRouter {
             input.full_text = existing_scene.full_text;
         }
 
+        repo.check_active_run_scene_handoff_plan_revision(
+            &project_id,
+            &harness_state.active_branch_id,
+            input.book_number,
+            input.chapter_number,
+            input.scene_order,
+        )
+        .await?;
+
         let save_output = self
             .service
             .save_scene_draft(authoring_save_scene_input(&input))
@@ -864,6 +977,10 @@ impl ToolRouter {
         live_scene.tone = input.tone.clone();
         live_scene.source_path = input.source_path.clone();
         live_scene.blocked_reason = None;
+        if let Some(ref mut diag) = live_scene.draft_diagnostics {
+            diag.handoff_plan_revision = None;
+            diag.superseded_handoff_plan_revision = None;
+        }
 
         // Summary invalidation (defect item 3): re-saving a scene in a chapter
         // whose summary was already persisted (the documented revise-during-

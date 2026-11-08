@@ -397,6 +397,16 @@ impl SqliteSpindleService {
             .active_branch_id_public(&save_input.project_id)
             .await?;
 
+        self.repository
+            .check_active_run_scene_handoff_plan_revision(
+                &save_input.project_id,
+                &branch_id,
+                save_input.book_number,
+                save_input.chapter_number,
+                save_input.scene_order,
+            )
+            .await?;
+
         // Style-learning capture (evolution §3.9): snapshot the scene's prior
         // state (provenance + prose) BEFORE this save overwrites it. Captured
         // after the save succeeds. `draft_origin.is_some()` here means THIS save

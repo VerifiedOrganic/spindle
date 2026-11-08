@@ -421,7 +421,24 @@ impl Repository {
             if p.status==PlanningProposalStatus::Applied {return Ok(p);}
             let done:i64=conn.query_row("SELECT COUNT(*) FROM planning_operation_receipt WHERE proposal_id=?1 AND outcome='applied'",[&id],|r|r.get(0))?;
             anyhow::ensure!(done==p.artifact.operations.len() as i64,"planning proposal has incomplete operations");
-            p.status=PlanningProposalStatus::Applied;p.decided_by=Some(actor);p.decision_note=Some(note);p.decided_at=Some(timestamp_to_micros(chrono::Utc::now()));save(conn,&p)?;Ok(p)
+            p.status=PlanningProposalStatus::Applied;p.decided_by=Some(actor);p.decision_note=Some(note);p.decided_at=Some(timestamp_to_micros(chrono::Utc::now()));save(conn,&p)?;
+            if matches!(p.artifact.level, PlanningLevel::Chapter | PlanningLevel::Scene) {
+                let mut s = session(conn, &p.artifact.session_id)?;
+                if s.projection_stale {
+                    let remaining_staged_detail = proposals(conn, &s.id)?
+                        .into_iter()
+                        .any(|cand| cand.status == PlanningProposalStatus::Staged && matches!(cand.artifact.level, PlanningLevel::Chapter | PlanningLevel::Scene));
+                    if !remaining_staged_detail {
+                        s.projection_stale = false;
+                        s.stale_reason = None;
+                        conn.execute(
+                            "UPDATE planning_session SET data=?2 WHERE id=?1",
+                            rusqlite::params![s.id, serde_json::to_string(&s)?],
+                        )?;
+                    }
+                }
+            }
+            Ok(p)
         })())).await?
     }
     pub(crate) async fn store_planning_attempt(
@@ -476,7 +493,10 @@ impl Repository {
     }
 }
 
-fn refs_in_conn(conn: &rusqlite::Connection, id: &str) -> Result<BTreeMap<String, String>> {
+pub(super) fn refs_in_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<BTreeMap<String, String>> {
     let mut stmt=conn.prepare("SELECT r.returned_ids FROM planning_operation_receipt r JOIN planning_proposal p ON p.id=r.proposal_id WHERE p.session_id=?1 AND r.outcome='applied' ORDER BY r.recorded_at,r.proposal_id,r.operation_index")?;
     let values = stmt
         .query_map([id], |r| r.get::<_, String>(0))?

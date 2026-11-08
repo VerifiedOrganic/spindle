@@ -123,7 +123,7 @@ impl Repository {
         self.inner
             .pool
             .write(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.savepoint()?;
 
                 // Upsert IN PLACE (ON CONFLICT DO UPDATE), NOT `INSERT OR
                 // REPLACE`. `INSERT OR REPLACE` is a DELETE+INSERT of the run
@@ -309,7 +309,7 @@ impl Repository {
         self.inner
             .pool
             .write(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.savepoint()?;
                 let runs: Vec<(String, String)> = {
                     let mut stmt = tx.prepare_cached(
                         "SELECT id, artifacts_dir FROM authoring_run
@@ -372,6 +372,24 @@ impl Repository {
                             stale_artifacts_to_remove.push((artifacts_dir.clone(), rel.clone()));
                         }
                     }
+                    let superseded_handoff_rev = existing_scenes.iter().find_map(|sc| {
+                        let diag = sc.draft_diagnostics.as_ref()?;
+                        diag.get("handoff_plan_revision")
+                            .and_then(|v| v.as_i64())
+                            .filter(|&rev| rev < plan_revision)
+                            .or_else(|| {
+                                diag.get("superseded_handoff_plan_revision")
+                                    .and_then(|v| v.as_i64())
+                            })
+                    });
+                    let reseeded_diag_json = superseded_handoff_rev
+                        .map(|rev| {
+                            serde_json::to_string(&serde_json::json!({
+                                "superseded_handoff_plan_revision": rev
+                            }))
+                        })
+                        .transpose()
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
                     tx.execute(
                         "UPDATE authoring_run_chapter
@@ -431,7 +449,7 @@ impl Repository {
                                 draft_diagnostics, blocked_reason, research_required, research_tags,
                                 explicit_query, mine_status, mine_detail, verify_status, verify_detail,
                                 revise_attempts, last_finding_fingerprint
-                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, ?9, NULL, NULL, ?10, ?11, ?12, NULL, NULL, NULL, NULL, 0, NULL)",
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, ?9, ?10, NULL, ?11, ?12, ?13, NULL, NULL, NULL, NULL, 0, NULL)",
                             rusqlite::params![
                                 &run_id,
                                 chapter_number,
@@ -442,6 +460,7 @@ impl Repository {
                                 tone,
                                 source_path,
                                 scene_artifact_path,
+                                reseeded_diag_json,
                                 plan_scene.research_required.map(|required| required as i32),
                                 research_tags_json,
                                 plan_scene.explicit_query,
@@ -538,5 +557,80 @@ impl Repository {
             stmt.query_row([&project_id], |r| r.get::<_, String>(0)).optional_inner()
         }).await?;
         Ok(run_id_opt)
+    }
+
+    pub async fn check_active_run_scene_handoff_plan_revision(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let current_plan_revision: Option<i64> = conn
+                    .query_row(
+                        "SELECT COALESCE(plan_revision, 0) FROM chapter_plan WHERE project_id = ?1 AND branch_id = ?2 AND book_number = ?3 AND chapter_number = ?4",
+                        rusqlite::params![&project_id, &branch_id, book_number, chapter_number],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .optional_inner()?;
+
+                let mut stmt = conn.prepare_cached(
+                    "SELECT s.draft_diagnostics
+                     FROM authoring_run r
+                     JOIN authoring_run_scene s ON s.authoring_run_id = r.id
+                     WHERE r.project_id = ?1
+                       AND r.active_branch_id = ?2
+                       AND r.book_number = ?3
+                       AND r.status IN ('active', 'blocked')
+                       AND s.chapter_number = ?4
+                       AND s.scene_order = ?5
+                     ORDER BY r.updated_at DESC",
+                )?;
+                let diag_rows = stmt
+                    .query_map(
+                        rusqlite::params![
+                            &project_id,
+                            &branch_id,
+                            book_number,
+                            chapter_number,
+                            scene_order
+                        ],
+                        |r| r.get::<_, Option<String>>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                for diag_str in diag_rows.into_iter().flatten() {
+                    if let Ok(diag_val) = serde_json::from_str::<serde_json::Value>(&diag_str) {
+                        if let Some(stale_rev) = diag_val
+                            .get("superseded_handoff_plan_revision")
+                            .and_then(|v| v.as_i64())
+                        {
+                            let cur_rev = current_plan_revision.unwrap_or(stale_rev + 1);
+                            return Ok(Err(anyhow::anyhow!(
+                                "stale host draft handoff for chapter {chapter_number} scene {scene_order}: handoff was issued at plan_revision {stale_rev}, which was superseded by plan_revision {cur_rev}; call authoring_execute_next again before saving a draft"
+                            )));
+                        }
+                        if let (Some(handoff_rev), Some(cur_rev)) = (
+                            diag_val
+                                .get("handoff_plan_revision")
+                                .and_then(|v| v.as_i64()),
+                            current_plan_revision,
+                        ) && handoff_rev != cur_rev
+                        {
+                            return Ok(Err(anyhow::anyhow!(
+                                "stale host draft handoff for chapter {chapter_number} scene {scene_order}: handoff was issued at plan_revision {handoff_rev}, but current chapter_plan.plan_revision is {cur_rev}; call authoring_execute_next again before saving a draft"
+                            )));
+                        }
+                    }
+                }
+                Ok(Ok(()))
+            })
+            .await?
     }
 }

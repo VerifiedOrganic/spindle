@@ -5063,3 +5063,1728 @@ agent = "shared-db-agent"
 
     srv_handle.join().unwrap();
 }
+
+fn phase_d_place(
+    book_number: i32,
+    chapter_number: i32,
+    scene_order: i32,
+) -> PlanningStoryPlacement {
+    PlanningStoryPlacement {
+        book_number,
+        chapter_number,
+        scene_order: Some(scene_order),
+        note: None,
+    }
+}
+
+fn phase_d_pref(key: &str) -> PlanningRef {
+    PlanningRef::ProposalRef(key.into())
+}
+
+fn phase_d_contract_input(s: &PlanningSession) -> StagePlanningInput {
+    artifact(s, "project:root")
+}
+
+fn phase_d_cast_input(s: &PlanningSession, contract: &PlanningProposal) -> StagePlanningInput {
+    use serde_json::json;
+    let mut a = artifact(s, "unused");
+    a.level = PlanningLevel::CastWorld;
+    a.parents = BTreeMap::from([(contract.id.clone(), contract.payload_hash.clone())]);
+    a.operations = vec![
+        planned(
+            "cast:mara",
+            "create_character",
+            json!({"name": "Mara", "summary": "Harbor archivist", "role": "protagonist"}),
+        ),
+        planned(
+            "loc:watchtower",
+            "create_location",
+            json!({"name": "Watchtower", "kind": "building", "summary": "Tidal signal tower"}),
+        ),
+        planned(
+            "rule:tides",
+            "create_world_rule",
+            json!({"rule_name": "Harbor tides", "rule_type": "physics", "description": "The tidal gate opens at dawn"}),
+        ),
+    ];
+    a
+}
+
+fn phase_d_series_input(
+    s: &PlanningSession,
+    contract: &PlanningProposal,
+    cast: &PlanningProposal,
+) -> StagePlanningInput {
+    use serde_json::json;
+    let mut a = artifact(s, "unused");
+    a.level = PlanningLevel::SeriesArc;
+    a.parents = BTreeMap::from([
+        (contract.id.clone(), contract.payload_hash.clone()),
+        (cast.id.clone(), cast.payload_hash.clone()),
+    ]);
+    a.target_range = Some(PlanningTargetRange {
+        book_number: 1,
+        chapter_start: 1,
+        chapter_end: 2,
+        scenes_per_chapter: 2,
+    });
+    a.operations = vec![
+        planned(
+            "theme:truth",
+            "create_theme",
+            json!({
+                "theme_statement": "Truth requires risk",
+                "thesis_antithesis": "Safety versus honesty",
+                "introduction_point": {"book_number": 1, "chapter_number": 1, "scene_order": 1},
+                "resolution_point": {"book_number": 1, "chapter_number": 2, "scene_order": 2}
+            }),
+        ),
+        planned(
+            "conflict:harbor",
+            "create_conflict",
+            json!({
+                "name": "The impossible bell",
+                "conflict_type": "mystery",
+                "stakes": "Harbor safety",
+                "escalation_stages": ["clue", "confrontation"]
+            }),
+        ),
+        planned(
+            "plot:main",
+            "create_plot_line",
+            json!({
+                "name": "Find the bell ringer",
+                "plot_type": "main",
+                "summary": "Trace the signal cable",
+                "connected_theme_ids": [reference("theme:truth")],
+                "connected_conflict_ids": [reference("conflict:harbor")]
+            }),
+        ),
+        planned(
+            "promise:bell",
+            "create_narrative_promise",
+            json!({
+                "promise_type": "mystery",
+                "description": "Who rang the clapperless bell?",
+                "planted_at": {"book_number": 1, "chapter_number": 1, "scene_order": 1},
+                "planned_payoff": {"book_number": 1, "chapter_number": 2, "scene_order": 2}
+            }),
+        ),
+        planned(
+            "arc:mara",
+            "create_character_arc",
+            json!({
+                "character_id": reference("cast:mara"),
+                "arc_type": "growth",
+                "starting_state": "Guarded",
+                "ending_state": "Resolute",
+                "thematic_purpose": "Risk the truth",
+                "connected_theme_ids": [reference("theme:truth")],
+                "milestones": [
+                    {
+                        "label": "Inspect the bell",
+                        "description": "Mara climbs the lantern tower",
+                        "placement": {"book_number": 1, "chapter_number": 1, "scene_order": 2}
+                    },
+                    {
+                        "label": "Ring the signal",
+                        "description": "Mara exposes the forged logbook",
+                        "placement": {"book_number": 1, "chapter_number": 2, "scene_order": 2}
+                    }
+                ]
+            }),
+        ),
+        planned(
+            "pacing:series",
+            "create_pacing_config",
+            json!({
+                "total_planned_books": 2,
+                "avg_chapters_per_book": 2,
+                "avg_scenes_per_chapter": 2,
+                "tension_model": "rising"
+            }),
+        ),
+        planned(
+            "pacing:curve_1",
+            "create_pacing_curve",
+            json!({
+                "book_number": 1,
+                "act_breakpoints": {"first": 0.25, "second": 0.75},
+                "scene_type_density": {"action": 0.5, "sequel": 0.5},
+                "intensity_points": [
+                    {"position": 0.0, "intensity": 0.2},
+                    {"position": 1.0, "intensity": 0.8}
+                ]
+            }),
+        ),
+    ];
+    a.schedule = PlanningSchedule {
+        promise_events: vec![
+            PlannedPromiseEvent {
+                promise_ref: phase_d_pref("promise:bell"),
+                action: PlannedPromiseAction::Plant,
+                placement: phase_d_place(1, 1, 1),
+                note: None,
+            },
+            PlannedPromiseEvent {
+                promise_ref: phase_d_pref("promise:bell"),
+                action: PlannedPromiseAction::Payoff,
+                placement: phase_d_place(1, 2, 2),
+                note: None,
+            },
+        ],
+        pov_plan: vec![],
+        intensity_targets: vec![],
+    };
+    a
+}
+
+fn phase_d_book_input(
+    s: &PlanningSession,
+    contract: &PlanningProposal,
+    series: &PlanningProposal,
+) -> StagePlanningInput {
+    use serde_json::json;
+    let mut a = artifact(s, "unused");
+    a.level = PlanningLevel::Book;
+    a.parents = BTreeMap::from([
+        (contract.id.clone(), contract.payload_hash.clone()),
+        (series.id.clone(), series.payload_hash.clone()),
+    ]);
+    a.operations = vec![planned(
+        "outline:book",
+        "set_book_outline",
+        json!({
+            "book_id": reference("project:root:book"),
+            "book_number": 1,
+            "content": "Mara uncovers the signal conspiracy at the watchtower."
+        }),
+    )];
+    a
+}
+
+fn phase_d_chapter_input(
+    s: &PlanningSession,
+    contract: &PlanningProposal,
+    book: &PlanningProposal,
+) -> StagePlanningInput {
+    use serde_json::json;
+    let mut a = artifact(s, "unused");
+    a.level = PlanningLevel::Chapter;
+    a.parents = BTreeMap::from([
+        (contract.id.clone(), contract.payload_hash.clone()),
+        (book.id.clone(), book.payload_hash.clone()),
+    ]);
+    a.operations = vec![
+        planned(
+            "chapter:1",
+            "create_chapter",
+            json!({
+                "book_id": reference("project:root:book"),
+                "book_number": 1,
+                "chapter_number": 1,
+                "title": "The First Watch"
+            }),
+        ),
+        planned(
+            "outline:chapter:1",
+            "set_chapter_outline",
+            json!({
+                "entity_id": reference("chapter:1"),
+                "book_number": 1,
+                "chapter_number": 1,
+                "content": "Mara hears the impossible bell.",
+                "beats": [{"order": 1, "summary": "Hear the bell", "status": "planned"}]
+            }),
+        ),
+    ];
+    a
+}
+
+fn phase_d_scene_input(
+    s: &PlanningSession,
+    cast: &PlanningProposal,
+    series: &PlanningProposal,
+    chapter: &PlanningProposal,
+) -> StagePlanningInput {
+    use serde_json::json;
+    let mut a = artifact(s, "unused");
+    a.level = PlanningLevel::Scene;
+    a.parents = BTreeMap::from([
+        (cast.id.clone(), cast.payload_hash.clone()),
+        (series.id.clone(), series.payload_hash.clone()),
+        (chapter.id.clone(), chapter.payload_hash.clone()),
+    ]);
+    a.target_range = Some(PlanningTargetRange {
+        book_number: 1,
+        chapter_start: 1,
+        chapter_end: 1,
+        scenes_per_chapter: 2,
+    });
+    a.operations = vec![planned(
+        "plan:ch1",
+        "plan_chapter",
+        json!({
+            "book_number": 1,
+            "chapter_number": 1,
+            "pov_character_id": reference("cast:mara"),
+            "synopsis": "Mara hears the impossible bell.",
+            "target_theme_ids": [reference("theme:truth")],
+            "target_conflict_ids": [reference("conflict:harbor")],
+            "target_plot_line_ids": [reference("plot:main")],
+            "scenes": [
+                {
+                    "scene_order": 1,
+                    "summary": "Mara hears the bronze bell.",
+                    "beat_structure": ["hook", "turn"],
+                    "character_ids": [reference("cast:mara")],
+                    "location_id": reference("loc:watchtower"),
+                    "content_rating": "general",
+                    "purpose": "Plant the impossible bell mystery"
+                },
+                {
+                    "scene_order": 2,
+                    "summary": "Mara climbs to the lantern room.",
+                    "beat_structure": ["escalation", "decision"],
+                    "character_ids": [reference("cast:mara")],
+                    "location_id": reference("loc:watchtower"),
+                    "content_rating": "general",
+                    "purpose": "Confirm the bell clapper is missing"
+                }
+            ]
+        }),
+    )];
+    a
+}
+
+#[tokio::test]
+async fn phase_d_validator_enforces_manifest_completeness_references_pov_causality_and_style() {
+    use serde_json::json;
+    use spindle_core::models::ContentRating;
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Phase D validator manifest, reference, POV, causality, and style checks"
+                .into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // 1. Stage Contract with reader_contract boundaries ("no graphic torture", "no explicit")
+    // and style_notes ("fast-paced page-turner with cliffhanger endings").
+    let mut contract_in = phase_d_contract_input(&s);
+    if let PlanningOperation::CreateProject(ref mut proj) = contract_in.operations[0].operation {
+        proj.reader_contract.boundaries = vec!["no graphic torture".into(), "no explicit".into()];
+        proj.reader_contract.style_notes =
+            vec!["fast-paced page-turner with cliffhanger endings".into()];
+    }
+    let contract_prop = svc.stage_planning(contract_in).await.unwrap();
+    assert!(
+        contract_prop.findings.is_empty(),
+        "valid contract should have 0 findings: {:?}",
+        contract_prop.findings
+    );
+
+    // 2. Stage CastWorld with two characters (mara, tomas), a location, and a style world rule.
+    let mut cast_in = phase_d_cast_input(&s, &contract_prop);
+    cast_in.operations.push(planned(
+        "cast:tomas",
+        "create_character",
+        json!({"name": "Tomas", "summary": "Quartermaster", "role": "supporting"}),
+    ));
+    cast_in.operations.push(planned(
+        "rule:style_melodrama",
+        "create_world_rule",
+        json!({
+            "rule_name": "No Melodramatic Fainting",
+            "rule_type": "style",
+            "description": "Avoid melodrama and fainting tropes",
+            "scan_pattern": "melodrama"
+        }),
+    ));
+    let cast_prop = svc.stage_planning(cast_in).await.unwrap();
+
+    // 3. Validate SeriesArc with invalid causality items to verify findings.
+    let mut series_bad = phase_d_series_input(&s, &contract_prop, &cast_prop);
+    // Add a theme whose resolution_point precedes its introduction_point, and a conflict with non-increasing try_fail_cycles.
+    series_bad.operations.push(PlanningOperationItem {
+        output_ref: "theme:inverted".into(),
+        operation: PlanningOperation::CreateTheme(PlanningCreateThemeInput {
+            theme_statement: "Inverted resolution".into(),
+            thesis_antithesis: "Order vs chaos".into(),
+            introduction_point: Some(phase_d_place(1, 3, 1)),
+            resolution_point: Some(phase_d_place(1, 1, 1)),
+        }),
+    });
+    series_bad.operations.push(PlanningOperationItem {
+        output_ref: "conflict:bad_cycles".into(),
+        operation: PlanningOperation::CreateConflict(PlanningCreateConflictInput {
+            name: "Bad Cycles".into(),
+            conflict_type: "interpersonal".into(),
+            stakes: "Trust".into(),
+            escalation_stages: vec!["a".into()],
+            expected_total_cycles: Some(2),
+            try_fail_cycles: vec![
+                PlanningTryFailCycleStep {
+                    attempt_order: 2,
+                    label: "First try".into(),
+                    outcome: "Fail".into(),
+                    cost: None,
+                    revelation: None,
+                },
+                PlanningTryFailCycleStep {
+                    attempt_order: 2,
+                    label: "Duplicate order".into(),
+                    outcome: "Fail".into(),
+                    cost: None,
+                    revelation: None,
+                },
+            ],
+            stated_consequences: vec![],
+        }),
+    });
+    let series_bad_findings = svc
+        .repository
+        .validate_planning_stage_input(series_bad, None)
+        .await
+        .unwrap();
+    let series_codes: Vec<&str> = series_bad_findings
+        .iter()
+        .map(|f| f.code.as_str())
+        .collect();
+    assert!(
+        series_codes.contains(&"unsupported_resolution"),
+        "expected unsupported_resolution in {series_codes:?}"
+    );
+
+    // Stage a clean SeriesArc with a second unconnected theme/conflict to test unrelated_thread_target.
+    let mut series_clean = phase_d_series_input(&s, &contract_prop, &cast_prop);
+    series_clean.operations.push(PlanningOperationItem {
+        output_ref: "theme:unrelated".into(),
+        operation: PlanningOperation::CreateTheme(PlanningCreateThemeInput {
+            theme_statement: "Unconnected subplot theme".into(),
+            thesis_antithesis: "Isolation vs community".into(),
+            introduction_point: Some(phase_d_place(1, 1, 1)),
+            resolution_point: Some(phase_d_place(1, 2, 1)),
+        }),
+    });
+    series_clean.operations.push(PlanningOperationItem {
+        output_ref: "conflict:unrelated".into(),
+        operation: PlanningOperation::CreateConflict(PlanningCreateConflictInput {
+            name: "Unconnected Conflict".into(),
+            conflict_type: "external".into(),
+            stakes: "Supplies".into(),
+            escalation_stages: vec!["shortage".into()],
+            expected_total_cycles: Some(1),
+            try_fail_cycles: vec![],
+            stated_consequences: vec![],
+        }),
+    });
+    let series_prop = svc.stage_planning(series_clean).await.unwrap();
+    assert!(series_prop.findings.is_empty());
+
+    let book_prop = svc
+        .stage_planning(phase_d_book_input(&s, &contract_prop, &series_prop))
+        .await
+        .unwrap();
+    assert!(book_prop.findings.is_empty());
+
+    let chapter_prop = svc
+        .stage_planning(phase_d_chapter_input(&s, &contract_prop, &book_prop))
+        .await
+        .unwrap();
+    assert!(chapter_prop.findings.is_empty());
+
+    // 4. Validate a Scene-level proposal with negative manifest fixtures:
+    // - target_range expects chapters 1..=2 with 2 scenes per chapter, but we only emit chapter 1 with 3 scenes (missing chapter 2 + scene_count_mismatch)
+    // - non-contiguous scene_order (1, 2, 4)
+    // - scene 1 has empty character_ids, missing location_id, missing content_rating EVEN THOUGH summary/purpose contain "location:loc:watchtower rating:general", and a no-op purpose ("status quo")
+    // - scene 2 has POV character (cast:mara) missing from character_ids (only cast:tomas), rating Explicit (violating rating_ceiling=Mature and boundary "no explicit"), and forbidden boundary phrase "graphic torture"
+    // - scene 4 claims "resolves conflict" in purpose while chapter target_conflict_ids is empty, and chapter targets "theme:unrelated" while targeting plot:main
+    // - chapter_pov_schedule_mismatch (schedule says cast:tomas for ch 1, plan says cast:mara)
+    let bad_scene_input = StagePlanningInput {
+        session_id: s.id.clone(),
+        scope: None,
+        intent_hash: s.intent_hash.clone(),
+        schema_version: 1,
+        level: PlanningLevel::Scene,
+        parents: BTreeMap::from([
+            (cast_prop.id.clone(), cast_prop.payload_hash.clone()),
+            (series_prop.id.clone(), series_prop.payload_hash.clone()),
+            (chapter_prop.id.clone(), chapter_prop.payload_hash.clone()),
+        ]),
+        operations: vec![PlanningOperationItem {
+            output_ref: "plan:bad_ch1".into(),
+            operation: PlanningOperation::PlanChapter(PlanningPlanChapterInput {
+                book_number: 1,
+                chapter_number: 1,
+                pov_character_id: Some(phase_d_pref("cast:mara")),
+                synopsis: "   ".into(),
+                target_theme_ids: vec![phase_d_pref("theme:unrelated")],
+                target_conflict_ids: vec![],
+                target_plot_line_ids: vec![phase_d_pref("plot:main")],
+                scenes: vec![
+                    PlanningPlanChapterSceneInput {
+                        scene_order: 1,
+                        summary: "location:loc:watchtower rating:general Mara watches the fog."
+                            .into(),
+                        beat_structure: vec!["opening".into()],
+                        character_ids: vec![],
+                        location_id: None,
+                        content_rating: None,
+                        purpose: "status quo".into(),
+                        research_required: Some(false),
+                        research_tags: vec![],
+                        explicit_query: None,
+                    },
+                    PlanningPlanChapterSceneInput {
+                        scene_order: 2,
+                        summary: "Tomas endures graphic torture and melodrama in the cellar."
+                            .into(),
+                        beat_structure: vec!["confrontation".into()],
+                        character_ids: vec![phase_d_pref("cast:tomas")],
+                        location_id: Some(phase_d_pref("loc:watchtower")),
+                        content_rating: Some(ContentRating::Explicit),
+                        purpose: "Raise stakes".into(),
+                        research_required: Some(false),
+                        research_tags: vec![],
+                        explicit_query: None,
+                    },
+                    PlanningPlanChapterSceneInput {
+                        scene_order: 4,
+                        summary: "   ".into(),
+                        beat_structure: vec!["quiet".into(), "reflective".into(), "grief".into()],
+                        character_ids: vec![phase_d_pref("cast:mara")],
+                        location_id: Some(phase_d_pref("loc:watchtower")),
+                        content_rating: Some(ContentRating::General),
+                        purpose: "Resolves conflict once and for all".into(),
+                        research_required: Some(false),
+                        research_tags: vec![],
+                        explicit_query: None,
+                    },
+                ],
+            }),
+        }],
+        rationale: "Negative scene manifest fixture.".into(),
+        target_range: Some(PlanningTargetRange {
+            book_number: 1,
+            chapter_start: 1,
+            chapter_end: 2,
+            scenes_per_chapter: 2,
+        }),
+        schedule: PlanningSchedule {
+            pov_plan: vec![PlannedPov {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: None,
+                pov_character_id: phase_d_pref("cast:tomas"),
+                rationale: None,
+            }],
+            promise_events: vec![],
+            intensity_targets: vec![],
+        },
+        assumptions: vec![],
+        author_questions: vec![],
+    };
+
+    let findings = svc
+        .repository
+        .validate_planning_stage_input(bad_scene_input.clone(), Some(ContentRating::Mature))
+        .await
+        .unwrap();
+    let codes: std::collections::BTreeSet<&str> =
+        findings.iter().map(|f| f.code.as_str()).collect();
+    for expected_code in [
+        "empty_chapter_synopsis",
+        "scene_count_mismatch",
+        "non_contiguous_scene_orders",
+        "empty_scene_characters",
+        "missing_scene_location",
+        "missing_scene_content_rating",
+        "scene_missing_state_change",
+        "scene_rating_exceeds_ceiling",
+        "boundary_conflict",
+        "pov_character_missing_from_scene_cast",
+        "empty_scene_summary",
+        "unsupported_resolution",
+        "unrelated_thread_target",
+        "chapter_pov_schedule_mismatch",
+        "missing_target_chapter_manifest",
+        "plan_chapter_style_warning",
+    ] {
+        assert!(
+            codes.contains(expected_code),
+            "expected finding code '{expected_code}' in {codes:?}"
+        );
+    }
+
+    // Staging the invalid scene proposal directly is rejected because of blocking validation findings.
+    let reject_stage = svc.stage_planning(bad_scene_input).await;
+    assert!(
+        reject_stage.is_err(),
+        "stage_planning must reject proposals with blocking validation findings"
+    );
+}
+
+#[tokio::test]
+async fn phase_d_validator_enforces_promise_schedules_pov_rotation_pacing_curves_and_arc_milestones()
+ {
+    use serde_json::json;
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Phase D promise schedules, POV rotation, pacing curves, and arc milestones"
+                .into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let contract_prop = svc
+        .stage_planning(phase_d_contract_input(&s))
+        .await
+        .unwrap();
+    let mut cast_in = phase_d_cast_input(&s, &contract_prop);
+    cast_in.operations.push(planned(
+        "cast:tomas",
+        "create_character",
+        json!({"name": "Tomas", "summary": "Signalman", "role": "supporting"}),
+    ));
+    let cast_prop = svc.stage_planning(cast_in).await.unwrap();
+
+    // 1. Promise schedule, pacing curve, and character arc milestone validation:
+    let mut series_test = phase_d_series_input(&s, &contract_prop, &cast_prop);
+    // Add a promise with payoff before plant, a deferred promise with no note/destination,
+    // a valid future-book deferred promise, and leave promise:bell unscheduled in-horizon.
+    series_test.operations.push(PlanningOperationItem {
+        output_ref: "promise:inverted".into(),
+        operation: PlanningOperation::CreateNarrativePromise(PlanningCreateNarrativePromiseInput {
+            promise_type: "mystery".into(),
+            description: "Payoff before plant".into(),
+            planted_at: phase_d_place(1, 4, 1),
+            planned_payoff: Some(phase_d_place(1, 2, 1)),
+            notes: vec![],
+        }),
+    });
+    series_test.operations.push(PlanningOperationItem {
+        output_ref: "promise:unnoted_defer".into(),
+        operation: PlanningOperation::CreateNarrativePromise(PlanningCreateNarrativePromiseInput {
+            promise_type: "foreshadowing".into(),
+            description: "Deferred with no note or destination".into(),
+            planted_at: phase_d_place(1, 1, 1),
+            planned_payoff: None,
+            notes: vec![],
+        }),
+    });
+    series_test.operations.push(PlanningOperationItem {
+        output_ref: "promise:noted_future_book".into(),
+        operation: PlanningOperation::CreateNarrativePromise(PlanningCreateNarrativePromiseInput {
+            promise_type: "setup_payoff".into(),
+            description: "Valid book-2 payoff".into(),
+            planted_at: phase_d_place(1, 2, 1),
+            planned_payoff: Some(phase_d_place(2, 1, 1)),
+            notes: vec!["Pays off in Book 2 Chapter 1".into()],
+        }),
+    });
+    // Add arc:tomas with unordered milestones (ch 4 then ch 2) and spacing violation + book budget violation
+    series_test.operations.push(PlanningOperationItem {
+        output_ref: "arc:tomas".into(),
+        operation: PlanningOperation::CreateCharacterArc(PlanningCreateCharacterArcInput {
+            character_id: phase_d_pref("cast:tomas"),
+            arc_type: "positive_change".into(),
+            starting_state: "Doubtful".into(),
+            ending_state: "Steadfast".into(),
+            milestones: vec![
+                PlanningCharacterArcMilestone {
+                    label: "Late".into(),
+                    description: "Late milestone first".into(),
+                    placement: Some(phase_d_place(1, 4, 1)),
+                    unlocks: vec![],
+                    reached_at: None,
+                },
+                PlanningCharacterArcMilestone {
+                    label: "Early".into(),
+                    description: "Early milestone second".into(),
+                    placement: Some(phase_d_place(1, 2, 1)),
+                    unlocks: vec![],
+                    reached_at: None,
+                },
+                PlanningCharacterArcMilestone {
+                    label: "Close".into(),
+                    description: "Too close milestone".into(),
+                    placement: Some(phase_d_place(1, 3, 1)),
+                    unlocks: vec![],
+                    reached_at: None,
+                },
+            ],
+            thematic_purpose: "Courage".into(),
+            connected_theme_ids: vec![phase_d_pref("theme:truth")],
+        }),
+    });
+    series_test.operations.push(PlanningOperationItem {
+        output_ref: "pacing:arc_tomas".into(),
+        operation: PlanningOperation::SetArcPacingConstraints(
+            PlanningSetArcPacingConstraintsInput {
+                character_arc_id: phase_d_pref("arc:tomas"),
+                max_progress_per_chapter: Some(1.5),
+                milestone_spacing: Some(3),
+                sprint_allowance: None,
+                regression_budget: None,
+                per_book_budget: BTreeMap::from([("1".into(), 0.25)]),
+            },
+        ),
+    });
+    // Add a malformed pacing curve (unnormalized scene_type_density and unordered breakpoints)
+    series_test.operations.push(PlanningOperationItem {
+        output_ref: "pacing:bad_curve".into(),
+        operation: PlanningOperation::CreatePacingCurve(PlanningCreatePacingCurveInput {
+            book_number: 2,
+            act_breakpoints: BTreeMap::from([
+                ("act_1_end".into(), 0.60),
+                ("midpoint".into(), 0.40),
+                ("act_2_end".into(), 1.20),
+            ]),
+            scene_type_density: BTreeMap::from([
+                ("action".into(), 0.20),
+                ("dialogue".into(), 0.20),
+            ]),
+            intensity_points: vec![
+                PlanningIntensityPoint {
+                    position: 0.5,
+                    intensity: 0.8,
+                },
+                PlanningIntensityPoint {
+                    position: 0.2,
+                    intensity: 1.5,
+                },
+            ],
+        }),
+    });
+    // Schedule with promise_events: advance outside [plant, payoff] for promise:noted_future_book,
+    // and promise:bell (planted in book 1 ch 1) is left unscheduled!
+    // Plus 4 consecutive chapters with intensity_targets deviating by > 0.20 from pacing:curve_1!
+    series_test.schedule = PlanningSchedule {
+        pov_plan: vec![
+            PlannedPov {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: None,
+                pov_character_id: phase_d_pref("cast:mara"),
+                rationale: None,
+            },
+            PlannedPov {
+                book_number: 1,
+                chapter_number: 2,
+                scene_order: None,
+                pov_character_id: phase_d_pref("cast:mara"),
+                rationale: None,
+            },
+            PlannedPov {
+                book_number: 1,
+                chapter_number: 3,
+                scene_order: None,
+                pov_character_id: phase_d_pref("cast:mara"),
+                rationale: None,
+            },
+            PlannedPov {
+                book_number: 1,
+                chapter_number: 4,
+                scene_order: None,
+                pov_character_id: phase_d_pref("cast:tomas"),
+                rationale: None,
+            },
+        ],
+        promise_events: vec![PlannedPromiseEvent {
+            promise_ref: phase_d_pref("promise:noted_future_book"),
+            action: PlannedPromiseAction::Advance,
+            placement: phase_d_place(1, 1, 1), // before plant at (1, 2, 1)!
+            note: None,
+        }],
+        intensity_targets: vec![
+            PlannedIntensity {
+                book_number: 1,
+                chapter_number: 1,
+                target_intensity: 0.95,
+                recovery_beat: false,
+                note: None,
+            },
+            PlannedIntensity {
+                book_number: 1,
+                chapter_number: 2,
+                target_intensity: 0.95,
+                recovery_beat: false,
+                note: None,
+            },
+            PlannedIntensity {
+                book_number: 1,
+                chapter_number: 3,
+                target_intensity: 0.95,
+                recovery_beat: false,
+                note: None,
+            },
+            PlannedIntensity {
+                book_number: 1,
+                chapter_number: 4,
+                target_intensity: 0.10,
+                recovery_beat: false,
+                note: None,
+            },
+        ],
+    };
+
+    // With default policy (pov_policy = None, pacing_policy = None):
+    // - No POV findings are emitted even though Mara has 3 consecutive chapters and 75% share!
+    // - pacing_curve_sustained_deviation is emitted as Advisory.
+    let series_findings = svc
+        .repository
+        .validate_planning_stage_input(series_test.clone(), None)
+        .await
+        .unwrap();
+    let codes: std::collections::BTreeSet<&str> =
+        series_findings.iter().map(|f| f.code.as_str()).collect();
+    for expected in [
+        "promise_payoff_before_plant",
+        "deferred_promise_missing_note_or_destination",
+        "promise_advance_outside_window",
+        "unscheduled_in_horizon_promise",
+        "arc_milestones_unordered",
+        "arc_pacing_constraint_out_of_range",
+        "arc_milestone_spacing_violation",
+        "arc_book_budget_exceeded",
+        "act_breakpoint_out_of_range",
+        "act_breakpoints_unordered",
+        "scene_type_density_unnormalized",
+        "intensity_point_out_of_range",
+        "intensity_points_unordered",
+        "pacing_curve_sustained_deviation",
+    ] {
+        assert!(
+            codes.contains(expected),
+            "expected '{expected}' in {codes:?}"
+        );
+    }
+    assert!(
+        !codes.iter().any(|c| c.starts_with("pov_")),
+        "pov_policy=None must never impose equal rotation: {codes:?}"
+    );
+    let pacing_finding = series_findings
+        .iter()
+        .find(|f| f.code == "pacing_curve_sustained_deviation")
+        .unwrap();
+    assert_eq!(pacing_finding.severity, PlanningFindingSeverity::Advisory);
+
+    // 2. Now configure POV policy + Pacing policy with hard_constraint = true (no waiver) and re-validate:
+    svc.set_planning_policy(SetPlanningPolicyInput {
+        session_id: s.id.clone(),
+        scope: None,
+        policy: PlanningPolicy {
+            policy_id: None,
+            policy_version: None,
+            gates: BTreeMap::new(),
+            max_advisory_findings: None,
+            pov_policy: Some(PlanningPovPolicy {
+                single_pov: Some(phase_d_pref("cast:mara")),
+                allowed_roster: vec![phase_d_pref("cast:mara")],
+                desired_shares: BTreeMap::from([
+                    ("cast:mara".into(), 0.50),
+                    ("cast:tomas".into(), 0.50),
+                ]),
+                share_tolerance: Some(0.10),
+                max_absence_chapters: Some(2),
+                max_consecutive_chapters: Some(2),
+                hard_constraint: true,
+            }),
+            pacing_policy: Some(PlanningPacingPolicy {
+                hard_constraint: true,
+                waiver_reason: None,
+            }),
+        },
+        actor: "author:jane".into(),
+        note: "Enable strict POV and pacing constraints".into(),
+    })
+    .await
+    .unwrap();
+
+    let hard_findings = svc
+        .repository
+        .validate_planning_stage_input(series_test.clone(), None)
+        .await
+        .unwrap();
+    for code in [
+        "pov_single_constraint_violated",
+        "pov_not_in_allowed_roster",
+        "pov_repetition_window_exceeded",
+        "pov_absence_window_exceeded",
+        "pov_share_deviation",
+        "pacing_curve_sustained_deviation",
+    ] {
+        let f = hard_findings
+            .iter()
+            .find(|f| f.code == code)
+            .unwrap_or_else(|| panic!("missing {code} in {hard_findings:?}"));
+        assert_eq!(
+            f.severity,
+            PlanningFindingSeverity::Blocking,
+            "{code} should be Blocking when hard_constraint=true"
+        );
+    }
+
+    // Adding a waiver_reason to pacing_policy downgrades pacing_curve_sustained_deviation back to Advisory.
+    svc.set_planning_policy(SetPlanningPolicyInput {
+        session_id: s.id.clone(),
+        scope: None,
+        policy: PlanningPolicy {
+            policy_id: None,
+            policy_version: None,
+            gates: BTreeMap::new(),
+            max_advisory_findings: None,
+            pov_policy: None,
+            pacing_policy: Some(PlanningPacingPolicy {
+                hard_constraint: true,
+                waiver_reason: Some("Intentional slow-burn Act I".into()),
+            }),
+        },
+        actor: "author:jane".into(),
+        note: "Waive pacing curve deviation for slow-burn Act I".into(),
+    })
+    .await
+    .unwrap();
+    let waived_findings = svc
+        .repository
+        .validate_planning_stage_input(series_test, None)
+        .await
+        .unwrap();
+    let waived_pacing = waived_findings
+        .iter()
+        .find(|f| f.code == "pacing_curve_sustained_deviation")
+        .unwrap();
+    assert_eq!(waived_pacing.severity, PlanningFindingSeverity::Advisory);
+}
+
+#[tokio::test]
+async fn phase_d_delegation_policy_activation_and_planning_readiness_agree_with_authoring_prepare_run()
+ {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Delegation policy activation and planning_readiness readback".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // 1. Root levels (Contract, CastWorld, SeriesArc, Book) can never use DelegateIfValid.
+    let bad_root_policy = svc
+        .set_planning_policy(SetPlanningPolicyInput {
+            session_id: s.id.clone(),
+            scope: None,
+            policy: PlanningPolicy {
+                policy_id: Some("root-auto".into()),
+                policy_version: Some(1),
+                gates: BTreeMap::from([(PlanningLevel::Book, PlanningGate::DelegateIfValid)]),
+                max_advisory_findings: None,
+                pov_policy: None,
+                pacing_policy: None,
+            },
+            actor: "author:jane".into(),
+            note: "Attempt invalid root delegation".into(),
+        })
+        .await;
+    assert!(bad_root_policy.is_err());
+
+    // 2. Chapter/Scene DelegateIfValid requires root attachment AND human-accepted root proposals.
+    let before_attach = svc
+        .set_planning_policy(SetPlanningPolicyInput {
+            session_id: s.id.clone(),
+            scope: None,
+            policy: PlanningPolicy {
+                policy_id: Some("outline-fast".into()),
+                policy_version: Some(3),
+                gates: BTreeMap::from([
+                    (PlanningLevel::Chapter, PlanningGate::DelegateIfValid),
+                    (PlanningLevel::Scene, PlanningGate::DelegateIfValid),
+                ]),
+                max_advisory_findings: Some(0),
+                pov_policy: None,
+                pacing_policy: None,
+            },
+            actor: "author:jane".into(),
+            note: "Attempt delegation before project root is attached".into(),
+        })
+        .await;
+    assert!(
+        before_attach.is_err(),
+        "cannot enable DelegateIfValid before project root is attached"
+    );
+
+    // Stage and human-accept Contract, CastWorld, SeriesArc, and Book.
+    let contract_prop = svc
+        .stage_planning(phase_d_contract_input(&s))
+        .await
+        .unwrap();
+    let cast_prop = svc
+        .stage_planning(phase_d_cast_input(&s, &contract_prop))
+        .await
+        .unwrap();
+    let series_prop = svc
+        .stage_planning(phase_d_series_input(&s, &contract_prop, &cast_prop))
+        .await
+        .unwrap();
+    let book_prop = svc
+        .stage_planning(phase_d_book_input(&s, &contract_prop, &series_prop))
+        .await
+        .unwrap();
+
+    let applied_roots = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            decision: PlanningDecision::Accept,
+            expected_hashes: BTreeMap::from([
+                (contract_prop.id.clone(), contract_prop.payload_hash.clone()),
+                (cast_prop.id.clone(), cast_prop.payload_hash.clone()),
+                (series_prop.id.clone(), series_prop.payload_hash.clone()),
+                (book_prop.id.clone(), book_prop.payload_hash.clone()),
+            ]),
+            actor: "author:jane".into(),
+            note: "Approve root levels".into(),
+        })
+        .await
+        .unwrap();
+    assert!(applied_roots.complete);
+    let attached_session = svc.get_planning_session(&s.id).await.unwrap();
+    let scope = attached_session.scope.clone().unwrap();
+
+    // 3. Activate DelegateIfValid on Chapter and Scene with policy_id="outline-fast", policy_version=3.
+    let updated_session = svc
+        .set_planning_policy(SetPlanningPolicyInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            policy: PlanningPolicy {
+                policy_id: Some("outline-fast".into()),
+                policy_version: Some(3),
+                gates: BTreeMap::from([
+                    (PlanningLevel::Chapter, PlanningGate::DelegateIfValid),
+                    (PlanningLevel::Scene, PlanningGate::DelegateIfValid),
+                ]),
+                max_advisory_findings: Some(0),
+                pov_policy: None,
+                pacing_policy: None,
+            },
+            actor: "author:jane".into(),
+            note: "Activate DelegateIfValid for Chapter and Scene".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        updated_session.policy.delegated_actor().as_deref(),
+        Some("policy:outline-fast:3")
+    );
+
+    // 4. Advance Chapter via host_submission: because Chapter gate is DelegateIfValid and there are 0 findings and 0 author_questions,
+    // advance_planning automatically applies it and records actor "policy:outline-fast:3"!
+    let ch_submission = json!({
+        "schema_version": 1,
+        "level": "chapter",
+        "rationale": "Create and outline chapters 1 and 2.",
+        "operations": [
+            {
+                "output_ref": "chapter:1",
+                "operation": {
+                    "operation": "create_chapter",
+                    "input": {
+                        "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                        "book_number": 1,
+                        "chapter_number": 1,
+                        "title": "The First Watch"
+                    }
+                }
+            },
+            {
+                "output_ref": "outline:chapter:1",
+                "operation": {
+                    "operation": "set_chapter_outline",
+                    "input": {
+                        "entity_id": {"kind": "proposal_ref", "value": "chapter:1"},
+                        "book_number": 1,
+                        "chapter_number": 1,
+                        "content": "Mara hears the impossible bell.",
+                        "beats": [{"order": 1, "summary": "Hear the bell", "status": "planned"}]
+                    }
+                }
+            },
+            {
+                "output_ref": "chapter:2",
+                "operation": {
+                    "operation": "create_chapter",
+                    "input": {
+                        "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                        "book_number": 1,
+                        "chapter_number": 2,
+                        "title": "The Second Watch"
+                    }
+                }
+            },
+            {
+                "output_ref": "outline:chapter:2",
+                "operation": {
+                    "operation": "set_chapter_outline",
+                    "input": {
+                        "entity_id": {"kind": "proposal_ref", "value": "chapter:2"},
+                        "book_number": 1,
+                        "chapter_number": 2,
+                        "content": "Mara decodes the bell's logbook.",
+                        "beats": [{"order": 1, "summary": "Decode the logbook", "status": "planned"}]
+                    }
+                }
+            }
+        ]
+    });
+    let ch_adv = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            level: Some(PlanningLevel::Chapter),
+            parents: Some(BTreeMap::from([
+                (contract_prop.id.clone(), contract_prop.payload_hash.clone()),
+                (book_prop.id.clone(), book_prop.payload_hash.clone()),
+            ])),
+            target_range: Some(PlanningTargetRange {
+                book_number: 1,
+                chapter_start: 1,
+                chapter_end: 2,
+                scenes_per_chapter: 2,
+            }),
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Host,
+                payload: ch_submission,
+            }),
+            retry_key: Some("phase-d-delegate-ch".into()),
+        })
+        .await
+        .unwrap();
+    let ch_prop = ch_adv.proposal.expect("chapter proposal");
+    assert_eq!(ch_prop.status, PlanningProposalStatus::Applied);
+    assert_eq!(ch_prop.decided_by.as_deref(), Some("policy:outline-fast:3"));
+    let apply_status = svc
+        .planning_apply_status(&s.id, Some(scope.clone()))
+        .await
+        .unwrap();
+    assert!(
+        apply_status
+            .operations
+            .iter()
+            .any(|r| r.proposal_id == ch_prop.id && r.actor == "policy:outline-fast:3")
+    );
+
+    // 5. Before Scene manifests are applied, planning_readiness and prepare_authoring_run both report ready_to_draft == false.
+    let pre_scene_readiness = svc
+        .planning_readiness(PlanningReadinessInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            target_range: Some(PlanningTargetRange {
+                book_number: 1,
+                chapter_start: 1,
+                chapter_end: 2,
+                scenes_per_chapter: 2,
+            }),
+            mining_policy: None,
+            checkpoint_policy: None,
+        })
+        .await
+        .unwrap();
+    assert!(!pre_scene_readiness.ready_to_draft);
+    assert!(!pre_scene_readiness.prepare_run.ready_to_draft);
+    assert!(!pre_scene_readiness.planner_checks_passed);
+
+    // 6. If a Scene proposal has author_questions (or Hold gate), DelegateIfValid does NOT auto-apply it.
+    let scene_with_question = json!({
+        "schema_version": 1,
+        "level": "scene",
+        "rationale": "Scene manifest with an open author question.",
+        "operations": [
+            {
+                "output_ref": "plan:ch1_q",
+                "operation": {
+                    "operation": "plan_chapter",
+                    "input": {
+                        "book_number": 1,
+                        "chapter_number": 1,
+                        "pov_character_id": {"kind": "proposal_ref", "value": "cast:mara"},
+                        "synopsis": "Mara hears the impossible bell.",
+                        "target_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                        "target_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:harbor"}],
+                        "target_plot_line_ids": [{"kind": "proposal_ref", "value": "plot:main"}],
+                        "scenes": [
+                            {
+                                "scene_order": 1,
+                                "summary": "Mara hears the bronze bell.",
+                                "beat_structure": ["hook", "turn"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Plant the impossible bell mystery"
+                            },
+                            {
+                                "scene_order": 2,
+                                "summary": "Mara climbs to the lantern room.",
+                                "beat_structure": ["escalation", "decision"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Confirm the bell clapper is missing"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "output_ref": "plan:ch2_q",
+                "operation": {
+                    "operation": "plan_chapter",
+                    "input": {
+                        "book_number": 1,
+                        "chapter_number": 2,
+                        "pov_character_id": {"kind": "proposal_ref", "value": "cast:mara"},
+                        "synopsis": "Mara decodes the bell's logbook.",
+                        "target_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                        "target_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:harbor"}],
+                        "target_plot_line_ids": [{"kind": "proposal_ref", "value": "plot:main"}],
+                        "scenes": [
+                            {
+                                "scene_order": 1,
+                                "summary": "Mara inspects the archive ledger.",
+                                "beat_structure": ["discovery"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Reveal the erased harbour entry"
+                            },
+                            {
+                                "scene_order": 2,
+                                "summary": "Mara confronts the harbour signal.",
+                                "beat_structure": ["climax"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Pay off the bell mystery"
+                            }
+                        ]
+                    }
+                }
+            }
+        ],
+        "author_questions": [{"id": "q1", "question": "Should the ledger name Mara's brother here?"}]
+    });
+    let q_adv = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            level: Some(PlanningLevel::Scene),
+            parents: Some(BTreeMap::from([
+                (cast_prop.id.clone(), cast_prop.payload_hash.clone()),
+                (series_prop.id.clone(), series_prop.payload_hash.clone()),
+                (ch_prop.id.clone(), ch_prop.payload_hash.clone()),
+            ])),
+            target_range: Some(PlanningTargetRange {
+                book_number: 1,
+                chapter_start: 1,
+                chapter_end: 2,
+                scenes_per_chapter: 2,
+            }),
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Host,
+                payload: scene_with_question,
+            }),
+            retry_key: Some("phase-d-scene-question".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(q_adv.outcome, PlanningSessionOutcome::NeedsAuthor);
+    let q_prop = q_adv.proposal.unwrap();
+    assert_eq!(
+        q_prop.status,
+        PlanningProposalStatus::Staged,
+        "proposal with author_questions must remain Staged for human review"
+    );
+    // Reject the question-bearing proposal and advance a clean Scene manifest so DelegateIfValid auto-applies it!
+    svc.decide_planning(DecidePlanningInput {
+        session_id: s.id.clone(),
+        scope: Some(scope.clone()),
+        decision: PlanningDecision::Reject,
+        expected_hashes: BTreeMap::from([(q_prop.id.clone(), q_prop.payload_hash.clone())]),
+        actor: "author:jane".into(),
+        note: "Resolve question and regenerate clean manifest".into(),
+    })
+    .await
+    .unwrap();
+
+    let clean_scenes = json!({
+        "schema_version": 1,
+        "level": "scene",
+        "rationale": "Complete 2-chapter scene manifest.",
+        "operations": [
+            {
+                "output_ref": "plan:ch1",
+                "operation": {
+                    "operation": "plan_chapter",
+                    "input": {
+                        "book_number": 1,
+                        "chapter_number": 1,
+                        "pov_character_id": {"kind": "proposal_ref", "value": "cast:mara"},
+                        "synopsis": "Mara hears the impossible bell.",
+                        "target_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                        "target_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:harbor"}],
+                        "target_plot_line_ids": [{"kind": "proposal_ref", "value": "plot:main"}],
+                        "scenes": [
+                            {
+                                "scene_order": 1,
+                                "summary": "Mara hears the bronze bell.",
+                                "beat_structure": ["hook", "turn"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Plant the impossible bell mystery"
+                            },
+                            {
+                                "scene_order": 2,
+                                "summary": "Mara climbs to the lantern room.",
+                                "beat_structure": ["escalation", "decision"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Confirm the bell clapper is missing"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "output_ref": "plan:ch2",
+                "operation": {
+                    "operation": "plan_chapter",
+                    "input": {
+                        "book_number": 1,
+                        "chapter_number": 2,
+                        "pov_character_id": {"kind": "proposal_ref", "value": "cast:mara"},
+                        "synopsis": "Mara decodes the bell's logbook.",
+                        "target_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                        "target_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:harbor"}],
+                        "target_plot_line_ids": [{"kind": "proposal_ref", "value": "plot:main"}],
+                        "scenes": [
+                            {
+                                "scene_order": 1,
+                                "summary": "Mara inspects the archive ledger.",
+                                "beat_structure": ["discovery"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Reveal the erased harbour entry"
+                            },
+                            {
+                                "scene_order": 2,
+                                "summary": "Mara confronts the harbour signal.",
+                                "beat_structure": ["climax"],
+                                "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                                "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                                "content_rating": "general",
+                                "purpose": "Pay off the bell mystery"
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    });
+    let sc_adv = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            level: Some(PlanningLevel::Scene),
+            parents: Some(BTreeMap::from([
+                (cast_prop.id.clone(), cast_prop.payload_hash.clone()),
+                (series_prop.id.clone(), series_prop.payload_hash.clone()),
+                (ch_prop.id.clone(), ch_prop.payload_hash.clone()),
+            ])),
+            target_range: Some(PlanningTargetRange {
+                book_number: 1,
+                chapter_start: 1,
+                chapter_end: 2,
+                scenes_per_chapter: 2,
+            }),
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Host,
+                payload: clean_scenes,
+            }),
+            retry_key: Some("phase-d-scene-clean".into()),
+        })
+        .await
+        .unwrap();
+    let sc_prop = sc_adv.proposal.unwrap();
+    assert_eq!(sc_prop.status, PlanningProposalStatus::Applied);
+    assert_eq!(sc_prop.decided_by.as_deref(), Some("policy:outline-fast:3"));
+
+    // 7. Now planning_readiness and prepare_authoring_run both agree that chapters 1..=2 are ready_to_draft!
+    let post_scene_readiness = svc
+        .planning_readiness(PlanningReadinessInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            target_range: Some(PlanningTargetRange {
+                book_number: 1,
+                chapter_start: 1,
+                chapter_end: 2,
+                scenes_per_chapter: 2,
+            }),
+            mining_policy: None,
+            checkpoint_policy: None,
+        })
+        .await
+        .unwrap();
+    assert!(post_scene_readiness.ready_to_draft);
+    assert!(post_scene_readiness.planner_checks_passed);
+    assert!(!post_scene_readiness.stale_projection);
+    assert!(post_scene_readiness.prepare_run.ready_to_draft);
+    assert_eq!(
+        post_scene_readiness
+            .pacing_metrics
+            .pov_chapter_counts
+            .get("cast:mara"),
+        Some(&2)
+    );
+
+    // 8. Policy actors are rejected in decide_plan_amendments and decide_canon_deltas.
+    let policy_amendment_err = svc
+        .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+            project_id: scope.project_id.clone(),
+            decisions: vec![],
+            decided_by: Some("policy:outline-fast:3".into()),
+        })
+        .await;
+    assert!(policy_amendment_err.is_err());
+    let policy_delta_err = svc
+        .decide_canon_deltas(spindle_core::models::DecideCanonDeltasInput {
+            project_id: scope.project_id.clone(),
+            decisions: vec![],
+            decided_by: Some("policy:outline-fast:3".into()),
+        })
+        .await;
+    assert!(policy_delta_err.is_err());
+}
+
+#[tokio::test]
+async fn phase_d_living_outline_reseeds_active_run_and_reconciles_planning_session_projections() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Living outline active run reseed and session projection reconciliation"
+                .into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let contract_prop = svc
+        .stage_planning(phase_d_contract_input(&s))
+        .await
+        .unwrap();
+    let cast_prop = svc
+        .stage_planning(phase_d_cast_input(&s, &contract_prop))
+        .await
+        .unwrap();
+    let series_prop = svc
+        .stage_planning(phase_d_series_input(&s, &contract_prop, &cast_prop))
+        .await
+        .unwrap();
+    let book_prop = svc
+        .stage_planning(phase_d_book_input(&s, &contract_prop, &series_prop))
+        .await
+        .unwrap();
+    let chapter_prop = svc
+        .stage_planning(phase_d_chapter_input(&s, &contract_prop, &book_prop))
+        .await
+        .unwrap();
+    let scene_prop = svc
+        .stage_planning(phase_d_scene_input(
+            &s,
+            &cast_prop,
+            &series_prop,
+            &chapter_prop,
+        ))
+        .await
+        .unwrap();
+    let props = [
+        &contract_prop,
+        &cast_prop,
+        &series_prop,
+        &book_prop,
+        &chapter_prop,
+        &scene_prop,
+    ];
+    let mut expected = BTreeMap::new();
+    for p in props {
+        expected.insert(p.id.clone(), p.payload_hash.clone());
+    }
+    let report = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            decision: PlanningDecision::Accept,
+            expected_hashes: expected,
+            actor: "author:jane".into(),
+            note: "Initial apply".into(),
+        })
+        .await
+        .unwrap();
+    assert!(report.complete);
+    let session = svc.get_planning_session(&s.id).await.unwrap();
+    let scope = session.scope.clone().unwrap();
+
+    // Create chapter 2 in SQLite (with no chapter_plan yet) and an active authoring run covering chapters 1..=2.
+    svc.create_chapter(CreateChapterInput {
+        project_id: scope.project_id.clone(),
+        book_id: None,
+        book_number: Some(1),
+        chapter_number: Some(2),
+        title: Some("Chapter Two".into()),
+    })
+    .await
+    .unwrap();
+    let now = chrono::Utc::now();
+    svc.repository
+        .save_authoring_run(
+            crate::sqlite::records::AuthoringRun {
+                id: "authoring_run:phase_d_reseed".into(),
+                project_id: scope.project_id.clone(),
+                active_branch_id: scope.branch_id.clone(),
+                book_number: 1,
+                start_chapter: 1,
+                end_chapter: 2,
+                checkpoint_interval: 2,
+                last_checkpoint_end_chapter: 0,
+                artifacts_dir: "artifacts".into(),
+                editorial_directives: vec![],
+                status: "active".into(),
+                created_at: now,
+                updated_at: now,
+                mining_policy: None,
+                max_revise_attempts: None,
+                checkpoint_policy: None,
+                replan_policy: None,
+            },
+            vec![
+                crate::sqlite::records::AuthoringRunChapter {
+                    authoring_run_id: "authoring_run:phase_d_reseed".into(),
+                    chapter_number: 1,
+                    planned: true,
+                    synopsis: "Mara hears the impossible bell.".into(),
+                    pov_character_id: None,
+                    status: "pending".into(),
+                    summary_saved: false,
+                    summary_artifact_path: None,
+                    replan_status: None,
+                    replan_detail: None,
+                },
+                crate::sqlite::records::AuthoringRunChapter {
+                    authoring_run_id: "authoring_run:phase_d_reseed".into(),
+                    chapter_number: 2,
+                    planned: false,
+                    synopsis: String::new(),
+                    pov_character_id: None,
+                    status: "pending".into(),
+                    summary_saved: false,
+                    summary_artifact_path: None,
+                    replan_status: None,
+                    replan_detail: None,
+                },
+            ],
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    // 1. Stage and apply a PlanChapter proposal for the missing future chapter 2 during the active run:
+    // It must succeed, bump chapter_plan.plan_revision to 2, and reseed authoring_run_chapter & authoring_run_scene for chapter 2!
+    let mut future_ch2 = phase_d_scene_input(&s, &cast_prop, &series_prop, &chapter_prop);
+    future_ch2.scope = Some(scope.clone());
+    future_ch2.target_range = Some(PlanningTargetRange {
+        book_number: 1,
+        chapter_start: 2,
+        chapter_end: 2,
+        scenes_per_chapter: 2,
+    });
+    future_ch2.operations[0].output_ref = "plan:ch2_future".into();
+    if let PlanningOperation::PlanChapter(ref mut plan) = future_ch2.operations[0].operation {
+        plan.chapter_number = 2;
+        plan.synopsis = "Mara traces the signal cable across the causeway.".into();
+    }
+    let future_ch2_prop = svc.stage_planning(future_ch2).await.unwrap();
+    let apply_ch2 = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            decision: PlanningDecision::Accept,
+            expected_hashes: BTreeMap::from([(
+                future_ch2_prop.id.clone(),
+                future_ch2_prop.payload_hash.clone(),
+            )]),
+            actor: "author:jane".into(),
+            note: "Plan missing future chapter 2 during active run".into(),
+        })
+        .await
+        .unwrap();
+    assert!(apply_ch2.complete);
+
+    let (_, run_chapters, run_scenes, _) = svc
+        .repository
+        .get_authoring_run("authoring_run:phase_d_reseed")
+        .await
+        .unwrap()
+        .unwrap();
+    let ch2_row = run_chapters.iter().find(|c| c.chapter_number == 2).unwrap();
+    assert!(ch2_row.planned);
+    assert_eq!(
+        ch2_row.synopsis,
+        "Mara traces the signal cable across the causeway."
+    );
+    let ch2_scenes: Vec<_> = run_scenes
+        .iter()
+        .filter(|sc| sc.chapter_number == 2)
+        .collect();
+    assert_eq!(ch2_scenes.len(), 2);
+    assert_eq!(
+        ch2_scenes[0].scene_artifact_path.as_deref(),
+        Some("scenes/chapter-0002/scene-001-r2.json")
+    );
+
+    // 2. Stage a conflicting Scene proposal targeting chapter 2 in the PlanningSession, then apply a living-outline
+    // scene_replace amendment to chapter 2 via decide_plan_amendments:
+    // - The conflicting staged proposal is marked Superseded.
+    // - Because the session has applied schedule projections (from series_input), session.projection_stale becomes true
+    //   and a reconciliation proposal (`reconcile:...`) is staged!
+    let mut conflicting_ch2 = phase_d_scene_input(&s, &cast_prop, &series_prop, &chapter_prop);
+    conflicting_ch2.scope = Some(scope.clone());
+    conflicting_ch2.target_range = Some(PlanningTargetRange {
+        book_number: 1,
+        chapter_start: 2,
+        chapter_end: 2,
+        scenes_per_chapter: 2,
+    });
+    conflicting_ch2.operations[0].output_ref = "plan:ch2_conflicting".into();
+    if let PlanningOperation::PlanChapter(ref mut plan) = conflicting_ch2.operations[0].operation {
+        plan.chapter_number = 2;
+        plan.synopsis = "Stale unapplied chapter 2 plan.".into();
+    }
+    let conflicting_prop = svc.stage_planning(conflicting_ch2).await.unwrap();
+
+    let staged_amendment = svc
+        .repository
+        .stage_plan_amendment(crate::sqlite::repository::StagePlanAmendmentParams {
+            project_id: scope.project_id.clone(),
+            branch_id: scope.branch_id.clone(),
+            source_chapter: 1,
+            book_number: 1,
+            authoring_run_id: Some("authoring_run:phase_d_reseed".into()),
+            amendment_class: "scene_replace".into(),
+            target_chapter: Some(2),
+            payload: serde_json::json!({
+                "scene_order": 1,
+                "summary": "Mara discovers the severed cable at the causeway gate.",
+                "purpose": "Escalate the harbour sabotage",
+                "character_ids": []
+            }),
+            rationale: "Living outline adjustment after Chapter 1".into(),
+            confidence: "high".into(),
+        })
+        .await
+        .unwrap();
+
+    let amend_out = svc
+        .decide_plan_amendments(spindle_core::models::DecidePlanAmendmentsInput {
+            project_id: scope.project_id.clone(),
+            decisions: vec![spindle_core::models::PlanAmendmentDecisionInput {
+                amendment_id: staged_amendment.id.clone(),
+                action: "apply".into(),
+                edit: None,
+                note: Some("Apply living outline amendment".into()),
+            }],
+            decided_by: Some("author:jane".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(amend_out.applied_count, 1);
+
+    let after_amend_session = svc.get_planning_session(&s.id).await.unwrap();
+    assert!(
+        after_amend_session.projection_stale,
+        "session with schedule projections must be flagged projection_stale after amendment"
+    );
+    assert!(after_amend_session.stale_reason.is_some());
+
+    let after_amend_props = svc
+        .list_planning_proposals(&s.id, Some(scope.clone()))
+        .await
+        .unwrap();
+    let superseded_conflict = after_amend_props
+        .iter()
+        .find(|p| p.id == conflicting_prop.id)
+        .unwrap();
+    assert_eq!(
+        superseded_conflict.status,
+        PlanningProposalStatus::Superseded
+    );
+    let recon_prop = after_amend_props
+        .iter()
+        .find(|p| {
+            p.status == PlanningProposalStatus::Staged
+                && p.artifact
+                    .operations
+                    .iter()
+                    .any(|op| op.output_ref.starts_with("reconcile:"))
+        })
+        .expect("reconciliation proposal should be staged");
+
+    // While projection_stale is true, planning_readiness reports stale_projection=true and ready_to_draft=false.
+    let stale_readiness = svc
+        .planning_readiness(PlanningReadinessInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            target_range: Some(PlanningTargetRange {
+                book_number: 1,
+                chapter_start: 1,
+                chapter_end: 2,
+                scenes_per_chapter: 2,
+            }),
+            mining_policy: None,
+            checkpoint_policy: None,
+        })
+        .await
+        .unwrap();
+    assert!(stale_readiness.stale_projection);
+    assert!(!stale_readiness.ready_to_draft);
+
+    // Superseding (or accepting) the reconciliation proposal clears projection_stale = false!
+    svc.decide_planning(DecidePlanningInput {
+        session_id: s.id.clone(),
+        scope: Some(scope.clone()),
+        decision: PlanningDecision::Supersede,
+        expected_hashes: BTreeMap::from([(recon_prop.id.clone(), recon_prop.payload_hash.clone())]),
+        actor: "author:jane".into(),
+        note: "Acknowledge and supersede reconciliation proposal".into(),
+    })
+    .await
+    .unwrap();
+
+    let reconciled_session = svc.get_planning_session(&s.id).await.unwrap();
+    assert!(!reconciled_session.projection_stale);
+}
