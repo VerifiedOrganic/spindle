@@ -4253,14 +4253,26 @@ impl SqliteSpindleService {
     }
 
     pub async fn test_agent(&self, input: TestAgentInput) -> Result<TestAgentOutput> {
+        let context = crate::ai::RequestContext {
+            project_id: input.project_id.clone(),
+            book_id: input.book_id.clone(),
+            chapter_id: input.chapter_id.clone(),
+            scene_id: input.scene_id.clone(),
+            run_id: input.run_id.clone(),
+            prompt_template_id: input.prompt_template_id.clone(),
+            prompt_version: input.prompt_version.clone(),
+            context_packet_hash: input.context_packet_hash.clone(),
+        };
+        let context = (!context.is_empty()).then_some(context);
         let mut output = self
             .repository
             .model_router()
-            .test_agent(
+            .test_agent_with_context(
                 &input.agent_id,
                 input.test_prompt.as_deref(),
                 input.route.as_deref(),
                 input.rating.as_deref(),
+                context,
             )
             .await?;
         if output.route_name == "draft" && !output.output.trim().is_empty() {
@@ -12323,7 +12335,11 @@ impl SqliteSpindleService {
                 route: "review".to_string(),
                 prompt,
                 rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
-                context: None,
+                context: Some(crate::ai::RequestContext {
+                    project_id: Some(scene.project_id.clone()),
+                    scene_id: Some(scene.id.clone()),
+                    ..Default::default()
+                }),
             })
             .await?;
 
@@ -13655,6 +13671,10 @@ impl SqliteSpindleService {
             book_id: input.book_id.clone(),
             chapter_id: input.chapter_id.clone(),
             scene_id: input.scene_id.clone(),
+            run_id: input.run_id.clone(),
+            prompt_template_id: input.prompt_template_id.clone(),
+            prompt_version: input.prompt_version.clone(),
+            context_packet_hash: input.context_packet_hash.clone(),
         };
         let context_ref = if context.is_empty() {
             None
@@ -14647,6 +14667,7 @@ impl SqliteSpindleService {
             book_id: None,
             chapter_id: Some(format!("{}.{}", scene.book_number, scene.chapter_number)),
             scene_id: Some(scene.id.clone()),
+            ..Default::default()
         });
         let antislop_injection = scan_scene_anti_slop(&scene.full_text)
             .as_ref()
@@ -14988,6 +15009,7 @@ impl SqliteSpindleService {
                 book_id: None,
                 chapter_id: None,
                 scene_id: input.scene_id.clone(),
+                ..Default::default()
             }),
         };
 
@@ -18553,6 +18575,12 @@ impl SqliteSpindleService {
             .await?;
         let rating = Some(scene.content_rating.trim().to_ascii_lowercase());
 
+        let mine_context = Some(crate::ai::RequestContext {
+            project_id: Some(input.project_id.clone()),
+            scene_id: Some(input.scene_id.clone()),
+            ..Default::default()
+        });
+
         // Fallback ladder (§2.3): mine → review (on NoRoute) → skip. The
         // chokepoint inside complete() gates the rating for the uncleared case,
         // so no prose leaves for an uncleared agent.
@@ -18563,7 +18591,7 @@ impl SqliteSpindleService {
                 route: "mine".to_string(),
                 prompt: prompt.clone(),
                 rating: rating.clone(),
-                context: None,
+                context: mine_context.clone(),
             })
             .await
         {
@@ -18582,7 +18610,7 @@ impl SqliteSpindleService {
                             route: "review".to_string(),
                             prompt: prompt.clone(),
                             rating: rating.clone(),
-                            context: None,
+                            context: mine_context,
                         })
                         .await
                     {
@@ -18832,6 +18860,11 @@ impl SqliteSpindleService {
             .collect();
         let prompt = build_replan_prompt(&realized, &target_digests);
 
+        let replan_context = Some(crate::ai::RequestContext {
+            project_id: Some(input.project_id.clone()),
+            ..Default::default()
+        });
+
         // Dispatch ladder (§2.3): replan → review (on NoRoute) → skip. The
         // route is non-prose-bearing, so rating is None throughout.
         let response = match self
@@ -18841,7 +18874,7 @@ impl SqliteSpindleService {
                 route: "replan".to_string(),
                 prompt: prompt.clone(),
                 rating: None,
-                context: None,
+                context: replan_context.clone(),
             })
             .await
         {
@@ -18860,7 +18893,7 @@ impl SqliteSpindleService {
                             route: "review".to_string(),
                             prompt: prompt.clone(),
                             rating: None,
-                            context: None,
+                            context: replan_context,
                         })
                         .await
                     {
@@ -23040,6 +23073,26 @@ impl SqliteSpindleService {
                     .await?
             }
         };
+        if input.generation_id.is_some() {
+            let project_id = save_input.project_id.clone();
+            let scene_id = scene.id.clone();
+            let _ = self
+                .repository
+                .pool()
+                .write(move |conn| {
+                    conn.execute(
+                        "UPDATE model_call
+                         SET scene_id = ?1,
+                             payload = json_set(payload, '$.scene_id', ?1)
+                         WHERE project_id = ?2
+                           AND route = 'draft'
+                           AND scene_id IS NULL",
+                        rusqlite::params![scene_id, project_id],
+                    )?;
+                    Ok(())
+                })
+                .await;
+        }
 
         // Record the knowledge_learned package (design §2.3 path 2). Each entry
         // is written through the SAME service path record_knowledge uses, stamped
@@ -34759,6 +34812,7 @@ rating = "explicit"
                 book_id: None,
                 chapter_id: None,
                 scene_id: None,
+                ..Default::default()
             })
             .await
             .unwrap_err();
@@ -39242,6 +39296,7 @@ rating = "explicit"
                         book_id: None,
                         chapter_id: None,
                         scene_id: None,
+                        ..Default::default()
                     })
                     .await;
             }

@@ -23,6 +23,71 @@ const EMBEDDING_DIMENSIONS: usize = 64;
 const HTTP_RETRY_ATTEMPTS: usize = 3;
 const HTTP_RETRY_BASE_DELAY_MS: u64 = if cfg!(test) { 10 } else { 1_000 };
 const HEALTH_HEARTBEAT_INTERVAL_MS: u64 = 10 * 60 * 1_000;
+
+// ── Prompt template IDs and version constants (V0047 telemetry attribution) ──
+pub const EXPLICIT_DRAFT_SYSTEM_PROMPT_TEMPLATE_ID: &str = "ai.explicit_draft_system";
+pub const EXPLICIT_DRAFT_SYSTEM_PROMPT_VERSION: &str = "v1";
+pub const EXPLICIT_ANALYSIS_SYSTEM_PROMPT_TEMPLATE_ID: &str = "ai.explicit_analysis_system";
+pub const EXPLICIT_ANALYSIS_SYSTEM_PROMPT_VERSION: &str = "v1";
+pub const GROK_MCP_SYSTEM_PROMPT_TEMPLATE_ID: &str = "ai.grok_mcp_system";
+pub const GROK_MCP_SYSTEM_PROMPT_VERSION: &str = "v1";
+pub const CONTINUATION_PROMPT_TEMPLATE_ID: &str = "ai.continuation";
+pub const CONTINUATION_PROMPT_VERSION: &str = "v1";
+pub const GROK_CONTINUATION_PROMPT_TEMPLATE_ID: &str = "ai.grok_continuation";
+pub const GROK_CONTINUATION_PROMPT_VERSION: &str = "v1";
+pub const AGENT_PROBE_PROMPT_TEMPLATE_ID: &str = "ai.agent_probe";
+pub const AGENT_PROBE_PROMPT_VERSION: &str = "v1";
+
+pub const HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID: &str = "harness.scene_draft_host";
+pub const HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION: &str = "v1";
+pub const HARNESS_DRAFTER_PROMPT_TEMPLATE_ID: &str = HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID;
+pub const HARNESS_DRAFTER_PROMPT_VERSION: &str = HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION;
+pub const HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID: &str = "harness.scene_draft_mcp_pull";
+pub const HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_VERSION: &str = "v1";
+pub const HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID: &str = "harness.chapter_summary";
+pub const HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION: &str = "v1";
+
+pub const CANON_MINE_PROMPT_TEMPLATE_ID: &str = "canon_mine";
+pub const CANON_MINE_PROMPT_VERSION: &str = "v1";
+pub const REPLAN_AUDIT_PROMPT_TEMPLATE_ID: &str = "replan_audit";
+pub const REPLAN_AUDIT_PROMPT_VERSION: &str = "v1";
+pub const READER_SIM_PROMPT_TEMPLATE_ID: &str = "reader_sim";
+pub const READER_SIM_PROMPT_VERSION: &str = "v1";
+pub const WORLD_RULE_DEEP_CHECK_PROMPT_TEMPLATE_ID: &str = "consistency.world_rule_deep";
+pub const WORLD_RULE_DEEP_CHECK_PROMPT_VERSION: &str = "v1";
+pub const TEMPORAL_DEEP_CHECK_PROMPT_TEMPLATE_ID: &str = "consistency.temporal_deep";
+pub const TEMPORAL_DEEP_CHECK_PROMPT_VERSION: &str = "v1";
+pub const PROMISE_PAYOFF_DEEP_CHECK_PROMPT_TEMPLATE_ID: &str = "consistency.promise_payoff_deep";
+pub const PROMISE_PAYOFF_DEEP_CHECK_PROMPT_VERSION: &str = "v1";
+pub const SECRET_LEAK_DEEP_CHECK_PROMPT_TEMPLATE_ID: &str = "consistency.secret_leak_deep";
+pub const SECRET_LEAK_DEEP_CHECK_PROMPT_VERSION: &str = "v1";
+pub const SCENE_PURPOSE_DEEP_CHECK_PROMPT_TEMPLATE_ID: &str = "consistency.scene_purpose_deep";
+pub const SCENE_PURPOSE_DEEP_CHECK_PROMPT_VERSION: &str = "v1";
+pub const GENERATION_REVISION_PROMPT_TEMPLATE_ID: &str = "generation_revision";
+pub const GENERATION_REVISION_PROMPT_VERSION: &str = "v1";
+
+pub const IMPORT_ENTITY_EXTRACTION_PROMPT_TEMPLATE_ID: &str = "import.entity_extraction";
+pub const IMPORT_ENTITY_EXTRACTION_PROMPT_VERSION: &str = "v1";
+pub const IMPORT_WORLD_EXTRACTION_PROMPT_TEMPLATE_ID: &str = "import.world_extraction";
+pub const IMPORT_WORLD_EXTRACTION_PROMPT_VERSION: &str = "v1";
+pub const IMPORT_NARRATIVE_ANALYSIS_PROMPT_TEMPLATE_ID: &str = "import.narrative_analysis";
+pub const IMPORT_NARRATIVE_ANALYSIS_PROMPT_VERSION: &str = "v1";
+pub const IMPORT_FINAL_STATE_PROMPT_TEMPLATE_ID: &str = "import.final_state";
+pub const IMPORT_FINAL_STATE_PROMPT_VERSION: &str = "v1";
+pub const IMPORT_ENTITY_CONSOLIDATION_PROMPT_TEMPLATE_ID: &str = "import.entity_consolidation";
+pub const IMPORT_ENTITY_CONSOLIDATION_PROMPT_VERSION: &str = "v1";
+pub const IMPORT_CHARACTER_ANALYSIS_PROMPT_TEMPLATE_ID: &str = "import.character_analysis";
+pub const IMPORT_CHARACTER_ANALYSIS_PROMPT_VERSION: &str = "v1";
+pub const IMPORT_REVIEW_VALIDATION_PROMPT_TEMPLATE_ID: &str = "import.review_validation";
+pub const IMPORT_REVIEW_VALIDATION_PROMPT_VERSION: &str = "v1";
+
+pub const STYLE_ANALYZE_PROMPT_TEMPLATE_ID: &str = "style.analyze";
+pub const STYLE_ANALYZE_PROMPT_VERSION: &str = "v1";
+pub const STYLE_REVISE_PROMPT_TEMPLATE_ID: &str = "style.revise";
+pub const STYLE_REVISE_PROMPT_VERSION: &str = "v1";
+
+pub const ROUTE_DEFAULT_PROMPT_VERSION: &str = "v1";
+
 const EXPLICIT_DRAFT_SYSTEM_APPENDIX: &str = "\
 Explicit-rating drafting directive: this scene is intended for adult readers. \
 When the prompt requests sexual material, keep it on page rather than fading to black \
@@ -193,6 +258,14 @@ pub struct RequestContext {
     pub chapter_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_packet_hash: Option<String>,
 }
 
 impl RequestContext {
@@ -201,7 +274,207 @@ impl RequestContext {
             && self.book_id.is_none()
             && self.chapter_id.is_none()
             && self.scene_id.is_none()
+            && self.run_id.is_none()
+            && self.prompt_template_id.is_none()
+            && self.prompt_version.is_none()
+            && self.context_packet_hash.is_none()
     }
+
+    pub fn has_spindle_ids(&self) -> bool {
+        self.project_id.is_some()
+            || self.book_id.is_some()
+            || self.chapter_id.is_some()
+            || self.scene_id.is_some()
+    }
+}
+
+/// Compute a deterministic SHA-256 hex digest of an assembled context/prompt
+/// packet without persisting any prose.
+pub fn compute_context_packet_hash(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Resolve the stable `(prompt_template_id, prompt_version)` pair for a model
+/// request when the caller has not overridden them on [`RequestContext`].
+pub fn infer_prompt_template(
+    route: &str,
+    rating: Option<&str>,
+    adapter_kind: Option<&str>,
+    prompt: &str,
+    is_continuation: bool,
+) -> (String, String) {
+    if is_continuation {
+        if matches!(adapter_kind, Some("grok" | "grok-cli")) {
+            return (
+                GROK_CONTINUATION_PROMPT_TEMPLATE_ID.to_string(),
+                GROK_CONTINUATION_PROMPT_VERSION.to_string(),
+            );
+        }
+        return (
+            CONTINUATION_PROMPT_TEMPLATE_ID.to_string(),
+            CONTINUATION_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Write two short lines that confirm the model is reachable.") {
+        return (
+            AGENT_PROBE_PROMPT_TEMPLATE_ID.to_string(),
+            AGENT_PROBE_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Write exactly one scene for Spindle and return JSON only.") {
+        return (
+            HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID.to_string(),
+            HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Use the Spindle MCP server/resources to pull the context you need") {
+        return (
+            HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID.to_string(),
+            HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Summarize one completed chapter for Spindle and return JSON only.") {
+        return (
+            HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID.to_string(),
+            HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("canon mining audit") {
+        return (
+            CANON_MINE_PROMPT_TEMPLATE_ID.to_string(),
+            CANON_MINE_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("outline replanning audit") {
+        return (
+            REPLAN_AUDIT_PROMPT_TEMPLATE_ID.to_string(),
+            REPLAN_AUDIT_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("cumulative reader simulation") {
+        return (
+            READER_SIM_PROMPT_TEMPLATE_ID.to_string(),
+            READER_SIM_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("semantic world-rule compliance audit")
+        || prompt.contains("semantically violates any of the world rules")
+    {
+        return (
+            WORLD_RULE_DEEP_CHECK_PROMPT_TEMPLATE_ID.to_string(),
+            WORLD_RULE_DEEP_CHECK_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("intra-scene temporal-coherence audit") {
+        return (
+            TEMPORAL_DEEP_CHECK_PROMPT_TEMPLATE_ID.to_string(),
+            TEMPORAL_DEEP_CHECK_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("narrative promise payoff audit") {
+        return (
+            PROMISE_PAYOFF_DEEP_CHECK_PROMPT_TEMPLATE_ID.to_string(),
+            PROMISE_PAYOFF_DEEP_CHECK_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("secret knowledge leak audit") {
+        return (
+            SECRET_LEAK_DEEP_CHECK_PROMPT_TEMPLATE_ID.to_string(),
+            SECRET_LEAK_DEEP_CHECK_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("scene purpose fulfillment audit") {
+        return (
+            SCENE_PURPOSE_DEEP_CHECK_PROMPT_TEMPLATE_ID.to_string(),
+            SCENE_PURPOSE_DEEP_CHECK_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.starts_with("Revise the generated scene prose below") {
+        return (
+            GENERATION_REVISION_PROMPT_TEMPLATE_ID.to_string(),
+            GENERATION_REVISION_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Extract import entities for ") {
+        return (
+            IMPORT_ENTITY_EXTRACTION_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_ENTITY_EXTRACTION_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Synthesize worldbuilding signals from ") {
+        return (
+            IMPORT_WORLD_EXTRACTION_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_WORLD_EXTRACTION_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Synthesize narrative architecture from ") {
+        return (
+            IMPORT_NARRATIVE_ANALYSIS_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_NARRATIVE_ANALYSIS_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Compute the imported manuscript ending state from ") {
+        return (
+            IMPORT_FINAL_STATE_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_FINAL_STATE_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Consolidate ") && prompt.contains(" import candidates into stable") {
+        return (
+            IMPORT_ENTITY_CONSOLIDATION_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_ENTITY_CONSOLIDATION_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Assemble imported character dossiers for these clusters") {
+        return (
+            IMPORT_CHARACTER_ANALYSIS_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_CHARACTER_ANALYSIS_PROMPT_VERSION.to_string(),
+        );
+    }
+    if prompt.contains("Validate import review item kind=") {
+        return (
+            IMPORT_REVIEW_VALIDATION_PROMPT_TEMPLATE_ID.to_string(),
+            IMPORT_REVIEW_VALIDATION_PROMPT_VERSION.to_string(),
+        );
+    }
+    if route == "style_analyze" {
+        return (
+            STYLE_ANALYZE_PROMPT_TEMPLATE_ID.to_string(),
+            STYLE_ANALYZE_PROMPT_VERSION.to_string(),
+        );
+    }
+    if route == "style_revise" {
+        return (
+            STYLE_REVISE_PROMPT_TEMPLATE_ID.to_string(),
+            STYLE_REVISE_PROMPT_VERSION.to_string(),
+        );
+    }
+    if matches!(adapter_kind, Some("grok" | "grok-cli")) {
+        return (
+            GROK_MCP_SYSTEM_PROMPT_TEMPLATE_ID.to_string(),
+            GROK_MCP_SYSTEM_PROMPT_VERSION.to_string(),
+        );
+    }
+    let is_explicit = rating.is_some_and(|v| v.trim().eq_ignore_ascii_case("explicit"));
+    if is_explicit && route == "draft" {
+        return (
+            EXPLICIT_DRAFT_SYSTEM_PROMPT_TEMPLATE_ID.to_string(),
+            EXPLICIT_DRAFT_SYSTEM_PROMPT_VERSION.to_string(),
+        );
+    }
+    if is_explicit && PROSE_BEARING_ROUTES.contains(&route) {
+        return (
+            EXPLICIT_ANALYSIS_SYSTEM_PROMPT_TEMPLATE_ID.to_string(),
+            EXPLICIT_ANALYSIS_SYSTEM_PROMPT_VERSION.to_string(),
+        );
+    }
+    (
+        format!("route.{route}"),
+        ROUTE_DEFAULT_PROMPT_VERSION.to_string(),
+    )
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -249,6 +522,8 @@ pub struct ModelRoute {
     pub system_prompt: String,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
     pub stop: Vec<String>,
     /// True only for the built-in `default_routes()` entries — i.e. a route that
     /// no operator agent config has claimed. The local stub for production
@@ -725,6 +1000,18 @@ impl ModelRouter {
         route: Option<&str>,
         rating: Option<&str>,
     ) -> anyhow::Result<TestAgentOutput> {
+        self.test_agent_with_context(agent_id, prompt, route, rating, None)
+            .await
+    }
+
+    pub async fn test_agent_with_context(
+        &self,
+        agent_id: &str,
+        prompt: Option<&str>,
+        route: Option<&str>,
+        rating: Option<&str>,
+        context: Option<RequestContext>,
+    ) -> anyhow::Result<TestAgentOutput> {
         let runtime = self
             .runtime
             .read()
@@ -739,7 +1026,7 @@ impl ModelRouter {
                     .unwrap_or("Write two short lines that confirm the model is reachable.")
                     .to_string(),
                 rating: rating.map(ToString::to_string),
-                context: None,
+                context,
             })
             .await?;
         Ok(TestAgentOutput {
@@ -756,11 +1043,31 @@ impl ModelRouter {
         })
     }
 
+    fn resolve_route_for_telemetry(
+        &self,
+        route_name: &str,
+        rating: Option<&str>,
+    ) -> Option<ModelRoute> {
+        let runtime = self.runtime.read().ok()?;
+        resolve_route(&runtime, route_name, rating).cloned()
+    }
+
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
         let start = std::time::Instant::now();
+        let resolved_route =
+            self.resolve_route_for_telemetry(&request.route, request.rating.as_deref());
         let mut result = self.complete_inner(request).await;
-        self.record_usage(&request.route, request.context.as_ref(), start, &mut result)
-            .await;
+        self.record_usage(
+            &request.route,
+            request.rating.as_deref(),
+            request.context.as_ref(),
+            &request.prompt,
+            false,
+            resolved_route.as_ref(),
+            start,
+            &mut result,
+        )
+        .await;
         result
     }
 
@@ -901,11 +1208,22 @@ impl ModelRouter {
         prior_output: &str,
     ) -> anyhow::Result<ModelResponse> {
         let start = std::time::Instant::now();
+        let resolved_route = self.resolve_route_for_telemetry(route_name, rating);
         let mut result = self
             .complete_continuation_inner(route_name, rating, context, original_prompt, prior_output)
             .await;
-        self.record_usage(route_name, context, start, &mut result)
-            .await;
+        let combined_context = format!("{original_prompt}\n{prior_output}");
+        self.record_usage(
+            route_name,
+            rating,
+            context,
+            &combined_context,
+            true,
+            resolved_route.as_ref(),
+            start,
+            &mut result,
+        )
+        .await;
         result
     }
 
@@ -1134,6 +1452,9 @@ impl ModelRouter {
             "temperature": route.temperature,
             "stream": false,
         });
+        if let Some(top_p) = route.top_p {
+            body["top_p"] = serde_json::json!(top_p);
+        }
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
         }
@@ -1208,6 +1529,9 @@ impl ModelRouter {
             "temperature": route.temperature,
             "stream": false,
         });
+        if let Some(top_p) = route.top_p {
+            body["top_p"] = serde_json::json!(top_p);
+        }
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
         }
@@ -1652,7 +1976,7 @@ fn grok_system_prompt(
     }
     prompt.push_str(GROK_MCP_USAGE_HINT);
     if let Some(context) = context
-        && !context.is_empty()
+        && context.has_spindle_ids()
     {
         prompt.push_str("\n\n");
         prompt.push_str(&format_spindle_context_block(context));
@@ -1927,6 +2251,7 @@ fn runtime_from_loaded_config(
                 purpose,
                 max_tokens: rule.max_tokens,
                 temperature: rule.temperature,
+                top_p: rule.top_p,
                 stop: rule.stop.clone(),
                 // Operator-configured route: NOT a built-in default, so a
                 // local-stub agent bound here is an intentional opt-in and the
@@ -2368,6 +2693,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "scene drafting and alternative synthesis".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2379,6 +2705,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "revision review and quality gates".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2390,6 +2717,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "agent-routed research workflow".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2401,6 +2729,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "semantic search embeddings".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2412,6 +2741,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "segment-level import extraction and candidate harvesting".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2423,6 +2753,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "cross-segment import synthesis and dossier assembly".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2434,6 +2765,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "import ambiguity validation and review-item triage".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2445,6 +2777,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "You are an expert stylometry and literary analysis agent. Analyze prose style and return structured JSON guidance.".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2456,6 +2789,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             system_prompt: "You are an expert editor and stylometrist. Provide style-aligned rewrite examples and suggestions.".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -3831,6 +4165,218 @@ enabled = false
         assert!(!serde_json::to_string(&report).unwrap().contains("PRIVATE"));
     }
 
+    #[tokio::test]
+    async fn model_usage_records_attribution_sampling_and_filters_without_prose() {
+        use spindle_core::models::GetModelUsageInput;
+
+        let (endpoint, server) = spawn_http_test_server(vec![
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "CONFIDENTIAL DRAFT PROSE"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 210, "completion_tokens": 55}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "{\"findings\":[]}"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 90, "completion_tokens": 12}
+                })
+                .to_string(),
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::sqlite::SqlitePool::open(&tmp.path().join("usage_attr.db"))
+            .await
+            .unwrap();
+        let repo = crate::sqlite::Repository::with_model_router(
+            pool.clone(),
+            tmp.path().into(),
+            http_test_router(&endpoint),
+        );
+        let svc = crate::sqlite::SqliteSpindleService::new(repo);
+        let project =
+            serde_json::from_value::<spindle_core::models::CreateProjectInput>(serde_json::json!({
+                "name": "Telemetry Project",
+                "genre": "fantasy",
+                "project_type": "novel",
+                "reader_contract": {
+                    "promise": "grim intrigue",
+                    "tone": "taut",
+                    "content_boundaries": ["safe"],
+                    "tropes": [],
+                    "anti_tropes": [],
+                    "emotional_payoffs": ["catharsis"]
+                }
+            }))
+            .unwrap();
+        let project = svc.create_project(project).await.unwrap();
+
+        // Seed an active authoring_run row to verify automatic run_id attribution
+        // when RequestContext omits run_id.
+        let project_id_for_run = project.project_id.clone();
+        pool.write(move |conn| {
+            conn.execute(
+                "INSERT INTO authoring_run (
+                    id, project_id, active_branch_id, book_number,
+                    start_chapter, end_chapter, checkpoint_interval,
+                    last_checkpoint_end_chapter, artifacts_dir, editorial_directives,
+                    status, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 1, 1, 5, 2, 0, 'artifacts', '[]', 'active', 1000, 2000)",
+                rusqlite::params![
+                    "authoring_run:test-run-01",
+                    project_id_for_run,
+                    project.branch_id
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let draft_prompt =
+            "Write exactly one scene for Spindle and return JSON only.\nCONFIDENTIAL CONTEXT";
+        let expected_hash = compute_context_packet_hash(draft_prompt);
+        svc.repository()
+            .model_router()
+            .complete(&ModelRequest {
+                route: "review".into(),
+                prompt: draft_prompt.into(),
+                rating: None,
+                context: Some(RequestContext {
+                    project_id: Some(project.project_id.clone()),
+                    scene_id: Some("scene:sc-01".into()),
+                    prompt_template_id: Some(
+                        HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID.to_string(),
+                    ),
+                    prompt_version: Some(HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION.to_string()),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+
+        let world_rule_prompt =
+            "Evaluate whether the scene prose semantically violates any of the world rules.";
+        svc.repository()
+            .model_router()
+            .complete(&ModelRequest {
+                route: "review".into(),
+                prompt: world_rule_prompt.into(),
+                rating: None,
+                context: Some(RequestContext {
+                    project_id: Some(project.project_id.clone()),
+                    scene_id: Some("scene:sc-02".into()),
+                    run_id: Some("authoring_run:explicit-run-02".into()),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(server.join().unwrap(), 2);
+
+        let all_calls = svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(all_calls.total_calls, 2);
+        assert_eq!(all_calls.calls.len(), 2);
+        let serialized = serde_json::to_string(&all_calls).unwrap();
+        assert!(!serialized.contains("CONFIDENTIAL"));
+
+        let first_call = all_calls
+            .calls
+            .iter()
+            .find(|c| c.scene_id.as_deref() == Some("scene:sc-01"))
+            .expect("sc-01 call recorded");
+        assert_eq!(
+            first_call.run_id.as_deref(),
+            Some("authoring_run:test-run-01"),
+            "active authoring_run should be attributed when context.run_id is omitted"
+        );
+        assert_eq!(
+            first_call.prompt_template_id.as_deref(),
+            Some(HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID)
+        );
+        assert_eq!(
+            first_call.prompt_version.as_deref(),
+            Some(HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION)
+        );
+        assert_eq!(
+            first_call.context_packet_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(first_call.temperature, Some(0.2));
+        assert_eq!(first_call.top_p, Some(0.95));
+        assert_eq!(first_call.max_tokens, Some(256));
+
+        let second_call = all_calls
+            .calls
+            .iter()
+            .find(|c| c.scene_id.as_deref() == Some("scene:sc-02"))
+            .expect("sc-02 call recorded");
+        assert_eq!(
+            second_call.run_id.as_deref(),
+            Some("authoring_run:explicit-run-02")
+        );
+        assert_eq!(
+            second_call.prompt_template_id.as_deref(),
+            Some(WORLD_RULE_DEEP_CHECK_PROMPT_TEMPLATE_ID)
+        );
+        assert_eq!(
+            second_call.prompt_version.as_deref(),
+            Some(WORLD_RULE_DEEP_CHECK_PROMPT_VERSION)
+        );
+
+        let filtered_by_scene = svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                scene_id: Some("scene:sc-01".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(filtered_by_scene.total_calls, 1);
+        assert_eq!(
+            filtered_by_scene.calls[0].scene_id.as_deref(),
+            Some("scene:sc-01")
+        );
+
+        let filtered_by_run = svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                run_id: Some("authoring_run:explicit-run-02".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(filtered_by_run.total_calls, 1);
+        assert_eq!(
+            filtered_by_run.calls[0].scene_id.as_deref(),
+            Some("scene:sc-02")
+        );
+
+        let filtered_by_template = svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                prompt_template_id: Some(WORLD_RULE_DEEP_CHECK_PROMPT_TEMPLATE_ID.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(filtered_by_template.total_calls, 1);
+        assert_eq!(
+            filtered_by_template.calls[0].prompt_template_id.as_deref(),
+            Some(WORLD_RULE_DEEP_CHECK_PROMPT_TEMPLATE_ID)
+        );
+    }
+
     fn http_test_router(endpoint: &str) -> ModelRouter {
         let route = ModelRoute {
             route_name: "review".to_string(),
@@ -3840,6 +4386,7 @@ enabled = false
             system_prompt: "revision review".to_string(),
             max_tokens: Some(256),
             temperature: Some(0.2),
+            top_p: Some(0.95),
             stop: Vec::new(),
             builtin_default: false,
         };
@@ -3851,6 +4398,7 @@ enabled = false
             system_prompt: None,
             max_tokens: Some(256),
             temperature: Some(0.2),
+            top_p: Some(0.95),
             stop: Vec::new(),
             rating: None,
         };
@@ -3996,6 +4544,7 @@ enabled = false
             system_prompt: "You are the drafting model.".to_string(),
             max_tokens: None,
             temperature: None,
+            top_p: None,
             stop: Vec::new(),
             builtin_default: false,
         }
@@ -4119,6 +4668,7 @@ enabled = false
             book_id: Some("book-1".to_string()),
             chapter_id: Some("ch-04".to_string()),
             scene_id: Some("sc-021".to_string()),
+            ..Default::default()
         };
         let prompt = grok_system_prompt(&route, Some("explicit"), Some(&context));
         assert!(prompt.contains("Spindle Context"));

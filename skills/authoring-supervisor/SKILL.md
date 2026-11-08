@@ -45,7 +45,11 @@ later model failed to repeat the concern.
 
 The local `/console` exposes series backlog, thread history, reader reviews,
 editorial decisions, and staged canon/plan actions beside manuscript reading.
-Use `get_model_usage` to report actual provider tokens and elapsed time;
+Use `get_model_usage` to report actual provider tokens, elapsed time, prompt
+template attribution (`prompt_template_id`, `prompt_version`,
+`context_packet_hash`), and sampling parameters (`temperature`, `top_p`,
+`max_tokens`), optionally filtered by `run_id`, `scene_id`, or
+`prompt_template_id`;
 unknown tokens remain unknown. Inspect deep `audit_coverage` separately from
 finding counts, including heuristic-only and unsampled records.
 
