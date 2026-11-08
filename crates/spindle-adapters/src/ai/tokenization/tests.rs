@@ -216,3 +216,64 @@ async fn cancellation_after_dispatch_keeps_recovery_marker() {
     server.join().unwrap();
     assert!(!config.calibration_file.exists());
 }
+
+#[tokio::test]
+async fn configured_packet_counter_checks_final_messages_before_prose_dispatch() {
+    use crate::drafting::{DraftTokenizer, assemble_packet_with_system};
+    use spindle_core::drafting::EditorialPolicy;
+    for drift in [0, 1] {
+        let (dir, mut config) = fixture();
+        config.probe_mode = ProbeMode::CloudOneToken;
+        let encoder = PinnedTokenizer::load("fixture", config.clone()).unwrap();
+        let samples = calibration_messages()
+            .iter()
+            .zip([9, 10, 8, 646])
+            .map(|(m, n)| ProbeReceipt {
+                model: "fixture".into(),
+                messages_hash: messages_hash(m).unwrap(),
+                input_tokens: n,
+                output_tokens: 1,
+                model_call_id: format!("fixture-{n}"),
+            })
+            .collect();
+        let certificate = encoder.certificate("test", samples).unwrap();
+        let encoder = encoder.verify(&certificate, "test").unwrap();
+        let packet = crate::drafting::tests::fixture();
+        let budget = crate::drafting::tests::budget();
+        let prepared =
+            assemble_packet_with_system(packet.clone(), &budget, Some(&encoder), "Test").unwrap();
+        let count = encoder.count_messages(&prepared.messages).unwrap();
+        let mut responses = [9, 10, 8, 646].map(|n| response(n, 1)).to_vec();
+        responses.push(response(count + drift, 1));
+        if drift == 0 {
+            responses.push((200,serde_json::json!({"model":"fixture","choices":[{"message":{"content":"Exact draft.\r\n"},"finish_reason":"stop"}]}).to_string()));
+        }
+        let (endpoint, captured, server) = spawn_http_capture_server(responses);
+        let router = router(&endpoint, &config, dir.path()).await;
+        router
+            .calibrate_tokenizer("draft", "general")
+            .await
+            .unwrap();
+        let result = router
+            .draft_packet(EditorialPolicy::CritiqueV1, packet, &budget, None)
+            .await;
+        if drift == 0 {
+            let (actual, response) = result.unwrap();
+            assert_eq!(actual.messages, prepared.messages);
+            assert_eq!(response.output, "Exact draft.\r\n");
+            assert_eq!(server.join().unwrap(), 6);
+            let captured = captured.lock().unwrap();
+            let probe: serde_json::Value = serde_json::from_str(&captured[4]).unwrap();
+            let generation: serde_json::Value = serde_json::from_str(&captured[5]).unwrap();
+            assert_eq!(probe["messages"], generation["messages"]);
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("calibration mismatch")
+            );
+            assert_eq!(server.join().unwrap(), 5);
+        }
+    }
+}
