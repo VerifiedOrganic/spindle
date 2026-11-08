@@ -1186,41 +1186,57 @@ def expand_pairs_for_calibration(
     target_count: int = 100,
     seed: int = 20261107,
 ) -> list[dict]:
-    """Build a calibration set of ~100 pairs drawn across the 30 scene briefs."""
-    if len(base_pairs) >= target_count:
-        return [
-            {**p, "pair_id": f"P{idx:03d}"}
-            for idx, p in enumerate(base_pairs[:target_count], start=1)
-        ]
+    """Build a calibration set of ~100 pairs drawn across the scene briefs while preserving pair provenance."""
+    if not base_pairs or target_count <= 0:
+        return []
 
     rng = random.Random(seed)
     expanded: list[dict] = []
-    variant_Round = 0
+    used_pair_ids: set[str] = set()
+    variant_round = 0
     while len(expanded) < target_count:
-        variant_Round += 1
+        variant_round += 1
         cycle_pairs = list(base_pairs)
-        if variant_Round > 1:
+        if variant_round > 1:
             rng.shuffle(cycle_pairs)
         for p in cycle_pairs:
             if len(expanded) >= target_count:
                 break
-            idx = len(expanded) + 1
             cid = p["case_id"]
             brief = briefs_by_id.get(cid, {})
+            orig_pid = str(p["pair_id"])
+            existing_spid = p.get("source_pair_id")
+            if existing_spid and orig_pid.startswith(f"{existing_spid}#cal"):
+                source_pid = str(existing_spid)
+            else:
+                source_pid = orig_pid
+            if variant_round == 1 and orig_pid not in used_pair_ids:
+                cal_pid = orig_pid
+            else:
+                cal_pid = f"{orig_pid}#cal{variant_round}"
+                suffix = 2
+                while cal_pid in used_pair_ids:
+                    cal_pid = f"{orig_pid}#cal{variant_round}_{suffix}"
+                    suffix += 1
+            used_pair_ids.add(cal_pid)
+
             base_copy = dict(p["baseline"])
             cand_copy = dict(p["candidate"])
-            if variant_Round > 1:
+            if variant_round > 1:
                 # Distinct pair sampling tag so each of the ~100 calibration pairs has unique provenance
-                base_copy["model_version"] = f"{base_copy.get('model_version', 'v1')}-cal-r{variant_Round}"
-                cand_copy["model_version"] = f"{cand_copy.get('model_version', 'v1')}-cal-r{variant_Round}"
+                base_copy["model_version"] = f"{base_copy.get('model_version', 'v1')}-cal-r{variant_round}"
+                cand_copy["model_version"] = f"{cand_copy.get('model_version', 'v1')}-cal-r{variant_round}"
             expanded.append({
-                "pair_id": f"P{idx:03d}",
+                "pair_id": cal_pid,
+                "source_pair_id": source_pid,
                 "case_id": cid,
                 "brief_id": cid,
                 "task": p.get("task") or brief.get("task", ""),
                 "contract": p.get("contract") or brief.get("contract", ""),
                 "scene_purpose": p.get("scene_purpose") or brief.get("scene_purpose", ""),
                 "continuity_checklist": p.get("continuity_checklist") or brief.get("criteria", []),
+                "baseline_text_hash": digest(base_copy["text"]),
+                "candidate_text_hash": digest(cand_copy["text"]),
                 "baseline": base_copy,
                 "candidate": cand_copy,
             })
@@ -1234,13 +1250,6 @@ def compute_calibration_agreement(
 ) -> dict:
     """Compute judge-human agreement metrics from a scored pairwise human packet and judge results."""
     human_scored = serial_fiction.score_pairs(key_path, ratings_path)
-    human_by_pair: dict[str, str] = {}
-    human_by_case: dict[str, list[str]] = {}
-    for row in human_scored.get("deblinded_pairs", []):
-        verdict = row.get("human_verdict")
-        if verdict in VERDICT_LABELS:
-            human_by_pair[row["pair_id"]] = verdict
-            human_by_case.setdefault(row["case_id"], []).append(verdict)
 
     pair_records = judge_results.get("pairs", [])
     judge_ids = [j["id"] for j in judge_results.get("judges", [])]
@@ -1249,17 +1258,67 @@ def compute_calibration_agreement(
     aligned_consensus: list[str] = []
     aligned_by_judge: dict[str, list[str]] = {jid: [] for jid in judge_ids}
 
-    # Align either by exact pair_id or by brief_id/case_id across the calibration set
-    judge_by_pair = {pr["pair_id"]: pr for pr in pair_records}
-    judge_by_case = {pr["brief_id"]: pr for pr in pair_records}
+    judge_by_id: dict[str, dict] = {}
+    judge_by_content: dict[tuple[str, str, str], list[dict]] = {}
+    for pr in pair_records:
+        pid = pr.get("pair_id")
+        spid = pr.get("source_pair_id") or pid
+        bid = pr.get("brief_id") or pr.get("case_id")
+        b_hash = pr.get("baseline_text_hash")
+        c_hash = pr.get("candidate_text_hash")
+        if not pid or not bid or not b_hash or not c_hash:
+            raise ValueError(
+                f"Judge pair record {pid!r} is missing required provenance fields "
+                "(brief_id, baseline_text_hash, candidate_text_hash)"
+            )
+        if pid in judge_by_id:
+            raise ValueError(f"Duplicate pair_id {pid!r} in judge_results")
+        judge_by_id[pid] = pr
+        if spid and spid not in judge_by_id:
+            judge_by_id[spid] = pr
+        judge_by_content.setdefault((bid, b_hash, c_hash), []).append(pr)
 
     for row in human_scored.get("deblinded_pairs", []):
         h_verdict = row.get("human_verdict")
         if h_verdict not in VERDICT_LABELS:
             continue
-        pr = judge_by_pair.get(row["pair_id"]) or judge_by_case.get(row["case_id"])
-        if not pr:
-            continue
+        h_pid = row["pair_id"]
+        h_spid = row.get("source_pair_id") or (h_pid.split("#cal", 1)[0] if "#cal" in h_pid else h_pid)
+        h_cid = row["case_id"]
+        h_b_hash = row.get("baseline_text_hash")
+        h_c_hash = row.get("candidate_text_hash")
+        if not h_b_hash or not h_c_hash:
+            raise ValueError(
+                f"Human calibration row {h_pid!r} is missing baseline_text_hash or candidate_text_hash"
+            )
+
+        pr = judge_by_id.get(h_pid) or judge_by_id.get(h_spid)
+        if pr is not None:
+            pr_bid = pr.get("brief_id") or pr.get("case_id")
+            if (
+                pr_bid != h_cid
+                or pr.get("baseline_text_hash") != h_b_hash
+                or pr.get("candidate_text_hash") != h_c_hash
+            ):
+                raise ValueError(
+                    f"Calibration pair {h_pid!r} (source={h_spid!r}, case={h_cid!r}) does not match "
+                    f"judged pair {pr.get('pair_id')!r} (brief={pr_bid!r}) prose content hashes"
+                )
+        else:
+            content_matches = judge_by_content.get((h_cid, h_b_hash, h_c_hash), [])
+            if len(content_matches) == 1:
+                pr = content_matches[0]
+            elif len(content_matches) > 1:
+                raise ValueError(
+                    f"Ambiguous calibration match for {h_pid!r} on brief {h_cid!r}: "
+                    "multiple judged pairs share identical hashes without matching source_pair_id"
+                )
+            else:
+                raise ValueError(
+                    f"No matching judged prose pair found for calibration row {h_pid!r} "
+                    f"(source={h_spid!r}, case={h_cid!r})"
+                )
+
         aligned_human.append(h_verdict)
         aligned_consensus.append(pr["panel_consensus"])
         per_j = {jr["judge_id"]: jr["verdict"] for jr in pr.get("judge_evaluations", [])}
@@ -1358,14 +1417,26 @@ def run_evaluation(
 
         consensus = panel_consensus([e["verdict"] for e in evals_for_pair])
         consensus_verdicts.append(consensus)
+        base_hash = digest(pair["baseline"]["text"])
+        cand_hash = digest(pair["candidate"]["text"])
+        pid_str = str(pair["pair_id"])
+        existing_spid = pair.get("source_pair_id")
+        source_pid = (
+            str(existing_spid)
+            if (existing_spid and pid_str.startswith(f"{existing_spid}#cal"))
+            else pid_str
+        )
         pair_reports.append({
             "pair_id": pair["pair_id"],
+            "source_pair_id": source_pid,
             "brief_id": bid,
             "name": brief["name"],
             "project_id": brief["project_id"],
             "genre": brief["genre"],
             "scene_type": brief["scene_type"],
             "pov": brief["pov"],
+            "baseline_text_hash": base_hash,
+            "candidate_text_hash": cand_hash,
             "baseline_meta": {
                 "model": pair["baseline"].get("model"),
                 "model_version": pair["baseline"].get("model_version"),
@@ -1593,6 +1664,93 @@ def self_test() -> None:
         assert cal_agreement["human_pairs_unrated"] == 60
         assert cal_agreement["panel_consensus_vs_human"]["raw_agreement_rate"]["estimate"] == 1.0
         assert cal_agreement["panel_consensus_vs_human"]["cohens_kappa"] == 1.0
+
+        # 4b. Verify reordered/custom non-sequential pair_ids and multiple distinct pairs per brief
+        p1_base = dict(pairs[0])
+        p2_base = dict(pairs[1])
+        # Reordered: P002 (PJ02, swapped so baseline wins) first, P001 (PJ01, candidate wins) second,
+        # plus a second distinct prose pair on PJ01 (CUSTOM-PJ01-SWAPPED, baseline wins)
+        reordered_custom_pairs = [
+            {
+                **p2_base,
+                "pair_id": "P002",
+                "case_id": "PJ02",
+                "brief_id": "PJ02",
+                "baseline": {**p2_base["candidate"], "condition": "baseline"},
+                "candidate": {**p2_base["baseline"], "condition": "candidate"},
+            },
+            {
+                **p1_base,
+                "pair_id": "P001",
+                "case_id": "PJ01",
+                "brief_id": "PJ01",
+            },
+            {
+                **p1_base,
+                "pair_id": "CUSTOM-PJ01-SWAPPED",
+                "case_id": "PJ01",
+                "brief_id": "PJ01",
+                # Swap baseline and candidate prose so baseline is the stronger draft on this second PJ01 pair
+                "baseline": {**p1_base["candidate"], "condition": "baseline"},
+                "candidate": {**p1_base["baseline"], "condition": "candidate"},
+            },
+        ]
+        custom_judge_report = run_evaluation(briefs[:2], reordered_custom_pairs, offline_judges, seed=20261107)
+        assert [pr["pair_id"] for pr in custom_judge_report["pairs"]] == ["P002", "P001", "CUSTOM-PJ01-SWAPPED"]
+        assert [pr["panel_consensus"] for pr in custom_judge_report["pairs"]] == ["baseline", "candidate", "baseline"]
+
+        non_expanded_custom = expand_pairs_for_calibration(reordered_custom_pairs, brief_map, target_count=3, seed=20261107)
+        assert [p["pair_id"] for p in non_expanded_custom] == ["P002", "P001", "CUSTOM-PJ01-SWAPPED"]
+        expanded_custom = expand_pairs_for_calibration(reordered_custom_pairs, brief_map, target_count=6, seed=20261107)
+        assert [p["pair_id"] for p in expanded_custom[:3]] == ["P002", "P001", "CUSTOM-PJ01-SWAPPED"]
+        assert all(p["source_pair_id"] in {"P002", "P001", "CUSTOM-PJ01-SWAPPED"} for p in expanded_custom)
+
+        custom_cal_dir = root / "blind_custom"
+        serial_fiction.blind_pairs(expanded_custom, custom_cal_dir, seed=20261107)
+        ckey = read_json(custom_cal_dir / "private-key.json")
+        cratings = read_json(custom_cal_dir / "ratings.json")
+        cmap = {m["pair_id"]: m for m in ckey["mapping"]}
+        for row in cratings:
+            m = cmap[row["pair_id"]]
+            inv = {cond: lbl for lbl, cond in m["labels"].items()}
+            # Human agrees with candidate ONLY on P001, and with baseline on P002 and CUSTOM-PJ01-SWAPPED
+            expected_winner = "candidate" if m.get("source_pair_id") == "P001" else "baseline"
+            row["preferred"] = [inv[expected_winner]]
+        write_json(custom_cal_dir / "ratings.json", cratings)
+
+        custom_cal = compute_calibration_agreement(
+            custom_cal_dir / "private-key.json",
+            custom_cal_dir / "ratings.json",
+            custom_judge_report,
+        )
+        assert custom_cal["human_pairs_rated"] == 6
+        assert custom_cal["panel_consensus_vs_human"]["raw_agreement_rate"]["estimate"] == 1.0
+        assert custom_cal["panel_consensus_vs_human"]["cohens_kappa"] == 1.0
+
+        # 4c. Reject mismatched prose / different drafting run or missing second pair on same brief
+        corrupted_report = json.loads(json.dumps(custom_judge_report))
+        corrupted_report["pairs"][0]["candidate_text_hash"] = "0" * 64
+        try:
+            compute_calibration_agreement(
+                custom_cal_dir / "private-key.json",
+                custom_cal_dir / "ratings.json",
+                corrupted_report,
+            )
+            raise AssertionError("Expected ValueError on mismatched candidate_text_hash")
+        except ValueError:
+            pass
+
+        incomplete_same_brief_report = json.loads(json.dumps(custom_judge_report))
+        incomplete_same_brief_report["pairs"] = incomplete_same_brief_report["pairs"][:2]  # drop CUSTOM-PJ01-SWAPPED
+        try:
+            compute_calibration_agreement(
+                custom_cal_dir / "private-key.json",
+                custom_cal_dir / "ratings.json",
+                incomplete_same_brief_report,
+            )
+            raise AssertionError("Expected ValueError when a distinct prose pair on the same brief is missing from judge results")
+        except ValueError:
+            pass
 
     # 5. Verify secret redaction & key check safety
     os.environ["SPINDLE_TEST_FAKE_SECRET_KEY"] = "super-secret-value-12345"

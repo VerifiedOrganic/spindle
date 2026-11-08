@@ -198,6 +198,7 @@ def normalize_pairwise_input(source, briefs_by_id=None):
             if not case_id:
                 raise ValueError("Each pair record requires case_id or brief_id")
             pair_id = item.get("pair_id") or f"P{idx:03d}"
+            source_pair_id = item.get("source_pair_id") or pair_id
             brief = briefs_by_id.get(case_id, {})
             base_dict = dict(item["baseline"])
             cand_dict = dict(item["candidate"])
@@ -205,6 +206,7 @@ def normalize_pairwise_input(source, briefs_by_id=None):
             cand_dict.setdefault("case_id", case_id)
             pair_entry = {
                 "pair_id": pair_id,
+                "source_pair_id": source_pair_id,
                 "case_id": case_id,
                 "task": item.get("task") or brief.get("task", ""),
                 "contract": item.get("contract") or brief.get("contract", ""),
@@ -224,7 +226,11 @@ def normalize_pairwise_input(source, briefs_by_id=None):
             if not pid or cond not in PAIRWISE_CONDITIONS:
                 raise ValueError("Flat pairwise candidates require pair_id/case_id and condition in ('baseline', 'candidate')")
             if pid not in grouped:
-                grouped[pid] = {"pair_id": pid, "case_id": cid or pid}
+                grouped[pid] = {
+                    "pair_id": pid,
+                    "source_pair_id": row.get("source_pair_id") or pid,
+                    "case_id": cid or pid,
+                }
                 order_keys.append(pid)
             if cond in grouped[pid]:
                 raise ValueError(f"Duplicate condition {cond} for pair {pid}")
@@ -237,6 +243,7 @@ def normalize_pairwise_input(source, briefs_by_id=None):
             brief = briefs_by_id.get(entry["case_id"], {})
             pairs.append({
                 "pair_id": pid,
+                "source_pair_id": entry["source_pair_id"],
                 "case_id": entry["case_id"],
                 "task": entry["baseline"].get("task") or brief.get("task", ""),
                 "contract": entry["baseline"].get("contract") or brief.get("contract", ""),
@@ -260,9 +267,11 @@ def normalize_pairwise_input(source, briefs_by_id=None):
                 valid_number(cand.get(field), field, integer=field.endswith("tokens"))
             flat_candidates.append({
                 "pair_id": pid,
+                "source_pair_id": pair.get("source_pair_id") or pid,
                 "case_id": pair["case_id"],
                 "condition": cond,
                 "text": cand["text"],
+                "text_hash": digest(cand["text"]),
                 "model": cand["model"],
                 "model_version": cand["model_version"],
                 "prompt_variant": cand.get("prompt_variant"),
@@ -270,6 +279,8 @@ def normalize_pairwise_input(source, briefs_by_id=None):
                 "output_tokens": cand.get("output_tokens"),
                 "elapsed_seconds": cand.get("elapsed_seconds"),
             })
+        pair["baseline_text_hash"] = digest(pair["baseline"]["text"])
+        pair["candidate_text_hash"] = digest(pair["candidate"]["text"])
     return pairs, flat_candidates
 
 
@@ -303,7 +314,14 @@ def blind_pairs(candidates_path, output, seed, briefs_path=None):
     key, packet, ratings = [], [], []
     for pair, order in zip(shuffled_pairs, orders):
         mapping = dict(zip("AB", order))
-        key.append({"pair_id": pair["pair_id"], "case_id": pair["case_id"], "labels": mapping})
+        key.append({
+            "pair_id": pair["pair_id"],
+            "source_pair_id": pair.get("source_pair_id") or pair["pair_id"],
+            "case_id": pair["case_id"],
+            "baseline_text_hash": pair["baseline_text_hash"],
+            "candidate_text_hash": pair["candidate_text_hash"],
+            "labels": mapping,
+        })
         packet.append({
             "pair_id": pair["pair_id"],
             "case_id": pair["case_id"],
@@ -348,6 +366,7 @@ def score_pairs(key_path, ratings_path):
     if digest(key["candidates"]) != key["source_hash"]:
         raise ValueError("Candidate provenance hash changed")
     mappings = {row["pair_id"]: row for row in key["mapping"]}
+    cand_lookup = {(c["pair_id"], c["condition"]): c for c in key["candidates"]}
     if len({r.get("pair_id") for r in ratings}) != len(ratings) or {r.get("pair_id") for r in ratings} != set(mappings):
         raise ValueError("Rating pairs must match the blinded packet exactly")
     result = {
@@ -416,9 +435,22 @@ def score_pairs(key_path, ratings_path):
                             raise ValueError(f"rubric.{dim_name} must be 1–5 or null")
                         result[condition]["rubric_scores"].setdefault(dim_name, []).append(score_val)
                         pair_rubric[condition][dim_name] = score_val
+        base_cand = cand_lookup.get((pid, "baseline"), {})
+        cand_cand = cand_lookup.get((pid, "candidate"), {})
         deblinded_pairs.append({
             "pair_id": pid,
+            "source_pair_id": mapping_row.get("source_pair_id") or base_cand.get("source_pair_id") or pid,
             "case_id": mapping_row["case_id"],
+            "baseline_text_hash": (
+                mapping_row.get("baseline_text_hash")
+                or base_cand.get("text_hash")
+                or (digest(base_cand["text"]) if "text" in base_cand else None)
+            ),
+            "candidate_text_hash": (
+                mapping_row.get("candidate_text_hash")
+                or cand_cand.get("text_hash")
+                or (digest(cand_cand["text"]) if "text" in cand_cand else None)
+            ),
             "human_verdict": human_verdict,
             "rationale": row.get("rationale", ""),
             "rubric": pair_rubric if pair_rubric else None,
