@@ -565,6 +565,9 @@ impl SqliteSpindleService {
                 session,
             } => (attempt_id, created_at, *session),
         };
+        let _active_guard = self
+            .repository
+            .register_active_planning_attempt(&attempt_id);
 
         match self
             .advance_planning_claimed(input, session, attempt_id.clone(), now)
@@ -676,6 +679,14 @@ impl SqliteSpindleService {
                 } else {
                     PlanningSessionOutcome::NeedsAuthor
                 };
+                let fallback_host_request = make_host_request(
+                    &session,
+                    level,
+                    &base_prompt,
+                    &parents,
+                    None,
+                    findings.clone(),
+                );
                 let report = PlanningAdvanceReport {
                     attempt_id,
                     session_id: session.id.clone(),
@@ -697,7 +708,12 @@ impl SqliteSpindleService {
                     .repository
                     .commit_planning_generation(
                         meta_for_session(&session, outcome),
-                        Some((stage_input, receipt, findings)),
+                        Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
+                            input: stage_input,
+                            receipt,
+                            findings,
+                            fallback_host_request,
+                        }),
                         report,
                     )
                     .await;
@@ -788,6 +804,8 @@ impl SqliteSpindleService {
         let reservation_1 = match self
             .repository
             .reserve_planning_model_call(
+                &attempt_id,
+                level,
                 &session.id,
                 session.scope.clone(),
                 session.budget.clone(),
@@ -955,6 +973,14 @@ impl SqliteSpindleService {
             } else {
                 PlanningSessionOutcome::NeedsAuthor
             };
+            let fallback_host_request = make_host_request(
+                &session,
+                level,
+                &base_prompt,
+                &parents,
+                None,
+                findings_1.clone(),
+            );
             let report = PlanningAdvanceReport {
                 attempt_id,
                 session_id: session.id.clone(),
@@ -976,7 +1002,76 @@ impl SqliteSpindleService {
                 .repository
                 .commit_planning_generation(
                     meta_for_session(&session, outcome),
-                    Some((stage_input, receipt, findings_1)),
+                    Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
+                        input: stage_input,
+                        receipt,
+                        findings: findings_1,
+                        fallback_host_request,
+                    }),
+                    report,
+                )
+                .await;
+        }
+
+        let unrepairable_state_change = findings_1.iter().any(|f| {
+            f.severity == PlanningFindingSeverity::Blocking
+                && matches!(
+                    f.code.as_str(),
+                    "stale_or_inactive_planning_parent"
+                        | "missing_planning_parent"
+                        | "stale_intent_hash"
+                        | "accepted_contract_root_immutable"
+                )
+        });
+        if unrepairable_state_change {
+            let receipt = PlanningGenerationReceipt {
+                source: PlanningOutputSource::Model,
+                prompt_id: base_prompt.prompt_id,
+                prompt_hash: base_prompt.prompt_hash.clone(),
+                schema_hash: base_prompt.schema_hash.clone(),
+                route_task: Some(resolved_route.route_task),
+                resolved_route: Some(resolved_route.resolved_route),
+                agent_name: Some(resolved_route.agent_name),
+                adapter_kind: Some(resolved_route.adapter_kind),
+                model: Some(resolved_route.model),
+                attempts_used: 1,
+                repaired: false,
+                calls: vec![call_1],
+                recorded_at: now,
+            };
+            let host_req = make_host_request(
+                &session,
+                level,
+                &base_prompt,
+                &parents,
+                None,
+                findings_1.clone(),
+            );
+            let report = PlanningAdvanceReport {
+                attempt_id,
+                session_id: session.id.clone(),
+                level,
+                retry_key: input.retry_key,
+                outcome: PlanningSessionOutcome::ModelOutputRejected,
+                proposal: None,
+                generation_receipt: Some(receipt),
+                findings: findings_1,
+                author_questions: Vec::new(),
+                host_request: Some(host_req),
+                route_problem: None,
+                usage: session.usage.clone(),
+                budget: session.budget.clone(),
+                message: Some(
+                    "session or parent proposal state changed during generation; cannot stage against invalidated parents"
+                        .into(),
+                ),
+                created_at: now,
+            };
+            return self
+                .repository
+                .commit_planning_generation(
+                    meta_for_session(&session, PlanningSessionOutcome::ModelOutputRejected),
+                    None,
                     report,
                 )
                 .await;
@@ -989,6 +1084,8 @@ impl SqliteSpindleService {
         let reservation_2 = match self
             .repository
             .reserve_planning_model_call(
+                &attempt_id,
+                level,
                 &session.id,
                 session.scope.clone(),
                 session.budget.clone(),
@@ -1193,6 +1290,14 @@ impl SqliteSpindleService {
             } else {
                 PlanningSessionOutcome::NeedsAuthor
             };
+            let fallback_host_request = make_host_request(
+                &session,
+                level,
+                &base_prompt,
+                &parents,
+                None,
+                findings_2.clone(),
+            );
             let report = PlanningAdvanceReport {
                 attempt_id,
                 session_id: session.id.clone(),
@@ -1214,7 +1319,12 @@ impl SqliteSpindleService {
                 .repository
                 .commit_planning_generation(
                     meta_for_session(&session, outcome),
-                    Some((stage_input, receipt_2, findings_2)),
+                    Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
+                        input: stage_input,
+                        receipt: receipt_2,
+                        findings: findings_2,
+                        fallback_host_request,
+                    }),
                     report,
                 )
                 .await;

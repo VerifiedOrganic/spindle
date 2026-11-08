@@ -642,6 +642,17 @@ fn validate_stage_input_in_conn(
     let s = check_session(conn, &input.session_id, &input.scope)?;
     let effective_ceiling = rating_ceiling.or(s.rating_ceiling);
     let mut findings = Vec::new();
+    if s.intent_hash != input.intent_hash {
+        findings.push(PlanningFinding {
+            code: "stale_intent_hash".to_string(),
+            severity: PlanningFindingSeverity::Blocking,
+            path: "/intent_hash".to_string(),
+            related_refs: Vec::new(),
+            expected: s.intent_hash.clone(),
+            actual: input.intent_hash.clone(),
+            repair_hint: "Use the current session intent_hash.".to_string(),
+        });
+    }
     if input.schema_version != 1 {
         findings.push(PlanningFinding {
             code: "invalid_schema_version".to_string(),
@@ -677,6 +688,58 @@ fn validate_stage_input_in_conn(
         });
     }
     let old = proposals(conn, &s.id)?;
+    if input.level == PlanningLevel::Contract
+        && old.iter().any(|p| {
+            p.artifact.level == PlanningLevel::Contract
+                && p.status == PlanningProposalStatus::Applied
+        })
+    {
+        findings.push(PlanningFinding {
+            code: "accepted_contract_root_immutable".to_string(),
+            severity: PlanningFindingSeverity::Blocking,
+            path: "/level".to_string(),
+            related_refs: Vec::new(),
+            expected: "unaccepted contract root".to_string(),
+            actual: "contract root already applied".to_string(),
+            repair_hint:
+                "Cannot stage or regenerate a contract proposal after the root contract has been applied."
+                    .to_string(),
+        });
+    }
+    for (id, expected) in &input.parents {
+        match old.iter().find(|p| &p.id == id) {
+            None => findings.push(PlanningFinding {
+                code: "missing_planning_parent".to_string(),
+                severity: PlanningFindingSeverity::Blocking,
+                path: format!("/parents/{id}"),
+                related_refs: vec![id.clone()],
+                expected: "existing parent proposal in session".to_string(),
+                actual: "missing".to_string(),
+                repair_hint: "Reference only parent proposals that exist in this planning session."
+                    .to_string(),
+            }),
+            Some(parent)
+                if &parent.payload_hash != expected
+                    || !matches!(
+                        parent.status,
+                        PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
+                    ) =>
+            {
+                findings.push(PlanningFinding {
+                    code: "stale_or_inactive_planning_parent".to_string(),
+                    severity: PlanningFindingSeverity::Blocking,
+                    path: format!("/parents/{id}"),
+                    related_refs: vec![id.clone()],
+                    expected: format!("active (staged/applied) parent with hash {expected}"),
+                    actual: format!("status={:?}, hash={}", parent.status, parent.payload_hash),
+                    repair_hint:
+                        "Re-select active parent proposals; a parent proposal was rejected, superseded, or modified."
+                            .to_string(),
+                });
+            }
+            Some(_) => {}
+        }
+    }
     let mut available = std::collections::BTreeMap::new();
     let mut reserved = std::collections::BTreeSet::new();
     let mut planted_promises = std::collections::BTreeMap::new();
@@ -874,6 +937,14 @@ pub(crate) struct PlanningSessionMetadataUpdate {
     pub last_outcome: PlanningSessionOutcome,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PlanningStagedCommitCandidate {
+    pub input: StagePlanningInput,
+    pub receipt: PlanningGenerationReceipt,
+    pub findings: Vec<PlanningFinding>,
+    pub fallback_host_request: PlanningHostRequest,
+}
+
 fn check_budget_in_conn(
     budget: &PlanningBudget,
     usage: &PlanningBudgetUsage,
@@ -980,16 +1051,22 @@ impl Repository {
     ) -> Result<Option<PlanningAdvanceReport>> {
         let session_id = session_id.to_owned();
         let retry_key = retry_key.to_owned();
+        let active_snapshot = self.active_planning_attempts_snapshot();
         self.pool()
             .read(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 AND outcome != 'in_progress' LIMIT 1",
+                    "SELECT id, outcome, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
                 )?;
                 let mut rows = stmt.query(rusqlite::params![session_id, retry_key])?;
                 let Some(row) = rows.next()? else {
                     return Ok(Ok(None));
                 };
-                let data: String = row.get(0)?;
+                let id: String = row.get(0)?;
+                let outcome: String = row.get(1)?;
+                let data: String = row.get(2)?;
+                if outcome == "in_progress" && active_snapshot.contains(&id) {
+                    return Ok(Ok(None));
+                }
                 Ok((|| -> Result<_> { Ok(Some(serde_json::from_str(&data)?)) })())
             })
             .await?
@@ -1001,19 +1078,31 @@ impl Repository {
         scope: Option<PlanningScope>,
     ) -> Result<Vec<PlanningAdvanceReport>> {
         let session_id = session_id.to_owned();
+        let active_snapshot = self.active_planning_attempts_snapshot();
         self.pool()
             .read(move |conn| {
                 Ok((|| -> Result<_> {
                     check_session(conn, &session_id, &scope)?;
                     let mut stmt = conn.prepare(
-                        "SELECT data FROM planning_generation_attempt WHERE session_id=?1 AND outcome != 'in_progress' ORDER BY created_at, id",
+                        "SELECT id, outcome, data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
                     )?;
                     let rows = stmt
-                        .query_map([&session_id], |r| r.get::<_, String>(0))?
+                        .query_map([&session_id], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                            ))
+                        })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
-                    rows.into_iter()
-                        .map(|d| Ok(serde_json::from_str(&d)?))
-                        .collect()
+                    let mut out = Vec::new();
+                    for (id, outcome, data) in rows {
+                        if outcome == "in_progress" && active_snapshot.contains(&id) {
+                            continue;
+                        }
+                        out.push(serde_json::from_str(&data)?);
+                    }
+                    Ok(out)
                 })())
             })
             .await?
@@ -1026,33 +1115,97 @@ impl Repository {
         retry_key: Option<String>,
     ) -> Result<PlanningAttemptClaim> {
         let session_id = session_id.to_owned();
+        let active_snapshot = self.active_planning_attempts_snapshot();
         self.pool()
             .write(move |conn| {
                 Ok((|| -> Result<PlanningAttemptClaim> {
                     let tx = conn.transaction()?;
                     let s = check_session(&tx, &session_id, &scope)?;
                     if let Some(rk) = retry_key.as_deref() {
-                        let existing: Option<(String, String)> = tx
+                        let existing: Option<(String, String, String)> = tx
                             .query_row(
-                                "SELECT outcome, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                                "SELECT id, outcome, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
                                 rusqlite::params![session_id, rk],
-                                |r| Ok((r.get(0)?, r.get(1)?)),
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                             )
                             .optional_inner()?;
-                        if let Some((outcome, data)) = existing {
+                        if let Some((existing_id, outcome, data)) = existing {
+                            if outcome != "in_progress" {
+                                let report: PlanningAdvanceReport = serde_json::from_str(&data)?;
+                                return Ok(PlanningAttemptClaim::Existing(Box::new(report)));
+                            }
                             anyhow::ensure!(
-                                outcome != "in_progress",
+                                !active_snapshot.contains(&existing_id),
                                 "planning generation attempt for retry_key '{rk}' is already in progress"
                             );
-                            let report: PlanningAdvanceReport = serde_json::from_str(&data)?;
-                            return Ok(PlanningAttemptClaim::Existing(Box::new(report)));
+                            let created_at = timestamp_to_micros(chrono::Utc::now());
+                            let recovered_report = PlanningAdvanceReport {
+                                attempt_id: existing_id.clone(),
+                                session_id: session_id.clone(),
+                                level: PlanningLevel::Contract,
+                                retry_key: retry_key.clone(),
+                                outcome: PlanningSessionOutcome::NeedsRoute,
+                                proposal: None,
+                                generation_receipt: None,
+                                findings: Vec::new(),
+                                author_questions: Vec::new(),
+                                host_request: None,
+                                route_problem: None,
+                                usage: s.usage.clone(),
+                                budget: s.budget.clone(),
+                                message: Some(
+                                    "generation attempt was interrupted before completion; any reserved call budget was retained"
+                                        .to_string(),
+                                ),
+                                created_at,
+                            };
+                            tx.execute(
+                                "UPDATE planning_generation_attempt SET data=?2, created_at=?3 WHERE id=?1",
+                                rusqlite::params![
+                                    existing_id,
+                                    serde_json::to_string(&recovered_report)?,
+                                    created_at
+                                ],
+                            )?;
+                            tx.commit()?;
+                            return Ok(PlanningAttemptClaim::Claimed {
+                                attempt_id: existing_id,
+                                created_at,
+                                session: Box::new(s),
+                            });
                         }
                     }
                     let attempt_id = mint_id("planning_generation_attempt");
                     let created_at = timestamp_to_micros(chrono::Utc::now());
+                    let initial_report = PlanningAdvanceReport {
+                        attempt_id: attempt_id.clone(),
+                        session_id: session_id.clone(),
+                        level: PlanningLevel::Contract,
+                        retry_key: retry_key.clone(),
+                        outcome: PlanningSessionOutcome::NeedsRoute,
+                        proposal: None,
+                        generation_receipt: None,
+                        findings: Vec::new(),
+                        author_questions: Vec::new(),
+                        host_request: None,
+                        route_problem: None,
+                        usage: s.usage.clone(),
+                        budget: s.budget.clone(),
+                        message: Some(
+                            "generation attempt was interrupted before completion; any reserved call budget was retained"
+                                .to_string(),
+                        ),
+                        created_at,
+                    };
                     tx.execute(
-                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,'contract',?3,'in_progress',NULL,'{}',?4)",
-                        rusqlite::params![attempt_id, session_id, retry_key, created_at],
+                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,'contract',?3,'in_progress',NULL,?4,?5)",
+                        rusqlite::params![
+                            attempt_id,
+                            session_id,
+                            retry_key,
+                            serde_json::to_string(&initial_report)?,
+                            created_at
+                        ],
                     )?;
                     tx.commit()?;
                     Ok(PlanningAttemptClaim::Claimed {
@@ -1080,6 +1233,8 @@ impl Repository {
 
     pub(crate) async fn reserve_planning_model_call(
         &self,
+        attempt_id: &str,
+        level: PlanningLevel,
         session_id: &str,
         scope: Option<PlanningScope>,
         budget: PlanningBudget,
@@ -1094,6 +1249,7 @@ impl Repository {
             (String, PlanningBudgetUsage),
         >,
     > {
+        let attempt_id = attempt_id.to_owned();
         let session_id = session_id.to_owned();
         self.pool()
             .write(move |conn| {
@@ -1126,6 +1282,32 @@ impl Repository {
                                 "UPDATE planning_session SET data=?2 WHERE id=?1",
                                 rusqlite::params![s.id, serde_json::to_string(&s)?],
                             )?;
+                            if let Some(existing_data) = tx
+                                .query_row(
+                                    "SELECT data FROM planning_generation_attempt WHERE id=?1 AND outcome='in_progress'",
+                                    [&attempt_id],
+                                    |r| r.get::<_, String>(0),
+                                )
+                                .optional_inner()?
+                                && let Ok(mut pending_report) =
+                                    serde_json::from_str::<PlanningAdvanceReport>(&existing_data)
+                            {
+                                pending_report.level = level;
+                                pending_report.usage = s.usage.clone();
+                                pending_report.budget = s.budget.clone();
+                                let level_str = serde_json::to_value(level)?
+                                    .as_str()
+                                    .unwrap_or("contract")
+                                    .to_string();
+                                tx.execute(
+                                    "UPDATE planning_generation_attempt SET level=?2, data=?3 WHERE id=?1 AND outcome='in_progress'",
+                                    rusqlite::params![
+                                        attempt_id,
+                                        level_str,
+                                        serde_json::to_string(&pending_report)?
+                                    ],
+                                )?;
+                            }
                             tx.commit()?;
                             Ok(Ok((res, usage_before, s.usage)))
                         }
@@ -1394,11 +1576,7 @@ impl Repository {
     pub(crate) async fn commit_planning_generation(
         &self,
         meta: PlanningSessionMetadataUpdate,
-        staged: Option<(
-            StagePlanningInput,
-            PlanningGenerationReceipt,
-            Vec<PlanningFinding>,
-        )>,
+        staged: Option<PlanningStagedCommitCandidate>,
         mut report: PlanningAdvanceReport,
     ) -> Result<PlanningAdvanceReport> {
         self.pool()
@@ -1413,36 +1591,67 @@ impl Repository {
                     live_session.last_outcome = Some(meta.last_outcome);
                     report.usage = live_session.usage.clone();
                     report.budget = live_session.budget.clone();
-                    let proposal_id = if let Some((input, receipt, findings)) = staged {
-                        let captured_base_state =
-                            apply::base_state(&tx, &live_session.scope, &input)?;
-                        let p = PlanningProposal {
-                            id: mint_id("planning_proposal"),
-                            payload_hash: hash(&input)?,
-                            artifact: input,
-                            status: PlanningProposalStatus::Staged,
-                            policy_snapshot: live_session.policy.clone(),
-                            base_state: captured_base_state,
-                            generation_receipt: Some(receipt),
-                            findings,
-                            decided_by: None,
-                            decision_note: None,
-                            decided_at: None,
-                            created_at: report.created_at,
-                        };
-                        tx.execute(
-                            "INSERT INTO planning_proposal(id,session_id,payload_hash,status,data,created_at) VALUES(?1,?2,?3,'staged',?4,?5)",
-                            rusqlite::params![
-                                p.id,
-                                p.artifact.session_id,
-                                p.payload_hash,
-                                serde_json::to_string(&p)?,
-                                p.created_at
-                            ],
+                    let proposal_id = if let Some(mut candidate) = staged {
+                        let tx_findings = validate_stage_input_in_conn(
+                            &tx,
+                            &candidate.input,
+                            live_session.rating_ceiling.clone(),
                         )?;
-                        let pid = p.id.clone();
-                        report.proposal = Some(p);
-                        Some(pid)
+                        let has_blocking = tx_findings
+                            .iter()
+                            .any(|f| f.severity == PlanningFindingSeverity::Blocking);
+                        if has_blocking {
+                            candidate.receipt.repaired = false;
+                            candidate.fallback_host_request.prior_findings = tx_findings.clone();
+                            live_session.last_outcome =
+                                Some(PlanningSessionOutcome::ModelOutputRejected);
+                            report.outcome = PlanningSessionOutcome::ModelOutputRejected;
+                            report.proposal = None;
+                            report.generation_receipt = Some(candidate.receipt);
+                            report.findings = tx_findings;
+                            report.author_questions = Vec::new();
+                            report.host_request = Some(candidate.fallback_host_request);
+                            report.message = Some(
+                                "staging invariants failed during transactional commit".to_string(),
+                            );
+                            None
+                        } else {
+                            let merged_findings = if tx_findings.is_empty() {
+                                candidate.findings
+                            } else {
+                                tx_findings
+                            };
+                            let captured_base_state =
+                                apply::base_state(&tx, &live_session.scope, &candidate.input)?;
+                            let p = PlanningProposal {
+                                id: mint_id("planning_proposal"),
+                                payload_hash: hash(&candidate.input)?,
+                                artifact: candidate.input,
+                                status: PlanningProposalStatus::Staged,
+                                policy_snapshot: live_session.policy.clone(),
+                                base_state: captured_base_state,
+                                generation_receipt: Some(candidate.receipt.clone()),
+                                findings: merged_findings.clone(),
+                                decided_by: None,
+                                decision_note: None,
+                                decided_at: None,
+                                created_at: report.created_at,
+                            };
+                            tx.execute(
+                                "INSERT INTO planning_proposal(id,session_id,payload_hash,status,data,created_at) VALUES(?1,?2,?3,'staged',?4,?5)",
+                                rusqlite::params![
+                                    p.id,
+                                    p.artifact.session_id,
+                                    p.payload_hash,
+                                    serde_json::to_string(&p)?,
+                                    p.created_at
+                                ],
+                            )?;
+                            let pid = p.id.clone();
+                            report.findings = merged_findings;
+                            report.proposal = Some(p);
+                            Some(pid)
+                        }
                     } else {
                         None
                     };

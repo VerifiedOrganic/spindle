@@ -3669,36 +3669,23 @@ async fn simultaneous_advances_reserve_budget_atomically_and_simultaneous_retry_
     let addr = listener.local_addr().unwrap();
     let call_counter = Arc::new(AtomicUsize::new(0));
     let call_counter_srv = call_counter.clone();
-    let responses = vec![
-        // 1: simultaneous retry_key test (only 1 call should arrive)
-        json!({
-            "choices": [{"message": {"content": valid_contract.to_string()}}],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 50}
-        })
-        .to_string(),
-        // 2: simultaneous max_model_calls=1 test (only 1 call should arrive)
-        json!({
-            "choices": [{"message": {"content": valid_contract.to_string()}}],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 60}
-        })
-        .to_string(),
-        // 3 & 4: simultaneous max_model_calls=2 test (both calls arrive and overlap)
-        json!({
-            "choices": [{"message": {"content": valid_contract.to_string()}}],
-            "usage": {"prompt_tokens": 110, "completion_tokens": 40}
-        })
-        .to_string(),
-        json!({
-            "choices": [{"message": {"content": valid_cast.to_string()}}],
-            "usage": {"prompt_tokens": 130, "completion_tokens": 60}
-        })
-        .to_string(),
-    ];
+    let body_contract = json!({
+        "choices": [{"message": {"content": valid_contract.to_string()}}],
+        "usage": {"prompt_tokens": 110, "completion_tokens": 40}
+    })
+    .to_string();
+    let body_cast = json!({
+        "choices": [{"message": {"content": valid_cast.to_string()}}],
+        "usage": {"prompt_tokens": 130, "completion_tokens": 60}
+    })
+    .to_string();
     let srv_handle = std::thread::spawn(move || {
         let mut worker_threads = Vec::new();
-        for body in responses {
+        for _ in 0..4 {
             let (mut stream, _) = listener.accept().unwrap();
             let counter = call_counter_srv.clone();
+            let contract_reply = body_contract.clone();
+            let cast_reply = body_cast.clone();
             worker_threads.push(std::thread::spawn(move || {
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -3730,6 +3717,12 @@ async fn simultaneous_advances_reserve_budget_atomically_and_simultaneous_retry_
                         Err(_) => break,
                     }
                 }
+                let req_str = String::from_utf8_lossy(&buf[..total]);
+                let body = if req_str.contains("planning_seed_v1") {
+                    cast_reply
+                } else {
+                    contract_reply
+                };
                 counter.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(60));
                 let reply = format!(
@@ -3902,5 +3895,821 @@ agent = "concurrent-agent"
     assert_eq!(final_session.usage.input_tokens, 110 + 130);
     assert_eq!(final_session.usage.output_tokens, 40 + 60);
     assert_eq!(final_session.usage.total_tokens, 150 + 190);
+    srv_handle.join().unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_and_reopened_in_progress_attempt_retains_reservation_and_recovers_on_same_retry_key()
+ {
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Recovered contract after cancellation.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Recovered Harbor",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {"promise": "Durable recovery", "style_notes": [], "boundaries": []}
+                }
+            }
+        }]
+    });
+    let valid_cast = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Recovered cast after process reopen.",
+        "operations": [{
+            "output_ref": "cast:tomas",
+            "operation": {
+                "operation": "create_character",
+                "input": {
+                    "name": "Tomas",
+                    "summary": "Signalman",
+                    "role": "supporting",
+                    "realm": null
+                }
+            }
+        }]
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body_contract = json!({
+        "choices": [{"message": {"content": valid_contract.to_string()}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 45}
+    })
+    .to_string();
+    let body_cast = json!({
+        "choices": [{"message": {"content": valid_cast.to_string()}}],
+        "usage": {"prompt_tokens": 120, "completion_tokens": 55}
+    })
+    .to_string();
+
+    let srv_handle = std::thread::spawn(move || {
+        // Request 1: slow (300ms) so the client future times out and is dropped mid-await.
+        // Request 2: fast response for the in-process retry of "cancel-key-001".
+        // Request 3: fast response for the post-reopen retry of "reopen-key-001".
+        for (delay_ms, body) in [
+            (300u64, body_contract.clone()),
+            (0u64, body_contract),
+            (0u64, body_cast),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .ok();
+            let mut buf = [0u8; 65536];
+            let mut total = 0usize;
+            loop {
+                match stream.read(&mut buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        let s = String::from_utf8_lossy(&buf[..total]);
+                        if let Some(hdr_end) = s.find("\r\n\r\n") {
+                            let hdrs = &s[..hdr_end];
+                            let content_len = hdrs
+                                .lines()
+                                .find_map(|l| {
+                                    let lower = l.to_ascii_lowercase();
+                                    lower
+                                        .strip_prefix("content-length:")
+                                        .and_then(|v| v.trim().parse::<usize>().ok())
+                                })
+                                .unwrap_or(0);
+                            if total >= hdr_end + 4 + content_len {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            if delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(reply.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("planning_cancel_reopen.db");
+    let config_path = tmp.path().join("spindle.toml");
+    let endpoint = format!("http://{addr}/v1");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "recover-agent"
+name = "Recover Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "recover-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "recover-agent"
+"#
+        ),
+    )
+    .unwrap();
+
+    let pool = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let router = crate::ai::ModelRouter::local_only();
+    router
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let repo = Repository::with_model_router(pool, tmp.path().join("data"), router);
+    let svc = SqliteSpindleService::new(repo);
+
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Cancel and reopen retry recovery".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // 1. Start advance_planning with "cancel-key-001" and cancel/drop the future mid-await!
+    let req_cancel = AdvancePlanningInput {
+        session_id: s.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::Contract),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: None,
+        host_submission: None,
+        retry_key: Some("cancel-key-001".into()),
+    };
+    let timed_out = tokio::time::timeout(
+        std::time::Duration::from_millis(75),
+        svc.advance_planning(req_cancel.clone()),
+    )
+    .await;
+    assert!(
+        timed_out.is_err(),
+        "first call should time out while HTTP response is delayed"
+    );
+
+    // Uncertain paid-call reservation (model_calls == 1) must be retained on the session,
+    // and the interrupted attempt must be visible via list/find APIs.
+    let session_after_cancel = svc.get_planning_session(&s.id).await.unwrap();
+    assert_eq!(session_after_cancel.usage.model_calls, 1);
+    let attempts_after_cancel = svc
+        .list_planning_generation_attempts(&s.id, None)
+        .await
+        .unwrap();
+    assert_eq!(attempts_after_cancel.len(), 1);
+    assert_eq!(attempts_after_cancel[0].usage.model_calls, 1);
+
+    // 2. Retry the exact same retry_key ("cancel-key-001"): must recover and succeed (`Staged`)
+    // while retaining the uncertain call reservation (`model_calls == 2`).
+    let recovered = svc.advance_planning(req_cancel.clone()).await.unwrap();
+    assert_eq!(recovered.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(recovered.attempt_id, attempts_after_cancel[0].attempt_id);
+    assert_eq!(recovered.usage.model_calls, 2);
+
+    // Idempotent replay after terminal completion does not dispatch another call.
+    let replayed = svc.advance_planning(req_cancel).await.unwrap();
+    assert_eq!(replayed.attempt_id, recovered.attempt_id);
+    assert_eq!(replayed.usage.model_calls, 2);
+
+    // 3. Simulate process crash/reopen with an abandoned `'in_progress'` attempt for "reopen-key-001"
+    // and an uncertain reserved call (`model_calls == 3`).
+    drop(svc);
+    let pool2 = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let router2 = crate::ai::ModelRouter::local_only();
+    router2
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let repo2 = Repository::with_model_router(pool2, tmp.path().join("data"), router2);
+    let svc2 = SqliteSpindleService::new(repo2);
+
+    let crashed_claim = svc2
+        .repository
+        .claim_planning_generation_attempt(&s.id, None, Some("reopen-key-001".into()))
+        .await
+        .unwrap();
+    let crashed_attempt_id = match crashed_claim {
+        crate::sqlite::repository::PlanningAttemptClaim::Claimed { attempt_id, .. } => attempt_id,
+        _ => panic!("expected fresh claim"),
+    };
+    svc2.repository
+        .reserve_planning_model_call(
+            &crashed_attempt_id,
+            PlanningLevel::CastWorld,
+            &s.id,
+            None,
+            PlanningBudget::default(),
+            200,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    drop(svc2);
+
+    // Reopen in a fresh service instance and retry "reopen-key-001": must recover and reach `Staged`
+    // while retaining the crashed run's reserved call (`model_calls == 4`).
+    let pool3 = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let router3 = crate::ai::ModelRouter::local_only();
+    router3
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let repo3 = Repository::with_model_router(pool3, tmp.path().join("data"), router3);
+    let svc3 = SqliteSpindleService::new(repo3);
+
+    let reopened_res = svc3
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::CastWorld),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("reopen-key-001".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(reopened_res.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(reopened_res.attempt_id, crashed_attempt_id);
+    assert_eq!(reopened_res.usage.model_calls, 4);
+
+    srv_handle.join().unwrap();
+}
+
+#[tokio::test]
+async fn transactional_commit_revalidates_duplicate_output_refs_and_parent_rejection_during_generation()
+ {
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let dup_cast_payload = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Overlapping cast proposal with shared output_ref.",
+        "operations": [{
+            "output_ref": "cast:shared_hero",
+            "operation": {
+                "operation": "create_character",
+                "input": {
+                    "name": "Sera",
+                    "summary": "Navigator",
+                    "role": "protagonist",
+                    "realm": null
+                }
+            }
+        }]
+    });
+    let child_cast_payload = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Cast proposal whose parent contract is rejected while model call is in flight.",
+        "operations": [{
+            "output_ref": "cast:after_parent_reject",
+            "operation": {
+                "operation": "create_character",
+                "input": {
+                    "name": "Bram",
+                    "summary": "Quartermaster",
+                    "role": "supporting",
+                    "realm": null
+                }
+            }
+        }]
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let call_counter = Arc::new(AtomicUsize::new(0));
+    let call_counter_srv = call_counter.clone();
+    let (req1_entered_tx, req1_entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let (req1_release_tx, req1_release_rx) = std::sync::mpsc::channel::<()>();
+    let (req2_entered_tx, req2_entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let (req2_release_tx, req2_release_rx) = std::sync::mpsc::channel::<()>();
+
+    let dup_body = json!({
+        "choices": [{"message": {"content": dup_cast_payload.to_string()}}],
+        "usage": {"prompt_tokens": 90, "completion_tokens": 40}
+    })
+    .to_string();
+    let child_body = json!({
+        "choices": [{"message": {"content": child_cast_payload.to_string()}}],
+        "usage": {"prompt_tokens": 95, "completion_tokens": 45}
+    })
+    .to_string();
+
+    let srv_handle = std::thread::spawn(move || {
+        // Call 1: overlapping model vs host submission with same `output_ref` ("cast:shared_hero").
+        // Call 2: model generation of CastWorld while parent Contract is rejected mid-flight.
+        let mut entered_signals = [Some(req1_entered_tx), Some(req2_entered_tx)];
+        let release_waits = [req1_release_rx, req2_release_rx];
+        let bodies = [dup_body, child_body];
+        for idx in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .ok();
+            let mut buf = [0u8; 65536];
+            let mut total = 0usize;
+            loop {
+                match stream.read(&mut buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        let s = String::from_utf8_lossy(&buf[..total]);
+                        if let Some(hdr_end) = s.find("\r\n\r\n") {
+                            let hdrs = &s[..hdr_end];
+                            let content_len = hdrs
+                                .lines()
+                                .find_map(|l| {
+                                    let lower = l.to_ascii_lowercase();
+                                    lower
+                                        .strip_prefix("content-length:")
+                                        .and_then(|v| v.trim().parse::<usize>().ok())
+                                })
+                                .unwrap_or(0);
+                            if total >= hdr_end + 4 + content_len {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            call_counter_srv.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = entered_signals[idx].take() {
+                let _ = tx.send(());
+            }
+            let _ = release_waits[idx].recv_timeout(std::time::Duration::from_secs(5));
+            let body = &bodies[idx];
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(reply.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let endpoint = format!("http://{addr}/v1");
+    let (_tmp, svc) = service_with_toml(&format!(
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "tx-guard-agent"
+name = "Tx Guard Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "tx-guard-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "tx-guard-agent"
+"#
+    ))
+    .await;
+
+    // 1. Overlapping host submissions AND overlapping model+host submissions with the same `output_ref`.
+    let s_dup = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Prevent duplicate output_ref across overlapping advances".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    // 1a. Two simultaneous host submissions with different retry_keys and the same `output_ref`:
+    // both may validate on the read pool, but transactional commit must allow only ONE Staged proposal.
+    let host_dup_payload = json!({
+        "schema_version": 1,
+        "level": "cast_world",
+        "rationale": "Simultaneous host submission with identical output_ref.",
+        "operations": [{
+            "output_ref": "cast:simultaneous_host",
+            "operation": {
+                "operation": "create_character",
+                "input": {
+                    "name": "Lira",
+                    "summary": "Cartographer",
+                    "role": "supporting",
+                    "realm": null
+                }
+            }
+        }]
+    });
+    let host_a = AdvancePlanningInput {
+        session_id: s_dup.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::CastWorld),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: None,
+        host_submission: Some(PlanningHostSubmission {
+            source: PlanningOutputSource::Host,
+            payload: host_dup_payload.clone(),
+        }),
+        retry_key: Some("host-dup-key-a".into()),
+    };
+    let host_b = AdvancePlanningInput {
+        retry_key: Some("host-dup-key-b".into()),
+        ..host_a.clone()
+    };
+    let (res_ha, res_hb) = tokio::join!(svc.advance_planning(host_a), svc.advance_planning(host_b));
+    let (res_ha, res_hb) = (res_ha.unwrap(), res_hb.unwrap());
+    let host_outcomes = [res_ha.outcome, res_hb.outcome];
+    assert!(host_outcomes.contains(&PlanningSessionOutcome::Staged));
+    assert!(host_outcomes.contains(&PlanningSessionOutcome::ModelOutputRejected));
+    let rejected_host = if res_ha.outcome == PlanningSessionOutcome::ModelOutputRejected {
+        &res_ha
+    } else {
+        &res_hb
+    };
+    assert!(rejected_host.proposal.is_none());
+    assert!(
+        rejected_host
+            .findings
+            .iter()
+            .any(|f| f.code == "duplicate_output_ref")
+    );
+
+    // 1b. Overlapping model advance and host submission with the same `output_ref` ("cast:shared_hero").
+    let model_dup_req = AdvancePlanningInput {
+        session_id: s_dup.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::CastWorld),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: Some(PlanningBudget {
+            max_model_calls: 1,
+            ..PlanningBudget::default()
+        }),
+        host_submission: None,
+        retry_key: Some("model-dup-key".into()),
+    };
+    let host_shared_req = AdvancePlanningInput {
+        session_id: s_dup.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::CastWorld),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: None,
+        host_submission: Some(PlanningHostSubmission {
+            source: PlanningOutputSource::Host,
+            payload: dup_cast_payload.clone(),
+        }),
+        retry_key: Some("host-shared-key".into()),
+    };
+    let model_fut = svc.advance_planning(model_dup_req);
+    let overlap_fut = async {
+        req1_entered_rx.await.unwrap();
+        let host_out = svc.advance_planning(host_shared_req).await.unwrap();
+        assert_eq!(host_out.outcome, PlanningSessionOutcome::Staged);
+        let _ = req1_release_tx.send(());
+        host_out
+    };
+    let (model_res, _host_res) = tokio::join!(model_fut, overlap_fut);
+    let model_res = model_res.unwrap();
+    // With max_model_calls=2 and only 1 call budget used before repair (wait: we only scripted 1 HTTP response for dup_body, so set max_model_calls=1 on s_dup!)
+    assert!(matches!(
+        model_res.outcome,
+        PlanningSessionOutcome::BudgetExhausted | PlanningSessionOutcome::ModelOutputRejected
+    ));
+    assert!(model_res.proposal.is_none());
+    assert!(
+        model_res
+            .findings
+            .iter()
+            .any(|f| f.code == "duplicate_output_ref")
+    );
+    let dup_proposals = svc.list_planning_proposals(&s_dup.id, None).await.unwrap();
+    let shared_hero_count = dup_proposals
+        .iter()
+        .filter(|p| {
+            p.status == PlanningProposalStatus::Staged
+                && p.artifact
+                    .operations
+                    .iter()
+                    .any(|op| op.output_ref == "cast:shared_hero")
+        })
+        .count();
+    assert_eq!(shared_hero_count, 1);
+
+    // 2. Parent proposal rejected while dependent model generation is in flight:
+    // must NOT stage a child proposal under the rejected parent, and must NOT waste a repair call.
+    let s_parent = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Reject parent during child generation".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let contract_staged = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s_parent.id.clone(),
+            scope: None,
+            level: Some(PlanningLevel::Contract),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: Some(PlanningHostSubmission {
+                source: PlanningOutputSource::Host,
+                payload: json!({
+                    "schema_version": 1,
+                    "level": "contract",
+                    "rationale": "Parent contract to be rejected during child generation.",
+                    "operations": [{
+                        "output_ref": "contract:project",
+                        "operation": {
+                            "operation": "create_project",
+                            "input": {
+                                "name": "Ephemeral Harbor",
+                                "project_type": "novel",
+                                "genre": "mystery",
+                                "reader_contract": {"promise": "No orphan children", "style_notes": [], "boundaries": []}
+                            }
+                        }
+                    }]
+                }),
+            }),
+            retry_key: Some("parent-contract-stage".into()),
+        })
+        .await
+        .unwrap()
+        .proposal
+        .unwrap();
+
+    let child_gen_fut = svc.advance_planning(AdvancePlanningInput {
+        session_id: s_parent.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::CastWorld),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: None,
+        host_submission: None,
+        retry_key: Some("child-cast-gen".into()),
+    });
+    let reject_parent_fut = async {
+        req2_entered_rx.await.unwrap();
+        let decided = svc
+            .decide_planning(DecidePlanningInput {
+                session_id: s_parent.id.clone(),
+                scope: None,
+                decision: PlanningDecision::Reject,
+                actor: "human:author".into(),
+                note: "Rejecting parent while child generation is in flight.".into(),
+                expected_hashes: [(
+                    contract_staged.id.clone(),
+                    contract_staged.payload_hash.clone(),
+                )]
+                .into_iter()
+                .collect(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(decided.len(), 1);
+        assert_eq!(decided[0].status, PlanningProposalStatus::Rejected);
+        let _ = req2_release_tx.send(());
+    };
+    let (child_out, ()) = tokio::join!(child_gen_fut, reject_parent_fut);
+    let child_out = child_out.unwrap();
+    assert_eq!(
+        child_out.outcome,
+        PlanningSessionOutcome::ModelOutputRejected
+    );
+    assert!(child_out.proposal.is_none());
+    assert!(
+        child_out
+            .findings
+            .iter()
+            .any(|f| f.code == "stale_or_inactive_planning_parent")
+    );
+    assert_eq!(
+        child_out.generation_receipt.as_ref().unwrap().attempts_used,
+        1,
+        "unrepairable parent rejection must not dispatch a second model call"
+    );
+    assert_eq!(call_counter.load(Ordering::SeqCst), 2);
+
+    let final_proposals = svc
+        .list_planning_proposals(&s_parent.id, None)
+        .await
+        .unwrap();
+    assert!(
+        final_proposals
+            .iter()
+            .all(|p| p.status != PlanningProposalStatus::Staged),
+        "no staged proposals may remain after parent rejection"
+    );
+
+    // 3. Direct race between read-pool validation and commit_planning_generation write transaction:
+    // Both candidates pass `validate_planning_stage_input` before either commits; the second commit
+    // is rejected inside the write transaction (`duplicate_output_ref`).
+    let s_tx_race = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Direct read-to-commit race window".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let tx_race_input = StagePlanningInput {
+        session_id: s_tx_race.id.clone(),
+        scope: None,
+        intent_hash: s_tx_race.intent_hash.clone(),
+        schema_version: 1,
+        level: PlanningLevel::CastWorld,
+        parents: Default::default(),
+        operations: vec![PlanningOperationItem {
+            output_ref: "cast:race_twin".into(),
+            operation: serde_json::from_value(json!({
+                "operation": "create_character",
+                "input": {
+                    "name": "Vesper",
+                    "summary": "Lighthouse keeper",
+                    "role": "protagonist",
+                    "realm": null
+                }
+            }))
+            .unwrap(),
+        }],
+        rationale: "Validated before concurrent commit.".into(),
+        target_range: None,
+        schedule: Default::default(),
+        assumptions: Vec::new(),
+        author_questions: Vec::new(),
+    };
+    let findings_pre_1 = svc
+        .repository
+        .validate_planning_stage_input(tx_race_input.clone(), None)
+        .await
+        .unwrap();
+    let findings_pre_2 = svc
+        .repository
+        .validate_planning_stage_input(tx_race_input.clone(), None)
+        .await
+        .unwrap();
+    assert!(findings_pre_1.is_empty());
+    assert!(findings_pre_2.is_empty());
+
+    let dummy_receipt = PlanningGenerationReceipt {
+        source: PlanningOutputSource::Host,
+        prompt_id: PlanningPromptId::PlanningSeedV1,
+        prompt_hash: "h".into(),
+        schema_hash: "s".into(),
+        route_task: None,
+        resolved_route: None,
+        agent_name: None,
+        adapter_kind: None,
+        model: None,
+        attempts_used: 1,
+        repaired: false,
+        calls: Vec::new(),
+        recorded_at: 1,
+    };
+    let dummy_host_req = PlanningHostRequest {
+        session_id: s_tx_race.id.clone(),
+        level: PlanningLevel::CastWorld,
+        route_task: "plan".into(),
+        prompt_id: PlanningPromptId::PlanningSeedV1,
+        prompt_hash: "h".into(),
+        schema_hash: "s".into(),
+        system_prompt: "sys".into(),
+        user_prompt: "usr".into(),
+        artifact_schema: json!({}),
+        parent_proposals: Default::default(),
+        target_range: s_tx_race.horizon.clone(),
+        route_problem: None,
+        prior_findings: Vec::new(),
+    };
+    let meta = crate::sqlite::repository::PlanningSessionMetadataUpdate {
+        session_id: s_tx_race.id.clone(),
+        scope: None,
+        horizon: s_tx_race.horizon.clone(),
+        budget: s_tx_race.budget.clone(),
+        rating_ceiling: None,
+        allow_review_backend: false,
+        last_outcome: PlanningSessionOutcome::Staged,
+    };
+    let rep_1 = svc
+        .repository
+        .commit_planning_generation(
+            meta.clone(),
+            Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
+                input: tx_race_input.clone(),
+                receipt: dummy_receipt.clone(),
+                findings: Vec::new(),
+                fallback_host_request: dummy_host_req.clone(),
+            }),
+            PlanningAdvanceReport {
+                attempt_id: "planning_generation_attempt:race1".into(),
+                session_id: s_tx_race.id.clone(),
+                level: PlanningLevel::CastWorld,
+                retry_key: Some("race-1".into()),
+                outcome: PlanningSessionOutcome::Staged,
+                proposal: None,
+                generation_receipt: Some(dummy_receipt.clone()),
+                findings: Vec::new(),
+                author_questions: Vec::new(),
+                host_request: None,
+                route_problem: None,
+                usage: s_tx_race.usage.clone(),
+                budget: s_tx_race.budget.clone(),
+                message: None,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(rep_1.outcome, PlanningSessionOutcome::Staged);
+    assert!(rep_1.proposal.is_some());
+
+    let rep_2 = svc
+        .repository
+        .commit_planning_generation(
+            meta,
+            Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
+                input: tx_race_input,
+                receipt: dummy_receipt.clone(),
+                findings: Vec::new(),
+                fallback_host_request: dummy_host_req,
+            }),
+            PlanningAdvanceReport {
+                attempt_id: "planning_generation_attempt:race2".into(),
+                session_id: s_tx_race.id.clone(),
+                level: PlanningLevel::CastWorld,
+                retry_key: Some("race-2".into()),
+                outcome: PlanningSessionOutcome::Staged,
+                proposal: None,
+                generation_receipt: Some(dummy_receipt),
+                findings: Vec::new(),
+                author_questions: Vec::new(),
+                host_request: None,
+                route_problem: None,
+                usage: s_tx_race.usage.clone(),
+                budget: s_tx_race.budget.clone(),
+                message: None,
+                created_at: 2,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(rep_2.outcome, PlanningSessionOutcome::ModelOutputRejected);
+    assert!(rep_2.proposal.is_none());
+    assert!(
+        rep_2
+            .findings
+            .iter()
+            .any(|f| f.code == "duplicate_output_ref")
+    );
+    assert_eq!(
+        svc.list_planning_proposals(&s_tx_race.id, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
     srv_handle.join().unwrap();
 }

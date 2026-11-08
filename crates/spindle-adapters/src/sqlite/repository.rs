@@ -625,12 +625,27 @@ pub struct Repository {
 
 type PlanningRetryLockMap =
     std::sync::Mutex<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
+type PlanningActiveAttemptSet = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+pub(crate) struct PlanningActiveAttemptGuard {
+    active: PlanningActiveAttemptSet,
+    attempt_id: String,
+}
+
+impl Drop for PlanningActiveAttemptGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.active.lock() {
+            guard.remove(&self.attempt_id);
+        }
+    }
+}
 
 struct Inner {
     pool: SqlitePool,
     data_dir: PathBuf,
     model_router: ModelRouter,
     planning_retry_locks: PlanningRetryLockMap,
+    planning_active_attempts: PlanningActiveAttemptSet,
 }
 
 mod authoring;
@@ -645,7 +660,9 @@ mod narrative;
 mod planning;
 pub(crate) use planning::apply::resolve_operation as resolve_planning_operation;
 pub(crate) use planning::output_refs as planning_output_refs;
-pub(crate) use planning::{PlanningAttemptClaim, PlanningSessionMetadataUpdate};
+pub(crate) use planning::{
+    PlanningAttemptClaim, PlanningSessionMetadataUpdate, PlanningStagedCommitCandidate,
+};
 mod plans;
 mod projects;
 mod quantity;
@@ -678,8 +695,32 @@ impl Repository {
                 data_dir,
                 model_router,
                 planning_retry_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                planning_active_attempts: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashSet::new(),
+                )),
             }),
         }
+    }
+
+    pub(crate) fn register_active_planning_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> PlanningActiveAttemptGuard {
+        if let Ok(mut guard) = self.inner.planning_active_attempts.lock() {
+            guard.insert(attempt_id.to_owned());
+        }
+        PlanningActiveAttemptGuard {
+            active: self.inner.planning_active_attempts.clone(),
+            attempt_id: attempt_id.to_owned(),
+        }
+    }
+
+    pub(crate) fn active_planning_attempts_snapshot(&self) -> std::collections::HashSet<String> {
+        self.inner
+            .planning_active_attempts
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn planning_retry_lock(
