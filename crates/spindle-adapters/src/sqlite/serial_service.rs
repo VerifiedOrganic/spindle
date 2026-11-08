@@ -498,15 +498,71 @@ impl SqliteSpindleService {
             "limit must be between 1 and 200"
         );
         self.repository().pool().read(move |conn| {
-            let mut stmt = conn.prepare("SELECT payload FROM model_call WHERE (?1 IS NULL OR project_id = ?1) ORDER BY recorded_at DESC, id DESC LIMIT ?2")?;
-            let calls = stmt.query_map(rusqlite::params![input.project_id, limit as i64], |row| super::row::json(row, 0))?
+            let mut stmt = conn.prepare(
+                "SELECT payload, scene_id, run_id, prompt_template_id, prompt_version, context_packet_hash, temperature, top_p, max_tokens
+                 FROM model_call
+                 WHERE (?1 IS NULL OR project_id = ?1)
+                   AND (?2 IS NULL OR run_id = ?2)
+                   AND (?3 IS NULL OR scene_id = ?3)
+                   AND (?4 IS NULL OR prompt_template_id = ?4)
+                 ORDER BY recorded_at DESC, id DESC LIMIT ?5",
+            )?;
+            let calls = stmt
+                .query_map(
+                    rusqlite::params![
+                        input.project_id,
+                        input.run_id,
+                        input.scene_id,
+                        input.prompt_template_id,
+                        limit as i64
+                    ],
+                    |row| {
+                        let mut record: ModelCallRecord = super::row::json(row, 0)?;
+                        if record.scene_id.is_none() {
+                            record.scene_id = row.get(1)?;
+                        }
+                        if record.run_id.is_none() {
+                            record.run_id = row.get(2)?;
+                        }
+                        if record.prompt_template_id.is_none() {
+                            record.prompt_template_id = row.get(3)?;
+                        }
+                        if record.prompt_version.is_none() {
+                            record.prompt_version = row.get(4)?;
+                        }
+                        if record.context_packet_hash.is_none() {
+                            record.context_packet_hash = row.get(5)?;
+                        }
+                        if record.temperature.is_none() {
+                            record.temperature = row.get(6)?;
+                        }
+                        if record.top_p.is_none() {
+                            record.top_p = row.get(7)?;
+                        }
+                        if record.max_tokens.is_none() {
+                            record.max_tokens = row.get(8)?;
+                        }
+                        Ok(record)
+                    },
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let (total_calls, calls_with_unknown_tokens, known_input_tokens, known_output_tokens, elapsed_ms) = conn.query_row(
                 "SELECT count(*), coalesce(sum(json_extract(payload, '$.usage.input_tokens') IS NULL OR json_extract(payload, '$.usage.output_tokens') IS NULL), 0),
                  coalesce(sum(json_extract(payload, '$.usage.input_tokens')), 0), coalesce(sum(json_extract(payload, '$.usage.output_tokens')), 0),
                  coalesce(sum(json_extract(payload, '$.elapsed_ms')), 0)
-                 FROM model_call WHERE (?1 IS NULL OR project_id = ?1)", [&input.project_id],
-                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?;
+                 FROM model_call
+                 WHERE (?1 IS NULL OR project_id = ?1)
+                   AND (?2 IS NULL OR run_id = ?2)
+                   AND (?3 IS NULL OR scene_id = ?3)
+                   AND (?4 IS NULL OR prompt_template_id = ?4)",
+                rusqlite::params![
+                    input.project_id,
+                    input.run_id,
+                    input.scene_id,
+                    input.prompt_template_id
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )?;
             let unattributed_calls = conn.query_row("SELECT count(*) FROM model_call WHERE project_id IS NULL", [], |row| row.get(0))?;
             Ok(GetModelUsageOutput { calls, total_calls, calls_with_unknown_tokens, known_input_tokens, known_output_tokens, elapsed_ms, unattributed_calls })
         }).await

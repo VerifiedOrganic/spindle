@@ -22,10 +22,15 @@ impl ModelRouter {
         self
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn record_usage(
         &self,
         route: &str,
+        rating: Option<&str>,
         context: Option<&RequestContext>,
+        prompt: &str,
+        is_continuation: bool,
+        resolved_route: Option<&super::ModelRoute>,
         start: std::time::Instant,
         result: &mut anyhow::Result<ModelResponse>,
     ) {
@@ -37,13 +42,36 @@ impl ModelRouter {
             return;
         };
         let now = chrono::Utc::now();
-        let record = ModelCallRecord {
+        let adapter_kind_hint = result
+            .as_ref()
+            .ok()
+            .map(|r| r.adapter_kind.as_str())
+            .or_else(|| resolved_route.map(|r| r.adapter_kind.as_str()));
+        let (inferred_template_id, inferred_prompt_version) =
+            super::infer_prompt_template(route, rating, adapter_kind_hint, prompt, is_continuation);
+        let prompt_template_id = context
+            .and_then(|c| c.prompt_template_id.clone())
+            .or_else(|| Some(inferred_template_id.to_string()));
+        let prompt_version = context
+            .and_then(|c| c.prompt_version.clone())
+            .or_else(|| Some(inferred_prompt_version.to_string()));
+        let context_packet_hash = context
+            .and_then(|c| c.context_packet_hash.clone())
+            .or_else(|| Some(super::compute_context_packet_hash(prompt)));
+        let mut record = ModelCallRecord {
             id: format!("model_call:{}", ulid::Ulid::new()),
             project_id: context.and_then(|c| c.project_id.clone()),
             scene_id: context.and_then(|c| c.scene_id.clone()),
+            run_id: context.and_then(|c| c.run_id.clone()),
             route: route.to_string(),
             adapter_kind: result.as_ref().ok().map(|r| r.adapter_kind.clone()),
             model_name: result.as_ref().ok().map(|r| r.model_name.clone()),
+            prompt_template_id,
+            prompt_version,
+            context_packet_hash,
+            temperature: resolved_route.and_then(|r| r.temperature),
+            top_p: resolved_route.and_then(|r| r.top_p),
+            max_tokens: resolved_route.and_then(|r| r.max_tokens),
             outcome: if result.is_ok() {
                 "succeeded"
             } else {
@@ -55,13 +83,46 @@ impl ModelRouter {
             recorded_at: now.to_rfc3339(),
         };
         let id = record.id.clone();
-        let saved = pool.write(move |conn| {
-            let payload = serde_json::to_string(&record)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            conn.execute("INSERT INTO model_call (id, project_id, recorded_at, payload) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![record.id, record.project_id, now.timestamp_micros(), payload])?;
-            Ok(())
-        }).await;
+        let saved = pool
+            .write(move |conn| {
+                if record.run_id.is_none()
+                    && let Some(project_id) = record.project_id.as_deref()
+                {
+                    record.run_id = conn
+                        .query_row(
+                            "SELECT id FROM authoring_run WHERE project_id = ?1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+                            rusqlite::params![project_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .ok();
+                }
+                let payload = serde_json::to_string(&record)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                conn.execute(
+                    "INSERT INTO model_call (
+                        id, project_id, scene_id, run_id, route,
+                        prompt_template_id, prompt_version, context_packet_hash,
+                        temperature, top_p, max_tokens, recorded_at, payload
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    rusqlite::params![
+                        record.id,
+                        record.project_id,
+                        record.scene_id,
+                        record.run_id,
+                        record.route,
+                        record.prompt_template_id,
+                        record.prompt_version,
+                        record.context_packet_hash,
+                        record.temperature,
+                        record.top_p,
+                        record.max_tokens,
+                        now.timestamp_micros(),
+                        payload
+                    ],
+                )?;
+                Ok(())
+            })
+            .await;
         match saved {
             Ok(()) => {
                 if let Ok(response) = result {

@@ -116,6 +116,44 @@ workflow, repeat on several real arcs and have the author judge the results.
 
 ---
 
+# Continuity recall benchmark
+
+`evals/continuity_recall.py` measures continuity detection recall and control
+false-positive counts across two synthetic 20-chapter manuscripts
+(`ashfall_expedition` and `veridian_station`, 40 chapters total with distinct
+narrative events per chapter). Each manuscript is seeded twice against a
+disposable `spindle-mcp` server and temporary `SPINDLE_DATA_DIR`:
+
+1. **Unplanted control copy** — measures false positives emitted by
+   `check_consistency` when no contradictions are planted.
+2. **Planted copy** — plants 2 contradictions per known category per manuscript
+   (14 per manuscript, 28 total across the 7 categories:
+   `character_attribute`, `dead_character_acting`,
+   `timeline_chronology_rewind`, `knowledge_leak_before_learned`,
+   `world_rule_cost_violation`, `quantity_affordability`, and `secret_leak`),
+   pairing a lexical/direct variant with a natural-prose/paraphrased variant in
+   each category.
+
+## Run
+
+```sh
+python3 evals/continuity_recall.py self-test
+python3 evals/continuity_recall.py --output evals/results/continuity_recall_baseline.json
+```
+
+To include the optional model-backed deep tier (`deep_check: true`), pass
+`--deep` with a configured `review` route:
+
+```sh
+python3 evals/continuity_recall.py --deep --agent-config /path/to/spindle.toml --output /tmp/continuity_recall_deep.json
+```
+
+The checked-in deterministic baseline lives at
+`evals/results/continuity_recall_baseline.json`. CI runs `self-test` and the
+deterministic benchmark on every pull request.
+
+---
+
 # Pairwise LLM-judge prose quality kit
 
 `evals/prose_judge.py` (+ fixtures under `evals/prose_judge/`) evaluates pairwise
