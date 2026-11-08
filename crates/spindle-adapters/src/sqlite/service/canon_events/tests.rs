@@ -1405,3 +1405,1119 @@ async fn sqlite_checkpoint_rollback_nested_inheritance_and_branch_merge() {
             .contains_key("alias")
     );
 }
+
+#[tokio::test]
+async fn backfill_all_18_stores_idempotency_progression_dedup_and_shadow_parity() {
+    use crate::sqlite::repository::{
+        AppendCharacterStateParams, AppendProgressionEventParams, AppendQuantityStateParams,
+        CanonDeltaDecision, StageCanonDeltaParams, UpsertKnowsParams,
+    };
+    use spindle_core::canon::ALL_BACKFILL_STORES;
+    use spindle_core::models::{
+        ArchiveEntityInput, CharacterStatePatch, CreateFutureKnowledgeInput, CreateLocationInput,
+        CreateNarrativePromiseInput, CreateRelationshipInput, CreateSystemOverlayInput,
+        CreateTemporalInterventionInput, CreateTimelineEventInput, CreateWorldRuleInput,
+        QuantityState, RecordKnowledgeInput, RegisterCanonicalFactInput, SecrecyScope, StoryClock,
+        StoryPlacement, UpdatePromiseStatusInput, UpdateRelationshipInput, WorldStateInput,
+    };
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene1_id, _) = project_with_scene(&svc, "Backfill All 18").await;
+    let main_branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let scene2_id = recap_scene(
+        &svc,
+        &project.project_id,
+        1,
+        1,
+        2,
+        "The second scene in the chapter.",
+    )
+    .await;
+
+    let veyra_id = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let bram_id = create_character_named(&svc, &project.project_id, "Bram").await;
+    let loc_out = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Obsidian Spire".into(),
+            kind: "fortress".into(),
+            realm: Some("North".into()),
+            summary: "A tall spire of dark glass.".into(),
+            initial_state: WorldStateInput {
+                controlling_faction: Some("Wardens".into()),
+                status: Some("fortified".into()),
+                prosperity: Some("high".into()),
+                stability: Some("stable".into()),
+                threat_level: Some("elevated".into()),
+                sensory_details: vec!["cold wind".into(), "ozone".into()],
+            },
+        })
+        .await
+        .unwrap();
+
+    // 1. canonical_fact (active + superseded + secret)
+    let old_fact = svc
+        .register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(scene1_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(veyra_id.clone()),
+            predicate: Some("banner_color".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("crimson".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+    let _new_fact = svc
+        .register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(scene2_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(veyra_id.clone()),
+            predicate: Some("banner_color".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("obsidian".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: Some(old_fact.canonical_fact_id.clone()),
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+    let secret_fact = svc
+        .register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(scene1_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(veyra_id.clone()),
+            predicate: Some("true_lineage".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("House Solaris".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(SecrecyScope {
+                holder_ids: vec![veyra_id.clone()],
+                concealment_note: Some("hidden from the council".into()),
+            }),
+        })
+        .await
+        .unwrap();
+
+    // 2. character_state (2 snapshots with status/injury transitions)
+    svc.repository()
+        .append_character_state(AppendCharacterStateParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            character_id: veyra_id.clone(),
+            scene_id: Some(scene1_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+            patch: CharacterStatePatch {
+                emotional_state: [("resolve".to_string(), serde_json::json!(0.8))]
+                    .into_iter()
+                    .collect(),
+                goals: Some(vec!["hold the gate".into()]),
+                status: Some(vec!["alive".into(), "injury:left_arm:minor".into()]),
+                notes: Some(vec!["first watch".into()]),
+                source_summary: Some("scene 1".into()),
+            },
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .append_character_state(AppendCharacterStateParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            character_id: veyra_id.clone(),
+            scene_id: Some(scene2_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 2,
+            patch: CharacterStatePatch {
+                emotional_state: [("resolve".to_string(), serde_json::json!(0.95))]
+                    .into_iter()
+                    .collect(),
+                goals: Some(vec!["hold the gate".into(), "seal the breach".into()]),
+                status: Some(vec!["alive".into(), "focused".into()]),
+                notes: Some(vec!["arm bandaged".into()]),
+                source_summary: Some("scene 2".into()),
+            },
+        })
+        .await
+        .unwrap();
+
+    // 3. world_state was created via `create_location` initial_state above (`loc_out.location_id`).
+
+    // 4. world_rule
+    svc.create_world_rule(CreateWorldRuleInput {
+        project_id: project.project_id.clone(),
+        rule_name: "Iron Ward".into(),
+        rule_type: "magic".into(),
+        description: "Cold iron nullifies spoken sigils within three paces.".into(),
+        established_in: None,
+        relevance_tags: vec!["warding".into(), "iron".into()],
+        scan_pattern: None,
+    })
+    .await
+    .unwrap();
+
+    // 5. knowledge_fact + 6. knows
+    let kn_out = svc
+        .record_knowledge(RecordKnowledgeInput {
+            project_id: project.project_id.clone(),
+            branch_id: None,
+            character_id: bram_id.clone(),
+            fact: "The northern gate has a hidden postern.".into(),
+            source_summary: "scout report".into(),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: Some(0.9),
+            tags: vec!["gate".into()],
+            reader_visible: true,
+            secret_of_fact_id: None,
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .upsert_knows(UpsertKnowsParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            character_id: bram_id.clone(),
+            knowledge_fact_id: kn_out.fact.knowledge_fact_id.clone(),
+            source_summary: Some("scout report".into()),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: Some(0.9),
+            reader_visible: true,
+            source_import_session_id: None,
+        })
+        .await
+        .unwrap();
+
+    // 7. future_knowledge
+    let fk_out = svc
+        .create_future_knowledge(CreateFutureKnowledgeInput {
+            project_id: project.project_id.clone(),
+            character_id: veyra_id.clone(),
+            knowledge_summary: "The eclipse occurs on the third night of the siege.".into(),
+            source: "prophetic vision".into(),
+            learned_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            expires_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 3,
+                scene_order: Some(1),
+                note: None,
+            }),
+            notes: vec!["time-displaced".into()],
+        })
+        .await
+        .unwrap();
+
+    // 8. system_overlay + 9. quantity_state + 10. progression_event
+    let overlay_out = svc
+        .create_system_overlay(CreateSystemOverlayInput {
+            project_id: project.project_id.clone(),
+            system_name: "Aether Conduit".into(),
+            system_type: "cultivation".into(),
+            rules: "Channels ambient aether through sigil rings.".into(),
+            visibility: "explicit".into(),
+            progression_currency: Some("aether".into()),
+            stats: vec!["capacity".into()],
+            advancement_tiers: vec!["Initiate".into(), "Adept".into()],
+        })
+        .await
+        .unwrap();
+
+    svc.repository()
+        .append_quantity_state(AppendQuantityStateParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            subject_table: "character".into(),
+            subject_id: veyra_id.clone(),
+            measure: "gold".into(),
+            state: QuantityState {
+                amount: Some(100.0),
+                unit: Some("crowns".into()),
+                band: Some("comfortable".into()),
+                change_reason: Some("opening".into()),
+            },
+            scene_id: Some(scene1_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 1,
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .append_quantity_state(AppendQuantityStateParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            subject_table: "character".into(),
+            subject_id: veyra_id.clone(),
+            measure: "gold".into(),
+            state: QuantityState {
+                amount: Some(125.0),
+                unit: Some("crowns".into()),
+                band: Some("comfortable".into()),
+                change_reason: Some("bounty reward".into()),
+            },
+            scene_id: Some(scene2_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 2,
+        })
+        .await
+        .unwrap();
+
+    // progression_event #1: duplicates the quantity_state at scene 2 -> DuplicateSkipped!
+    // progression_event #2: unique overlay tier_up transition -> Mapped!
+    svc.repository()
+        .append_progression_event(AppendProgressionEventParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            subject_table: "character".into(),
+            subject_id: veyra_id.clone(),
+            overlay_id: None,
+            kind: "quantity_change".into(),
+            delta_json: serde_json::json!({
+                "measure": "gold",
+                "delta": "25",
+                "unit": "crowns"
+            }),
+            source_scene_id: Some(scene2_id.clone()),
+            placement: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(2),
+                note: None,
+            }),
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .append_progression_event(AppendProgressionEventParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            subject_table: "character".into(),
+            subject_id: veyra_id.clone(),
+            overlay_id: Some(overlay_out.system_overlay_id.clone()),
+            kind: "tier_up".into(),
+            delta_json: serde_json::json!({
+                "from_tier": "Initiate",
+                "to_tier": "Adept"
+            }),
+            source_scene_id: Some(scene2_id.clone()),
+            placement: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(2),
+                note: None,
+            }),
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    // 11. timeline_event + 12. temporal_intervention + 13. scene_clock + 14. timeline_event_clock
+    let te_out = svc
+        .create_timeline_event(CreateTimelineEventInput {
+            project_id: project.project_id.clone(),
+            title: "The Spire Bell Tolls".into(),
+            event_type: "battle".into(),
+            placement: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            summary: "The warning bell rings across the valley.".into(),
+            related_entity_ids: vec![veyra_id.clone(), loc_out.location_id.clone()],
+        })
+        .await
+        .unwrap();
+    svc.create_temporal_intervention(CreateTemporalInterventionInput {
+        project_id: project.project_id.clone(),
+        title: "Echo Reversal".into(),
+        intervention_type: "time_loop".into(),
+        source_event_id: Some(te_out.timeline_event_id.clone()),
+        target_event_id: Some(te_out.timeline_event_id.clone()),
+        summary: "Rewinds the bell toll by ten minutes.".into(),
+        consequences: vec!["bell rope frays".into()],
+        status: Some("active".into()),
+    })
+    .await
+    .unwrap();
+    svc.repository()
+        .upsert_scene_clock(
+            &scene1_id,
+            &project.project_id,
+            &main_branch.id,
+            &StoryClock {
+                day_index: Some(1),
+                time_of_day: Some(6),
+                duration_days: Some(0.1),
+                precision: Some("exact".into()),
+            },
+            Some("linear"),
+            Some("main_timeline"),
+        )
+        .await
+        .unwrap();
+    svc.repository()
+        .upsert_timeline_event_clock(
+            &te_out.timeline_event_id,
+            &project.project_id,
+            &main_branch.id,
+            &StoryClock {
+                day_index: Some(1),
+                time_of_day: Some(6),
+                duration_days: Some(0.05),
+                precision: Some("exact".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+    // 15. narrative_promise (one open + reinforced, one archived)
+    let np_open = svc
+        .create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: project.project_id.clone(),
+            promise_type: "chekhovs_gun".into(),
+            description: "Veyra carries the glass key to the Spire vault.".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 4,
+                scene_order: Some(1),
+                note: None,
+            }),
+            notes: Vec::new(),
+        })
+        .await
+        .unwrap();
+    svc.update_promise_status(UpdatePromiseStatusInput {
+        narrative_promise_id: np_open.narrative_promise_id.clone(),
+        status: "in_progress".into(),
+        at: Some(StoryPlacement {
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: Some(2),
+            note: None,
+        }),
+        source_scene_id: Some(scene2_id.clone()),
+        replaces_event_id: None,
+        note: Some("Veyra inspects the vault lock".into()),
+    })
+    .await
+    .unwrap();
+    let np_archived = svc
+        .create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: project.project_id.clone(),
+            promise_type: "red_herring".into(),
+            description: "A dropped subplot about the cellar tunnel.".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: None,
+            notes: Vec::new(),
+        })
+        .await
+        .unwrap();
+    svc.archive_entity(ArchiveEntityInput {
+        entity_type: "narrative_promise".into(),
+        entity_id: np_archived.narrative_promise_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    // 16. relates_to + 17. relationship_scene_delta
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: veyra_id.clone(),
+        character_b_id: bram_id.clone(),
+        relationship_type: "comrades".into(),
+        initial_trust: 40,
+        initial_tension: 15,
+        dynamics: vec!["sworn shield".into()],
+    })
+    .await
+    .unwrap();
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: veyra_id.clone(),
+        character_b_id: bram_id.clone(),
+        trust_delta: 10,
+        tension_delta: -5,
+        reason: "held the eastern parapet together".into(),
+        scene_id: scene2_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    // 18. canon_delta (applied, staged/pending, rejected)
+    let cd_applied = svc
+        .repository()
+        .stage_canon_delta(StageCanonDeltaParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            scene_id: scene2_id.clone(),
+            authoring_run_id: None,
+            delta_class: "relationship_shift".into(),
+            target_id: Some(veyra_id.clone()),
+            payload: serde_json::json!({
+                "from_character_id": veyra_id,
+                "to_character_id": bram_id,
+                "trust_delta": 10,
+                "tension_delta": -5
+            }),
+            evidence: "They held the eastern parapet together.".into(),
+            confidence: "high".into(),
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .decide_canon_delta(
+            &cd_applied.id,
+            CanonDeltaDecision::Applied,
+            "operator",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let _cd_staged = svc
+        .repository()
+        .stage_canon_delta(StageCanonDeltaParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            scene_id: scene2_id.clone(),
+            authoring_run_id: None,
+            delta_class: "character_state".into(),
+            target_id: Some(veyra_id.clone()),
+            payload: serde_json::json!({
+                "status": ["vigilant"]
+            }),
+            evidence: "Veyra kept watch through the night.".into(),
+            confidence: "medium".into(),
+        })
+        .await
+        .unwrap();
+
+    let cd_rejected = svc
+        .repository()
+        .stage_canon_delta(StageCanonDeltaParams {
+            project_id: project.project_id.clone(),
+            branch_id: main_branch.id.clone(),
+            scene_id: scene2_id.clone(),
+            authoring_run_id: None,
+            delta_class: "character_state".into(),
+            target_id: Some(bram_id.clone()),
+            payload: serde_json::json!({
+                "status": ["exhausted"]
+            }),
+            evidence: "A stray stone chipped the outer stair.".into(),
+            confidence: "low".into(),
+        })
+        .await
+        .unwrap();
+    svc.repository()
+        .decide_canon_delta(
+            &cd_rejected.id,
+            CanonDeltaDecision::Rejected,
+            "operator",
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Run backfill!
+    let report1 = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(report1.total_quarantined_count, 0);
+    assert_eq!(report1.total_reused_idempotent_count, 0);
+    let total_scanned1 = report1.total_mapped_count
+        + report1.total_duplicate_skipped_count
+        + report1.total_quarantined_count
+        + report1.total_reused_idempotent_count;
+    assert!(total_scanned1 >= 18);
+
+    // Every one of the 18 stores was scanned and had >= 1 row.
+    for store in ALL_BACKFILL_STORES {
+        let sc = &report1.by_store[store.as_source_table()];
+        let store_scanned = sc.mapped_count
+            + sc.duplicate_skipped_count
+            + sc.quarantined_count
+            + sc.reused_idempotent_count;
+        assert!(
+            store_scanned >= 1,
+            "expected store {} to have at least 1 row scanned, got {:?}",
+            store.as_source_table(),
+            sc
+        );
+        assert_eq!(sc.reused_idempotent_count, 0);
+        assert_eq!(sc.quarantined_count, 0);
+    }
+
+    // Verify progression_event deduplication: 1 DuplicateSkipped (gold delta already in quantity_state) + 1 Mapped (tier_up).
+    let prog_counts = &report1.by_store["progression_event"];
+    assert_eq!(prog_counts.duplicate_skipped_count, 1);
+    assert_eq!(prog_counts.mapped_count, 1);
+
+    // Verify canon_delta handling: 1 applied -> DuplicateSkipped, 1 staged + 1 rejected -> Mapped.
+    let cd_counts = &report1.by_store["canon_delta"];
+    assert_eq!(cd_counts.duplicate_skipped_count, 1);
+    assert_eq!(cd_counts.mapped_count, 2);
+
+    // Verify future_knowledge did NOT fold into ordinary unconditional view.knowledge,
+    // and secret_circle_members matches legacy.
+    let view = svc
+        .canon_state_at(
+            &project.project_id,
+            &main_branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        view.knowledge_status(
+            &veyra_id,
+            &format!("proposition:future:{}", fk_out.future_knowledge_id)
+        ),
+        KnowledgeStatus::Unknown
+    );
+    let proj_secret_members = crate::sqlite::repository::project_secret_circle_members_from_canon(
+        &view,
+        &secret_fact.canonical_fact_id,
+    )
+    .unwrap();
+    assert_eq!(proj_secret_members.len(), 1);
+    assert_eq!(proj_secret_members[0].0, veyra_id);
+
+    // Verify archived promise is tombstoned in `view.open_threads` while active promise is open.
+    assert!(
+        view.open_threads
+            .contains_key(&np_open.narrative_promise_id)
+    );
+    assert!(
+        !view
+            .open_threads
+            .contains_key(&np_archived.narrative_promise_id)
+    );
+
+    // Verify relationship math in reducer (`40 + 10 = 50` trust, `15 - 5 = 10` tension) — NOT double-counted by applied canon_delta or progression_event!
+    let rel_reduced = view.relationship(&veyra_id, &bram_id).unwrap();
+    assert_eq!(rel_reduced.resolved_trust, Some(50));
+    assert_eq!(rel_reduced.resolved_tension, Some(10));
+    assert_eq!(view.quantity_balance(&veyra_id, "gold"), Some("125"));
+
+    // Rerun backfill: 100% idempotent, zero new events or claims!
+    let events_before_rerun = svc
+        .list_canon_events_for_lineage(&project.project_id, &main_branch.id)
+        .await
+        .unwrap();
+    let report2 = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(report2.total_mapped_count, 0);
+    assert_eq!(report2.total_duplicate_skipped_count, 0);
+    assert_eq!(report2.total_quarantined_count, 0);
+    assert_eq!(report2.total_reused_idempotent_count, total_scanned1);
+    let events_after_rerun = svc
+        .list_canon_events_for_lineage(&project.project_id, &main_branch.id)
+        .await
+        .unwrap();
+    assert_eq!(events_before_rerun.len(), events_after_rerun.len());
+
+    // Compare compatibility shadow reads & SubjectSnapshots on main_branch:
+    let shadow = svc
+        .compare_canon_compatibility_shadow_reads(&project.project_id, &main_branch.id, None)
+        .await
+        .unwrap();
+    assert!(
+        shadow.parity_clean,
+        "expected clean shadow parity, got differences: {:#?}",
+        shadow.differences
+    );
+    assert!(shadow.checked_store_count >= 16);
+    assert!(shadow.checked_subject_snapshot_count >= 6);
+
+    let readiness = svc
+        .evaluate_project_canon_cutover_readiness(&project.project_id)
+        .await
+        .unwrap();
+    assert!(
+        readiness.cutover_allowed,
+        "expected cutover_allowed, blocking_reasons: {:?}",
+        readiness.blocking_reasons
+    );
+}
+
+#[tokio::test]
+async fn backfill_and_shadow_parity_across_nested_branches_ancestor_edits_tombstones_merges_and_savepoints()
+ {
+    use spindle_core::models::{
+        ArchiveEntityInput, CharacterStatePatch, CommitCharacterStateInput, CreateBranchInput,
+        CreateLocationInput, CreateNarrativePromiseInput, CreateRelationshipInput,
+        CreateSavePointInput, CreateWorldRuleInput, MergeBranchInput, RegisterCanonicalFactInput,
+        RestoreSavePointInput, StoryPlacement, SwitchBranchInput, WorldStateInput,
+    };
+
+    let (_tmp, svc) = fresh_service_workspace().await;
+    let (project, main_scene_id, _) = project_with_scene(&svc, "Nested Branch Parity").await;
+    let main_branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+
+    let veyra_id = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let bram_id = create_character_named(&svc, &project.project_id, "Bram").await;
+    let _loc = svc
+        .create_location(CreateLocationInput {
+            project_id: project.project_id.clone(),
+            name: "Sun Keep".into(),
+            kind: "citadel".into(),
+            realm: None,
+            summary: "Fortress of the sun.".into(),
+            initial_state: WorldStateInput {
+                controlling_faction: Some("Sun Guard".into()),
+                status: Some("standing".into()),
+                prosperity: Some("high".into()),
+                stability: Some("high".into()),
+                threat_level: Some("low".into()),
+                sensory_details: vec!["warm stone".into()],
+            },
+        })
+        .await
+        .unwrap();
+    let main_promise = svc
+        .create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: project.project_id.clone(),
+            promise_type: "mystery".into(),
+            description: "Veyra hears footsteps behind the throne.".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: None,
+            notes: Vec::new(),
+        })
+        .await
+        .unwrap();
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: veyra_id.clone(),
+        character_b_id: bram_id.clone(),
+        relationship_type: "allies".into(),
+        initial_trust: 25,
+        initial_tension: 10,
+        dynamics: vec!["trusted".into()],
+    })
+    .await
+    .unwrap();
+
+    // Create `child` from `main`, and `grandchild` from `child`, plus `sibling` from `main`.
+    let child = svc
+        .create_branch(CreateBranchInput {
+            project_id: project.project_id.clone(),
+            name: "child-branch".into(),
+            branch_type: "what_if".into(),
+            description: Some("child".into()),
+            parent_branch_id: Some(main_branch.id.clone()),
+        })
+        .await
+        .unwrap();
+    let grandchild = svc
+        .create_branch(CreateBranchInput {
+            project_id: project.project_id.clone(),
+            name: "grandchild-branch".into(),
+            branch_type: "what_if".into(),
+            description: Some("grandchild".into()),
+            parent_branch_id: Some(child.branch_id.clone()),
+        })
+        .await
+        .unwrap();
+    let sibling = svc
+        .create_branch(CreateBranchInput {
+            project_id: project.project_id.clone(),
+            name: "sibling-branch".into(),
+            branch_type: "what_if".into(),
+            description: Some("sibling".into()),
+            parent_branch_id: Some(main_branch.id.clone()),
+        })
+        .await
+        .unwrap();
+
+    // Switch to `child`: commit character state on inherited `main_scene_id` (routing to active descendant `child`)
+    // and create + archive a child promise.
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: child.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.commit_character_state(CommitCharacterStateInput {
+        character_id: veyra_id.clone(),
+        scene_id: main_scene_id.clone(),
+        changes: CharacterStatePatch {
+            emotional_state: [("courage".to_string(), serde_json::json!(0.9))]
+                .into_iter()
+                .collect(),
+            goals: Some(vec!["defend the keep".into()]),
+            status: Some(vec!["alive".into()]),
+            notes: None,
+            source_summary: Some("committed on child from inherited main scene".into()),
+        },
+    })
+    .await
+    .unwrap();
+    let child_promise = svc
+        .create_narrative_promise(CreateNarrativePromiseInput {
+            project_id: project.project_id.clone(),
+            promise_type: "foreshadowing".into(),
+            description: "Bram notices the cracked seal.".into(),
+            planted_at: StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            },
+            planned_payoff: None,
+            notes: Vec::new(),
+        })
+        .await
+        .unwrap();
+    svc.archive_entity(ArchiveEntityInput {
+        entity_type: "narrative_promise".into(),
+        entity_id: child_promise.narrative_promise_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    // Switch to `grandchild`: add a canonical fact override
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: grandchild.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.register_canonical_fact(RegisterCanonicalFactInput {
+        project_id: project.project_id.clone(),
+        scene_id: Some(main_scene_id.clone()),
+        book_number: 1,
+        chapter_number: 1,
+        fact_type: None,
+        key: None,
+        value: None,
+        context: None,
+        subject_table: Some("character".into()),
+        subject_id: Some(veyra_id.clone()),
+        predicate: Some("title".into()),
+        value_kind: Some("text".into()),
+        value_text: Some("Grand Marshal".into()),
+        value_number: None,
+        value_unit: None,
+        value_json: None,
+        aliases: Vec::new(),
+        scope: None,
+        valid_from: None,
+        valid_until: None,
+        legacy_untyped: None,
+        supersedes_fact_id: None,
+        secrecy: None,
+    })
+    .await
+    .unwrap();
+
+    // Switch to `sibling`: add a world rule on `sibling`
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: sibling.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.create_world_rule(CreateWorldRuleInput {
+        project_id: project.project_id.clone(),
+        rule_name: "Solar Resonance".into(),
+        rule_type: "magic".into(),
+        description: "Sunstones hum at noon.".into(),
+        established_in: None,
+        relevance_tags: vec!["sun".into()],
+        scan_pattern: None,
+    })
+    .await
+    .unwrap();
+
+    // Live ancestor edit on `main` AFTER `child` and `grandchild` were forked!
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: main_branch.id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.create_world_rule(CreateWorldRuleInput {
+        project_id: project.project_id.clone(),
+        rule_name: "Nightfall Curfew".into(),
+        rule_type: "law".into(),
+        description: "No lanterns on the outer wall after dusk.".into(),
+        established_in: None,
+        relevance_tags: vec!["curfew".into()],
+        scan_pattern: None,
+    })
+    .await
+    .unwrap();
+
+    // Backfill and verify parity across all 4 branches (including sibling isolation and live ancestor edit inheritance)!
+    let _ = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    for bid in [
+        &main_branch.id,
+        &child.branch_id,
+        &grandchild.branch_id,
+        &sibling.branch_id,
+    ] {
+        let rep = svc
+            .compare_canon_compatibility_shadow_reads(&project.project_id, bid, None)
+            .await
+            .unwrap();
+        assert!(
+            rep.parity_clean,
+            "expected clean parity on branch {bid}, got: {:#?}",
+            rep.differences
+        );
+    }
+
+    // Merge `sibling` into `main`, rerun backfill, and verify parity!
+    svc.merge_branch(MergeBranchInput {
+        project_id: project.project_id.clone(),
+        source_branch_id: sibling.branch_id.clone(),
+        target_branch_id: Some(main_branch.id.clone()),
+        merge_type: "fast_forward".into(),
+    })
+    .await
+    .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    for bid in [&main_branch.id, &child.branch_id, &grandchild.branch_id] {
+        let rep = svc
+            .compare_canon_compatibility_shadow_reads(&project.project_id, bid, None)
+            .await
+            .unwrap();
+        assert!(
+            rep.parity_clean,
+            "expected clean parity after merge on branch {bid}, got: {:#?}",
+            rep.differences
+        );
+    }
+
+    // Now test Save-Point Restore on `child`:
+    // 1. Switch to `child` and create a save point.
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: child.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+    let sp = svc
+        .create_save_point(CreateSavePointInput {
+            project_id: project.project_id.clone(),
+            name: "before-child-mutation".into(),
+            description: Some("checkpoint before extra rule".into()),
+        })
+        .await
+        .unwrap();
+
+    // 2. Mutate `child` (add a new world rule) and backfill so canon_event has the post-savepoint event.
+    svc.create_world_rule(CreateWorldRuleInput {
+        project_id: project.project_id.clone(),
+        rule_name: "Temporary Child Rule".into(),
+        rule_type: "custom".into(),
+        description: "Should vanish when save point is restored.".into(),
+        established_in: None,
+        relevance_tags: Vec::new(),
+        scan_pattern: None,
+    })
+    .await
+    .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+
+    // 3. Restore save point on `child`, rerun `backfill_project_canon`, and verify that stale post-savepoint
+    //    canon events are invalidated and shadow parity is 100% clean!
+    svc.restore_save_point(RestoreSavePointInput {
+        project_id: project.project_id.clone(),
+        save_point_id: sp.save_point_id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+
+    let post_restore_shadow = svc
+        .compare_canon_compatibility_shadow_reads(&project.project_id, &child.branch_id, None)
+        .await
+        .unwrap();
+    assert!(
+        post_restore_shadow.parity_clean,
+        "expected clean shadow parity after savepoint restore, got: {:#?}",
+        post_restore_shadow.differences
+    );
+    let _ = main_promise;
+}
+
+#[tokio::test]
+async fn per_project_cutover_readiness_gate_isolates_quarantined_and_unmapped_projects() {
+    use crate::sqlite::repository::AppendProgressionEventParams;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (clean_proj, _, _) = project_with_scene(&svc, "Clean Project").await;
+    let (quarantined_proj, q_scene_id, _) = project_with_scene(&svc, "Quarantined Project").await;
+    let q_branch = svc
+        .repository()
+        .get_active_branch(&quarantined_proj.project_id)
+        .await
+        .unwrap();
+    let q_char = create_character_named(&svc, &quarantined_proj.project_id, "Kael").await;
+
+    // Insert an opaque progression_event on `quarantined_proj`.
+    svc.repository()
+        .append_progression_event(AppendProgressionEventParams {
+            project_id: quarantined_proj.project_id.clone(),
+            branch_id: q_branch.id.clone(),
+            subject_table: "character".into(),
+            subject_id: q_char.clone(),
+            overlay_id: None,
+            kind: "opaque_legacy_mutation".into(),
+            delta_json: serde_json::json!({
+                "arbitrary_blob": [1, 2, 3]
+            }),
+            source_scene_id: Some(q_scene_id.clone()),
+            placement: None,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    // Before backfill on `clean_proj` (if it had any canon rows) or `quarantined_proj`:
+    // `quarantined_proj` has 2 unmapped legacy rows (`character_state` from create_character + `progression_event`), so cutover is blocked.
+    let pre_q_gate = svc
+        .evaluate_project_canon_cutover_readiness(&quarantined_proj.project_id)
+        .await
+        .unwrap();
+    assert!(!pre_q_gate.cutover_allowed);
+    assert_eq!(pre_q_gate.unmapped_legacy_row_count, 2);
+
+    // Backfill both projects.
+    let clean_rep = svc
+        .backfill_project_canon(&clean_proj.project_id)
+        .await
+        .unwrap();
+    assert_eq!(clean_rep.total_quarantined_count, 0);
+
+    let q_rep = svc
+        .backfill_project_canon(&quarantined_proj.project_id)
+        .await
+        .unwrap();
+    assert_eq!(q_rep.total_quarantined_count, 1);
+    assert_eq!(q_rep.quarantined_entries.len(), 1);
+    assert_eq!(
+        q_rep.quarantined_entries[0].source_table,
+        "progression_event"
+    );
+
+    // Verify per-project isolation: `clean_proj` is ready for cutover, while `quarantined_proj` is blocked!
+    let clean_gate = svc
+        .evaluate_project_canon_cutover_readiness(&clean_proj.project_id)
+        .await
+        .unwrap();
+    assert!(
+        clean_gate.cutover_allowed,
+        "clean project should allow cutover, blocking_reasons: {:?}",
+        clean_gate.blocking_reasons
+    );
+
+    let post_q_gate = svc
+        .evaluate_project_canon_cutover_readiness(&quarantined_proj.project_id)
+        .await
+        .unwrap();
+    assert!(!post_q_gate.cutover_allowed);
+    assert_eq!(post_q_gate.quarantined_count, 1);
+    assert_eq!(post_q_gate.unmapped_legacy_row_count, 0);
+}

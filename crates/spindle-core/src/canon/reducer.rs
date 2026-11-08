@@ -656,26 +656,51 @@ pub fn state_at(
                 superseded.clone(),
             ));
         }
-        match &event.payload {
-            CanonEventPayloadV1::SourceInvalidation { invalidation } => {
-                for rev_id in &invalidation.invalidated_revision_ids {
-                    invalidated_revisions.push((
-                        depth,
-                        event.decision_seq,
-                        event.append_seq,
-                        invalidation.scene_id.clone(),
-                        rev_id.clone(),
-                    ));
-                }
-                for ev_id in &invalidation.invalidated_event_ids {
-                    suppressed_event_ids.push((
-                        depth,
-                        event.decision_seq,
-                        event.append_seq,
-                        ev_id.clone(),
-                    ));
-                }
+        if let CanonEventPayloadV1::SourceInvalidation { invalidation } = &event.payload {
+            for rev_id in &invalidation.invalidated_revision_ids {
+                invalidated_revisions.push((
+                    depth,
+                    event.decision_seq,
+                    event.append_seq,
+                    invalidation.scene_id.clone(),
+                    rev_id.clone(),
+                ));
             }
+            for ev_id in &invalidation.invalidated_event_ids {
+                suppressed_event_ids.push((
+                    depth,
+                    event.decision_seq,
+                    event.append_seq,
+                    ev_id.clone(),
+                ));
+            }
+        }
+    }
+
+    for &(depth, event) in &control_scan {
+        let is_suppressed = suppressed_event_ids
+            .iter()
+            .any(|(sup_depth, sup_dec, sup_app, id)| {
+                (*sup_depth < depth
+                    || (*sup_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*sup_dec, *sup_app)))
+                    && event_matches_id_or_merged_source(event, id)
+            })
+            || invalidated_revisions.iter().any(
+                |(inv_depth, inv_dec, inv_app, scene_filter, rev_id)| {
+                    (*inv_depth < depth
+                        || (*inv_depth == depth
+                            && (event.decision_seq, event.append_seq) < (*inv_dec, *inv_app)))
+                        && event_matches_revision_or_merged_source(event, rev_id)
+                        && scene_filter
+                            .as_ref()
+                            .is_none_or(|s| event.scene_id.as_ref() == Some(s))
+                },
+            );
+        if is_suppressed {
+            continue;
+        }
+        match &event.payload {
             CanonEventPayloadV1::SceneVisibility { visibility } => {
                 scene_visibility_by_id
                     .insert(visibility.scene_id.clone(), (depth, visibility.clone()));
@@ -690,6 +715,7 @@ pub fn state_at(
                 ));
             }
             CanonEventPayloadV1::Assertion { .. }
+            | CanonEventPayloadV1::SourceInvalidation { .. }
             | CanonEventPayloadV1::WatermarkRestore { .. } => {}
         }
     }
@@ -2262,26 +2288,51 @@ pub fn validate_event_batch_in_history(
                 superseded.clone(),
             ));
         }
-        match &event.payload {
-            CanonEventPayloadV1::SourceInvalidation { invalidation } => {
-                for rev_id in &invalidation.invalidated_revision_ids {
-                    invalidated_revisions.push((
-                        depth,
-                        event.decision_seq,
-                        event.append_seq,
-                        invalidation.scene_id.clone(),
-                        rev_id.clone(),
-                    ));
-                }
-                for ev_id in &invalidation.invalidated_event_ids {
-                    suppressed_event_ids.push((
-                        depth,
-                        event.decision_seq,
-                        event.append_seq,
-                        ev_id.clone(),
-                    ));
-                }
+        if let CanonEventPayloadV1::SourceInvalidation { invalidation } = &event.payload {
+            for rev_id in &invalidation.invalidated_revision_ids {
+                invalidated_revisions.push((
+                    depth,
+                    event.decision_seq,
+                    event.append_seq,
+                    invalidation.scene_id.clone(),
+                    rev_id.clone(),
+                ));
             }
+            for ev_id in &invalidation.invalidated_event_ids {
+                suppressed_event_ids.push((
+                    depth,
+                    event.decision_seq,
+                    event.append_seq,
+                    ev_id.clone(),
+                ));
+            }
+        }
+    }
+
+    for &(depth, event) in &control_scan {
+        let is_suppressed = suppressed_event_ids
+            .iter()
+            .any(|(sup_depth, sup_dec, sup_app, id)| {
+                (*sup_depth < depth
+                    || (*sup_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*sup_dec, *sup_app)))
+                    && event_matches_id_or_merged_source(event, id)
+            })
+            || invalidated_revisions.iter().any(
+                |(inv_depth, inv_dec, inv_app, scene_filter, rev_id)| {
+                    (*inv_depth < depth
+                        || (*inv_depth == depth
+                            && (event.decision_seq, event.append_seq) < (*inv_dec, *inv_app)))
+                        && event_matches_revision_or_merged_source(event, rev_id)
+                        && scene_filter
+                            .as_ref()
+                            .is_none_or(|s| event.scene_id.as_ref() == Some(s))
+                },
+            );
+        if is_suppressed {
+            continue;
+        }
+        match &event.payload {
             CanonEventPayloadV1::SceneVisibility { visibility } => {
                 scene_visibility_by_id
                     .insert(visibility.scene_id.clone(), (depth, visibility.clone()));
@@ -2296,6 +2347,7 @@ pub fn validate_event_batch_in_history(
                 ));
             }
             CanonEventPayloadV1::Assertion { .. }
+            | CanonEventPayloadV1::SourceInvalidation { .. }
             | CanonEventPayloadV1::WatermarkRestore { .. } => {}
         }
     }
