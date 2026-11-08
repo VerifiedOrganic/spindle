@@ -36,10 +36,11 @@ cargo test -p spindle-adapters --features perf
 
 ## Local Runtime
 
-Run the MCP server in stdio mode:
+Build and run the MCP server in stdio mode (the repo `.mcp.json` expects the prebuilt `target/release/spindle-mcp` binary so MCP clients never block on compilation or the Cargo lock during `initialize`):
 
 ```bash
-cargo run -p spindle-mcp
+cargo build --release -p spindle-mcp
+./target/release/spindle-mcp
 ```
 
 Set `SPINDLE_DATA_DIR` to choose the local SQLite data directory. Optional model

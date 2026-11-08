@@ -55,11 +55,15 @@ impl SqlitePool {
     pub async fn open(path: &Path) -> Result<Self> {
         register_sqlite_vec_once();
 
+        let migration_lock = acquire_migration_lock(path).await?;
+
         let writer = open_connection(path, /* reader = */ false)
             .await
             .context("opening writer connection")?;
 
-        // Migrations run synchronously on the writer thread.
+        // Migrations run synchronously on the writer thread while holding the
+        // cross-process file lock so concurrent fresh starts never race
+        // refinery's history check against table creation.
         writer
             .call(|conn| {
                 migrations::runner()
@@ -69,6 +73,8 @@ impl SqlitePool {
             })
             .await
             .context("running refinery migrations")?;
+
+        drop(migration_lock);
 
         let mut readers = Vec::with_capacity(READER_COUNT);
         for _ in 0..READER_COUNT {
@@ -120,6 +126,50 @@ impl SqlitePool {
     }
 }
 
+struct MigrationLockGuard {
+    file: std::fs::File,
+}
+
+impl Drop for MigrationLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub(crate) fn migration_lock_path(db_path: &Path) -> std::path::PathBuf {
+    let mut os = db_path.as_os_str().to_os_string();
+    os.push(".migration.lock");
+    std::path::PathBuf::from(os)
+}
+
+async fn acquire_migration_lock(db_path: &Path) -> Result<Option<MigrationLockGuard>> {
+    if db_path.as_os_str().is_empty() || db_path == Path::new(":memory:") {
+        return Ok(None);
+    }
+    let lock_path = migration_lock_path(db_path);
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = lock_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("creating parent directory for {}", lock_path.display())
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("opening migration lock file {}", lock_path.display()))?;
+        file.lock()
+            .with_context(|| format!("acquiring migration lock {}", lock_path.display()))?;
+        Ok(Some(MigrationLockGuard { file }))
+    })
+    .await
+    .context("joining migration lock task")?
+}
+
 async fn open_connection(path: &Path, reader: bool) -> Result<AsyncConnection> {
     let conn = AsyncConnection::open(path).await?;
     conn.call(move |c| apply_pragmas(c, reader).map_err(tokio_rusqlite::Error::from))
@@ -128,12 +178,12 @@ async fn open_connection(path: &Path, reader: bool) -> Result<AsyncConnection> {
 }
 
 fn apply_pragmas(conn: &mut Connection, reader: bool) -> rusqlite::Result<()> {
-    // journal_mode returns the resulting mode; execute_batch is fine here
-    // since we don't need the return value.
+    // Set busy_timeout first so concurrent connections opening WAL mode wait
+    // instead of failing immediately with SQLITE_BUSY.
     conn.execute_batch(
-        "PRAGMA journal_mode       = WAL;\n\
+        "PRAGMA busy_timeout       = 5000;\n\
+         PRAGMA journal_mode       = WAL;\n\
          PRAGMA synchronous        = NORMAL;\n\
-         PRAGMA busy_timeout       = 5000;\n\
          PRAGMA cache_size         = -65536;\n\
          PRAGMA mmap_size          = 268435456;\n\
          PRAGMA temp_store         = MEMORY;\n\
@@ -258,5 +308,80 @@ mod tests {
             .await
             .expect("count branches");
         assert_eq!(branches, 0, "cascade should have removed the branch");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_fresh_starts_serialize_migrations_without_race() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("race.db");
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let db_path = path.clone();
+            let b = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                b.wait().await;
+                SqlitePool::open(&db_path).await
+            }));
+        }
+
+        let mut pools = Vec::with_capacity(4);
+        for handle in handles {
+            let pool = handle.await.expect("join opener task").expect(
+                "concurrent SqlitePool::open must not fail with table project already exists",
+            );
+            pools.push(pool);
+        }
+
+        // All 4 pools can read the migrated schema.
+        for pool in &pools {
+            let count: i64 = pool
+                .read(|conn| conn.query_row("SELECT COUNT(*) FROM project", [], |r| r.get(0)))
+                .await
+                .expect("query project table");
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migration_lock_blocks_until_external_holder_releases() {
+        let tmp = TempDir::new().expect("tempdir");
+        let db_path = tmp.path().join("locked.db");
+        let lock_path = migration_lock_path(&db_path);
+
+        let external_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .expect("open lock file");
+        external_file.lock().expect("acquire external lock");
+
+        let db_path_clone = db_path.clone();
+        let mut open_task = tokio::spawn(async move { SqlitePool::open(&db_path_clone).await });
+
+        // While the external lock is held, SqlitePool::open must block.
+        let blocked =
+            tokio::time::timeout(std::time::Duration::from_millis(150), &mut open_task).await;
+        assert!(
+            blocked.is_err(),
+            "SqlitePool::open must wait while migration lock is held"
+        );
+
+        external_file.unlock().expect("release external lock");
+        drop(external_file);
+
+        let pool = tokio::time::timeout(std::time::Duration::from_secs(30), open_task)
+            .await
+            .expect("SqlitePool::open should finish once lock is released")
+            .expect("join open task")
+            .expect("open pool");
+        let count: i64 = pool
+            .read(|conn| conn.query_row("SELECT COUNT(*) FROM project", [], |r| r.get(0)))
+            .await
+            .expect("query project");
+        assert_eq!(count, 0);
     }
 }
