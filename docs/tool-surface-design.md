@@ -1,8 +1,9 @@
 # Tool surface and skill alignment (Wave 2 / P4)
 
-Status: proposed; design only. Baseline: `origin/main` at
+Status: accepted; implementation in progress. Baseline: `origin/main` at
 `419f40be7378d8919ac89d28139496d06b7db935`, measured 2026-11-08.
-No tool, skill, profile, persistence, or CLI behavior changes in this PR.
+The measurements below are the original design baseline. Current implementation
+changes are tracked in the implementation checkpoints at the end.
 
 ## Decision and scope
 
@@ -608,3 +609,20 @@ Proceed with these recommended defaults unless the author chooses otherwise:
    does not grant auto-accept authority or alter creative boundaries.
 4. **Budget tradeoff:** enforce byte caps above and split specialist workflows when
    a profile grows; raise a cap only with measured workflow evidence and review.
+
+## Implementation checkpoints
+
+The inventory guard in `tools/profile_snapshot_probe.py` checks live stdio
+`tools/list` against the registry snapshots under
+`crates/spindle-mcp/src/tools/snapshots/`. Run `cargo build -p spindle-mcp`
+then `python3 tools/profile_snapshot_probe.py`. Each child uses an empty config
+and a separate temporary data directory with inherited Spindle settings removed.
+The probe reports compact UTF-8 input/full bytes and ceil(bytes / 4) estimates;
+snapshot equality is the initial compatibility budget. Target canonical-profile
+ceilings above remain pending the manifest/compiler and schema phases.
+
+The first intentional surface change adds `set_active_project` to minimal,
+write, and import. Existing-book selection is now listed and callable in every
+named profile. Default and authoring discovery, legacy DTOs, unknown-profile
+fallback, and branch/revision behavior remain unchanged. The snapshots include
+this addition; a profile-call regression test exercises valid selection.

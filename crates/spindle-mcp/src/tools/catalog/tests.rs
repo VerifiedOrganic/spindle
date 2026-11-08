@@ -83,7 +83,12 @@ async fn skill_tools_are_listed_in_every_tool_profile() {
             .iter()
             .map(|tool| tool.name.to_string())
             .collect();
-        for tool_name in ["list_skills", "get_skill", "get_reference"] {
+        for tool_name in [
+            "list_skills",
+            "get_skill",
+            "get_reference",
+            "set_active_project",
+        ] {
             assert!(
                 names.iter().any(|name| name == tool_name),
                 "profile {profile} is missing tool {tool_name}"
