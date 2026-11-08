@@ -163,7 +163,8 @@ async fn skill_profile_alignment() {
             owned.extend(required.iter().copied());
             for profile in profiles {
                 assert!(
-                    ["default", "minimal", "write", "import", "authoring"].contains(profile),
+                    *profile == "default"
+                        || crate::tools::validate_tool_profile(Some(profile)).is_ok(),
                     "unknown declared profile {profile}"
                 );
                 router.tool_profile = (*profile != "default").then(|| (*profile).to_owned());
@@ -276,5 +277,21 @@ fn skill_manifest_metadata_matches_snapshot() {
         std::fs::read_to_string(path).unwrap(),
         actual,
         "regenerate metadata snapshot intentionally; never hand edit"
+    );
+}
+
+#[test]
+fn generated_profile_metadata_matches_snapshot() {
+    let metadata: Vec<_> = spindle_adapters::guidance::list_profiles().iter().map(|p| serde_json::json!({"name": p.name, "description": p.description, "units": p.units, "tools": p.tools})).collect();
+    let actual = serde_json::to_string_pretty(&metadata).unwrap() + "\n";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/generated-profiles.json");
+    if std::env::var("SPINDLE_UPDATE_SKILL_SNAPSHOT").as_deref() == Ok("1") {
+        std::fs::write(&path, &actual).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        actual,
+        "regenerate from composition and manifests; never hand edit"
     );
 }

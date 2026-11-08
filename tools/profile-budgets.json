@@ -1,22 +1,137 @@
 {
   "version": 1,
   "compatibility": {
-    "default": {"tools": 170, "input_bytes": 137800, "full_bytes": 557658},
-    "minimal": {"tools": 20, "input_bytes": 16037, "full_bytes": 135764},
-    "write": {"tools": 122, "input_bytes": 105845, "full_bytes": 389782},
-    "import": {"tools": 40, "input_bytes": 19846, "full_bytes": 207434},
-    "authoring": {"tools": 76, "input_bytes": 81082, "full_bytes": 278295}
+    "default": {
+      "tools": 170,
+      "input_bytes": 137800,
+      "full_bytes": 557658
+    },
+    "minimal": {
+      "tools": 20,
+      "input_bytes": 16037,
+      "full_bytes": 135764
+    },
+    "write": {
+      "tools": 122,
+      "input_bytes": 105845,
+      "full_bytes": 389782
+    },
+    "import": {
+      "tools": 40,
+      "input_bytes": 19846,
+      "full_bytes": 207434
+    },
+    "authoring": {
+      "tools": 76,
+      "input_bytes": 81082,
+      "full_bytes": 278295
+    },
+    "planning": {
+      "tools": 39,
+      "input_bytes": 39359,
+      "full_bytes": 170942
+    },
+    "release": {
+      "tools": 65,
+      "input_bytes": 57121,
+      "full_bytes": 223646
+    },
+    "research": {
+      "tools": 22,
+      "input_bytes": 21331,
+      "full_bytes": 141988
+    },
+    "revision": {
+      "tools": 38,
+      "input_bytes": 31953,
+      "full_bytes": 226540
+    },
+    "setup": {
+      "tools": 16,
+      "input_bytes": 17952,
+      "full_bytes": 131036
+    },
+    "style": {
+      "tools": 48,
+      "input_bytes": 40612,
+      "full_bytes": 241772
+    },
+    "workflow-authoring": {
+      "tools": 70,
+      "input_bytes": 73580,
+      "full_bytes": 291770
+    },
+    "workflow-import": {
+      "tools": 27,
+      "input_bytes": 25520,
+      "full_bytes": 217334
+    },
+    "workflow-write": {
+      "tools": 45,
+      "input_bytes": 49511,
+      "full_bytes": 208654
+    },
+    "worldbuilding": {
+      "tools": 48,
+      "input_bytes": 51170,
+      "full_bytes": 195489
+    },
+    "legacy-all": {
+      "tools": 170,
+      "input_bytes": 137800,
+      "full_bytes": 557658
+    }
   },
   "canonical": {
-    "minimal": {"tools": 16, "input_bytes": 12000, "full_bytes": 16000},
-    "write": {"tools": 45, "input_bytes": 32000, "full_bytes": 40000},
-    "authoring": {"tools": 55, "input_bytes": 40000, "full_bytes": 48000},
-    "import": {"tools": 30, "input_bytes": 20000, "full_bytes": 24000},
-    "revision": {"tools": 30, "input_bytes": 20000, "full_bytes": 24000},
-    "worldbuilding": {"tools": 45, "input_bytes": 32000, "full_bytes": 40000},
-    "planning": {"tools": 45, "input_bytes": 32000, "full_bytes": 40000},
-    "style": {"tools": 25, "input_bytes": 16000, "full_bytes": 20000},
-    "research": {"tools": 25, "input_bytes": 16000, "full_bytes": 20000},
-    "release": {"tools": 25, "input_bytes": 16000, "full_bytes": 20000}
+    "minimal": {
+      "tools": 16,
+      "input_bytes": 12000,
+      "full_bytes": 16000
+    },
+    "write": {
+      "tools": 45,
+      "input_bytes": 32000,
+      "full_bytes": 40000
+    },
+    "authoring": {
+      "tools": 55,
+      "input_bytes": 40000,
+      "full_bytes": 48000
+    },
+    "import": {
+      "tools": 30,
+      "input_bytes": 20000,
+      "full_bytes": 24000
+    },
+    "revision": {
+      "tools": 30,
+      "input_bytes": 20000,
+      "full_bytes": 24000
+    },
+    "worldbuilding": {
+      "tools": 45,
+      "input_bytes": 32000,
+      "full_bytes": 40000
+    },
+    "planning": {
+      "tools": 45,
+      "input_bytes": 32000,
+      "full_bytes": 40000
+    },
+    "style": {
+      "tools": 25,
+      "input_bytes": 16000,
+      "full_bytes": 20000
+    },
+    "research": {
+      "tools": 25,
+      "input_bytes": 16000,
+      "full_bytes": 20000
+    },
+    "release": {
+      "tools": 25,
+      "input_bytes": 16000,
+      "full_bytes": 20000
+    }
   }
 }

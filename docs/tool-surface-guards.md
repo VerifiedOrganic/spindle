@@ -37,8 +37,8 @@ Compact UTF-8 tool-array bytes are authoritative; token estimates are
 `ceil(bytes / 4)`. Input-only measurement includes name, description and input
 schema. Full measurement includes advertised outputs. The live isolated stdio
 probe checks the same ceilings plus exact registry snapshots and per-tool growth
-on mismatch. It retains the current unknown-profile fallback until startup
-selection changes in the compiler phase.
+on mismatch. The live probe also asserts unknown startup profiles are rejected before data
+access; direct unknown-profile routers fail closed.
 
 The current long-form catalogs are not lint-clean and do not meet canonical size
 targets. `quality/legacy-schema-inventory.json` is a generated diagnostic
@@ -55,5 +55,6 @@ After an intentional compatibility schema change, regenerate with
 inspect the pointer/rule diff, and rerun without the update setting. This does
 not update discovery snapshots or authorize a budget increase. Intentional
 public surface changes still require same-PR snapshot updates and a changelog.
-The target caps are not claims of implemented reduction; the profile compiler,
-canonical descriptions/enums and compact discovery remain upcoming P4 work.
+The target caps are not claims of implemented reduction. Generated transitional
+profiles now have measured compatibility ceilings; canonical descriptions/enums,
+narrowed skill cores and compact discovery remain upcoming P4 work.

@@ -640,3 +640,10 @@ compatibility byte ceilings in registry, HTTP, and isolated stdio checks. It add
 strict no-exemption helpers and the target ceilings for upcoming canonical
 profiles, without claiming those profiles or reductions have shipped. See
 [guard contracts](tool-surface-guards.md). Current discovery bytes are unchanged.
+
+The profile compiler now resolves `skills/profiles.toml` into ten opt-in static
+workflow/specialist profiles, with generated metadata, snapshots, and measured
+transitional caps. Unset/four existing profiles remain byte-identical and explicit
+`legacy-all` preserves the full catalog. Unknown startup names are rejected;
+routers and secondary proxies fail closed/filter calls. See [profile catalog](tool-profiles.md).
+Canonical target reductions and loader/skill/schema cleanup are not claimed yet.

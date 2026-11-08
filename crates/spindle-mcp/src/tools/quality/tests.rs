@@ -143,7 +143,10 @@ fn budgets() -> Budgets {
 async fn profile_token_budgets() {
     let budgets = budgets();
     assert_eq!(budgets.version, 1);
-    assert_eq!(budgets.compatibility.len(), 5);
+    assert_eq!(
+        budgets.compatibility.len(),
+        crate::tools::profile_names().len() + 1
+    );
     assert_eq!(budgets.canonical.len(), 10);
     let mut router = router().await;
     for (profile, budget) in &budgets.compatibility {
