@@ -509,12 +509,15 @@ fn rewrite_hint(shelf_id: &str) -> String {
 
 const EMOTION_WORDS: &str = "relief|dread|hope|terror|fear|love|resentment|pride|shame|anger|disappointment|grief|guilt|joy|sorrow|panic|calm|rage|pity|resolve|awe|disgust|envy|jealousy|gratitude|bitterness|longing|despair|excitement|anxiety|affection|contempt|fury|remorse|sadness|happiness|elation|melancholy|wonder|horror|revulsion|sympathy|irritation|amusement|confusion|curiosity|unease|apprehension|exhilaration|humiliation|indignation|nostalgia|regret|satisfaction|tenderness|triumph|vulnerability|yearning|frustration|admiration|devotion|hatred|loathing|lust|passion|doubt|helplessness|defiance|resignation|shock|disbelief|astonishment|bewilderment|dismay|foreboding|glee|pleasure|pain|agony|ecstasy|bliss|misery|worry|compassion|empathy|spite|embarrassment|chagrin|vexation|annoyance|delight|euphoria|rapture|serenity|turmoil|anguish|torment|heartbreak|loneliness|suspicion|hopeful|terrified|relieved|afraid|angry|sad|happy|proud|ashamed|guilty|grateful|bitter|anxious|furious|jealous|envious|curious|uneasy|excited|nervous|scared|thrilled|horrified|disgusted|amused|irritated|confused";
 
+const CONTRAST_HINGE_NOUNS: &str = "homecoming|reckoning|request|order|truce|trap|mercy|calculation|threat|promise|warning|apology|confession|verdict|sentence|invitation|ultimatum|command|plea|bargain|surrender|victory|defeat|betrayal|sacrifice|punishment|reward|accident|coincidence|mistake|choice|decision|declaration|judgment|trial|test|lesson|gift|curse|blessing|omen|prophecy|miracle|tragedy|farce|game|war|battle|duel|ambush|execution|inquisition|interrogation|negotiation|conversation|question|answer|lie|truth|secret|revelation|epiphany|awakening|rebirth|ending|beginning|farewell|goodbye|welcome|reunion|escape|rescue|exile|sanctuary|prison|cage|weapon|shield|mask|armor|wound|scar|ghost|haunting|memory|dream|nightmare|illusion|vow|oath|covenant|sin|atonement|redemption|absolution|damnation|salvation|revenge|vengeance|justice|cruelty|kindness|weakness|strength|courage|cowardice|bravery|folly|madness|sanity|survival|destiny|fate";
+
 fn contrast_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
+        let hinge_terms = format!("{EMOTION_WORDS}|{CONTRAST_HINGE_NOUNS}");
         let pat = format!(
-            r"(?i)(?:\b(?:it|this|that)\s+(?:wasn['’]t|was\s+not)\s+(?:just\s+|merely\s+|simply\s+)?(?:a\s+|an\s+|the\s+)?[a-z'’-]+(?:\s+[a-z'’-]+){{0,4}}\s*(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)|[\u2014—]\s*(?:it\s+was|this\s+was|that\s+was|a\b|an\b|the\b|{e}))\b|(?:^|[\.!?\n]\s*)Not\s+(?:just\s+|merely\s+)?(?:{e}|a\s+\w+|the\s+\w+)\s*(?:[\u2014—–-]\s*(?:something\b|a\b|an\b|the\b|{e})|,\s*but\s+(?:something\b|rather\b|{e}))\b|\b(?:he|she|they|it)\s+didn['’]t\s+\w+[^\n]{{0,60}}\bbecause\b[^\n]{{1,60}}\bbecause\b)",
-            e = EMOTION_WORDS
+            r"(?i)(?:\b(?:it|this|that)\s+(?:wasn['’]t|was\s+not)\s+(?:(?:just|merely|simply)\s+(?:a\s+|an\s+|the\s+)?[a-z'’-]+(?:\s+[a-z'’-]+){{0,3}}\s*(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)\s+(?:a\s+|an\s+|the\s+)?[a-z'’-]+|[\u2014—]\s*(?:(?:it\s+was|this\s+was|that\s+was)\s+)?(?:a\s+|an\s+|the\s+)?[a-z'’-]+)|(?:a\s+|an\s+|the\s+)?(?:(?:{h})\b[a-z'’\s-]{{0,24}}(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)\s+(?:a\s+|an\s+|the\s+)?[a-z'’-]+|[\u2014—]\s*(?:(?:it\s+was|this\s+was|that\s+was)\s+)?(?:a\s+|an\s+|the\s+)?[a-z'’-]+)|[a-z'’-]+(?:\s+[a-z'’-]+){{0,3}}\s*(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)\s+(?:a\s+|an\s+|the\s+)?(?:[a-z'’-]+\s+){{0,2}}(?:{h})|[\u2014—]\s*(?:(?:it\s+was|this\s+was|that\s+was)\s+)?(?:a\s+|an\s+|the\s+)?(?:[a-z'’-]+\s+){{0,2}}(?:{h}))))\b|(?:^|[\.!?\n]\s*)Not\s+(?:just\s+|merely\s+|simply\s+)?(?:a\s+|an\s+|the\s+)?(?:{h})\s*(?:[\u2014—–-]\s*(?:something\b|a\b|an\b|the\b|{h})|,\s*but\s+(?:something\b|rather\b|a\b|an\b|the\b|{h}))\b|\b(?:he|she|they|it)\s+didn['’]t\s+\w+[^\n]{{0,60}}\bbecause\b[^\n]{{1,60}}\bbecause\b)",
+            h = hinge_terms
         );
         Regex::new(&pat).expect("contrast regex")
     })
@@ -570,7 +573,7 @@ fn solitary_fade_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?im)(?:^\s*Hours\s+passed\.\s*$|\bspent the (?:afternoon|morning|evening|night|day)\s+thinking(?:\s+about)?\b|\bLater,\s+at the\s+(?:meeting|office|table|hall),\s+(?:she|he|they)\s+told\s+(?:him|her|them)\s+everything\b|\bthought about (?:what|the offer|his words|her words)[^\n]{0,80}\buntil (?:morning|dawn)\b|\bleft the \w+ and later told \w+\b)",
+            r"(?im)(?:\b(?:(?:a\s+few|several|many|two|three|four|five|six|seven|eight|nine|ten)\s+)?(?:hours|days|weeks|months)\s+passed(?:\s*[\.!?,;—\u2014…]|\s*$)|\bspent the (?:afternoon|morning|evening|night|day)\s+thinking(?:\s+about)?\b|\bLater,\s+at the\s+(?:meeting|office|table|hall),\s+(?:she|he|they)\s+told\s+(?:him|her|them)\s+everything\b|\bthought about (?:what|the offer|his words|her words)[^\n]{0,80}\buntil (?:morning|dawn)\b|\bleft the \w+ and later told \w+\b)",
         )
         .expect("solitary_fade regex")
     })

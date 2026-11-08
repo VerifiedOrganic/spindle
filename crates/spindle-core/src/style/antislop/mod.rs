@@ -626,6 +626,9 @@ mod tests {
         let pack = ShelfPack::load_default().expect("pack");
         let prose = "\"I'm not going, but I'll call,\" she said. \"It wasn't my idea. It was yours.\"\n\
                      The road was not long, but it was steep, and the horse was not young, but it was steady.\n\
+                     It was not raining. It was snowing. It was not morning. It was noon.\n\
+                     It wasn't raining. It was snowing. It wasn't morning. It was noon.\n\
+                     That was not the barn. It was the granary.\n\
                      He did not answer, but turned toward the gate.";
         let report = scan(&pack, &fiction(prose));
         assert!(
@@ -633,7 +636,7 @@ mod tests {
                 .hits
                 .iter()
                 .all(|hit| hit.shelf_id != "contrast_not_x_but_y"),
-            "ordinary 'not X, but Y' clauses and dialogue must not fire contrast_not_x_but_y: {report:?}"
+            "ordinary 'not X, but Y' clauses, literal physical corrections, and dialogue must not fire contrast_not_x_but_y: {report:?}"
         );
         assert_eq!(report.hard_count, 0);
     }
@@ -707,5 +710,23 @@ mod tests {
                 .all(|hit| hit.shelf_id != "solitary_fade"),
             "grounded transitions ('Hours later, ...', 'Two days passed in the saddle...', 'Later, at the station, he bought...') must not fire solitary_fade: {report:?}"
         );
+
+        for bare_fade in [
+            "Hours passed.",
+            "Days passed.",
+            "Weeks passed.",
+            "Months passed.",
+            "Three days passed.",
+        ] {
+            let fade_report = scan(&pack, &fiction(bare_fade));
+            assert!(
+                fade_report
+                    .hits
+                    .iter()
+                    .any(|hit| hit.shelf_id == "solitary_fade" && hit.severity == Severity::Soft),
+                "bare time-skip fade '{bare_fade}' must still fire solitary_fade: {fade_report:?}"
+            );
+            assert_eq!(fade_report.hard_count, 0);
+        }
     }
 }

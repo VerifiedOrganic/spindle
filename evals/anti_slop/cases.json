@@ -219,8 +219,8 @@
     },
     {
       "id": "AS16",
-      "name": "ordinary dialogue and descriptive 'not X, but Y' do not trigger contrast_not_x_but_y",
-      "prose": "\"I'm not going, but I'll call,\" she said. \"It wasn't my idea. It was yours.\" The road was not long, but it was steep, and the horse was not young, but it was steady.",
+      "name": "ordinary dialogue, literal corrections, and descriptive 'not X, but Y' do not trigger contrast_not_x_but_y",
+      "prose": "\"I'm not going, but I'll call,\" she said. \"It wasn't my idea. It was yours.\" It was not raining. It was snowing. It was not morning. It was noon. It wasn't raining. It was snowing. The road was not long, but it was steep, and the horse was not young, but it was steady.",
       "expect": {
         "skipped": false,
         "hard_count": 0,
@@ -237,6 +237,22 @@
         "hard_count": 0,
         "must_include": [],
         "must_exclude": ["solitary_fade", "naming_watchlist"]
+      }
+    },
+    {
+      "id": "AS18",
+      "name": "bare days, weeks, and months time-skip fades trigger solitary_fade",
+      "prose": "Days passed.\n\nWeeks passed.\n\nMonths passed.",
+      "expect": {
+        "skipped": false,
+        "hard_count": 0,
+        "must_include": [
+          {"shelf_id": "solitary_fade", "severity": "soft"}
+        ],
+        "must_exclude": []
+      },
+      "preference_dims": {
+        "lived_in_solitude": "absent"
       }
     }
   ]

@@ -399,8 +399,9 @@ she was still paring apples at the kitchen table", "Two days passed in the
 saddle before they reached the ford", "Later, at the station, he bought a
 loaf and waited under the awning") that satisfy `temporal_coherence` are not
 this shelf either — `solitary_fade` only flags **ungrounded** time-skip fades
-where alone-time is emptied into a bare `"Hours passed."` line, `"spent the
-afternoon thinking..."`, or an unrooted jump straight to the next conversation.
+where alone-time is emptied into a bare `"Hours passed."` / `"Days passed."` /
+`"Weeks passed."` / `"Months passed."` clause, `"spent the afternoon
+thinking..."`, or an unrooted jump straight to the next conversation.
 The finding is the habit of never showing the character alone in their life.
 
 **Rewrite from the beat.** When the POV is alone, root the reader in **place +

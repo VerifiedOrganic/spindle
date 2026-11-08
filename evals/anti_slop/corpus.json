@@ -2785,7 +2785,7 @@
         "repository": "spindle/evals/anti_slop",
         "license": "CC0-1.0"
       },
-      "prose": "He thought about the offer until morning.\n\nHours passed.",
+      "prose": "He thought about the offer until morning.\n\nDays passed.",
       "expected_shelves": [
         "solitary_fade"
       ]
@@ -2800,7 +2800,7 @@
         "repository": "spindle/evals/anti_slop",
         "license": "CC0-1.0"
       },
-      "prose": "She left the kitchen and later told Marcus she would take the shift.",
+      "prose": "Weeks passed.\n\nShe left the kitchen and later told Marcus she would take the shift.",
       "expected_shelves": [
         "solitary_fade"
       ]
@@ -2815,7 +2815,7 @@
         "repository": "spindle/evals/anti_slop",
         "license": "CC0-1.0"
       },
-      "prose": "He spent the evening thinking about the letter.\n\nLater, at the office, he told her everything.",
+      "prose": "Months passed.\n\nHe spent the evening thinking about the letter.\n\nLater, at the office, he told her everything.",
       "expected_shelves": [
         "solitary_fade"
       ]
