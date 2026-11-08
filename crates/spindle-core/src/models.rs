@@ -5621,6 +5621,25 @@ pub struct GetReferenceOutput {
     pub markdown: String,
 }
 
+/// Optional index of full response schemas, independent of profile access.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResponseContractIndex {
+    /// Major contract version. Version 1 describes the current result envelopes.
+    pub version: u32,
+    /// Full-schema loading routes for explicitly selected large result types.
+    pub contracts: Vec<ResponseContractEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResponseContractEntry {
+    /// Existing registered tool whose structured response the schema describes.
+    pub tool_name: String,
+    /// Resource URI returning the full JSON Schema without project data.
+    pub uri: String,
+    /// Equivalent get_reference name for hosts without MCP resource support.
+    pub reference_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigureAgentsOutput {
     pub source_path: Option<String>,

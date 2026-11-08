@@ -692,6 +692,10 @@ impl ToolRouter {
                         name: reference.name.to_string(),
                         kind: "reference".to_string(),
                     })
+                    .chain(std::iter::once(SkillSummary {
+                        name: "contracts/tools/v1".to_owned(),
+                        kind: "reference".to_owned(),
+                    }))
                     .collect(),
             }),
             "get_skill" => match parse_arguments::<GetSkillInput>(arguments) {
@@ -708,6 +712,12 @@ impl ToolRouter {
                 Err(error) => Err(error),
             },
             "get_reference" => match parse_arguments::<GetReferenceInput>(arguments) {
+                Ok(input) if input.name.starts_with("contracts/") => {
+                    match response_contract_reference(&input.name) {
+                        Ok(output) => structured_result(&output),
+                        Err(error) => Ok(structured_error_result(&error)),
+                    }
+                }
                 Ok(input) => match spindle_adapters::get_reference(&input.name) {
                     Some(reference) => structured_result(&GetReferenceOutput {
                         name: reference.name.to_string(),

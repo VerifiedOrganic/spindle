@@ -42,6 +42,10 @@ impl ResourceRouter {
             .no_annotation()
         }));
 
+        resources.push(RawResource::new("bible://contracts/tools/v1", "full response contracts v1")
+            .with_description("Optional full JSON Schemas for large tool results; does not enable tools or load project data.")
+            .with_mime_type("application/json").no_annotation());
+
         resources.push(
             RawResource::new("bible://system/model-routes", "model routes")
                 .with_description("Configured model routes. Resource-only read; use configure_agents tool to reload from config.")
@@ -468,6 +472,9 @@ impl ResourceRouter {
 
     pub fn list_resource_templates(&self) -> ListResourceTemplatesResult {
         ListResourceTemplatesResult::with_all_items(vec![
+            RawResourceTemplate::new("bible://contracts/tools/v1/{name}", "full response schema v1")
+                .with_description("Full JSON Schema for an explicitly referenced result type. Names are listed in bible://contracts/tools/v1.")
+                .with_mime_type("application/schema+json").no_annotation(),
             RawResourceTemplate::new("bible://{table}:{id}", "direct entity record")
                 .with_description(
                     "Read a single persisted entity by record id. Resource-only: stable cached \
@@ -634,6 +641,30 @@ impl ResourceRouter {
     }
 
     pub async fn read_resource(&self, uri: &str) -> anyhow::Result<ReadResourceResult> {
+        if uri == "bible://contracts/tools/v1" {
+            let content = serde_json::to_string_pretty(&crate::tools::response_contract_index())?;
+            return Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(content, uri).with_mime_type("application/json"),
+            ]));
+        }
+        if uri.starts_with("bible://contracts/") {
+            let name = uri
+                .strip_prefix("bible://contracts/tools/v1/")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown response contract version; use bible://contracts/tools/v1"
+                    )
+                })?;
+            let schema = crate::tools::response_contract(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown v1 response contract: {name}; use bible://contracts/tools/v1"
+                )
+            })?;
+            return Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(serde_json::to_string_pretty(schema)?, uri)
+                    .with_mime_type("application/schema+json"),
+            ]));
+        }
         if let Some(name) = uri.strip_prefix("bible://skills/") {
             let skill = get_skill(name)
                 .ok_or_else(|| anyhow::anyhow!("skill resource not found: {uri}"))?;
