@@ -216,7 +216,7 @@ pub fn scan_with_options(
     }
 
     if let Some(store) = options.suppressions {
-        hits.retain(|hit| !store.suppresses(hit));
+        hits.retain(|hit| !store.suppresses_in_prose(hit, input.prose));
     }
     let (hard_count, soft_count) = recount_after_suppress(&hits);
 
@@ -263,21 +263,81 @@ pub(crate) fn raw_match_count(shelf: &ShelfSpec, prose: &str) -> u32 {
 }
 
 fn collect_matches(shelf: &ShelfSpec, prose: &str) -> Vec<RawMatch> {
+    if shelf.id == "said_bookism" {
+        return find_all(said_bookism_re(), prose, prose);
+    }
+    let narration = mask_dialogue_preserving_bytes(prose);
     match shelf.id.as_str() {
-        "contrast_not_x_but_y" => find_all(contrast_re(), prose),
-        "emotion_cocktail" => find_all(emotion_re(), prose),
-        "fishing_ending" => find_in_close(fishing_re(), prose),
-        "said_bookism" => find_all(said_bookism_re(), prose),
-        "body_reactions" => distinct_markers(prose, BODY_MARKERS),
-        "eye_department" => distinct_markers(prose, EYE_MARKERS),
-        "gesture_rack" => distinct_markers(prose, GESTURE_MARKERS),
-        "atmosphere_prefabs" => distinct_markers(prose, ATMOSPHERE_MARKERS),
-        "naming_watchlist" => naming_watchlist(prose),
-        "rhythm_cadence" => find_all(rhythm_re(), prose),
-        "triadic_listing" => find_all(triad_re(), prose),
-        "solitary_fade" => find_all(solitary_fade_re(), prose),
+        "contrast_not_x_but_y" => find_all(contrast_re(), &narration, prose),
+        "emotion_cocktail" => find_all(emotion_re(), &narration, prose),
+        "fishing_ending" => find_in_close(fishing_re(), &narration, prose),
+        "body_reactions" => find_all(body_re(), &narration, prose),
+        "eye_department" => find_all(eye_re(), &narration, prose),
+        "gesture_rack" => gesture_cluster_matches(&narration, prose),
+        "atmosphere_prefabs" => find_all(atmosphere_re(), &narration, prose),
+        "naming_watchlist" => naming_watchlist(&narration, prose),
+        "rhythm_cadence" => find_all(rhythm_re(), &narration, prose),
+        "triadic_listing" => find_all(triad_re(), &narration, prose),
+        "solitary_fade" => find_all(solitary_fade_re(), &narration, prose),
         _ => Vec::new(),
     }
+}
+
+/// Replace balanced double-quoted dialogue spans (`"..."` and `“...”`) within
+/// each line with ASCII spaces of the exact same byte length.
+///
+/// Preserves UTF-8 validity and exact byte offsets for all narration outside
+/// quotes so regex matches on the returned string slice `prose` without drift.
+fn mask_dialogue_preserving_bytes(prose: &str) -> String {
+    let mut bytes = prose.as_bytes().to_vec();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        // ASCII double quote '"'
+        if bytes[i] == b'"' {
+            let mut j = i + 1;
+            let mut found = None;
+            while j < len && bytes[j] != b'\n' {
+                if bytes[j] == b'"' {
+                    found = Some(j + 1);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(end) = found {
+                for b in &mut bytes[i..end] {
+                    if *b != b'\n' {
+                        *b = b' ';
+                    }
+                }
+                i = end;
+                continue;
+            }
+        }
+        // Curly open double quote '“' (0xE2 0x80 0x9C) -> close '”' (0xE2 0x80 0x9D)
+        if i + 3 <= len && bytes[i] == 0xE2 && bytes[i + 1] == 0x80 && bytes[i + 2] == 0x9C {
+            let mut j = i + 3;
+            let mut found = None;
+            while j + 3 <= len && bytes[j] != b'\n' {
+                if bytes[j] == 0xE2 && bytes[j + 1] == 0x80 && bytes[j + 2] == 0x9D {
+                    found = Some(j + 3);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(end) = found {
+                for b in &mut bytes[i..end] {
+                    if *b != b'\n' {
+                        *b = b' ';
+                    }
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| prose.to_string())
 }
 
 /// Snap a byte index down to the nearest UTF-8 char boundary so a close-window
@@ -292,58 +352,105 @@ fn floor_char_boundary(text: &str, mut idx: usize) -> usize {
     idx
 }
 
-fn find_all(re: &Regex, prose: &str) -> Vec<RawMatch> {
-    re.find_iter(prose)
-        .map(|mat| RawMatch {
-            start: mat.start(),
-            end: mat.end(),
-            excerpt: mat.as_str().trim().to_string(),
+fn find_all(re: &Regex, search_text: &str, original_prose: &str) -> Vec<RawMatch> {
+    re.find_iter(search_text)
+        .filter_map(|mat| {
+            let start = mat.start();
+            let end = mat.end();
+            let slice = original_prose.get(start..end)?;
+            let trimmed = slice.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let lead = slice.len() - slice.trim_start().len();
+            let actual_start = start + lead;
+            let actual_end = actual_start + trimmed.len();
+            Some(RawMatch {
+                start: actual_start,
+                end: actual_end,
+                excerpt: trimmed.to_string(),
+            })
         })
         .collect()
 }
 
-fn find_in_close(re: &Regex, prose: &str) -> Vec<RawMatch> {
-    let trimmed = prose.trim_end();
-    if trimmed.is_empty() {
+fn find_in_close(re: &Regex, search_text: &str, original_prose: &str) -> Vec<RawMatch> {
+    let trimmed_len = original_prose.trim_end().len();
+    if trimmed_len == 0 {
         return Vec::new();
     }
-    let para_start = trimmed.rfind("\n\n").map(|idx| idx + 2).unwrap_or(0);
-    let close_start = if trimmed.len() > 400 {
-        floor_char_boundary(trimmed, trimmed.len().saturating_sub(400).max(para_start))
+    let trimmed_orig = &original_prose[..trimmed_len];
+    let trimmed_search = &search_text[..trimmed_len.min(search_text.len())];
+    let para_start = trimmed_orig.rfind("\n\n").map(|idx| idx + 2).unwrap_or(0);
+    let close_start = if trimmed_orig.len() > 400 {
+        floor_char_boundary(
+            trimmed_orig,
+            trimmed_orig.len().saturating_sub(400).max(para_start),
+        )
     } else {
         para_start
     };
-    let close = &trimmed[close_start..];
+    let close = &trimmed_search[close_start..];
     re.find_iter(close)
-        .map(|mat| RawMatch {
-            start: close_start + mat.start(),
-            end: close_start + mat.end(),
-            excerpt: mat.as_str().trim().to_string(),
+        .filter_map(|mat| {
+            let start = close_start + mat.start();
+            let end = close_start + mat.end();
+            let slice = original_prose.get(start..end)?;
+            let trimmed = slice.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let lead = slice.len() - slice.trim_start().len();
+            let actual_start = start + lead;
+            let actual_end = actual_start + trimmed.len();
+            Some(RawMatch {
+                start: actual_start,
+                end: actual_end,
+                excerpt: trimmed.to_string(),
+            })
         })
         .collect()
 }
 
-fn distinct_markers(prose: &str, markers: &[&str]) -> Vec<RawMatch> {
-    let lower = prose.to_lowercase();
-    let mut out = Vec::new();
-    for marker in markers {
-        if let Some(rel) = lower.find(marker) {
-            let end = rel + marker.len();
-            if end <= prose.len() {
-                out.push(RawMatch {
-                    start: rel,
-                    end,
-                    excerpt: prose[rel..end].to_string(),
-                });
-            }
+fn filter_clustered_matches(matches: Vec<RawMatch>, max_gap_bytes: usize) -> Vec<RawMatch> {
+    if matches.len() < 2 {
+        return Vec::new();
+    }
+    let mut clustered = Vec::new();
+    for (idx, item) in matches.iter().enumerate() {
+        let prev_close =
+            idx > 0 && item.start.saturating_sub(matches[idx - 1].end) <= max_gap_bytes;
+        let next_close = idx + 1 < matches.len()
+            && matches[idx + 1].start.saturating_sub(item.end) <= max_gap_bytes;
+        if prev_close || next_close {
+            clustered.push(item.clone());
         }
     }
-    out
+    clustered
 }
 
-fn naming_watchlist(prose: &str) -> Vec<RawMatch> {
+fn gesture_cluster_matches(narration: &str, original_prose: &str) -> Vec<RawMatch> {
+    let all = find_all(gesture_re(), narration, original_prose);
+    if all.len() >= 3 {
+        return all;
+    }
+    filter_clustered_matches(all, 220)
+}
+
+fn naming_watchlist(narration: &str, original_prose: &str) -> Vec<RawMatch> {
     // `delve` is explicitly not a tech gate. Do not add it here.
-    distinct_markers(prose, NAMING_MARKERS)
+    let all = find_all(naming_re(), narration, original_prose);
+    let clustered = filter_clustered_matches(all, 220);
+    // Require at least one multi-word hedge phrase (or >= 3 clustered hedges) so two
+    // ordinary adverbs (`suddenly` / `somehow`) do not trigger on their own.
+    let has_phrase = clustered
+        .iter()
+        .any(|m| m.excerpt.split_whitespace().count() >= 2);
+    if has_phrase || clustered.len() >= 3 {
+        clustered
+    } else {
+        Vec::new()
+    }
 }
 
 fn rewrite_hint(shelf_id: &str) -> String {
@@ -400,23 +507,30 @@ fn rewrite_hint(shelf_id: &str) -> String {
     }
 }
 
+const EMOTION_WORDS: &str = "relief|dread|hope|terror|fear|love|resentment|pride|shame|anger|disappointment|grief|guilt|joy|sorrow|panic|calm|rage|pity|resolve|awe|disgust|envy|jealousy|gratitude|bitterness|longing|despair|excitement|anxiety|affection|contempt|fury|remorse|sadness|happiness|elation|melancholy|wonder|horror|revulsion|sympathy|irritation|amusement|confusion|curiosity|unease|apprehension|exhilaration|humiliation|indignation|nostalgia|regret|satisfaction|tenderness|triumph|vulnerability|yearning|frustration|admiration|devotion|hatred|loathing|lust|passion|doubt|helplessness|defiance|resignation|shock|disbelief|astonishment|bewilderment|dismay|foreboding|glee|pleasure|pain|agony|ecstasy|bliss|misery|worry|compassion|empathy|spite|embarrassment|chagrin|vexation|annoyance|delight|euphoria|rapture|serenity|turmoil|anguish|torment|heartbreak|loneliness|suspicion|hopeful|terrified|relieved|afraid|angry|sad|happy|proud|ashamed|guilty|grateful|bitter|anxious|furious|jealous|envious|curious|uneasy|excited|nervous|scared|thrilled|horrified|disgusted|amused|irritated|confused";
+
+const CONTRAST_HINGE_NOUNS: &str = "homecoming|reckoning|request|order|truce|trap|mercy|calculation|threat|promise|warning|apology|confession|verdict|sentence|invitation|ultimatum|command|plea|bargain|surrender|victory|defeat|betrayal|sacrifice|punishment|reward|accident|coincidence|mistake|choice|decision|declaration|judgment|trial|test|lesson|gift|curse|blessing|omen|prophecy|miracle|tragedy|farce|game|war|battle|duel|ambush|execution|inquisition|interrogation|negotiation|conversation|question|answer|lie|truth|secret|revelation|epiphany|awakening|rebirth|ending|beginning|farewell|goodbye|welcome|reunion|escape|rescue|exile|sanctuary|prison|cage|weapon|shield|mask|armor|wound|scar|ghost|haunting|memory|dream|nightmare|illusion|vow|oath|covenant|sin|atonement|redemption|absolution|damnation|salvation|revenge|vengeance|justice|cruelty|kindness|weakness|strength|courage|cowardice|bravery|folly|madness|sanity|survival|destiny|fate";
+
 fn contrast_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)(?:\b(?:it|this|that)\s+wasn['’]t\b[^\n.]{0,80}[\.!?]\s*(?:it\s+was|it['’]s)\b|\bnot\s+[^.\n]{1,40}(?:,\s*but\s+|[\u2014—–-]\s+)|\bdidn['’]t\b[^\n]{0,80}\bbecause\b[^\n]{0,80}\bbecause\b)",
-        )
-        .expect("contrast regex")
+        let hinge_terms = format!("{EMOTION_WORDS}|{CONTRAST_HINGE_NOUNS}");
+        let pat = format!(
+            r"(?i)(?:\b(?:it|this|that)\s+(?:wasn['’]t|was\s+not)\s+(?:(?:just|merely|simply)\s+(?:a\s+|an\s+|the\s+)?[a-z'’-]+(?:\s+[a-z'’-]+){{0,3}}\s*(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)\s+(?:a\s+|an\s+|the\s+)?[a-z'’-]+|[\u2014—]\s*(?:(?:it\s+was|this\s+was|that\s+was)\s+)?(?:a\s+|an\s+|the\s+)?[a-z'’-]+)|(?:a\s+|an\s+|the\s+)?(?:(?:{h})\b[a-z'’\s-]{{0,24}}(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)\s+(?:a\s+|an\s+|the\s+)?[a-z'’-]+|[\u2014—]\s*(?:(?:it\s+was|this\s+was|that\s+was)\s+)?(?:a\s+|an\s+|the\s+)?[a-z'’-]+)|[a-z'’-]+(?:\s+[a-z'’-]+){{0,3}}\s*(?:[\.!?]\s*(?:it\s+was|this\s+was|that\s+was|it['’]s)\s+(?:a\s+|an\s+|the\s+)?(?:[a-z'’-]+\s+){{0,2}}(?:{h})|[\u2014—]\s*(?:(?:it\s+was|this\s+was|that\s+was)\s+)?(?:a\s+|an\s+|the\s+)?(?:[a-z'’-]+\s+){{0,2}}(?:{h}))))\b|(?:^|[\.!?\n]\s*)Not\s+(?:just\s+|merely\s+|simply\s+)?(?:a\s+|an\s+|the\s+)?(?:{h})\s*(?:[\u2014—–-]\s*(?:something\b|a\b|an\b|the\b|{h})|,\s*but\s+(?:something\b|rather\b|a\b|an\b|the\b|{h}))\b|\b(?:he|she|they|it)\s+didn['’]t\s+\w+[^\n]{{0,60}}\bbecause\b[^\n]{{1,60}}\bbecause\b)",
+            h = hinge_terms
+        );
+        Regex::new(&pat).expect("contrast regex")
     })
 }
 
 fn emotion_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)\b(?:a\s+mix\s+of\s+\w+\s+and\s+\w+|equal\s+parts\b|swirl\s+of\s+(?:conflicting\s+)?(?:emotions?|\w+\s+and\s+\w+)|torn\s+between\b|conflicting\s+emotions\b)",
-        )
-        .expect("emotion regex")
+        let pat = format!(
+            r"(?i)\b(?:(?:a\s+)?(?:mix|mixture|blend|concoction|tangle|wash|rush|flood|wave|surge)\s+of\s+(?:both\s+)?(?:{e})\s+and\s+(?:{e})|equal\s+parts\s+(?:{e})\s+and\s+(?:{e})|(?:a\s+)?(?:confusing\s+|strange\s+|heady\s+|sudden\s+|dizzying\s+)?swirl\s+of\s+(?:conflicting\s+emotions?|(?:{e})\s+and\s+(?:{e}))|torn\s+between\s+(?:{e})\s+and\s+(?:{e})|conflicting\s+emotions|(?:{e})\s+and\s+(?:{e})\s+warred\s+(?:within|inside)\s+(?:him|her|them|me))\b",
+            e = EMOTION_WORDS
+        );
+        Regex::new(&pat).expect("emotion regex")
     })
 }
 
@@ -424,7 +538,7 @@ fn fishing_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?i)\b(?:only\s+time\s+would\s+tell|tomorrow\s+would\s+bring|real\s+journey\b|somehow,?\s+(?:she|he|they)\s+knew|what\s+happened\s+next\s+would\s+change|nothing\s+would\s+ever\s+be\s+the\s+same)\b",
+            r"(?i)\b(?:only\s+time\s+(?:would|will)\s+tell|what\s+tomorrow\s+would\s+bring|the\s+real\s+journey\s+(?:was\s+just\s+beginning|had\s+only\s+just\s+begun|lay\s+ahead)|somehow,?\s+(?:she|he|they)\s+knew\s+(?:that\s+)?(?:everything\s+had\s+changed|nothing\s+would\s+ever\s+be\s+the\s+same|this\s+was\s+(?:only|just)\s+the\s+beginning|there\s+was\s+no\s+going\s+back)|what\s+happened\s+next\s+would\s+change|nothing\s+would\s+ever\s+be\s+the\s+same)\b",
         )
         .expect("fishing regex")
     })
@@ -434,7 +548,7 @@ fn said_bookism_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)["“][^"”\n]{0,240}["”]\s+(?:she|he|they|[A-Z][\w'-]*)\s+(?:ejaculated|expostulated|intoned|queried|interjected|hissed|growled|snapped|breathed|gasped)\b"#,
+            r#"(?i)["“][^"”\n]{1,240}[,?!—…]["”]\s+(?:she|he|they|(?:the|a|an)\s+[a-z][\w'-]*|(?-i:[A-Z][\w'-]*))\s+(?:ejaculated|expostulated|intoned|queried|interjected|hissed|growled|snapped|breathed|gasped)\b"#,
         )
         .expect("said_bookism regex")
     })
@@ -459,62 +573,60 @@ fn solitary_fade_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?i)\b(?:(?:hours|days|weeks|months)\s+passed|spent the (?:afternoon|morning|evening|night|day)\s+thinking|Later,\s+at the\b|thought about (?:what|the offer)[^\n]{0,80}until (?:morning|dawn)|later told \w+)\b",
+            r"(?im)(?:\b(?:(?:a\s+few|several|many|two|three|four|five|six|seven|eight|nine|ten)\s+)?(?:hours|days|weeks|months)\s+passed(?:\s*[\.!?,;—\u2014…]|\s*$)|\bspent the (?:afternoon|morning|evening|night|day)\s+thinking(?:\s+about)?\b|\bLater,\s+at the\s+(?:meeting|office|table|hall),\s+(?:she|he|they)\s+told\s+(?:him|her|them)\s+everything\b|\bthought about (?:what|the offer|his words|her words)[^\n]{0,80}\buntil (?:morning|dawn)\b|\bleft the \w+ and later told \w+\b)",
         )
         .expect("solitary_fade regex")
     })
 }
 
-const BODY_MARKERS: &[&str] = &[
-    "jaw tightened",
-    "stomach dropped",
-    "heart hammered",
-    "blood ran cold",
-    "knuckles whitened",
-    "shivers down",
-    "lump in his throat",
-    "lump in her throat",
-    "didn't know she was holding",
-    "didn't know they were holding",
-];
+fn body_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:jaw\s+tightened|stomach\s+dropped|heart\s+hammered|blood\s+ran\s+cold|knuckles\s+whitened|shivers\s+down(?:\s+(?:his|her|their|my)\s+spine)?|lump\s+in\s+(?:his|her|their)\s+throat|didn['’]t\s+know\s+(?:she|he|they)\s+(?:was|were)\s+holding)\b",
+        )
+        .expect("body_reactions regex")
+    })
+}
 
-const EYE_MARKERS: &[&str] = &[
-    "eyes that held",
-    "gaze pierced",
-    "eyes darkened",
-    "looked into his eyes",
-    "looked into her eyes",
-    "flickered behind",
-    "eyes held",
-];
+fn eye_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let pat = format!(
+            r"(?i)\b(?:eyes\s+that\s+held|gaze\s+pierced|eyes\s+darkened|looked\s+into\s+(?:his|her|their)\s+eyes(?:\s+and\s+saw)?|flickered\s+behind\s+(?:his|her|their)\s+eyes|eyes\s+held\s+(?:a\b|an\b|only\b|nothing\b|{e}))\b",
+            e = EMOTION_WORDS
+        );
+        Regex::new(&pat).expect("eye_department regex")
+    })
+}
 
-const GESTURE_MARKERS: &[&str] = &[
-    "ran a hand through",
-    "crossed his arms",
-    "crossed her arms",
-    "clenched his fists",
-    "clenched her fists",
-    "shrugged",
-    "sighed",
-];
+fn gesture_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:ran\s+a\s+hand\s+through(?:\s+(?:his|her|their)\s+hair)?|crossed\s+(?:his|her|their)\s+arms|clenched\s+(?:his|her|their)\s+fists|shrugged|sighed)\b",
+        )
+        .expect("gesture_rack regex")
+    })
+}
 
-const ATMOSPHERE_MARKERS: &[&str] = &[
-    "air crackled",
-    "silence hung heavy",
-    "hold its breath",
-    "something in the air shifted",
-    "a testament to",
-    "a dance of",
-];
+fn atmosphere_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:air\s+crackled|silence\s+hung\s+heavy|(?:room|air|world|night|house|hall|crowd)\s+(?:seemed\s+to\s+)?(?:hold|held)\s+its\s+breath|hold\s+its\s+breath|something\s+in\s+the\s+air\s+shifted|a\s+testament\s+to|a\s+dance\s+of\s+(?:light|shadow|shadows|death|fire|flame|steel|blades))\b",
+        )
+        .expect("atmosphere_prefabs regex")
+    })
+}
 
-const NAMING_MARKERS: &[&str] = &[
-    "suddenly",
-    "somehow",
-    "couldn't help but",
-    "found themselves",
-    "in that moment",
-    "something shifted",
-    "it was as if",
-    "with a sense of",
-    "the weight of",
-];
+fn naming_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let pat = format!(
+            r"(?i)\b(?:couldn['’]t\s+help\s+but|found\s+(?:himself|herself|themselves)\b|in\s+that\s+moment|something\s+shifted|it\s+was\s+as\s+if|with\s+a\s+sense\s+of\s+(?:{e}|finality|purpose|inevitability)|the\s+weight\s+of\s+(?:it\s+all|everything|nothing|the\s+moment|the\s+silence|the\s+years|the\s+past|the\s+truth|his\s+words|her\s+words|their\s+words|his\s+gaze|her\s+gaze|{e})|suddenly|somehow)\b",
+            e = EMOTION_WORDS
+        );
+        Regex::new(&pat).expect("naming_watchlist regex")
+    })
+}

@@ -187,17 +187,25 @@ that claim.
 
 ## Eval / CI / console (Phase 4)
 
-- **Regression eval:** `evals/anti_slop/cases.json` plus
-  `python3 evals/anti_slop.py self-test|drift|regress|score`. Cases lock
-  expected shelf IDs, severity, and `hard_count`. `solitary_fade` stays
-  soft. Preference dims are optional labels (`present` / `absent` / `n/a`),
-  never a ranking of writing quality.
+- **Regression eval & corpus precision gate:** `evals/anti_slop/cases.json`
+  and `evals/anti_slop/corpus.json` (160 public-domain Project Gutenberg
+  passages in `evals/anti_slop/SOURCES.md` plus 48 positive LLM-style
+  examples across all 12 shelves) run via
+  `python3 evals/anti_slop.py self-test|drift|regress|report|score`. Cases
+  lock expected shelf IDs, severity, and `hard_count`. `report` (and the
+  `antislop_eval` test) computes per-shelf precision and recall on the corpus
+  and enforces the **hard-shelf precision gate**: a shelf may be `hard` only
+  with measured precision ≥ 0.9 on the corpus. `solitary_fade` stays soft.
+  Preference dims are optional labels (`present` / `absent` / `n/a`), never a
+  ranking of writing quality.
 - **Journal / console:** `scene_drafted` (host save) may include an
   additive `anti_slop` key: `hard_count`, `soft_count`, `hard_ids`,
   `soft_ids`. The operator console timeline renders that summary. No
   excerpts (ADR 0002 D3.1).
-- **CI drift:** catalog headings, `references/anti-slop-shelf-pack.v0.toml`
-  shelf `id`s, and `SCANNER_SHELF_IDS` must be the same twelve IDs.
+- **CI drift & precision:** catalog headings,
+  `references/anti-slop-shelf-pack.v0.toml` shelf `id`s, and
+  `SCANNER_SHELF_IDS` must be the same twelve IDs (`drift`), and CI runs
+  `self-test`, `drift`, and `report` on every pull request.
 - **Project config:** `[anti_slop]` in `spindle.toml` / `.spindle/config.toml`
   (`disable`, `soften`, `promote_to_hard`). Empty means pack defaults.
   `said_bookism` stays soft unless explicitly promoted.
@@ -213,9 +221,12 @@ hard-on-verify locks are unchanged.
 
 ## Learned suppressions (Phase 5)
 
-When style learning (V0031) captures an operator edit that **keeps** a
-scanner-flagged excerpt, that `(shelf_id, normalized excerpt)` is stored
-(`anti_slop_suppression`, migration V0045) and skipped on later scans.
+When style learning (V0031) captures an operator edit that **keeps** the
+surrounding sentence span of a scanner-flagged hit intact inside a
+substantively edited local region (not a distant edit in another paragraph or
+a minor typo fix), that `(shelf_id, normalized sentence span)` is stored
+(`anti_slop_suppression`, migration V0045) and skipped on later scans when the
+same sentence span recurs. Bare marker substrings never suppress branch-wide.
 `spindle-core` exposes a clean store + apply path even when learning is
 off. Suppressions never invent a hard finding and never promote a soft
 shelf.
