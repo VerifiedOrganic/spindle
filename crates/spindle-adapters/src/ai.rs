@@ -329,6 +329,10 @@ struct RuntimeConfig {
     /// to the operator's explicit-cleared offload agent instead of their default
     /// binding — see [`resolve_route`]. Mirrors the opt-in config flag.
     route_import_to_explicit: bool,
+    /// Last error encountered when loading `config.toml` / `spindle.toml`, if
+    /// the most recent load failed. Surfaced in `list_agents` and `/health` so a
+    /// broken config is never silently hidden behind fallback stub routes.
+    config_error: Option<String>,
 }
 
 /// A single ATTEMPTED dispatch observed at the router's rating-gated chokepoint
@@ -383,16 +387,21 @@ pub struct ModelRouter {
 
 impl Default for ModelRouter {
     fn default() -> Self {
-        Self::from_loaded_config(
-            load_agent_config(None).unwrap_or_else(|_| LoadedAgentConfig {
-                source_path: None,
-                agents: Vec::new(),
-                routing: Vec::new(),
-                health_check: crate::agent_config::default_health_check_config(),
-                route_import_to_explicit: false,
-                anti_slop: crate::agent_config::AntiSlopProjectConfig::default(),
-            }),
-        )
+        match load_agent_config(None) {
+            Ok(loaded) => Self::from_loaded_config(loaded),
+            Err(error) => {
+                let err_msg = format!("{error:#}");
+                tracing::error!(
+                    error = %err_msg,
+                    "failed to load default agent config; falling back to local stub routes"
+                );
+                let router = Self::local_only();
+                if let Ok(mut runtime) = router.runtime.write() {
+                    runtime.config_error = Some(err_msg);
+                }
+                router
+            }
+        }
     }
 }
 
@@ -508,7 +517,24 @@ impl ModelRouter {
     }
 
     pub fn configure(&self, explicit_path: Option<&str>) -> anyhow::Result<ConfigureAgentsOutput> {
-        let loaded = load_agent_config(explicit_path)?;
+        let loaded = match load_agent_config(explicit_path) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let err_msg = format!("{error:#}");
+                tracing::error!(
+                    config_path = ?explicit_path,
+                    error = %err_msg,
+                    "failed to load agent configuration"
+                );
+                if let Ok(mut runtime) = self.runtime.write() {
+                    if let Some(path) = explicit_path {
+                        runtime.source_path = Some(path.to_string());
+                    }
+                    runtime.config_error = Some(err_msg);
+                }
+                return Err(error);
+            }
+        };
         let warnings = configuration_warnings(&loaded);
         for warning in &warnings {
             tracing::warn!(source_path = ?loaded.source_path, "agent config lint: {warning}");
@@ -527,6 +553,14 @@ impl ModelRouter {
             health_checks_enabled: health_checks,
             warnings,
         })
+    }
+
+    pub fn config_error(&self) -> anyhow::Result<Option<String>> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        Ok(runtime.config_error.clone())
     }
 
     /// Verify — without any network I/O — that the `draft` route can serve a
@@ -679,6 +713,7 @@ impl ModelRouter {
                     route_names: agent.route_names,
                 })
                 .collect(),
+            config_error: runtime.config_error.clone(),
         })
     }
 
@@ -1954,6 +1989,7 @@ fn runtime_from_loaded_config(
         health_checks_enabled,
         health_check_timeout: timeout,
         route_import_to_explicit: config.route_import_to_explicit,
+        config_error: None,
     }
 }
 
@@ -3876,6 +3912,7 @@ enabled = false
         };
         let runtime = RuntimeConfig {
             source_path: None,
+            config_error: None,
             routes: BTreeMap::from([(route.route_name.clone(), route)]),
             rating_routes: BTreeMap::new(),
             routing_rules: vec![routing_rule],

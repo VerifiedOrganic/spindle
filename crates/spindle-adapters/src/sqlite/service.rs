@@ -4223,6 +4223,10 @@ impl SqliteSpindleService {
         self.repository.model_router().list_agents()
     }
 
+    pub fn agent_config_error(&self) -> Result<Option<String>> {
+        self.repository.model_router().config_error()
+    }
+
     pub fn agent_routing_config(&self) -> Result<spindle_core::models::AgentRoutingConfigOutput> {
         self.repository.model_router().routing_config()
     }
@@ -5878,92 +5882,237 @@ impl SqliteSpindleService {
                 "updated_at": scene.updated_at.to_rfc3339(),
             }));
         }
-        let exists = match table {
-            "project" => self.repository.get_project(record_id_str).await.is_ok(),
-            "book" => self.repository.get_book(record_id_str).await.is_ok(),
-            "chapter" => self.repository.get_chapter(record_id_str).await.is_ok(),
-            "character" => self.repository.get_character(record_id_str).await.is_ok(),
+        let not_found = || anyhow::anyhow!("entity {record_id_str} not found");
+        let project_id = match table {
+            "project" => {
+                self.repository
+                    .get_project(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .id
+            }
+            "book" => {
+                self.repository
+                    .get_book(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "chapter" => {
+                self.repository
+                    .get_chapter(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "character" => {
+                self.repository
+                    .get_character(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
             // Keyed 1:1 by character_id with no project_id column of its own;
-            // existence check only (callers resolve the project through the
-            // character). Needed so update_entity can address it.
-            "character_emotional_profile" => self
+            // resolve the project through the owning character so update_entity
+            // locks the owning project rather than the profile id.
+            "character_emotional_profile" => {
+                let profile = self
+                    .repository
+                    .get_character_emotional_profile_by_id(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?;
+                self.repository
+                    .get_character(&profile.character_id)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "location" => {
+                self.repository
+                    .get_location(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "bible_branch" => self
                 .repository
-                .get_character_emotional_profile_by_id(record_id_str)
+                .get_branch(record_id_str)
                 .await
-                .is_ok(),
-            "location" => self.repository.get_location(record_id_str).await.is_ok(),
-            "bible_branch" => self.repository.get_branch(record_id_str).await.is_ok(),
-            "faction" => self.repository.get_faction(record_id_str).await.is_ok(),
-            "religion" => self.repository.get_religion(record_id_str).await.is_ok(),
-            "economy" => self.repository.get_economy(record_id_str).await.is_ok(),
-            "term" => self.repository.get_term(record_id_str).await.is_ok(),
-            "plot_line" => self.repository.get_plot_line(record_id_str).await.is_ok(),
-            "conflict" => self.repository.get_conflict(record_id_str).await.is_ok(),
-            "theme" => self.repository.get_theme(record_id_str).await.is_ok(),
-            "motif" => self.repository.get_motif(record_id_str).await.is_ok(),
-            "narrative_promise" => self
-                .repository
-                .get_narrative_promise(record_id_str)
-                .await
-                .is_ok(),
-            "world_rule" => self.repository.get_world_rule(record_id_str).await.is_ok(),
-            "character_arc" => self
-                .repository
-                .get_character_arc(record_id_str)
-                .await
-                .is_ok(),
-            "save_point" => self.repository.get_save_point(record_id_str).await.is_ok(),
-            "canonical_fact" => self
-                .repository
-                .get_canonical_fact(record_id_str)
-                .await
-                .is_ok(),
-            "knowledge_fact" => self
-                .repository
-                .get_knowledge_fact(record_id_str)
-                .await
-                .is_ok(),
-            "system_overlay" => self
-                .repository
-                .get_system_overlay(record_id_str)
-                .await
-                .is_ok(),
-            "timeline_event" => self
-                .repository
-                .get_timeline_event(record_id_str)
-                .await
-                .is_ok(),
-            "future_knowledge" => self
-                .repository
-                .get_future_knowledge(record_id_str)
-                .await
-                .is_ok(),
-            "research_source" => self
-                .repository
-                .get_research_source(record_id_str)
-                .await
-                .is_ok(),
-            "research_note" => self
-                .repository
-                .get_research_note(record_id_str)
-                .await
-                .is_ok(),
-            "research_claim" => self
-                .repository
-                .get_research_claim(record_id_str)
-                .await
-                .is_ok(),
-            "research_usage" => self
-                .repository
-                .get_research_usage(record_id_str)
-                .await
-                .is_ok(),
+                .map_err(|_| not_found())?
+                .project_id
+                .ok_or_else(not_found)?,
+            "faction" => {
+                self.repository
+                    .get_faction(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "religion" => {
+                self.repository
+                    .get_religion(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "economy" => {
+                self.repository
+                    .get_economy(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "term" => {
+                self.repository
+                    .get_term(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "plot_line" => {
+                self.repository
+                    .get_plot_line(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "conflict" => {
+                self.repository
+                    .get_conflict(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "theme" => {
+                self.repository
+                    .get_theme(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "motif" => {
+                self.repository
+                    .get_motif(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "narrative_promise" => {
+                self.repository
+                    .get_narrative_promise(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "world_rule" => {
+                self.repository
+                    .get_world_rule(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "character_arc" => {
+                self.repository
+                    .get_character_arc(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "save_point" => {
+                self.repository
+                    .get_save_point(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "canonical_fact" => {
+                self.repository
+                    .get_canonical_fact(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "knowledge_fact" => {
+                self.repository
+                    .get_knowledge_fact(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "system_overlay" => {
+                self.repository
+                    .get_system_overlay(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "timeline_event" => {
+                self.repository
+                    .get_timeline_event(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "temporal_intervention" => {
+                self.repository
+                    .get_temporal_intervention(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "future_knowledge" => {
+                self.repository
+                    .get_future_knowledge(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "revision_marker" => {
+                self.repository
+                    .get_revision_marker(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .project_id
+            }
+            "research_source" => {
+                self.repository
+                    .get_research_source(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .ok_or_else(not_found)?
+                    .project_id
+            }
+            "research_note" => {
+                self.repository
+                    .get_research_note(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .ok_or_else(not_found)?
+                    .project_id
+            }
+            "research_claim" => {
+                self.repository
+                    .get_research_claim(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .ok_or_else(not_found)?
+                    .project_id
+            }
+            "research_usage" => {
+                self.repository
+                    .get_research_usage(record_id_str)
+                    .await
+                    .map_err(|_| not_found())?
+                    .ok_or_else(not_found)?
+                    .project_id
+            }
             other => anyhow::bail!("read_entity_by_id does not support table `{other}`"),
         };
-        if !exists {
-            anyhow::bail!("entity {record_id_str} not found");
-        }
-        Ok(serde_json::json!({ "id": record_id_str, "table": table }))
+        Ok(serde_json::json!({
+            "id": record_id_str,
+            "table": table,
+            "project_id": project_id,
+        }))
     }
 
     /// Aggregate the writer's current state on a project/branch: cursor scene,
