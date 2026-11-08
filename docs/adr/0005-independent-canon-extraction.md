@@ -1,6 +1,6 @@
 # ADR 0005: independent evidence-bound canon claims
 
-Status: proposed implementation, shadow only (canon-memory PR B).
+Status: proposed implementation, shadow contracts + append-only event store/reducers (canon-memory PRs B–C).
 
 ## Decision
 
@@ -59,9 +59,11 @@ loss. Neither agreement nor confidence overrides prior canon.
 
 No canonical facts, character state, knowledge, relationships, promises or events
 are written by extraction or comparison. Shadow reports must not be converted
-into unattended legacy write authority. Author ratification, typed reducers,
-append-only persistence and policy calibration remain later PRs. Deaths, secret
-disclosures and promise payoffs never auto-ratify in v1.
+into unattended legacy write authority. PR C adds the append-only canon event
+store (`V0051`) and pure deterministic reducers (`spindle_core::canon::events`,
+`spindle_core::canon::reducer`), while legacy backfill, compatibility shadow
+reads, author ratification cutover and policy calibration remain later PRs.
+Deaths, secret disclosures and promise payoffs never auto-ratify in v1.
 
 The versioned meanings above are a protocol boundary. Unknown predicates are
 rejected, not preserved as arbitrary JSON; changing a predicate's meaning needs

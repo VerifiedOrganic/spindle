@@ -319,6 +319,16 @@ Its projection round-trips through the existing package converter without adding
 claims or an independent audit. It makes no model call and applies no canon.
 The legacy authoring default remains unchanged; independent extraction is opt-in.
 
+`spindle_core::canon::events` and `spindle_core::canon::reducer` define the
+append-only canon event schema (`CanonClaimRecordV1`, `CanonDecisionV1`,
+`CanonEventV1`, `CanonSourceMapEntryV1`, `CanonSavepointCheckpointV1`) and pure
+deterministic reducers (`state_at`, batch precondition/conservation validation,
+parent-chain coverage/whole-record/delta-event masking, source invalidation,
+checkpoint rollback, and 3-way branch merge). Migration V0051 and
+`sqlite::repository::canon_events` / `sqlite::service::canon_events` persist the
+append-only store and rebuildable projections (`canon_projection_state`,
+`canon_projection_checkpoint`) without cutting over legacy state tables yet.
+
 ## Staging & ratification (canon deltas + plan amendments)
 
 While a drafter's structured continuity package (`character_states`,
@@ -580,6 +590,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0048 | branch-scoped canon uniqueness, per-scene relationship delta ledger, and fact replacement links (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
 | V0049 | initial-planning sessions/proposals and operation receipt foundation (ADR 0004) |
 | V0050 | planning apply attempts, operation audit/output fields and deferred semantic-index refresh queue |
+| V0051 | append-only canon event store (`canon_claim`, `canon_decision`, `canon_event`, `canon_source_map`, rebuildable `canon_projection_state`, `canon_projection_checkpoint`) |
 
 ## Where to make changes
 
