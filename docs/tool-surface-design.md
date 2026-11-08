@@ -633,3 +633,10 @@ and registry/profile/dispatch alignment tests with negative fixtures. See
 [skill manifest contracts](skill-manifests.md). Runtime profile generation,
 profile-aware loading, schema lint and target-budget enforcement remain pending;
 no current discovery profile or schema changes in this checkpoint.
+
+The schema/budget infrastructure inspects finalized schemas, validates JSON
+Schema structure, inventories current descriptive debt, and enforces explicit
+compatibility byte ceilings in registry, HTTP, and isolated stdio checks. It adds
+strict no-exemption helpers and the target ceilings for upcoming canonical
+profiles, without claiming those profiles or reductions have shipped. See
+[guard contracts](tool-surface-guards.md). Current discovery bytes are unchanged.
