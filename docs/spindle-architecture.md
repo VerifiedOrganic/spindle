@@ -526,7 +526,7 @@ Use this map when you need to patch behavior quickly.
 - Add or modify continuity and validator-facing DTOs:
   `crates/spindle-core/src/models.rs`.
 - Add or modify MCP session/defaulting/schema behavior:
-  `crates/spindle-mcp/src/tools.rs`.
+  `crates/spindle-mcp/src/tools/session.rs`, `serialization.rs`, or `schema.rs`.
 - Change repository persistence/query behavior:
   `crates/spindle-adapters/src/sqlite/repository/` by aggregate (`projects.rs`,
   `scenes.rs`, `characters.rs`, `canon.rs`, `relationships.rs`, `branches.rs`,
@@ -541,8 +541,13 @@ Use this map when you need to patch behavior quickly.
   `import_hydration.rs`). Shared service state and helpers remain in
   `crates/spindle-adapters/src/sqlite/service.rs`.
 - Change MCP tool/resource exposure:
-  `crates/spindle-mcp/src/tools.rs` and
-  `crates/spindle-mcp/src/resources.rs`.
+  `crates/spindle-mcp/src/tools/catalog.rs` (registration), `profiles.rs`
+  (profile membership), and `dispatch.rs` (service delegates). Authoring
+  handlers live in `tools/authoring*.rs`; skills and journal helpers live in
+  `tools/skills.rs` and `tools/journal.rs`. Router/shared state remains in
+  `tools.rs`, and resources remain in `crates/spindle-mcp/src/resources.rs`.
+  Family tests live under `tools/`; full pre-split `tools/list` snapshots
+  for all profiles live in `tools/snapshots/`.
 
 ## Contributor guardrails
 
