@@ -183,13 +183,14 @@ impl Repository {
                     )?;
                     let mut all = proposals(&tx, &s.id)?;
                     for p in &mut all {
-                        if p.status == PlanningProposalStatus::Staged
-                            && matches!(
-                                p.artifact.level,
-                                PlanningLevel::Chapter | PlanningLevel::Scene
-                            )
-                        {
+                        if p.status == PlanningProposalStatus::Staged {
                             p.policy_snapshot = s.policy.clone();
+                            p.findings = validate_stage_input_in_conn_excluding(
+                                &tx,
+                                &p.artifact,
+                                None,
+                                Some(&p.id),
+                            )?;
                             save(&tx, p)?;
                         }
                     }
@@ -1461,7 +1462,25 @@ fn validate_stage_input_in_conn(
     input: &StagePlanningInput,
     rating_ceiling: Option<spindle_core::models::ContentRating>,
 ) -> Result<Vec<PlanningFinding>> {
-    let s = check_session(conn, &input.session_id, &input.scope)?;
+    validate_stage_input_in_conn_excluding(conn, input, rating_ceiling, None)
+}
+
+fn validate_stage_input_in_conn_excluding(
+    conn: &rusqlite::Connection,
+    input: &StagePlanningInput,
+    rating_ceiling: Option<spindle_core::models::ContentRating>,
+    exclude_proposal_id: Option<&str>,
+) -> Result<Vec<PlanningFinding>> {
+    let s = if exclude_proposal_id.is_some() {
+        let s = session(conn, &input.session_id)?;
+        check_scope(conn, &s.scope)?;
+        if input.scope.is_some() {
+            anyhow::ensure!(s.scope == input.scope, "planning scope mismatch");
+        }
+        s
+    } else {
+        check_session(conn, &input.session_id, &input.scope)?
+    };
     let effective_ceiling = rating_ceiling.or(s.rating_ceiling);
     let mut findings = Vec::new();
     if s.intent_hash != input.intent_hash {
@@ -1528,6 +1547,25 @@ fn validate_stage_input_in_conn(
         });
     }
     let old = proposals(conn, &s.id)?;
+    let mut excluded_ids = std::collections::BTreeSet::new();
+    if let Some(ex_id) = exclude_proposal_id {
+        excluded_ids.insert(ex_id.to_string());
+        loop {
+            let before = excluded_ids.len();
+            for p in &old {
+                if p.artifact
+                    .parents
+                    .keys()
+                    .any(|pid| excluded_ids.contains(pid))
+                {
+                    excluded_ids.insert(p.id.clone());
+                }
+            }
+            if excluded_ids.len() == before {
+                break;
+            }
+        }
+    }
     let creates_project = input
         .operations
         .iter()
@@ -1535,7 +1573,8 @@ fn validate_stage_input_in_conn(
     if input.level == PlanningLevel::Contract
         && creates_project
         && old.iter().any(|p| {
-            p.artifact.level == PlanningLevel::Contract
+            !excluded_ids.contains(&p.id)
+                && p.artifact.level == PlanningLevel::Contract
                 && p.status == PlanningProposalStatus::Applied
         })
     {
@@ -1591,7 +1630,7 @@ fn validate_stage_input_in_conn(
     let mut ancestor_ids: std::collections::BTreeSet<String> =
         input.parents.keys().cloned().collect();
     for p in &old {
-        if p.status == PlanningProposalStatus::Applied {
+        if !excluded_ids.contains(&p.id) && p.status == PlanningProposalStatus::Applied {
             ancestor_ids.insert(p.id.clone());
         }
     }
@@ -1622,6 +1661,9 @@ fn validate_stage_input_in_conn(
     let mut reserved = std::collections::BTreeSet::new();
     let mut ancestor_outlined_chapters = std::collections::BTreeSet::new();
     for p in &old {
+        if excluded_ids.contains(&p.id) {
+            continue;
+        }
         if matches!(
             p.status,
             PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
@@ -3202,6 +3244,41 @@ impl Repository {
     ) -> Result<Vec<PlanningFinding>> {
         self.pool()
             .read(move |conn| Ok(validate_stage_input_in_conn(conn, &input, rating_ceiling)))
+            .await?
+    }
+
+    pub(crate) async fn revalidate_staged_planning_proposal(
+        &self,
+        session_id: &str,
+        proposal_id: &str,
+    ) -> Result<Vec<PlanningFinding>> {
+        let session_id = session_id.to_owned();
+        let proposal_id = proposal_id.to_owned();
+        self.pool()
+            .read(move |conn| {
+                Ok((|| -> Result<Vec<PlanningFinding>> {
+                    let s = session(conn, &session_id)?;
+                    let all = proposals(conn, &s.id)?;
+                    let p = all
+                        .iter()
+                        .find(|p| p.id == proposal_id)
+                        .context("proposal not in planning session")?;
+                    let applied: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM planning_operation_receipt WHERE proposal_id=?1 AND outcome='applied'",
+                        [&p.id],
+                        |r| r.get(0),
+                    )?;
+                    if applied > 0 || p.status != PlanningProposalStatus::Staged {
+                        return Ok(p.findings.clone());
+                    }
+                    validate_stage_input_in_conn_excluding(
+                        conn,
+                        &p.artifact,
+                        None,
+                        Some(&p.id),
+                    )
+                })())
+            })
             .await?
     }
 

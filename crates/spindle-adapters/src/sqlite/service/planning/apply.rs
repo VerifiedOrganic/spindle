@@ -132,9 +132,17 @@ impl SqliteSpindleService {
                 p.artifact.intent_hash == s.intent_hash,
                 "stale planning intent"
             );
+            let current_findings = if p.status == PlanningProposalStatus::Staged {
+                self.repository
+                    .revalidate_staged_planning_proposal(&s.id, &p.id)
+                    .await?
+            } else {
+                p.findings.clone()
+            };
             anyhow::ensure!(
                 !p.findings
                     .iter()
+                    .chain(current_findings.iter())
                     .any(|f| f.severity == PlanningFindingSeverity::Blocking),
                 "cannot accept planning proposal with blocking validation findings"
             );
@@ -163,14 +171,23 @@ impl SqliteSpindleService {
                     s.policy.delegated_actor()
                 );
                 anyhow::ensure!(
+                    p.policy_snapshot == s.policy,
+                    "delegated policy cannot accept proposal with stale policy_snapshot"
+                );
+                anyhow::ensure!(
                     p.artifact.author_questions.is_empty(),
                     "delegated policy cannot accept proposal with unresolved author_questions"
                 );
-                let adv_count = p
+                let stored_adv_count = p
                     .findings
                     .iter()
                     .filter(|f| f.severity == PlanningFindingSeverity::Advisory)
                     .count();
+                let current_adv_count = current_findings
+                    .iter()
+                    .filter(|f| f.severity == PlanningFindingSeverity::Advisory)
+                    .count();
+                let adv_count = stored_adv_count.max(current_adv_count);
                 anyhow::ensure!(
                     s.policy
                         .max_advisory_findings

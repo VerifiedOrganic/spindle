@@ -6024,10 +6024,13 @@ async fn phase_d_delegation_policy_activation_and_planning_readiness_agree_with_
         .stage_planning(phase_d_contract_input(&s))
         .await
         .unwrap();
-    let cast_prop = svc
-        .stage_planning(phase_d_cast_input(&s, &contract_prop))
-        .await
-        .unwrap();
+    let mut cast_in = phase_d_cast_input(&s, &contract_prop);
+    cast_in.operations.push(planned(
+        "cast:tomas",
+        "create_character",
+        serde_json::json!({"name": "Tomas", "summary": "Ferryman", "role": "deuteragonist"}),
+    ));
+    let cast_prop = svc.stage_planning(cast_in).await.unwrap();
     let series_prop = svc
         .stage_planning(phase_d_series_input(&s, &contract_prop, &cast_prop))
         .await
@@ -6497,10 +6500,13 @@ async fn phase_d_living_outline_reseeds_active_run_and_reconciles_planning_sessi
         .stage_planning(phase_d_contract_input(&s))
         .await
         .unwrap();
-    let cast_prop = svc
-        .stage_planning(phase_d_cast_input(&s, &contract_prop))
-        .await
-        .unwrap();
+    let mut cast_in = phase_d_cast_input(&s, &contract_prop);
+    cast_in.operations.push(planned(
+        "cast:tomas",
+        "create_character",
+        serde_json::json!({"name": "Tomas", "summary": "Ferryman", "role": "deuteragonist"}),
+    ));
+    let cast_prop = svc.stage_planning(cast_in).await.unwrap();
     let series_prop = svc
         .stage_planning(phase_d_series_input(&s, &contract_prop, &cast_prop))
         .await
@@ -6787,4 +6793,192 @@ async fn phase_d_living_outline_reseeds_active_run_and_reconciles_planning_sessi
 
     let reconciled_session = svc.get_planning_session(&s.id).await.unwrap();
     assert!(!reconciled_session.projection_stale);
+}
+
+#[tokio::test]
+async fn phase_d_tightening_pov_and_pacing_policy_after_staging_revalidates_and_blocks_delegated_acceptance()
+ {
+    let (_tmp, svc) = fresh_service_local().await;
+    let s = svc
+        .begin_planning(BeginPlanningInput {
+            premise: "Tighten POV and pacing constraints after staging".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let contract_prop = svc
+        .stage_planning(phase_d_contract_input(&s))
+        .await
+        .unwrap();
+    let mut cast_in = phase_d_cast_input(&s, &contract_prop);
+    cast_in.operations.push(planned(
+        "cast:tomas",
+        "create_character",
+        serde_json::json!({"name": "Tomas", "summary": "Ferryman", "role": "deuteragonist"}),
+    ));
+    let cast_prop = svc.stage_planning(cast_in).await.unwrap();
+    let series_prop = svc
+        .stage_planning(phase_d_series_input(&s, &contract_prop, &cast_prop))
+        .await
+        .unwrap();
+    let book_prop = svc
+        .stage_planning(phase_d_book_input(&s, &contract_prop, &series_prop))
+        .await
+        .unwrap();
+    let mut root_hashes = BTreeMap::new();
+    for p in [&contract_prop, &cast_prop, &series_prop, &book_prop] {
+        root_hashes.insert(p.id.clone(), p.payload_hash.clone());
+    }
+    let root_apply = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: None,
+            decision: PlanningDecision::Accept,
+            expected_hashes: root_hashes,
+            actor: "author:jane".into(),
+            note: "Accept upstream roots before staging chapter/scene".into(),
+        })
+        .await
+        .unwrap();
+    assert!(root_apply.complete);
+    let session = svc.get_planning_session(&s.id).await.unwrap();
+    let scope = session.scope.clone().unwrap();
+
+    // 1. Stage a Chapter proposal with POV = cast:iven AND a sustained pacing deviation (3 chapters off curve)
+    // while there is NO POV policy and NO hard pacing policy.
+    // Under the initial default policy, it has 0 blocking findings (pacing deviation is only Advisory).
+    let mut ch_input = phase_d_chapter_input(&s, &contract_prop, &book_prop);
+    ch_input.scope = Some(scope.clone());
+    ch_input
+        .parents
+        .insert(cast_prop.id.clone(), cast_prop.payload_hash.clone());
+    ch_input.schedule.pov_plan = vec![PlannedPov {
+        book_number: 1,
+        chapter_number: 2,
+        scene_order: None,
+        pov_character_id: PlanningRef::ProposalRef("cast:tomas".into()),
+        rationale: Some("Tomas POV chapter".into()),
+    }];
+    ch_input.schedule.intensity_targets = vec![
+        PlannedIntensity {
+            book_number: 1,
+            chapter_number: 1,
+            target_intensity: 0.95,
+            recovery_beat: false,
+            note: None,
+        },
+        PlannedIntensity {
+            book_number: 1,
+            chapter_number: 2,
+            target_intensity: 0.95,
+            recovery_beat: false,
+            note: None,
+        },
+        PlannedIntensity {
+            book_number: 1,
+            chapter_number: 3,
+            target_intensity: 0.05,
+            recovery_beat: false,
+            note: None,
+        },
+    ];
+    let staged_ch = svc.stage_planning(ch_input).await.unwrap();
+    assert!(
+        !staged_ch
+            .findings
+            .iter()
+            .any(|f| f.severity == PlanningFindingSeverity::Blocking),
+        "staged proposal before policy tightening should have 0 blocking findings"
+    );
+    assert!(
+        staged_ch
+            .findings
+            .iter()
+            .any(|f| f.code == "pacing_curve_sustained_deviation"
+                && f.severity == PlanningFindingSeverity::Advisory),
+        "pacing deviation should initially be Advisory"
+    );
+
+    // 2. Tighten policy to DelegateIfValid on Chapter with hard single_pov = cast:mara and hard pacing_policy.
+    // set_planning_policy must revalidate the staged proposal and upgrade both violations to Blocking!
+    let mut gates = BTreeMap::new();
+    gates.insert(PlanningLevel::Chapter, PlanningGate::DelegateIfValid);
+    svc.set_planning_policy(SetPlanningPolicyInput {
+        session_id: s.id.clone(),
+        scope: Some(scope.clone()),
+        policy: PlanningPolicy {
+            policy_id: Some("strict-pov-pacing".into()),
+            policy_version: Some(1),
+            gates,
+            max_advisory_findings: None,
+            pov_policy: Some(PlanningPovPolicy {
+                single_pov: Some(PlanningRef::ProposalRef("cast:mara".into())),
+                allowed_roster: vec![],
+                desired_shares: BTreeMap::new(),
+                share_tolerance: None,
+                max_consecutive_chapters: None,
+                max_absence_chapters: None,
+                hard_constraint: true,
+            }),
+            pacing_policy: Some(PlanningPacingPolicy {
+                hard_constraint: true,
+                waiver_reason: None,
+            }),
+        },
+        actor: "author:jane".into(),
+        note: "Tighten POV and pacing constraints to hard blocking".into(),
+    })
+    .await
+    .unwrap();
+
+    let revalidated_props = svc
+        .list_planning_proposals(&s.id, Some(scope.clone()))
+        .await
+        .unwrap();
+    let updated_ch = revalidated_props
+        .iter()
+        .find(|p| p.id == staged_ch.id)
+        .unwrap();
+    assert!(
+        updated_ch
+            .findings
+            .iter()
+            .any(|f| f.code == "pov_single_constraint_violated"
+                && f.severity == PlanningFindingSeverity::Blocking),
+        "revalidated staged proposal must record Blocking pov_single_constraint_violated"
+    );
+    assert!(
+        updated_ch
+            .findings
+            .iter()
+            .any(|f| f.code == "pacing_curve_sustained_deviation"
+                && f.severity == PlanningFindingSeverity::Blocking),
+        "revalidated staged proposal must record Blocking pacing_curve_sustained_deviation"
+    );
+    assert!(
+        !updated_ch
+            .findings
+            .iter()
+            .any(|f| f.code == "duplicate_output_ref"),
+        "revalidation must exclude the candidate itself from duplicate_output_ref checks"
+    );
+
+    // 3. Delegated acceptance must be rejected because of the blocking findings under the tightened policy.
+    let delegated_err = svc
+        .apply_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: Some(scope.clone()),
+            decision: PlanningDecision::Accept,
+            expected_hashes: BTreeMap::from([(
+                updated_ch.id.clone(),
+                updated_ch.payload_hash.clone(),
+            )]),
+            actor: "policy:strict-pov-pacing:1".into(),
+            note: "Attempt delegated acceptance after tightening policy".into(),
+        })
+        .await;
+    assert!(
+        delegated_err.is_err(),
+        "delegated acceptance must not bypass tightened POV/pacing constraints"
+    );
 }
