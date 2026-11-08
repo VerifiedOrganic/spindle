@@ -572,7 +572,7 @@
       20,
       20
     ],
-    "elapsed_seconds": 11.161,
+    "elapsed_seconds": 21.173,
     "summary": {
       "total_planted": 28,
       "total_detected": 20,
@@ -636,7 +636,7 @@
           {
             "check_type": "world_rule_compliance",
             "entity_ids": [
-              "world_rule:01M6XVN4J087KBP2AAVC50594H"
+              "world_rule:01M6XW712SAKAKBF5TWF07JG22"
             ],
             "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
             "severity": "warning",
@@ -645,7 +645,7 @@
           {
             "check_type": "world_rule_semantic_drift",
             "entity_ids": [
-              "scene:01M6XVN4R9RQS3K6SBMKGCWHAP"
+              "scene:01M6XW71D3KPV9WAETKRB8KGN2"
             ],
             "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 149..156)",
             "severity": "info",
@@ -654,7 +654,7 @@
           {
             "check_type": "world_rule_semantic_drift",
             "entity_ids": [
-              "scene:01M6XVN4SRXBCTTJAZKTX2XP95"
+              "scene:01M6XW71F50RS4KBS4N31NMEV1"
             ],
             "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
             "severity": "info",
@@ -853,7 +853,7 @@
               "quantity_drift"
             ],
             "matched_messages": [
-              "coin for 'character:01M6XVN68ZGCDDZS6NVC1N5CJJ' jumped 4 tiers (scraping \u2192 princely) without a change_reason"
+              "coin for 'character:01M6XW750282V81MM14D3E87AK' jumped 4 tiers (scraping \u2192 princely) without a change_reason"
             ]
           },
           {
@@ -897,7 +897,7 @@
           {
             "check_type": "world_rule_compliance",
             "entity_ids": [
-              "world_rule:01M6XVN86AZ40VW30M5VA1PB1V"
+              "world_rule:01M6XW79V1KFBGX4ZWC4NQN5DZ"
             ],
             "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
             "severity": "warning",
@@ -906,7 +906,7 @@
           {
             "check_type": "world_rule_semantic_drift",
             "entity_ids": [
-              "scene:01M6XVN889QQ1W9S8M9Y1V2PTM"
+              "scene:01M6XW79XGDC80A1TQWMYWE6JP"
             ],
             "message": "scene references world rule 'Neural Splice Cooldown' (no violation context detected) (bytes 112..119)",
             "severity": "info",
@@ -1105,7 +1105,7 @@
               "quantity_drift"
             ],
             "matched_messages": [
-              "credits for 'character:01M6XVNA10XB56M85QVKVE03VV' jumped 4 tiers (strapped \u2192 syndicate) without a change_reason"
+              "credits for 'character:01M6XW7EK6KRTHJTG20RT24G3Y' jumped 4 tiers (strapped \u2192 syndicate) without a change_reason"
             ]
           },
           {

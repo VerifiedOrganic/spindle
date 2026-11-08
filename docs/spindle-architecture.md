@@ -496,7 +496,9 @@ consistency scans, resolving inherited scenes against the active branch. A named
 action after a prior-scene deceased state yields one scene-attributed
 `retcon_reachability` issue; mentions and explicitly marked memories, flashbacks,
 recordings, dreams and hypothetical actions are excluded by a conservative lexical
-prefilter. It is not a semantic claim extractor. Same-scene final death states
+prefilter scoped to the named action (including ordinary conditional clauses).
+An object such as a recording-room door does not suppress an action. It is not
+a semantic claim extractor. Same-scene final death states
 are excluded because within-scene ordering is not yet available. Free-text death
 statuses remain warnings; `status:deceased` remains an error. This state scan is
 uncached so state changes cannot leave a stale text-only hit. The `continuity-editor`

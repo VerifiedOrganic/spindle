@@ -1893,51 +1893,76 @@ fn has_named_character_action(text: &str, name: &str) -> bool {
     ];
     text.split(['.', '!', '?', '\n']).any(|sentence| {
         let lower = sentence.to_lowercase();
-        let qualified = [
-            "remember",
-            "memory",
-            "memories",
-            "flashback",
-            "years ago",
-            "before the death",
-            "before her death",
-            "before his death",
-            "recording",
-            "recorded",
-            "hologram",
-            "ghost",
-            "dream",
-            "imagined",
-            "would have",
-            "could have",
-            "if only",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker));
-        !qualified
-            && lower.match_indices(&name).any(|(start, matched)| {
-                if lower[..start]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_alphanumeric())
-                {
-                    return false;
-                }
-                let tail = &lower[start + matched.len()..];
-                if !tail.starts_with(char::is_whitespace) {
-                    return false;
-                }
-                let mut words = tail.split_whitespace();
-                let first = words.next().unwrap_or_default();
-                let verb = if ["quietly", "quickly", "slowly", "suddenly", "also", "then"]
-                    .contains(&first)
-                {
+        lower.match_indices(&name).any(|(start, matched)| {
+            // Exclusions qualify this named action, not arbitrary words in
+            // its objects or another clause (e.g. a recording-room door).
+            let before = lower[..start].rsplit(';').next().unwrap_or_default();
+            let before = before.rsplit(" but ").next().unwrap_or_default();
+            let before = before.rsplit(" yet ").next().unwrap_or_default();
+            let hypothetical = ["if", "unless", "suppose", "supposing"]
+                .iter()
+                .any(|word| contains_case_insensitive_word_boundary(before, word));
+            let framed = [
+                "in a flashback",
+                "years ago",
+                "before the death",
+                "before her death",
+                "before his death",
+                "in her memory",
+                "in his memory",
+                "in the memory",
+                "in a dream",
+                "in her dream",
+                "in his dream",
+                "remembered how",
+                "remembered when",
+                "remembered that",
+                "imagined that",
+                "dreamed that",
+                "the recording played",
+            ]
+            .iter()
+            .any(|frame| {
+                before
+                    .trim_end()
+                    .trim_end_matches([',', ':'])
+                    .trim_end()
+                    .ends_with(frame)
+            });
+            let framed_subject = [
+                "on the recording,",
+                "in the recording,",
+                "a ghost",
+                "the ghost",
+                "a hologram of",
+                "the hologram of",
+            ]
+            .iter()
+            .any(|frame| before.trim_end().ends_with(frame));
+            if hypothetical || framed || framed_subject {
+                return false;
+            }
+            if lower[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric())
+            {
+                return false;
+            }
+            let tail = &lower[start + matched.len()..];
+            if !tail.starts_with(char::is_whitespace) {
+                return false;
+            }
+            let mut words = tail.split_whitespace();
+            let first = words.next().unwrap_or_default();
+            let verb =
+                if ["quietly", "quickly", "slowly", "suddenly", "also", "then"].contains(&first) {
                     words.next().unwrap_or_default()
                 } else {
                     first
                 };
-                ACTIONS.contains(&verb.trim_matches(|c: char| !c.is_alphabetic()))
-            })
+            ACTIONS.contains(&verb.trim_matches(|c: char| !c.is_alphabetic()))
+        })
     })
 }
 
@@ -1952,6 +1977,11 @@ mod dead_action_tests {
             "Veyra quietly opened the door.",
             "Veyra said, ‘Go.’",
             "They remembered Veyra. Veyra drew her sword.",
+            "Veyra opened the recording room door.",
+            "Veyra stepped past the ghost town.",
+            "In a dream laboratory, Veyra opened the door.",
+            "In a flashback exhibit room, Veyra opened the door.",
+            "Garrick remembered how Eli died, but Veyra opened the door.",
         ] {
             assert!(has_named_character_action(text, "Veyra"), "{text}");
         }
@@ -1963,6 +1993,9 @@ mod dead_action_tests {
             "Veyra's ghost opened the door.",
             "Veyra did not open the door.",
             "If only Veyra walked beside them.",
+            "If Veyra opened the door, the alarm would sound.",
+            "Unless Veyra opened the door, they would be trapped.",
+            "Garrick remembered how Veyra opened the door.",
             "Veyra had stepped into the hall.",
             "Veyra would have opened the door.",
             "OtherVeyra stepped into the hall.",

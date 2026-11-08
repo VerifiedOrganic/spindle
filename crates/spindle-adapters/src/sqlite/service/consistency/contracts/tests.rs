@@ -6228,6 +6228,40 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
                 .is_empty()
         );
     }
+    // Review regressions: objects named recording/ghost are ordinary action;
+    // an explicit conditional must never become a blocking death error.
+    for (text, blocked) in [
+        ("Veyra opened the recording room door.", true),
+        ("Veyra stepped past the ghost town.", true),
+        ("If Veyra opened the door, the alarm would sound.", false),
+    ] {
+        let saved = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 4,
+                full_text: text.into(),
+                summary: "modality control".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(!saved.retcon_findings.is_empty(), blocked, "{text}");
+        let committed = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: saved.scene_id,
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: None,
+            })
+            .await;
+        assert_eq!(committed.is_err(), blocked, "{text}: {committed:?}");
+    }
     let scene = svc.repository().get_scene(&scene3.scene_id).await.unwrap();
     svc.repository()
         .upsert_scene_clock(
