@@ -5673,6 +5673,8 @@ pub struct ListAgentsOutput {
     pub health_checks_enabled: bool,
     #[serde(default)]
     pub agents: Vec<AgentSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

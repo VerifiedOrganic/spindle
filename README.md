@@ -316,8 +316,10 @@ cargo test -p spindle-core --features perf
 cargo test -p spindle-adapters --features perf
 ```
 
-Run the MCP server directly during development:
+Build and run the MCP server binary (the repository `.mcp.json` points at
+`target/release/spindle-mcp` so MCP clients answer `initialize` immediately without blocking on compilation or the Cargo lock):
 
 ```bash
-cargo run -p spindle-mcp
+cargo build --release -p spindle-mcp
+./target/release/spindle-mcp
 ```

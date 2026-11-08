@@ -365,10 +365,13 @@ internal MCP listener**, and connecting to `http://<addr>/mcp`.
 
 Primacy is claimed in two ways:
 
-- **At startup** (fast path): the first stdio-mode process to open the DB becomes
-  primary, starts the internal listener (an accept loop that serves each session
-  to completion and keeps accepting — a session close never tears it down), and
-  writes the addr file. The addr file is removed only on real shutdown.
+- **At startup** (fast path): the first stdio-mode process to acquire the
+  cross-process file lock (`.spindle/runtime/spindle.lock`) becomes primary,
+  starts the internal listener (an accept loop that serves each session to
+  completion and keeps accepting — a session close never tears it down), and
+  claims `.spindle/runtime/spindle.addr`. Additional stdio processes on the
+  same data directory proxy to the primary's internal listener. The addr file is
+  removed only by its owner on shutdown (including early-return error paths).
 - **Lazily at dispatch time**: if a process needs to dispatch but no live primary
   owns the addr file yet (e.g. it started before the workspace was initialized,
   or it came up as a secondary), it claims primacy on the spot — binding a
@@ -378,12 +381,13 @@ Primacy is claimed in two ways:
   reclaimed.
 
 **HTTP mode also claims primacy.** A server started with `SPINDLE_HTTP_ADDR`
-writes the addr file pointing at its own `SPINDLE_HTTP_ADDR` listener (removed on
-shutdown). This is deliberate: the server's own run-phase dispatch reads the addr
-file, not `SPINDLE_HTTP_ADDR`, so without it an `authoring_execute_next` served
-over HTTP would fail its dispatch arm with `no primary server found`. Because the
-HTTP `/mcp` listener serves the identical MCP surface, the addr file simply points
-at that same address. (External harnesses still connect via `--server-url`; the
+acquires the primary lock and claims the addr file pointing at its own
+`SPINDLE_HTTP_ADDR` listener (removed by its owner on shutdown). This is
+deliberate: the server's own run-phase dispatch reads the addr file, not
+`SPINDLE_HTTP_ADDR`, so without it an `authoring_execute_next` served over HTTP
+would fail its dispatch arm with `no primary server found`. Because the HTTP
+`/mcp` listener serves the identical MCP surface, the addr file simply points at
+that same address. (External harnesses still connect via `--server-url`; the
 addr file exists for the server's own dispatch-back.)
 
 ### Console (read-only operator console v1)
@@ -397,7 +401,8 @@ a browser.
 address, then open the console:
 
 ```bash
-SPINDLE_HTTP_ADDR=127.0.0.1:4321 cargo run -p spindle-mcp
+cargo build --release -p spindle-mcp
+SPINDLE_HTTP_ADDR=127.0.0.1:4321 ./target/release/spindle-mcp
 # then browse to:
 open http://127.0.0.1:4321/console
 ```

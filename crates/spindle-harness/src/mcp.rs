@@ -708,6 +708,7 @@ mod tests {
                 agent_with_ratings("default-draft", &["general", "teen", "mature"]),
                 agent_with_ratings("explicit-draft", &["explicit"]),
             ],
+            config_error: None,
         };
 
         let binding =
@@ -733,6 +734,7 @@ mod tests {
                 "default-draft",
                 &["general", "teen", "mature"],
             )],
+            config_error: None,
         };
 
         let binding =
@@ -758,6 +760,7 @@ mod tests {
                 "default-draft",
                 &["general", "teen", "mature"],
             )],
+            config_error: None,
         };
 
         let err =
@@ -791,6 +794,7 @@ mod tests {
             source_path: None,
             health_checks_enabled: false,
             agents: vec![shared_agent],
+            config_error: None,
         };
 
         let binding = select_draft_route_binding(&routes, &routing, &agents, None).unwrap();

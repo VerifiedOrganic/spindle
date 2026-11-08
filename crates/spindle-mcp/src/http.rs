@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,13 +20,21 @@ use crate::server::SpindleMcpServer;
 #[derive(Clone)]
 pub struct HttpState {
     service: Arc<SpindleService>,
+    serialization_state: Arc<crate::tools::ToolSerializationState>,
 }
 
 impl HttpState {
     pub fn new(service: SpindleService) -> Self {
+        let serialization_state = crate::tools::ToolSerializationState::for_service(&service);
         Self {
             service: Arc::new(service),
+            serialization_state,
         }
+    }
+
+    #[cfg(test)]
+    pub fn serialization_state(&self) -> &Arc<crate::tools::ToolSerializationState> {
+        &self.serialization_state
     }
 }
 
@@ -43,8 +50,8 @@ const CONSOLE_HTML: &str = include_str!("console.html");
 /// existing read-only operational routes (`/health`, `/model-routes`, `/events`),
 /// and the operator console. Actions use the existing MCP transport.
 pub fn mcp_router(service: SpindleService, cancellation_token: CancellationToken) -> Router {
-    let mcp_service =
-        SpindleMcpServer::streamable_http_service(service.clone(), cancellation_token);
+    let state = HttpState::new(service.clone());
+    let mcp_service = SpindleMcpServer::streamable_http_service(service, cancellation_token);
 
     Router::new()
         .route("/health", get(health))
@@ -58,7 +65,7 @@ pub fn mcp_router(service: SpindleService, cancellation_token: CancellationToken
         .route("/console/api/manuscript", get(console_manuscript))
         .route("/console/api/canon_deltas", get(console_canon_deltas))
         .route("/console/api/plan_amendments", get(console_plan_amendments))
-        .with_state(HttpState::new(service))
+        .with_state(state)
         .nest_service("/mcp", mcp_service)
         .layer(axum::middleware::from_fn(check_browser_origin))
 }
@@ -114,9 +121,12 @@ async fn check_browser_origin(
     next.run(request).await
 }
 
-pub async fn serve(service: SpindleService, addr: SocketAddr) -> anyhow::Result<()> {
-    let ct = CancellationToken::new();
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+pub async fn serve_with_listener(
+    service: SpindleService,
+    listener: tokio::net::TcpListener,
+    ct: CancellationToken,
+) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
     tracing::info!("spindle mcp listening on http://{addr}/mcp");
     axum::serve(listener, mcp_router(service, ct.clone()))
         .with_graceful_shutdown(async move { ct.cancelled_owned().await })
@@ -126,9 +136,20 @@ pub async fn serve(service: SpindleService, addr: SocketAddr) -> anyhow::Result<
 
 fn snapshot_payload(service: &SpindleService) -> serde_json::Value {
     match service.model_routes() {
-        Ok(routes) => serde_json::json!({
-            "model_routes": routes,
-        }),
+        Ok(routes) => {
+            let mut payload = serde_json::json!({
+                "model_routes": routes,
+            });
+            if let Ok(Some(config_error)) = service.agent_config_error()
+                && let Some(obj) = payload.as_object_mut()
+            {
+                obj.insert(
+                    "config_error".to_string(),
+                    serde_json::Value::String(config_error),
+                );
+            }
+            payload
+        }
         // The SSE snapshot stream is infallible, so a poisoned lock surfaces
         // in-band (and in logs) rather than silently emitting empty routes.
         // The poison is sticky: every poll re-reports until restart.
@@ -142,14 +163,23 @@ fn snapshot_payload(service: &SpindleService) -> serde_json::Value {
     }
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({
+async fn health(State(state): State<HttpState>) -> impl IntoResponse {
+    let mut body = serde_json::json!({
         "status": "ok",
         "mode": "mcp-http",
         "mcp_endpoint": "/mcp",
         "read_only_endpoints": ["/health", "/model-routes", "/events"],
         "console": "/console"
-    }))
+    });
+    if let Ok(Some(config_error)) = state.service.agent_config_error()
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert(
+            "config_error".to_string(),
+            serde_json::Value::String(config_error),
+        );
+    }
+    Json(body)
 }
 
 async fn model_routes(State(state): State<HttpState>) -> impl IntoResponse {
@@ -230,7 +260,7 @@ async fn console_status(
     let router = crate::tools::ToolRouter::with_tool_profile_and_serialization(
         (*state.service).clone(),
         None,
-        std::sync::Arc::new(crate::tools::ToolSerializationState::default()),
+        state.serialization_state.clone(),
     );
     let input = spindle_core::models::AuthoringStatusInput {
         project_id,
