@@ -5,6 +5,7 @@
 
 pub mod agent_config;
 pub mod ai;
+pub mod drafting;
 pub mod export;
 pub mod format;
 pub mod guidance;
