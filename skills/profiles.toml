@@ -1,0 +1,51 @@
+version = 1
+
+[[profiles]]
+name = "workflow-write"
+description = "Complete current scene-writing workflow, with new-book setup."
+units = ["scene-writer", "spindle/setup"]
+
+[[profiles]]
+name = "workflow-authoring"
+description = "Scene writing plus run and checkpoint orchestration."
+units = ["scene-writer", "authoring-supervisor", "spindle/setup"]
+
+[[profiles]]
+name = "workflow-import"
+description = "Manuscript import and source synchronization; style is separate."
+units = ["manuscript-importer"]
+
+[[profiles]]
+name = "revision"
+description = "Branch, alternatives, revision-marker and history workflows."
+units = ["revision-manager"]
+
+[[profiles]]
+name = "worldbuilding"
+description = "World and character creation and continuity setup."
+units = ["worldbuilder", "character-creator"]
+
+[[profiles]]
+name = "planning"
+description = "Plot architecture and declared planning tools."
+units = ["plot-architect"]
+
+[[profiles]]
+name = "research"
+description = "Research sources, claims and scene research packages."
+units = ["researcher"]
+
+[[profiles]]
+name = "style"
+description = "Editorial style-profile preview, apply, revision and recovery."
+units = ["editor/style"]
+
+[[profiles]]
+name = "release"
+description = "Editorial and series release workflows."
+units = ["editor", "bible-librarian"]
+
+[[profiles]]
+name = "setup"
+description = "New-book setup over the current entry workflow."
+units = ["spindle/setup"]

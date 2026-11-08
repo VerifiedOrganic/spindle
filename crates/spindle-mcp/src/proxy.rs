@@ -21,13 +21,19 @@ use crate::read_addr_file;
 pub struct ProxyHandler {
     client: Peer<RoleClient>,
     failover_signal: CancellationToken,
+    tool_profile: Option<String>,
 }
 
 impl ProxyHandler {
-    pub fn new(client: Peer<RoleClient>, failover_signal: CancellationToken) -> Self {
+    pub fn new(
+        client: Peer<RoleClient>,
+        failover_signal: CancellationToken,
+        tool_profile: Option<String>,
+    ) -> Self {
         Self {
             client,
             failover_signal,
+            tool_profile,
         }
     }
 
@@ -58,7 +64,10 @@ impl ServerHandler for ProxyHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools = self.map_proxy_error(self.client.list_all_tools().await)?;
+        let mut tools = self.map_proxy_error(self.client.list_all_tools().await)?;
+        tools.retain(|tool| {
+            crate::tools::profile_has_tool(self.tool_profile.as_deref(), &tool.name)
+        });
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -71,6 +80,11 @@ impl ServerHandler for ProxyHandler {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        if !crate::tools::profile_has_tool(self.tool_profile.as_deref(), &request.name) {
+            return Ok(CallToolResult::error(vec![rmcp::model::Content::text(
+                format!("unknown tool: {}", request.name),
+            )]));
+        }
         self.map_proxy_error(self.client.call_tool(request).await)
     }
 

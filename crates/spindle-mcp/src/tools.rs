@@ -157,7 +157,10 @@ use serialization::*;
 mod catalog;
 use catalog::*;
 mod profiles;
+#[cfg(test)]
+pub(crate) use profiles::profile_names;
 use profiles::*;
+pub(crate) use profiles::{print_profiles, profile_has_tool, profile_help, validate_tool_profile};
 mod authoring;
 use authoring::*;
 mod session;
@@ -275,8 +278,11 @@ impl ToolRouter {
         let Some(profile) = self.tool_profile.as_deref() else {
             return all.to_vec();
         };
-        let Some(allowed) = profile_allowed_tool_names(profile) else {
+        if profile == "legacy-all" {
             return all.to_vec();
+        }
+        let Some(allowed) = profile_allowed_tool_names(profile) else {
+            return Vec::new();
         };
         all.iter()
             .filter(|t| allowed.contains(&t.name.as_ref()))
@@ -285,16 +291,7 @@ impl ToolRouter {
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        if !static_tool_names().contains(name) {
-            return false;
-        }
-        let Some(profile) = self.tool_profile.as_deref() else {
-            return true;
-        };
-        match profile_allowed_tool_names(profile) {
-            Some(allowed) => allowed.contains(&name),
-            None => true,
-        }
+        profile_has_tool(self.tool_profile.as_deref(), name)
     }
 
     #[cfg(test)]

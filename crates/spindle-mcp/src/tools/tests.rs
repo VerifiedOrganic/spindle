@@ -267,3 +267,6 @@ mod alignment;
 
 #[path = "quality/tests.rs"]
 mod quality;
+
+#[path = "profiles/tests.rs"]
+mod profile_generation;
