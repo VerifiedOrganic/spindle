@@ -453,6 +453,7 @@ mod import_hydration;
 mod imports;
 mod narrative;
 mod plan_amendments;
+mod planning;
 mod projects;
 mod reader_sim;
 mod replan;

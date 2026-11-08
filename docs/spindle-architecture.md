@@ -528,6 +528,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0041 | `model_call` telemetry ledger (`get_model_usage`) |
 | V0047 | `model_call` attribution columns (`scene_id`, `run_id`, `route`, `prompt_template_id`, `prompt_version`, `context_packet_hash`, `temperature`, `top_p`, `max_tokens`) |
 | V0048 | branch-scoped canon uniqueness, per-scene relationship delta ledger, and fact replacement links (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
+| V0049 | initial-planning sessions/proposals and reserved operation receipts (ADR 0004) |
 
 ## Where to make changes
 
@@ -603,3 +604,15 @@ Run this sequence when you start a new implementation task.
 - `docs/fiction-anti-slop.md`: fiction anti-slop contract (shelf catalog,
   product locks, writing-packet digest, Phase 3 critic / revise loop).
   Scanner + rewrite-from-beats contracts: `spindle-core` `style/antislop/`.
+
+## Initial planning foundation (Phase A)
+
+Core `planning` contracts define closed operations with typed existing/proposal
+references. `sqlite/service/planning.rs` delegates to transactional staging in
+`sqlite/repository/planning.rs`. V0049 adds sessions (including pre-project
+sessions), proposals and a reserved operation ledger. No model calls, MCP tools,
+creation/apply path or readiness claim ships in this phase. Reads and audited
+reject/supersede decisions are available to service callers; acceptance fails
+closed until atomic apply/receipt support lands. All gates remain human.
+See [ADR 0004](adr/0004-initial-planning-ratification.md); existing canon-delta and
+plan-amendment semantics remain unchanged.
