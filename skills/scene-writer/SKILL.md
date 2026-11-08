@@ -21,17 +21,16 @@ Save only manuscript prose in the draft text (no assistant prefaces, beat outlin
 ## Step 1: Prepare Context
 
 1. Call `set_active_project` once per session to set the active project and branch.
-2. Call `get_writer_state` to recover the active branch, cursor (`current` / `next`), `hard_constraints`, `open_promises_due_now`, `active_overlays`, `unsynced_local_files`, `drift_warnings`, and `recent_session_activity`.
-3. Call `get_chapter_briefing` and read `continuity_sheets` (or `get_character_snapshot` for present characters when sheets are absent).
-4. Call `get_scene_context` (`book_number`, `chapter_number`, `scene_order`, `character_ids`, `location_id`, `budget_tokens`, `sections`). Use `find_scenes_referencing` for entity history, `list_chapter_scenes` for the chapter spine, and `list_book_chapters` for book order.
-5. Before offloading to a server-side route, check `bible://config/routing` (`caller_should_send_brief`, `adapter_kind`) and load `get_reference(name="scene-writer/offloaded-generation")`.
+2. Call `prepare_scene` (`intent`: `"draft"`, `"revise"`, or `"continue"`, plus optional `scene_id`, `chapter_id`, `book_number`, `chapter_number`, `scene_order`, `character_ids`, `location_id`, `budget_tokens`) to assemble a bounded scene preparation packet in a single read (`writer_cursor`, `scene_purpose`, `hard_constraints`, `reader_contract`, `style_directive`, `compact_shelf_digest`, `voice_samples`, `scene_negatives`, `novel` and `scene` context, `existing_prose`, `drafting_packet_v1`, `coverage`, and freshness `dependency_tokens`).
+3. Use `get_writer_state`, `get_chapter_briefing`, `get_scene_context`, `get_character_snapshot`, `find_scenes_referencing`, `list_chapter_scenes`, or `list_book_chapters` when inspecting individual slices outside `prepare_scene`.
+4. Before offloading to a server-side route, check `bible://config/routing` (`caller_should_send_brief`, `adapter_kind`) and load `get_reference(name="scene-writer/offloaded-generation")`.
 
 ## Step 2: Enforce Canon, Voice, and Constraints
 
 - **Project Style Requirements (`novel.style_directive`)**: Obey `reader_contract.promise`, `style_notes`, `boundaries`, `[STYLE DIRECTIVE]` world rules, and `narrator_voice` (`emotional_register`, `pacing_feel`, `comedy_density`, `interiority_ratio`, `chapter_ending_style`).
 - **Pacing & Agency (`novel.pacing_directives`, `scene.agency_check`)**: Advance `behind` or `stalled` arcs; hold `in_cooldown` or `ahead` arcs. When `scenes_since_active_choice >= 3`, the protagonist must make an active, costly choice that drives events.
 - **World Rules & Promises (`novel.world_rules`, `novel.narrative_promises_due`, `novel.semantic_references`)**: Never violate world rules or invent unseeded capabilities; pay off due promises when earned.
-- **Knowledge & `[SECRETS IN PLAY]` (`novel.knowledge_briefing`)**: Characters act only on what they know at this cursor. Under `[SECRETS IN PLAY]`, characters in `Present and NOT in the know` must never reference, imply, or react to the secret; under a POV-only secret, narration may hold private awareness while dialogue and outward behavior stay sealed. For an on-page reveal, set `secret_of_fact_id` on the learning entry (or via `record_knowledge` with `secret_of_fact_id` and `learned_at`) so the circle expands forward without leaking backward.
+- **Knowledge & `[SECRETS IN PLAY]` (`novel.knowledge_briefing`)**: Characters act only on what they know at this cursor. Under `[SECRETS IN PLAY]`, characters in `Present and NOT in the know` must never reference, imply, or react to the secret; under a POV-only secret, narration may hold private awareness while dialogue and outward behavior stay sealed. For an on-page reveal, set `secret_of_fact_id` on `record_knowledge` with `learned_at` so the circle expands forward without leaking backward.
 
 ## Step 3: Plan Beats and Draft Prose
 
@@ -68,12 +67,12 @@ Call `save_scene_draft` (`chapter_id` or `book_number` + `chapter_number`, `scen
 
 Never read every reference before drafting; call `get_reference` only when needed:
 
-- `scene-writer/offloaded-generation` (`bible://references/scene-writer/offloaded-generation`): Explicit-rating offload, `generation_id` receipts, and `bible://config/routing` (`caller_should_send_brief` / `adapter_kind`).
-- `scene-writer/craft-and-voice` (`bible://references/scene-writer/craft-and-voice`): Swain's Scene/Sequel framework, MRU/dialogue/POV craft, and common failure modes.
-- `scene-writer/research-and-sources` (`bible://references/scene-writer/research-and-sources`): Scene research packs, read-only canon recon subagents, and local file sync.
-- `scene-writer/authoring-runs` (`bible://references/scene-writer/authoring-runs`): Supervised authoring run drafting and post-commit canon mining.
-- `scene-writer/drafting-packets` (`bible://references/scene-writer/drafting-packets`): Typed drafting-packet rollout boundary.
-- `anti-slop` (`bible://references/anti-slop`): Full 12-shelf fiction anti-slop catalog.
+- `scene-writer/offloaded-generation`: Explicit-rating offload, `generation_id` receipts, and `bible://config/routing` (`caller_should_send_brief` / `adapter_kind`).
+- `scene-writer/craft-and-voice`: Swain's Scene/Sequel framework, MRU/dialogue/POV craft, and common failure modes.
+- `scene-writer/research-and-sources`: Scene research packs, read-only canon recon subagents, and local file sync.
+- `scene-writer/authoring-runs`: Supervised authoring run drafting and post-commit canon mining.
+- `scene-writer/drafting-packets`: Typed drafting-packet rollout boundary.
+- `anti-slop`: Full 12-shelf fiction anti-slop catalog.
 
 <!-- tool: annotate_scene_beats -->
 <!-- tool: check_consistency -->
@@ -92,6 +91,7 @@ Never read every reference before drafting; call `get_reference` only when neede
 <!-- tool: list_book_chapters -->
 <!-- tool: list_chapter_scenes -->
 <!-- tool: plan_chapter -->
+<!-- tool: prepare_scene -->
 <!-- tool: record_knowledge -->
 <!-- tool: record_note -->
 <!-- tool: register_canonical_fact -->

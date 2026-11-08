@@ -1362,6 +1362,18 @@ impl SqliteSpindleService {
         &self,
         input: spindle_core::models::GetSceneContextInput,
     ) -> Result<spindle_core::models::SceneContextOutput> {
+        Ok(self
+            .get_scene_context_for_branch(input, None, false)
+            .await?
+            .output)
+    }
+
+    pub(crate) async fn get_scene_context_for_branch(
+        &self,
+        input: spindle_core::models::GetSceneContextInput,
+        branch_id_override: Option<&str>,
+        enforce_hard_constraint_budget: bool,
+    ) -> Result<SceneContextWithCoverage> {
         use crate::format::{
             DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS, SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS,
             WorldRuleContextCharacter, agency_check_from_scene_history,
@@ -1409,7 +1421,22 @@ impl SqliteSpindleService {
         let want_agency_check = input.wants_scene_section("agency_check");
 
         let project = self.repository.get_project(&input.project_id).await?;
-        let active_branch = self.repository.get_active_branch(&input.project_id).await?;
+        let active_branch = match branch_id_override
+            .map(str::trim)
+            .filter(|branch_id| !branch_id.is_empty())
+        {
+            Some(branch_id) => {
+                let branch = self.repository.get_branch(branch_id).await?;
+                if branch.project_id.as_deref() != Some(input.project_id.as_str()) {
+                    anyhow::bail!(
+                        "branch {branch_id} does not belong to project {}",
+                        input.project_id
+                    );
+                }
+                branch
+            }
+            None => self.repository.get_active_branch(&input.project_id).await?,
+        };
 
         // Reconcile chapter_id vs book_number/chapter_number.
         let mut normalized = input.clone();
@@ -1781,6 +1808,7 @@ impl SqliteSpindleService {
         // (a different chapter or book), so relevance — not just adjacency —
         // drives what resurfaces. Reuses the exact embed→kNN path as
         // `search_bible`; the query is the present characters + location.
+        let mut unavailable_passes = Vec::new();
         let semantic_references: Vec<spindle_core::models::SearchBibleResultItem> =
             if want_semantic_references {
                 const SEMANTIC_REFERENCE_LIMIT: usize = 5;
@@ -1799,40 +1827,59 @@ impl SqliteSpindleService {
                 if query.trim().is_empty() {
                     Vec::new()
                 } else {
-                    let embedding_session = self.repository.model_router().embedding_session()?;
-                    let query_embedding = embedding_session.embed_text(&query).await?;
-                    // Over-fetch so excluding present-scene entities (which are
-                    // already rendered in the scene layer) can't starve the slice.
-                    let k = SEMANTIC_REFERENCE_LIMIT + ids.len() + 1;
-                    let hits = self
-                        .repository
-                        .knn_search_embeddings(
-                            &input.project_id,
-                            Some(&active_branch.id),
-                            &query_embedding,
-                            k,
-                        )
-                        .await?;
-                    let present: std::collections::HashSet<&str> = ids
-                        .iter()
-                        .map(String::as_str)
-                        .chain(std::iter::once(input.location_id.as_str()))
-                        .collect();
-                    hits.into_iter()
-                        .filter(|(se, _)| !present.contains(se.entity_id.as_str()))
-                        .take(SEMANTIC_REFERENCE_LIMIT)
-                        .map(
-                            |(se, distance)| spindle_core::models::SearchBibleResultItem {
-                                entity_type: se.entity_table,
-                                entity_id: se.entity_id,
-                                title: se.title,
-                                excerpt: se.excerpt,
-                                // Lower distance = more similar; report as a [0, 1]
-                                // score where higher is better, mirroring search_bible.
-                                score: 1.0 / (1.0 + distance),
-                            },
-                        )
-                        .collect()
+                    let recall_result: Result<Vec<spindle_core::models::SearchBibleResultItem>> =
+                        async {
+                            let embedding_session =
+                                self.repository.model_router().embedding_session()?;
+                            let query_embedding = embedding_session.embed_text(&query).await?;
+                            // Over-fetch so excluding present-scene entities (which are
+                            // already rendered in the scene layer) can't starve the slice.
+                            let k = SEMANTIC_REFERENCE_LIMIT + ids.len() + 1;
+                            let hits = self
+                                .repository
+                                .knn_search_embeddings(
+                                    &input.project_id,
+                                    Some(&active_branch.id),
+                                    &query_embedding,
+                                    k,
+                                )
+                                .await?;
+                            let present: std::collections::HashSet<&str> = ids
+                                .iter()
+                                .map(String::as_str)
+                                .chain(std::iter::once(input.location_id.as_str()))
+                                .collect();
+                            Ok(hits
+                                .into_iter()
+                                .filter(|(se, _)| !present.contains(se.entity_id.as_str()))
+                                .take(SEMANTIC_REFERENCE_LIMIT)
+                                .map(|(se, distance)| {
+                                    spindle_core::models::SearchBibleResultItem {
+                                        entity_type: se.entity_table,
+                                        entity_id: se.entity_id,
+                                        title: se.title,
+                                        excerpt: se.excerpt,
+                                        // Lower distance = more similar; report as a [0, 1]
+                                        // score where higher is better, mirroring search_bible.
+                                        score: 1.0 / (1.0 + distance),
+                                    }
+                                })
+                                .collect())
+                        }
+                        .await;
+                    match recall_result {
+                        Ok(items) => items,
+                        Err(err) if enforce_hard_constraint_budget => {
+                            unavailable_passes.push(
+                                spindle_core::models::PrepareSceneUnavailablePass {
+                                    pass: "semantic_references".to_string(),
+                                    reason: err.to_string(),
+                                },
+                            );
+                            Vec::new()
+                        }
+                        Err(err) => return Err(err),
+                    }
                 }
             } else {
                 Vec::new()
@@ -2477,6 +2524,11 @@ impl SqliteSpindleService {
         let non_truncatable_cost =
             non_truncatable_prefix_tokens_scene_context(format_fmt, &hard_constraints);
         if non_truncatable_cost > budget_tokens {
+            if enforce_hard_constraint_budget {
+                anyhow::bail!(
+                    "budget_tokens ({budget_tokens}) too small to fit hard constraints (minimum required: {non_truncatable_cost} tokens). Increase budget_tokens or reduce world rules."
+                );
+            }
             budget_tokens =
                 non_truncatable_cost.saturating_add(SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS);
         }
@@ -2525,19 +2577,25 @@ impl SqliteSpindleService {
             )
             .await;
 
-        Ok(SceneContextOutput {
-            hard_constraints,
-            canonical_facts: canonical_fact_read_models,
-            novel: novel_layer,
-            scene: scene_layer,
-            budget: SceneContextBudgetMeta {
-                estimated_tokens,
-                token_budget: Some(budget_tokens),
-                novel_layer_truncated,
+        Ok(SceneContextWithCoverage {
+            output: SceneContextOutput {
+                hard_constraints,
+                canonical_facts: canonical_fact_read_models,
+                novel: novel_layer,
+                scene: scene_layer,
+                budget: SceneContextBudgetMeta {
+                    estimated_tokens,
+                    token_budget: Some(budget_tokens),
+                    novel_layer_truncated,
+                },
+                compact_shelf_digest,
+                voice_samples,
+                scene_negatives,
             },
-            compact_shelf_digest,
-            voice_samples,
-            scene_negatives,
+            bundle_estimated_tokens: budget_report.estimated_tokens,
+            hard_constraint_tokens: non_truncatable_cost,
+            truncated_section_ids: budget_report.truncated_section_ids,
+            unavailable_passes,
         })
     }
 
@@ -2845,4 +2903,1229 @@ impl SqliteSpindleService {
             .assemble_subject_snapshot(&input.project_id, &branch.id, &subject, &placement)
             .await
     }
+
+    /// Assemble a bounded, read-only scene preparation packet composing writer cursor
+    /// state, chapter/scene purpose, branch-visible context, secret-gated canon,
+    /// style guidance, optional research recall, and `DraftingPacketV1`.
+    pub async fn prepare_scene(
+        &self,
+        input: spindle_core::models::PrepareSceneInput,
+    ) -> Result<spindle_core::models::PrepareSceneOutput> {
+        use crate::format::DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS;
+        use spindle_core::models::{
+            ContentRating, ContextFormat, GetSceneContextInput, PrepareSceneCoverage,
+            PrepareSceneCursor, PrepareSceneEvidenceRef, PrepareSceneIntent, PrepareSceneOutput,
+            PrepareScenePurpose, PrepareSceneResearchItem, PrepareSceneUnavailablePass,
+            ResearchSearchInput, StoryPlacement,
+        };
+
+        let project = self.repository.get_project(&input.project_id).await?;
+        let branch = match input
+            .branch_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch_id| !branch_id.is_empty())
+        {
+            Some(branch_id) => {
+                let branch = self.repository.get_branch(branch_id).await?;
+                if branch.project_id.as_deref() != Some(project.id.as_str()) {
+                    anyhow::bail!(
+                        "branch {branch_id} does not belong to project {}",
+                        project.id
+                    );
+                }
+                branch
+            }
+            None => self.repository.get_active_branch(&project.id).await?,
+        };
+
+        let intent = input.intent.unwrap_or_default();
+        let scenes = self
+            .repository
+            .list_scenes_resolved_for_branch(&project.id, &branch.id)
+            .await?;
+        let writer_position = self
+            .repository
+            .get_writer_position(&project.id, &branch.id)
+            .await?;
+
+        let cursor_scene = if let Some(position_scene_id) = writer_position
+            .as_ref()
+            .and_then(|pos| pos.scene_id.clone())
+        {
+            scenes
+                .iter()
+                .find(|candidate| candidate.id == position_scene_id)
+                .cloned()
+                .or_else(|| scenes.last().cloned())
+        } else {
+            scenes.last().cloned()
+        };
+        let cursor_index = cursor_scene
+            .as_ref()
+            .and_then(|scene| scenes.iter().position(|candidate| candidate.id == scene.id));
+        let next_scene = cursor_index
+            .and_then(|index| scenes.get(index + 1))
+            .cloned();
+
+        let writer_cursor = PrepareSceneCursor {
+            cursor_scene_id: cursor_scene.as_ref().map(|scene| scene.id.clone()),
+            cursor_placement: cursor_scene.as_ref().map(|scene| StoryPlacement {
+                book_number: scene.book_number,
+                chapter_number: scene.chapter_number,
+                scene_order: Some(scene.scene_order),
+                note: None,
+            }),
+            next_scene_id: next_scene.as_ref().map(|scene| scene.id.clone()),
+            writer_intent: writer_position
+                .as_ref()
+                .map(|pos| crate::format::parse_writer_intent(&pos.intent)),
+            notes: writer_position
+                .as_ref()
+                .and_then(|pos| pos.next_focus.clone())
+                .or_else(|| project.notes.clone()),
+        };
+
+        // Resolve target scene / placement without mutating writer position.
+        let mut target_scene: Option<crate::sqlite::records::Scene> = None;
+        let mut resolved_chapter_id: Option<String> = None;
+        let (book_number, chapter_number, scene_order) = if let Some(scene_id) = input
+            .scene_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let scene = if let Some(found) = scenes.iter().find(|s| s.id == scene_id).cloned() {
+                found
+            } else {
+                let raw = self.repository.get_scene(scene_id).await?;
+                if raw.project_id != project.id || raw.branch_id != branch.id {
+                    anyhow::bail!(
+                        "scene {scene_id} does not belong to branch {} of project {}",
+                        branch.id,
+                        project.id
+                    );
+                }
+                raw
+            };
+            let b = input.book_number.unwrap_or(scene.book_number);
+            let c = input.chapter_number.unwrap_or(scene.chapter_number);
+            let s = input.scene_order.unwrap_or(scene.scene_order);
+            if b != scene.book_number || c != scene.chapter_number || s != scene.scene_order {
+                anyhow::bail!(
+                    "scene_id {} placement ({},{},{}) does not match requested placement ({},{},{})",
+                    scene.id,
+                    scene.book_number,
+                    scene.chapter_number,
+                    scene.scene_order,
+                    b,
+                    c,
+                    s
+                );
+            }
+            resolved_chapter_id = Some(scene.chapter_id.clone());
+            target_scene = Some(scene);
+            (b, c, s)
+        } else if let Some(chapter_id) = input
+            .chapter_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let chapter = self.repository.get_chapter(chapter_id).await?;
+            if chapter.project_id != project.id {
+                anyhow::bail!("chapter does not belong to the requested project");
+            }
+            if let Some(b) = input.book_number
+                && b > 0
+                && b != chapter.book_number
+            {
+                anyhow::bail!("chapter_id {} does not match book_number {}", chapter_id, b);
+            }
+            if let Some(c) = input.chapter_number
+                && c > 0
+                && c != chapter.chapter_number
+            {
+                anyhow::bail!(
+                    "chapter_id {} does not match chapter_number {}",
+                    chapter_id,
+                    c
+                );
+            }
+            let b = chapter.book_number;
+            let c = chapter.chapter_number;
+            let s = input.scene_order.unwrap_or(1).max(1);
+            resolved_chapter_id = Some(chapter.id);
+            target_scene = scenes
+                .iter()
+                .find(|scene| {
+                    scene.book_number == b && scene.chapter_number == c && scene.scene_order == s
+                })
+                .cloned();
+            (b, c, s)
+        } else if input.book_number.is_some() || input.chapter_number.is_some() {
+            let b = input.book_number.unwrap_or(1);
+            let c = input.chapter_number.unwrap_or(1);
+            if b <= 0 || c <= 0 {
+                anyhow::bail!("prepare_scene book_number and chapter_number must be positive");
+            }
+            let s = input.scene_order.unwrap_or(1).max(1);
+            target_scene = scenes
+                .iter()
+                .find(|scene| {
+                    scene.book_number == b && scene.chapter_number == c && scene.scene_order == s
+                })
+                .cloned();
+            if let Some(scene) = target_scene.as_ref() {
+                resolved_chapter_id = Some(scene.chapter_id.clone());
+            }
+            (b, c, s)
+        } else if let Some(scene) = match intent {
+            PrepareSceneIntent::Continue => next_scene.clone().or_else(|| cursor_scene.clone()),
+            PrepareSceneIntent::Draft | PrepareSceneIntent::Revise => cursor_scene.clone(),
+        } {
+            let s = input.scene_order.unwrap_or(scene.scene_order).max(1);
+            resolved_chapter_id = Some(scene.chapter_id.clone());
+            if s == scene.scene_order {
+                target_scene = Some(scene.clone());
+            } else {
+                target_scene = scenes
+                    .iter()
+                    .find(|candidate| {
+                        candidate.book_number == scene.book_number
+                            && candidate.chapter_number == scene.chapter_number
+                            && candidate.scene_order == s
+                    })
+                    .cloned();
+            }
+            (scene.book_number, scene.chapter_number, s)
+        } else {
+            let s = input.scene_order.unwrap_or(1).max(1);
+            (1, 1, s)
+        };
+
+        let chapters = self
+            .repository
+            .list_chapters_by_project(&project.id)
+            .await?;
+        let chapter_record = if let Some(chapter_id) = resolved_chapter_id.as_deref() {
+            chapters.iter().find(|ch| ch.id == chapter_id).cloned()
+        } else {
+            chapters
+                .iter()
+                .find(|ch| ch.book_number == book_number && ch.chapter_number == chapter_number)
+                .cloned()
+        };
+        if resolved_chapter_id.is_none() {
+            resolved_chapter_id = chapter_record.as_ref().map(|ch| ch.id.clone());
+        }
+
+        let chapter_plan = self
+            .repository
+            .list_chapter_plans_by_project(&project.id)
+            .await?
+            .into_iter()
+            .find(|plan| plan.book_number == book_number && plan.chapter_number == chapter_number);
+
+        let planned_scene = chapter_plan
+            .as_ref()
+            .and_then(|plan| plan.scenes.iter().find(|s| s.scene_order == scene_order));
+
+        // Resolve character_ids and location_id from input -> chapter_plan -> project defaults.
+        let mut resolved_character_ids = input.character_ids.clone();
+        if resolved_character_ids.is_empty() {
+            if let Some(plan) = chapter_plan.as_ref() {
+                if let Some(pov) = plan
+                    .pov_character_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    resolved_character_ids.push(pov.to_string());
+                }
+                if let Some(ps) = planned_scene {
+                    for cid in &ps.character_ids {
+                        if !resolved_character_ids.contains(cid) {
+                            resolved_character_ids.push(cid.clone());
+                        }
+                    }
+                }
+            }
+            if resolved_character_ids.is_empty() {
+                for character in self
+                    .repository
+                    .list_characters_by_project(&project.id)
+                    .await?
+                {
+                    resolved_character_ids.push(character.id);
+                }
+            }
+        }
+
+        let resolved_location_id = if let Some(loc_id) = input
+            .location_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            loc_id.to_string()
+        } else if let Some(loc_id) = target_scene
+            .as_ref()
+            .and_then(|s| s.location_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            loc_id.to_string()
+        } else if let Some(loc_id) = planned_scene
+            .and_then(|ps| ps.location_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            loc_id.to_string()
+        } else if let Some(loc_id) = scenes
+            .iter()
+            .filter(|s| s.book_number == book_number && s.chapter_number == chapter_number)
+            .find_map(|s| {
+                s.location_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+            })
+        {
+            loc_id.to_string()
+        } else {
+            let locations = self
+                .repository
+                .list_locations_by_project(&project.id)
+                .await?;
+            locations.first().map(|loc| loc.id.clone()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "prepare_scene requires location_id or at least one location in the project"
+                )
+            })?
+        };
+
+        let effective_budget = input
+            .budget_tokens
+            .unwrap_or(DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS);
+
+        let scene_context_with_cov = self
+            .get_scene_context_for_branch(
+                GetSceneContextInput {
+                    project_id: project.id.clone(),
+                    chapter_id: resolved_chapter_id.clone(),
+                    book_number,
+                    chapter_number,
+                    scene_order,
+                    character_ids: resolved_character_ids.clone(),
+                    location_id: resolved_location_id.clone(),
+                    sections: None,
+                    format: Some(ContextFormat::Markdown),
+                    budget_tokens: Some(effective_budget),
+                    token_budget: None,
+                    max_character_count: None,
+                },
+                Some(&branch.id),
+                true,
+            )
+            .await?;
+
+        let mut unavailable_passes = scene_context_with_cov.unavailable_passes;
+        let scene_context = scene_context_with_cov.output;
+
+        // Optional research recall pass.
+        let mut research = Vec::new();
+        if let Some(query) = input
+            .research_query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            match self
+                .research_search(ResearchSearchInput {
+                    project_id: project.id.clone(),
+                    branch_id: Some(branch.id.clone()),
+                    query: query.to_string(),
+                    tags: Vec::new(),
+                    time_period: None,
+                    location: None,
+                    limit: Some(5),
+                })
+                .await
+            {
+                Ok(found) => {
+                    for item in found.results {
+                        let summary = if item.preview.trim().is_empty()
+                            || item.preview == item.title_or_summary
+                        {
+                            item.title_or_summary
+                        } else {
+                            format!("{}: {}", item.title_or_summary, item.preview)
+                        };
+                        research.push(PrepareSceneResearchItem {
+                            id: item.id,
+                            kind: item.item_type,
+                            summary,
+                            source_id: item.source_title,
+                        });
+                    }
+                }
+                Err(err) => {
+                    unavailable_passes.push(PrepareSceneUnavailablePass {
+                        pass: "research_recall".to_string(),
+                        reason: err.to_string(),
+                    });
+                }
+            }
+        }
+
+        let placement = StoryPlacement {
+            book_number,
+            chapter_number,
+            scene_order: Some(scene_order),
+            note: None,
+        };
+
+        let dependency_tokens = self
+            .compute_scene_preparation_dependencies(
+                &project.id,
+                &branch.id,
+                &placement,
+                target_scene.as_ref().map(|s| s.id.as_str()),
+            )
+            .await?;
+        let context_revision_token = composite_context_revision_token(&dependency_tokens);
+        let preparation_id = format!(
+            "prep:{}",
+            &generation_sha256_hex(
+                format!(
+                    "{}:{}:{}:{}:{}:{}:{}",
+                    project.id,
+                    branch.id,
+                    book_number,
+                    chapter_number,
+                    scene_order,
+                    intent.as_str(),
+                    context_revision_token
+                )
+                .as_bytes()
+            )[..16]
+        );
+
+        let pov_character_id = chapter_plan
+            .as_ref()
+            .and_then(|p| p.pov_character_id.clone())
+            .or_else(|| resolved_character_ids.first().cloned());
+
+        let content_rating = target_scene
+            .as_ref()
+            .and_then(|s| {
+                serde_json::from_value::<ContentRating>(serde_json::Value::String(
+                    s.content_rating.trim().to_ascii_lowercase(),
+                ))
+                .ok()
+            })
+            .or_else(|| planned_scene.and_then(|ps| ps.content_rating.clone()))
+            .unwrap_or(ContentRating::General);
+
+        let mut expected_beats = planned_scene
+            .map(|ps| ps.beat_structure.clone())
+            .unwrap_or_default();
+        if expected_beats.is_empty()
+            && let Some(chapter_id) = resolved_chapter_id.as_deref()
+            && let Some(outline) = self
+                .repository
+                .get_chapter_outline(chapter_id, &branch.id)
+                .await?
+        {
+            expected_beats = outline
+                .beats
+                .into_iter()
+                .filter(|beat| beat.order == scene_order)
+                .map(|beat| beat.summary)
+                .collect();
+        }
+
+        let chapter_synopsis = chapter_plan
+            .as_ref()
+            .map(|plan| plan.synopsis.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                chapter_record
+                    .as_ref()
+                    .and_then(|ch| ch.title.clone())
+                    .filter(|s| !s.trim().is_empty())
+            });
+
+        let scene_version = if let Some(scene) = target_scene.as_ref() {
+            let versions = self.repository.list_scene_versions(&scene.id).await?;
+            Some(versions.last().map(|v| v.version_number).unwrap_or(1))
+        } else {
+            None
+        };
+
+        let scene_purpose = PrepareScenePurpose {
+            chapter_synopsis,
+            scene_title: chapter_record.as_ref().and_then(|ch| ch.title.clone()),
+            scene_summary: target_scene
+                .as_ref()
+                .map(|s| s.summary.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| planned_scene.map(|ps| ps.summary.clone())),
+            pov_character_id,
+            location_id: resolved_location_id.clone(),
+            character_ids: resolved_character_ids.clone(),
+            content_rating,
+            expected_beats,
+            active_threads: scene_context.novel.active_threads.clone(),
+        };
+
+        let existing_prose = match intent {
+            PrepareSceneIntent::Revise | PrepareSceneIntent::Continue => target_scene
+                .as_ref()
+                .map(|s| s.full_text.clone())
+                .filter(|text| !text.trim().is_empty()),
+            PrepareSceneIntent::Draft => None,
+        };
+
+        let drafting_packet_v1 = match build_drafting_packet_v1_for_prepare_scene(
+            &preparation_id,
+            &project.id,
+            &branch.id,
+            target_scene.as_ref(),
+            scene_version,
+            &placement,
+            &dependency_tokens,
+            &scene_purpose,
+            &scene_context,
+            &research,
+        ) {
+            Ok(packet) => Some(packet),
+            Err(reason) => {
+                unavailable_passes.push(PrepareSceneUnavailablePass {
+                    pass: "drafting_packet_v1".to_string(),
+                    reason,
+                });
+                None
+            }
+        };
+
+        // Compute included vs truncated sections and compact evidence references.
+        const PREPARE_SCENE_SECTIONS: &[&str] = &[
+            "reader_contract",
+            "style_directive",
+            "world_rules",
+            "subjects",
+            "system_overlays",
+            "timeline_briefing",
+            "future_knowledge_briefing",
+            "pacing_directives",
+            "narrative_promises_due",
+            "knowledge_briefing",
+            "semantic_references",
+            "economy_briefing",
+            "active_threads",
+            "previous_scene_tail",
+            "location",
+            "world_state",
+            "characters",
+            "relationships",
+            "agency_check",
+        ];
+        let truncated_set: std::collections::HashSet<&str> = scene_context_with_cov
+            .truncated_section_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let mut included_sections = vec!["hard_constraints".to_string()];
+        for section in PREPARE_SCENE_SECTIONS {
+            if !truncated_set.contains(*section) {
+                included_sections.push((*section).to_string());
+            }
+        }
+
+        let mut evidence_references = Vec::new();
+        if let Some(scene) = target_scene.as_ref() {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: scene.id.clone(),
+                kind: "scene".to_string(),
+                label: scene.summary.clone(),
+            });
+        }
+        if let Some(plan) = chapter_plan.as_ref() {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: plan.id.clone(),
+                kind: "chapter_plan".to_string(),
+                label: format!("Book {} Chapter {}", plan.book_number, plan.chapter_number),
+            });
+        }
+        if !scene_context.scene.location.location_id.is_empty() {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: scene_context.scene.location.location_id.clone(),
+                kind: "location".to_string(),
+                label: scene_context.scene.location.name.clone(),
+            });
+        }
+        for character in &scene_context.scene.characters {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: character.character_id.clone(),
+                kind: "character".to_string(),
+                label: character.name.clone(),
+            });
+        }
+        for rule in &scene_context.novel.world_rules {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: rule.rule_name.clone(),
+                kind: "world_rule".to_string(),
+                label: rule.rule_type.clone(),
+            });
+        }
+        for fact in &scene_context.canonical_facts {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: fact.canonical_fact_id.clone(),
+                kind: "canonical_fact".to_string(),
+                label: fact.predicate.clone(),
+            });
+        }
+        for item in &research {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: item.id.clone(),
+                kind: "research".to_string(),
+                label: item.kind.clone(),
+            });
+        }
+
+        let coverage = PrepareSceneCoverage {
+            budget_tokens: effective_budget,
+            estimated_tokens: scene_context_with_cov.bundle_estimated_tokens,
+            hard_constraint_tokens: scene_context_with_cov.hard_constraint_tokens,
+            included_sections,
+            truncated_sections: scene_context_with_cov.truncated_section_ids,
+            evidence_references,
+            unavailable_passes,
+        };
+
+        let reader_contract = scene_context.novel.reader_contract.clone();
+        let style_directive = scene_context.novel.style_directive.clone();
+
+        Ok(PrepareSceneOutput {
+            preparation_id,
+            project_id: project.id,
+            branch_id: branch.id,
+            branch_name: branch.name,
+            intent,
+            placement,
+            chapter_id: resolved_chapter_id,
+            scene_id: target_scene.as_ref().map(|s| s.id.clone()),
+            scene_version,
+            context_revision_token,
+            dependency_tokens,
+            writer_cursor,
+            scene_purpose,
+            hard_constraints: scene_context.hard_constraints,
+            reader_contract,
+            style_directive,
+            compact_shelf_digest: scene_context.compact_shelf_digest,
+            voice_samples: scene_context.voice_samples,
+            scene_negatives: scene_context.scene_negatives,
+            novel: scene_context.novel,
+            scene: scene_context.scene,
+            existing_prose,
+            research,
+            drafting_packet_v1,
+            coverage,
+        })
+    }
+
+    /// Evaluate whether a previously prepared scene packet's dependencies are still fresh
+    /// against current project state on the given branch and placement.
+    pub async fn check_prepare_scene_freshness(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        placement: &spindle_core::models::StoryPlacement,
+        scene_id: Option<&str>,
+        expected_dependencies: &spindle_core::models::ScenePreparationDependencies,
+    ) -> Result<spindle_core::models::ScenePreparationFreshness> {
+        let current_dependencies = self
+            .compute_scene_preparation_dependencies(project_id, branch_id, placement, scene_id)
+            .await?;
+        let current_context_revision_token =
+            composite_context_revision_token(&current_dependencies);
+
+        let mut stale_components = Vec::new();
+        if current_dependencies.scene_text_hash != expected_dependencies.scene_text_hash {
+            stale_components.push("scene_text".to_string());
+        }
+        if current_dependencies.canon_snapshot_hash != expected_dependencies.canon_snapshot_hash {
+            stale_components.push("canon".to_string());
+        }
+        if current_dependencies.style_revision_hash != expected_dependencies.style_revision_hash {
+            stale_components.push("style".to_string());
+        }
+        if current_dependencies.plan_revision_hash != expected_dependencies.plan_revision_hash {
+            stale_components.push("plan".to_string());
+        }
+
+        Ok(spindle_core::models::ScenePreparationFreshness {
+            fresh: stale_components.is_empty(),
+            current_context_revision_token,
+            current_dependencies,
+            stale_components,
+        })
+    }
+
+    pub(crate) async fn compute_scene_preparation_dependencies(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        placement: &spindle_core::models::StoryPlacement,
+        scene_id: Option<&str>,
+    ) -> Result<spindle_core::models::ScenePreparationDependencies> {
+        let project = self.repository.get_project(project_id).await?;
+        let scenes = self
+            .repository
+            .list_scenes_resolved_for_branch(project_id, branch_id)
+            .await?;
+        let scene_order = placement.scene_order.unwrap_or(1);
+
+        let target_scene = if let Some(id) = scene_id {
+            scenes.iter().find(|s| s.id == id).cloned()
+        } else {
+            scenes
+                .iter()
+                .find(|s| {
+                    s.book_number == placement.book_number
+                        && s.chapter_number == placement.chapter_number
+                        && s.scene_order == scene_order
+                })
+                .cloned()
+        };
+
+        let scene_text_hash = if let Some(scene) = target_scene.as_ref() {
+            let versions = self.repository.list_scene_versions(&scene.id).await?;
+            let version_number = versions.last().map(|v| v.version_number).unwrap_or(1);
+            let payload = serde_json::json!({
+                "id": scene.id,
+                "version_number": version_number,
+                "summary": scene.summary,
+                "full_text": scene.full_text,
+                "tone": scene.tone,
+                "location_id": scene.location_id,
+                "content_rating": scene.content_rating,
+            });
+            Some(format!(
+                "scene:{}",
+                &generation_sha256_hex(&serde_json::to_vec(&payload).unwrap_or_default())[..16]
+            ))
+        } else {
+            None
+        };
+
+        let mut characters = self
+            .repository
+            .list_characters_by_project(project_id)
+            .await?;
+        characters.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut character_states = Vec::new();
+        for character in &characters {
+            let state = self
+                .repository
+                .resolve_character_state_for_branch(
+                    branch_id,
+                    &character.id,
+                    placement.book_number,
+                    placement.chapter_number,
+                    scene_order,
+                )
+                .await?;
+            character_states.push(serde_json::json!({
+                "id": character.id,
+                "name": character.name,
+                "role": character.role,
+                "summary": character.summary,
+                "aliases": character.aliases,
+                "state": state.map(|s| serde_json::json!({
+                    "emotional_state": s.emotional_state,
+                    "goals": s.goals,
+                    "status": s.status,
+                    "notes": s.notes,
+                })),
+            }));
+        }
+
+        let mut locations = self
+            .repository
+            .list_locations_by_project(project_id)
+            .await?;
+        locations.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut location_entries = Vec::new();
+        for loc in &locations {
+            let ws = self
+                .repository
+                .get_world_state_by_location(&loc.id)
+                .await
+                .ok()
+                .flatten();
+            location_entries.push(serde_json::json!({
+                "id": loc.id,
+                "name": loc.name,
+                "kind": loc.kind,
+                "realm": loc.realm,
+                "summary": loc.summary,
+                "world_state": ws.map(|w| serde_json::json!({
+                    "controlling_faction": w.controlling_faction,
+                    "status": w.status,
+                    "prosperity": w.prosperity,
+                    "stability": w.stability,
+                    "threat_level": w.threat_level,
+                    "sensory_details": w.sensory_details,
+                })),
+            }));
+        }
+
+        let all_world_rules = self
+            .repository
+            .list_world_rules_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let mut lore_rules: Vec<_> = all_world_rules
+            .iter()
+            .filter(|r| !r.rule_type.eq_ignore_ascii_case("style"))
+            .map(|r| (&r.id, &r.rule_name, &r.rule_type, &r.description, &r.notes))
+            .collect();
+        lore_rules.sort_by(|a, b| a.0.cmp(b.0));
+
+        let mut style_rules: Vec<_> = all_world_rules
+            .iter()
+            .filter(|r| r.rule_type.eq_ignore_ascii_case("style"))
+            .map(|r| (&r.id, &r.rule_name, &r.description))
+            .collect();
+        style_rules.sort_by(|a, b| a.0.cmp(b.0));
+
+        let mut canonical_facts = self
+            .repository
+            .list_canonical_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        canonical_facts.sort_by(|a, b| a.id.cmp(&b.id));
+        let fact_entries: Vec<_> = canonical_facts
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.id,
+                    "subject_table": f.subject_table,
+                    "subject_id": f.subject_id,
+                    "predicate": f.predicate,
+                    "value_kind": f.value_kind,
+                    "value_text": f.value_text,
+                    "value_number": f.value_number,
+                    "unit": f.unit,
+                    "value_json": f.value_json,
+                    "secret": f.secret,
+                    "valid_from": f.valid_from,
+                    "valid_until": f.valid_until,
+                })
+            })
+            .collect();
+
+        let mut knowledge_facts = self
+            .repository
+            .list_knowledge_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        knowledge_facts.sort_by(|a, b| a.id.cmp(&b.id));
+        let knowledge_entries: Vec<_> = knowledge_facts
+            .iter()
+            .map(|k| {
+                (
+                    &k.id,
+                    &k.character_id,
+                    &k.fact,
+                    &k.learned_at,
+                    &k.secret_of_fact_id,
+                )
+            })
+            .collect();
+
+        let mut promises = self
+            .repository
+            .list_narrative_promises_by_project_and_branch(project_id, branch_id)
+            .await?;
+        promises.sort_by(|a, b| a.id.cmp(&b.id));
+        let promise_entries: Vec<_> = promises
+            .iter()
+            .map(|p| (&p.id, &p.description, &p.status, &p.planned_payoff))
+            .collect();
+
+        let mut timeline_events = self
+            .repository
+            .list_timeline_events_by_project_and_branch(project_id, branch_id)
+            .await?;
+        timeline_events.sort_by(|a, b| a.id.cmp(&b.id));
+        let timeline_entries: Vec<_> = timeline_events
+            .iter()
+            .map(|t| (&t.id, &t.title, &t.event_type, &t.summary, &t.placement))
+            .collect();
+
+        let canon_payload = serde_json::json!({
+            "characters": character_states,
+            "locations": location_entries,
+            "lore_rules": lore_rules,
+            "canonical_facts": fact_entries,
+            "knowledge_facts": knowledge_entries,
+            "promises": promise_entries,
+            "timeline_events": timeline_entries,
+        });
+        let canon_snapshot_hash = format!(
+            "canon:{}",
+            &generation_sha256_hex(&serde_json::to_vec(&canon_payload).unwrap_or_default())[..16]
+        );
+
+        let active_style_profile =
+            if let Some(profile_id) = project.active_style_profile_id.as_deref() {
+                self.repository
+                    .get_style_profile(project_id, profile_id)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+        let style_payload = serde_json::json!({
+            "genre": project.genre,
+            "project_type": project.project_type,
+            "reader_contract": project.reader_contract,
+            "narrator_voice": project.narrator_voice,
+            "active_style_profile_id": project.active_style_profile_id,
+            "active_style_profile": active_style_profile.map(|p| serde_json::json!({
+                "profile_id": p.profile_id,
+                "name": p.name,
+                "guidance": p.guidance,
+            })),
+            "style_rules": style_rules,
+        });
+        let style_revision_hash = format!(
+            "style:{}",
+            &generation_sha256_hex(&serde_json::to_vec(&style_payload).unwrap_or_default())[..16]
+        );
+
+        let chapters = self.repository.list_chapters_by_project(project_id).await?;
+        let chapter_record = chapters.iter().find(|ch| {
+            ch.book_number == placement.book_number && ch.chapter_number == placement.chapter_number
+        });
+        let chapter_outline = if let Some(ch) = chapter_record {
+            self.repository
+                .get_chapter_outline(&ch.id, branch_id)
+                .await?
+        } else {
+            None
+        };
+        let chapter_plan = self
+            .repository
+            .list_chapter_plans_by_project(project_id)
+            .await?
+            .into_iter()
+            .find(|plan| {
+                plan.book_number == placement.book_number
+                    && plan.chapter_number == placement.chapter_number
+            });
+        let plan_payload = serde_json::json!({
+            "chapter": chapter_record.map(|ch| serde_json::json!({
+                "id": ch.id,
+                "title": ch.title,
+            })),
+            "chapter_plan": chapter_plan.map(|plan| serde_json::json!({
+                "id": plan.id,
+                "synopsis": plan.synopsis,
+                "pov_character_id": plan.pov_character_id,
+                "scenes": plan.scenes,
+                "plan_revision": plan.plan_revision,
+                "target_theme_ids": plan.target_theme_ids,
+                "target_conflict_ids": plan.target_conflict_ids,
+                "target_plot_line_ids": plan.target_plot_line_ids,
+            })),
+            "chapter_outline": chapter_outline.map(|outline| serde_json::json!({
+                "format": outline.format,
+                "content": outline.content,
+                "beats": outline.beats,
+            })),
+        });
+        let plan_revision_hash = format!(
+            "plan:{}",
+            &generation_sha256_hex(&serde_json::to_vec(&plan_payload).unwrap_or_default())[..16]
+        );
+
+        Ok(spindle_core::models::ScenePreparationDependencies {
+            scene_text_hash,
+            canon_snapshot_hash,
+            style_revision_hash,
+            plan_revision_hash,
+        })
+    }
+}
+
+pub(crate) struct SceneContextWithCoverage {
+    pub output: spindle_core::models::SceneContextOutput,
+    pub bundle_estimated_tokens: usize,
+    pub hard_constraint_tokens: usize,
+    pub truncated_section_ids: Vec<String>,
+    pub unavailable_passes: Vec<spindle_core::models::PrepareSceneUnavailablePass>,
+}
+
+fn composite_context_revision_token(
+    deps: &spindle_core::models::ScenePreparationDependencies,
+) -> String {
+    let payload = serde_json::to_vec(deps).unwrap_or_default();
+    format!("ctxrev:{}", &generation_sha256_hex(&payload)[..16])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_drafting_packet_v1_for_prepare_scene(
+    preparation_id: &str,
+    project_id: &str,
+    branch_id: &str,
+    target_scene: Option<&crate::sqlite::records::Scene>,
+    scene_version: Option<i32>,
+    placement: &spindle_core::models::StoryPlacement,
+    dependencies: &spindle_core::models::ScenePreparationDependencies,
+    purpose: &spindle_core::models::PrepareScenePurpose,
+    context: &spindle_core::models::SceneContextOutput,
+    research: &[spindle_core::models::PrepareSceneResearchItem],
+) -> std::result::Result<spindle_core::drafting::DraftingPacketV1, String> {
+    use spindle_core::drafting::{
+        ConstraintKind, CraftRubric, DraftingPacketV1, EditorialMemory, EmotionShift,
+        NarrativePerson, NarrativeTense, PacketChapter, PacketConstraint, PacketContinuity,
+        PacketItem, PacketLocation, PacketParticipant, PacketPov, PacketSource, PacketVoice,
+        SceneCardV1, TargetWords, ValueShift,
+    };
+
+    let pov_character = if let Some(pov_id) = purpose.pov_character_id.as_deref() {
+        context
+            .scene
+            .characters
+            .iter()
+            .find(|c| c.character_id == pov_id)
+            .or_else(|| context.scene.characters.first())
+    } else {
+        context.scene.characters.first()
+    };
+
+    let Some(pov_char) = pov_character else {
+        return Err(
+            "no POV or scene character available to populate DraftingPacketV1.scene_card.pov"
+                .to_string(),
+        );
+    };
+
+    let plan_source = PacketSource {
+        branch_id: branch_id.to_string(),
+        source_id: format!(
+            "plan:{}:{}:{}",
+            placement.book_number,
+            placement.chapter_number,
+            placement.scene_order.unwrap_or(1)
+        ),
+        revision_hash: dependencies.plan_revision_hash.clone(),
+    };
+    let canon_source = PacketSource {
+        branch_id: branch_id.to_string(),
+        source_id: format!("canon:{project_id}"),
+        revision_hash: dependencies.canon_snapshot_hash.clone(),
+    };
+
+    let mut source_versions = vec![plan_source.clone(), canon_source.clone()];
+
+    let mut hard_constraints = Vec::new();
+    let mut seen_constraint_ids = std::collections::BTreeSet::new();
+    for (idx, hc) in context.hard_constraints.iter().enumerate() {
+        let id = if seen_constraint_ids.insert(hc.id.clone()) {
+            hc.id.clone()
+        } else {
+            let dedup = format!("{}#{}", hc.id, idx + 1);
+            seen_constraint_ids.insert(dedup.clone());
+            dedup
+        };
+        hard_constraints.push(PacketConstraint {
+            id,
+            kind: ConstraintKind::Canon,
+            statement: hc.statement.clone(),
+            scope: "scene".to_string(),
+            source: canon_source.clone(),
+        });
+    }
+
+    let character_states = context
+        .scene
+        .characters
+        .iter()
+        .map(|c| PacketItem {
+            proposition_id: c.character_id.clone(),
+            text: format!(
+                "{} ({}): emotional_state={:?}, goals={:?}, status={:?}",
+                c.name, c.role, c.emotional_state, c.goals, c.status
+            ),
+            relevance: 100,
+            recency: 1,
+            source: canon_source.clone(),
+        })
+        .collect();
+
+    let open_threads = purpose
+        .active_threads
+        .iter()
+        .map(|t| PacketItem {
+            proposition_id: t.id.clone(),
+            text: format!("{} ({}): {}", t.name, t.kind, t.statement),
+            relevance: 80,
+            recency: 1,
+            source: plan_source.clone(),
+        })
+        .collect();
+
+    let prior_scene_tail = context
+        .novel
+        .previous_scene_tail
+        .as_ref()
+        .map(|tail| PacketItem {
+            proposition_id: tail.scene_id.clone(),
+            text: tail.excerpt.clone(),
+            relevance: 90,
+            recency: 1,
+            source: canon_source.clone(),
+        });
+
+    let research_evidence = research
+        .iter()
+        .map(|item| {
+            let src = PacketSource {
+                branch_id: branch_id.to_string(),
+                source_id: item.id.clone(),
+                revision_hash: dependencies.canon_snapshot_hash.clone(),
+            };
+            source_versions.push(src.clone());
+            PacketItem {
+                proposition_id: item.id.clone(),
+                text: item.summary.clone(),
+                relevance: 50,
+                recency: 1,
+                source: src,
+            }
+        })
+        .collect();
+
+    source_versions.sort();
+    source_versions.dedup();
+
+    let goal = purpose
+        .scene_summary
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| purpose.expected_beats.first().map(String::as_str))
+        .or(purpose.chapter_synopsis.as_deref())
+        .unwrap_or("Advance the planned scene beat")
+        .to_string();
+
+    let turn = purpose
+        .expected_beats
+        .last()
+        .map(String::as_str)
+        .or(purpose.scene_summary.as_deref())
+        .unwrap_or("Deliver the scene's narrative turn")
+        .to_string();
+
+    let participants = context
+        .scene
+        .characters
+        .iter()
+        .map(|c| PacketParticipant {
+            id: c.character_id.clone(),
+            display_name: c.name.clone(),
+            role: c.role.clone(),
+        })
+        .collect();
+
+    let entry_emotion = if pov_char.emotional_state.is_empty() {
+        "focused".to_string()
+    } else {
+        serde_json::to_string(&pov_char.emotional_state).unwrap_or_else(|_| "focused".to_string())
+    };
+
+    Ok(DraftingPacketV1 {
+        schema_version: "drafting_packet_v1".to_string(),
+        packet_id: preparation_id.to_string(),
+        project_id: project_id.to_string(),
+        branch_id: branch_id.to_string(),
+        run_id: None,
+        scene_id: target_scene.map(|s| s.id.clone()),
+        scene_revision: scene_version.map(|v| v.max(1).to_string()),
+        canon_snapshot_hash: dependencies.canon_snapshot_hash.clone(),
+        plan_revision: dependencies.plan_revision_hash.clone(),
+        source_versions,
+        scene_card: SceneCardV1 {
+            source: plan_source,
+            pov: PacketPov {
+                character_id: pov_char.character_id.clone(),
+                display_name: pov_char.name.clone(),
+                person: NarrativePerson::Third,
+                tense: NarrativeTense::Past,
+                source: canon_source,
+            },
+            goal: goal.clone(),
+            opposition: "Scene conflict".to_string(),
+            turn,
+            intended_outcome: goal,
+            value_shift: ValueShift {
+                axis: "narrative".to_string(),
+                before: "opening".to_string(),
+                after: "shifted".to_string(),
+            },
+            emotion: EmotionShift {
+                entry: entry_emotion,
+                exit: "changed".to_string(),
+            },
+            chapter: PacketChapter {
+                book_number: placement.book_number.max(1) as u32,
+                number: placement.chapter_number.max(1) as u32,
+                scene_index: placement.scene_order.unwrap_or(1).max(1) as u32,
+                planned_scene_count: None,
+                is_closer: false,
+            },
+            target_words: TargetWords {
+                min: 800,
+                preferred: 1_500,
+                max: 3_000,
+            },
+            location: PacketLocation {
+                id: context.scene.location.location_id.clone(),
+                name: context.scene.location.name.clone(),
+            },
+            story_clock: String::new(),
+            rating: purpose.content_rating.clone(),
+            tone: None,
+            participants,
+            required_beats: purpose.expected_beats.clone(),
+            promises_due: context
+                .novel
+                .narrative_promises_due
+                .iter()
+                .map(|p| p.description.clone())
+                .collect(),
+            prohibited_outcomes: Vec::new(),
+        },
+        hard_constraints,
+        continuity: PacketContinuity {
+            story_so_far: Vec::new(),
+            prior_scene_tail,
+            character_states,
+            knowledge_boundaries: Vec::new(),
+            facts: Vec::new(),
+            open_threads,
+        },
+        voice: PacketVoice::default(),
+        editorial_memory: EditorialMemory::default(),
+        craft_rubric: CraftRubric {
+            version: crate::drafting::RUBRIC_VERSION.to_string(),
+            text: crate::drafting::CRAFT_RUBRIC.to_string(),
+        },
+        research_evidence,
+        assembly: None,
+    })
 }

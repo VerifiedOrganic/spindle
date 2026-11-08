@@ -21,8 +21,8 @@ as unset. New generated profiles are opt-in:
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 40 | 39,592 | 81,791 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 70 | 67,904 | 150,318 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 41 | 41,704 | 84,050 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 71 | 70,016 | 152,577 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
 | revision | Branch/revision/history workflow | 32 | 20,661 | 53,896 |
 | worldbuilding | Worldbuilder + character creator | 43 | 40,080 | 61,514 |
