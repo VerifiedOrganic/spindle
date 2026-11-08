@@ -2,6 +2,7 @@ pub mod canonical_facts;
 pub mod context_bundle;
 pub mod model_output;
 pub mod models;
+pub mod planning;
 pub mod provenance;
 pub mod serial;
 pub mod style;
