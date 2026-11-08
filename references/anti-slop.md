@@ -394,8 +394,15 @@ time skips ("hours passed," "she thought about what he'd said").
 
 A scene that is *supposed* to be one unbroken dialogue (a deposition, a
 phone call, a locked-room argument) is not this shelf. A montage the genre
-asked for is not this shelf. The finding is the habit of never showing the
-character alone in their life.
+asked for is not this shelf. Grounded temporal transition beats ("Hours later,
+she was still paring apples at the kitchen table", "Two days passed in the
+saddle before they reached the ford", "Later, at the station, he bought a
+loaf and waited under the awning") that satisfy `temporal_coherence` are not
+this shelf either — `solitary_fade` only flags **ungrounded** time-skip fades
+where alone-time is emptied into a bare `"Hours passed."` / `"Days passed."` /
+`"Weeks passed."` / `"Months passed."` clause, `"spent the afternoon
+thinking..."`, or an unrooted jump straight to the next conversation.
+The finding is the habit of never showing the character alone in their life.
 
 **Rewrite from the beat.** When the POV is alone, root the reader in **place +
 body + mundane action** before or around the turn. Prefer concrete errands,

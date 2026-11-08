@@ -25,7 +25,8 @@ pub struct SpindleMcpServer {
 
 impl SpindleMcpServer {
     pub fn new(service: SpindleService) -> Self {
-        Self::with_serialization_state(service, Arc::new(ToolSerializationState::default()))
+        let serialization_state = ToolSerializationState::for_service(&service);
+        Self::with_serialization_state(service, serialization_state)
     }
 
     pub(crate) fn with_serialization_state(
@@ -43,12 +44,18 @@ impl SpindleMcpServer {
     }
 
     #[cfg(test)]
+    pub fn serialization_state(&self) -> &Arc<ToolSerializationState> {
+        self.tool_router.serialization_state()
+    }
+
+    #[cfg(test)]
     pub fn with_tool_profile(service: SpindleService, tool_profile: Option<String>) -> Self {
+        let serialization_state = ToolSerializationState::for_service(&service);
         Self {
             tool_router: ToolRouter::with_tool_profile_and_serialization(
                 service.clone(),
                 tool_profile,
-                Arc::new(ToolSerializationState::default()),
+                serialization_state,
             ),
             resource_router: ResourceRouter::new(service),
         }
@@ -60,10 +67,11 @@ impl SpindleMcpServer {
         service: SpindleService,
         cancellation_token: CancellationToken,
     ) -> StreamableHttpService<Self, LocalSessionManager> {
+        let serialization_state = ToolSerializationState::for_service(&service);
         Self::streamable_http_service_with_serialization_state(
             service,
             cancellation_token,
-            Arc::new(ToolSerializationState::default()),
+            serialization_state,
         )
     }
 
@@ -134,7 +142,7 @@ MCP clients without resource support: use the `list_skills`, `get_skill`, and `g
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         use futures_util::FutureExt;
         use std::panic::AssertUnwindSafe;
@@ -153,9 +161,12 @@ MCP clients without resource support: use the `list_skills`, `get_skill`, and `g
         // poisoned lock or half-applied state behind. Naming the panic still
         // beats hanging on it — the caller can log it, fail the step, and move
         // on instead of stalling the loop.
-        let call = self
-            .tool_router
-            .call_tool(&request.name, request.arguments.as_ref());
+        let internal_token = extract_internal_token(&context);
+        let call = self.tool_router.call_tool_with_internal_token(
+            &request.name,
+            request.arguments.as_ref(),
+            internal_token.as_deref(),
+        );
         match AssertUnwindSafe(call).catch_unwind().await {
             Ok(result) => result.map_err(error_data),
             Err(panic) => {
@@ -206,6 +217,32 @@ MCP clients without resource support: use the `list_skills`, `get_skill`, and `g
 
 fn error_data(error: anyhow::Error) -> McpError {
     McpError::internal_error(error.to_string(), None::<serde_json::Value>)
+}
+
+fn extract_internal_token(context: &RequestContext<RoleServer>) -> Option<String> {
+    let parts = context.extensions.get::<axum::http::request::Parts>()?;
+    if let Some(header) = parts
+        .headers
+        .get("x-spindle-internal-token")
+        .and_then(|v| v.to_str().ok())
+    {
+        let trimmed = header.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    let query = parts.uri.query()?;
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=')
+            && key == "internal_token"
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Best-effort message out of a caught panic payload. `panic!` produces either a
