@@ -639,6 +639,7 @@ mod generation;
 mod imports;
 mod narrative;
 mod planning;
+pub(crate) use planning::apply::resolve_operation as resolve_planning_operation;
 mod plans;
 mod projects;
 mod quantity;

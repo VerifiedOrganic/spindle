@@ -21,21 +21,23 @@ as unset. New generated profiles are opt-in:
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + setup | 45 | 49,511 | 208,654 |
-| workflow-authoring | Scene-writer + authoring-supervisor + setup | 70 | 73,580 | 291,770 |
-| workflow-import | Manuscript importer and source sync | 27 | 25,520 | 217,334 |
-| revision | Branch/revision/history workflow | 38 | 31,953 | 226,540 |
-| worldbuilding | Worldbuilder + character creator | 48 | 51,170 | 195,489 |
-| planning | Plot architect | 39 | 39,359 | 170,942 |
-| research | Researcher | 22 | 21,331 | 141,988 |
-| style | Editor core + style reference | 48 | 40,612 | 241,772 |
-| release | Editor + bible librarian | 65 | 57,121 | 223,646 |
-| setup | New-book setup reference | 16 | 17,952 | 131,036 |
+| workflow-write | Scene-writer core + setup | 45 | 50,064 | 103,725 |
+| workflow-authoring | Scene-writer + authoring-supervisor + setup | 70 | 74,469 | 160,027 |
+| workflow-import | Manuscript importer and source sync | 27 | 26,748 | 62,888 |
+| revision | Branch/revision/history workflow | 38 | 32,735 | 83,514 |
+| worldbuilding | Worldbuilder + character creator | 48 | 51,723 | 90,560 |
+| planning | Plot architect | 39 | 39,800 | 80,892 |
+| research | Researcher | 22 | 21,797 | 51,963 |
+| style | Editor core + style reference | 48 | 41,648 | 106,579 |
+| release | Editor + bible librarian | 65 | 57,699 | 118,742 |
+| setup | New-book setup reference | 16 | 18,393 | 40,986 |
 
 Every generated profile includes the shared entry core. These are **transitional
 closures over current long-form skills and schemas**, not the final canonical
 catalogs. The broad entry/core dependencies still contribute run, offload or
-release capabilities in some profiles. Their measured byte ceilings are explicit
+release capabilities in some profiles. Large context/analysis output schemas now load optionally through versioned
+[response contracts](tool-response-contracts.md); actual results are unchanged.
+Their measured byte ceilings are explicit
 in `tools/profile-budgets.json`; canonical target caps are unchanged and remain
 unmet. Lower tool counts alone do not establish lower full-schema bytes. Skill
 splitting, profile-aware loading metadata and canonical schema cleanup follow.

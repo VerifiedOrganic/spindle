@@ -115,3 +115,11 @@ changing the startup profile. New generated names include `workflow-write`,
 `research`, `style`, `release`, and `setup`. Existing names retain compatibility
 catalogs. Load workflows listed for the connected profile; reading a skill never
 enables missing tools. Unknown profile names are startup errors.
+
+
+Generated profiles may omit large output schemas from discovery; actual JSON
+results are unchanged. If a full result contract is needed, load `get_reference`
+with name `contracts/tools/v1` for the index or `contracts/tools/v1/<tool>` for a
+schema. Equivalent resources start at `bible://contracts/tools/v1`. Reading a
+contract does not enable its tool. Clients requiring full inline schemas can
+select `legacy-all` and reconnect to a primary serving that catalog.

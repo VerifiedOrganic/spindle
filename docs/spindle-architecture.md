@@ -95,7 +95,9 @@ Current audit findings:
   non-standard numeric `format` annotations (`uint`, `int32`, `float`, …) at
   the generation seam so strict JSON-Schema clients do not warn per field.
   Finalized schema lint, structural validation and transport discovery-byte
-  guards are described in `docs/tool-surface-guards.md`.
+  guards are described in `docs/tool-surface-guards.md`. Generated profiles
+  omit explicitly selected large output schemas; full typed response schemas
+  remain available through the v1 routes in `docs/tool-response-contracts.md`.
 
 The service layer currently lives under:
 
@@ -543,7 +545,8 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0041 | `model_call` telemetry ledger (`get_model_usage`) |
 | V0047 | `model_call` attribution columns (`scene_id`, `run_id`, `route`, `prompt_template_id`, `prompt_version`, `context_packet_hash`, `temperature`, `top_p`, `max_tokens`) |
 | V0048 | branch-scoped canon uniqueness, per-scene relationship delta ledger, and fact replacement links (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
-| V0049 | initial-planning sessions/proposals and reserved operation receipts (ADR 0004) |
+| V0049 | initial-planning sessions/proposals and operation receipt foundation (ADR 0004) |
+| V0050 | planning apply attempts, operation audit/output fields and deferred semantic-index refresh queue |
 
 ## Where to make changes
 
@@ -620,14 +623,37 @@ Run this sequence when you start a new implementation task.
   product locks, writing-packet digest, Phase 3 critic / revise loop).
   Scanner + rewrite-from-beats contracts: `spindle-core` `style/antislop/`.
 
-## Initial planning foundation (Phase A)
+## Initial planning foundation (Phases A–B)
 
 Core `planning` contracts define closed operations with typed existing/proposal
-references. `sqlite/service/planning.rs` delegates to transactional staging in
-`sqlite/repository/planning.rs`. V0049 adds sessions (including pre-project
-sessions), proposals and a reserved operation ledger. No model calls, MCP tools,
-creation/apply path or readiness claim ships in this phase. Reads and audited
-reject/supersede decisions are available to service callers; acceptance fails
-closed until atomic apply/receipt support lands. All gates remain human.
-See [ADR 0004](adr/0004-initial-planning-ratification.md); existing canon-delta and
-plan-amendment semantics remain unchanged.
+references. V0049 adds pre-project sessions, proposals and the operation ledger;
+V0050 adds apply attempt history, operation audit/output fields and a deferred
+search-index queue. `sqlite/service/planning/apply.rs` translates the allowlist
+through existing service methods. No planning model generation or MCP entry
+tools are exposed yet, and application success is never drafting readiness.
+
+Human acceptance preflights the complete selected dependency closure in a
+rollback-only application transaction, then commits one domain operation and
+its durable receipt at a time. Initial project/branch attachment shares its
+creation receipt's commit; root aliases preserve the initial book/chapter IDs.
+Interrupted retries reuse immutable receipts. Failed batches report their
+committed prefix, failed operation and not-reached suffix. Rejection and
+supersession cannot hide partially applied history. Snapshots protect reader
+contract, refs, target hashes and revisions. Verified approved writes advance
+later snapshots only when they match the transaction-local pre-write state;
+unrelated external edits remain stale. Acceptance rechecks active branch,
+visible IDs and persisted-prose guards. An active authoring run freezes roots
+and requires amendments for existing plans (including inherited or cached run plans), while missing future chapters may
+still be filled. Project-wide contract/allocation guards also respect runs on
+other branches. Active-run projection refresh remains a later integration step.
+
+`sqlite/pool/application.rs` pins reads to the writer inside this bounded async
+unit of work. Planning-used repository transactions nest through savepoints.
+Other writes wait on the application gate; cancellation rolls back before that
+gate is released. Semantic embedding work runs after commit, from a durable
+queue, and pending refresh counts remain visible if indexing fails.
+
+All gates remain human. Delegation activation, route generation, manifest/run
+validation and agent entry arrive in subsequent phases. See
+[ADR 0004](adr/0004-initial-planning-ratification.md); existing canon-delta and
+plan-amendment classes and human ratification policies remain unchanged.
