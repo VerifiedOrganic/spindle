@@ -25,6 +25,35 @@ const CHAPTER_BRIEFING_RECENT_LIMIT: usize = 3;
 const CHAPTER_BRIEFING_TOKEN_BUDGET: usize = 12_000;
 const SCENE_CONTEXT_TOKEN_BUDGET: usize = 32_000;
 
+/// Stable prompt template identifier for the harness host-embedded scene drafter prompt.
+pub const HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID: &str = "harness.scene_draft_host";
+/// Stable prompt template version for `HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID`.
+pub const HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION: &str = "v1";
+
+/// Stable prompt template identifier for the harness MCP-pull scene drafter prompt.
+pub const HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID: &str = "harness.scene_draft_mcp_pull";
+/// Stable prompt template version for `HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID`.
+pub const HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_VERSION: &str = "v1";
+
+/// Stable prompt template identifier for the harness chapter summary prompt.
+pub const HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID: &str = "harness.chapter_summary";
+/// Stable prompt template version for `HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID`.
+pub const HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION: &str = "v1";
+
+fn infer_authoring_run_id(state_path: &Path) -> Option<String> {
+    let run_dir = state_path.parent()?;
+    let runs_parent = run_dir.parent()?;
+    if runs_parent.file_name()?.to_str()? == "authoring_runs" {
+        run_dir.file_name()?.to_str().map(ToString::to_string)
+    } else {
+        None
+    }
+}
+
+fn compute_prompt_packet_hash(prompt: &str) -> String {
+    format!("{:x}", Sha256::digest(prompt.as_bytes()))
+}
+
 pub struct ExecutionResult {
     pub state: HarnessState,
     pub message: String,
@@ -247,6 +276,9 @@ async fn draft_scene(
 
     if artifact.save_draft_output.is_none() {
         ensure_scene_package_ready(
+            state_path,
+            state,
+            &draft_route,
             client,
             artifact_store,
             &scene,
@@ -916,6 +948,160 @@ async fn revise_scene(
     ))
 }
 
+fn content_rating_rank(rating: &spindle_core::models::ContentRating) -> u8 {
+    match rating {
+        spindle_core::models::ContentRating::Explicit => 3,
+        spindle_core::models::ContentRating::Mature => 2,
+        spindle_core::models::ContentRating::Teen => 1,
+        spindle_core::models::ContentRating::General => 0,
+    }
+}
+
+pub fn max_chapter_content_rating(
+    chapter: &crate::state::ChapterState,
+) -> Option<spindle_core::models::ContentRating> {
+    chapter
+        .scenes
+        .iter()
+        .max_by_key(|scene| content_rating_rank(&scene.content_rating))
+        .map(|scene| scene.content_rating.clone())
+}
+
+fn is_summary_rating_clearance_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}").to_ascii_lowercase();
+    text.contains("not cleared for rating") || text.contains("no model route resolves for `draft`")
+}
+
+fn dedup_preserve_order(items: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for item in items {
+        let normalized = item.trim().to_string();
+        if normalized.is_empty() || !seen.insert(normalized.clone()) {
+            continue;
+        }
+        deduped.push(normalized);
+    }
+    deduped
+}
+
+fn synthesize_deterministic_summary_package(
+    artifact_store: &ArtifactStore,
+    chapter: &crate::state::ChapterState,
+) -> Result<GeneratedChapterSummaryPackage> {
+    let mut scene_summaries = Vec::new();
+    let mut key_events = Vec::new();
+    let mut character_changes = Vec::new();
+    let mut relationship_shifts = Vec::new();
+    let mut arc_advances = Vec::new();
+    let mut promise_events = Vec::new();
+
+    for scene in &chapter.scenes {
+        let scene_prefix = format!("Scene {}", scene.scene_order);
+        let loaded_package = scene
+            .scene_artifact_path
+            .as_ref()
+            .and_then(|path| {
+                artifact_store
+                    .load_json::<SceneGenerationArtifact>(path)
+                    .ok()
+            })
+            .and_then(|artifact| artifact.package);
+
+        if let Some(package) = loaded_package {
+            if !package.summary.trim().is_empty() {
+                scene_summaries.push(format!("{scene_prefix}: {}", package.summary.trim()));
+            }
+            for beat in &package.beats {
+                if !beat.summary.trim().is_empty() {
+                    let beat_label = beat.beat_type.trim();
+                    let entry = if beat_label.is_empty() {
+                        format!("{scene_prefix}: {}", beat.summary.trim())
+                    } else {
+                        format!("{scene_prefix} [{beat_label}]: {}", beat.summary.trim())
+                    };
+                    if beat_label.eq_ignore_ascii_case("promise")
+                        || beat_label.eq_ignore_ascii_case("narrative_promise")
+                    {
+                        promise_events.push(entry.clone());
+                    }
+                    key_events.push(entry);
+                }
+            }
+            for fact in &package.canonical_facts {
+                let value = fact
+                    .value
+                    .as_deref()
+                    .or(fact.value_text.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        fact.value_json
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .filter(|value| !value.is_empty())
+                    });
+                let label = fact
+                    .key
+                    .as_deref()
+                    .or(fact.predicate.as_deref())
+                    .unwrap_or("canonical fact")
+                    .trim();
+                if let Some(value) = value {
+                    key_events.push(format!("{scene_prefix}: {label} = {value}"));
+                }
+            }
+            for state_change in &package.character_states {
+                if let Some(summary) = state_change.changes.source_summary.as_deref()
+                    && !summary.trim().is_empty()
+                {
+                    character_changes.push(format!(
+                        "{scene_prefix}: {} - {}",
+                        state_change.character_id,
+                        summary.trim()
+                    ));
+                }
+            }
+            for relationship in &package.relationship_updates {
+                relationship_shifts.push(format!(
+                    "{scene_prefix}: {} <-> {} trust {:+}, tension {:+}: {}",
+                    relationship.character_a_id,
+                    relationship.character_b_id,
+                    relationship.trust_delta,
+                    relationship.tension_delta,
+                    relationship.reason.trim()
+                ));
+            }
+            for note in &package.continuity_notes {
+                if !note.trim().is_empty() {
+                    arc_advances.push(format!("{scene_prefix}: {}", note.trim()));
+                }
+            }
+        }
+    }
+
+    if key_events.is_empty() {
+        key_events = scene_summaries.clone();
+    }
+    let summary = if scene_summaries.is_empty() {
+        chapter.synopsis.clone()
+    } else {
+        format!("{} {}", chapter.synopsis.trim(), scene_summaries.join(" "))
+            .trim()
+            .to_string()
+    };
+
+    Ok(GeneratedChapterSummaryPackage {
+        summary,
+        key_events: dedup_preserve_order(key_events),
+        character_changes: dedup_preserve_order(character_changes),
+        relationship_shifts: dedup_preserve_order(relationship_shifts),
+        arc_advances: dedup_preserve_order(arc_advances),
+        promise_events: dedup_preserve_order(promise_events),
+    })
+}
+
 async fn save_chapter_summary(
     state_path: &Path,
     state: &mut HarnessState,
@@ -932,16 +1118,52 @@ async fn save_chapter_summary(
         .summary_artifact_path
         .clone()
         .context("summary artifact path missing after initialization")?;
-    let draft_route = client.resolve_draft_route(None).await?;
-    let mut artifact = load_or_create_summary_artifact(
-        client,
-        artifact_store,
-        &draft_route,
-        state,
-        &chapter,
-        &artifact_path,
-    )
-    .await?;
+    let chapter_rating = max_chapter_content_rating(&chapter);
+    let chapter_rating_str = chapter_rating
+        .as_ref()
+        .map(|rating| rating.as_str().to_string());
+
+    let mut skip_reason: Option<String> = None;
+    let mut artifact = match client.resolve_draft_route(chapter_rating.clone()).await {
+        Ok(draft_route) => {
+            load_or_create_summary_artifact(
+                client,
+                artifact_store,
+                &draft_route,
+                state,
+                &chapter,
+                &artifact_path,
+            )
+            .await?
+        }
+        Err(error) if is_summary_rating_clearance_error(&error) => {
+            let reason = format!("chapter summary model call SKIPPED: {error}");
+            skip_reason = Some(reason.clone());
+            let mut skipped_artifact = artifact_store
+                .load_json::<ChapterSummaryArtifact>(&artifact_path)
+                .unwrap_or_else(|_| {
+                    ChapterSummaryArtifact::new(
+                        chapter_number,
+                        "draft".to_string(),
+                        "rating-clearance-skip".to_string(),
+                        reason.clone(),
+                    )
+                    .with_rating(chapter_rating_str.clone())
+                });
+            skipped_artifact.rating = chapter_rating_str.clone();
+            skipped_artifact.adapter_kind = Some("skipped".to_string());
+            skipped_artifact.model_name = Some("rating-clearance-skip".to_string());
+            skipped_artifact.truncated = false;
+            skipped_artifact.last_parse_error = Some(reason);
+            skipped_artifact.package = Some(synthesize_deterministic_summary_package(
+                artifact_store,
+                &chapter,
+            )?);
+            artifact_store.save_json(&artifact_path, &skipped_artifact)?;
+            skipped_artifact
+        }
+        Err(error) => return Err(error),
+    };
 
     // Stale-artifact guard (defect item 2, CLI mirror of the MCP executor): a
     // prior save_summary_output is idempotency proof only while the
@@ -962,12 +1184,46 @@ async fn save_chapter_summary(
             artifact.clear_generation();
             artifact.save_summary_output = None;
             artifact.last_parse_error = None;
+            if skip_reason.is_some() {
+                artifact.adapter_kind = Some("skipped".to_string());
+                artifact.model_name = Some("rating-clearance-skip".to_string());
+                artifact.truncated = false;
+                artifact.package = Some(synthesize_deterministic_summary_package(
+                    artifact_store,
+                    &chapter,
+                )?);
+            }
             artifact_store.save_json(&artifact_path, &artifact)?;
         }
     }
 
     if artifact.save_summary_output.is_none() {
-        ensure_summary_package_ready(client, artifact_store, &mut artifact, &artifact_path).await?;
+        if let Err(error) = ensure_summary_package_ready(
+            state_path,
+            state,
+            client,
+            artifact_store,
+            &mut artifact,
+            &artifact_path,
+        )
+        .await
+        {
+            if is_summary_rating_clearance_error(&error) {
+                let reason = format!("chapter summary model call SKIPPED: {error}");
+                skip_reason = Some(reason.clone());
+                artifact.adapter_kind = Some("skipped".to_string());
+                artifact.model_name = Some("rating-clearance-skip".to_string());
+                artifact.truncated = false;
+                artifact.last_parse_error = Some(reason);
+                artifact.package = Some(synthesize_deterministic_summary_package(
+                    artifact_store,
+                    &chapter,
+                )?);
+                artifact_store.save_json(&artifact_path, &artifact)?;
+            } else {
+                return Err(error);
+            }
+        }
         let package = artifact
             .package
             .as_ref()
@@ -994,9 +1250,15 @@ async fn save_chapter_summary(
 
     state.chapters[chapter_index].summary_saved = true;
     state.save(state_path)?;
-    Ok(format!(
-        "Saved chapter summary for chapter {chapter_number}"
-    ))
+    if let Some(reason) = skip_reason {
+        Ok(format!(
+            "Skipped model chapter summary for chapter {chapter_number} ({reason}); saved deterministic summary"
+        ))
+    } else {
+        Ok(format!(
+            "Saved chapter summary for chapter {chapter_number}"
+        ))
+    }
 }
 
 async fn run_checkpoint(
@@ -1256,7 +1518,11 @@ async fn load_or_create_scene_artifact(
     Ok(artifact)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ensure_scene_package_ready(
+    state_path: &Path,
+    state: &HarnessState,
+    draft_route: &DraftRouteBinding,
     client: &McpHarnessClient,
     artifact_store: &ArtifactStore,
     scene: &crate::state::SceneState,
@@ -1267,6 +1533,20 @@ async fn ensure_scene_package_ready(
         return Ok(());
     }
 
+    let (prompt_template_id, prompt_version) = if draft_route.caller_should_send_brief {
+        (
+            HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID,
+            HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_VERSION,
+        )
+    } else {
+        (
+            HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID,
+            HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION,
+        )
+    };
+    let run_id = infer_authoring_run_id(state_path);
+    let context_packet_hash = compute_prompt_packet_hash(&artifact.prompt);
+
     for _ in 0..MAX_GENERATION_ROUNDS {
         if artifact.completion_fragments.is_empty() {
             let response = client
@@ -1275,6 +1555,14 @@ async fn ensure_scene_package_ready(
                     test_prompt: Some(artifact.prompt.clone()),
                     route: Some(artifact.route_name.clone()),
                     rating: artifact.rating.clone(),
+                    project_id: Some(state.project_id.clone()),
+                    book_id: None,
+                    chapter_id: None,
+                    scene_id: scene.scene_id.clone(),
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(prompt_template_id.to_string()),
+                    prompt_version: Some(prompt_version.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("draft generation failed on initial call")?;
@@ -1300,10 +1588,14 @@ async fn ensure_scene_package_ready(
                     original_prompt: artifact.prompt.clone(),
                     prior_output: artifact.combined_output(),
                     rating: artifact.rating.clone(),
-                    project_id: None,
+                    project_id: Some(state.project_id.clone()),
                     book_id: None,
                     chapter_id: None,
-                    scene_id: None,
+                    scene_id: scene.scene_id.clone(),
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(prompt_template_id.to_string()),
+                    prompt_version: Some(prompt_version.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("draft generation continuation failed")?;
@@ -1362,10 +1654,17 @@ async fn load_or_create_summary_artifact(
     chapter: &crate::state::ChapterState,
     artifact_path: &str,
 ) -> Result<ChapterSummaryArtifact> {
+    let chapter_rating = draft_route
+        .rating
+        .clone()
+        .or_else(|| max_chapter_content_rating(chapter).map(|rating| rating.as_str().to_string()));
     let full_path = artifact_store.root().join(artifact_path);
     if full_path.exists() {
-        let artifact: ChapterSummaryArtifact = artifact_store.load_json(artifact_path)?;
+        let mut artifact: ChapterSummaryArtifact = artifact_store.load_json(artifact_path)?;
         validate_summary_artifact_identity(&artifact, chapter.chapter_number)?;
+        if artifact.rating.is_none() {
+            artifact.rating = chapter_rating;
+        }
         return Ok(artifact);
     }
 
@@ -1375,12 +1674,15 @@ async fn load_or_create_summary_artifact(
         draft_route.route_name.clone(),
         draft_route.agent_id.clone(),
         prompt,
-    );
+    )
+    .with_rating(chapter_rating);
     artifact_store.save_json(artifact_path, &artifact)?;
     Ok(artifact)
 }
 
 async fn ensure_summary_package_ready(
+    state_path: &Path,
+    state: &HarnessState,
     client: &McpHarnessClient,
     artifact_store: &ArtifactStore,
     artifact: &mut ChapterSummaryArtifact,
@@ -1390,6 +1692,12 @@ async fn ensure_summary_package_ready(
         return Ok(());
     }
 
+    let run_id = artifact
+        .run_id
+        .clone()
+        .or_else(|| infer_authoring_run_id(state_path));
+    let context_packet_hash = compute_prompt_packet_hash(&artifact.prompt);
+
     for _ in 0..MAX_GENERATION_ROUNDS {
         if artifact.completion_fragments.is_empty() {
             let response = client
@@ -1397,7 +1705,17 @@ async fn ensure_summary_package_ready(
                     agent_id: artifact.agent_id.clone(),
                     test_prompt: Some(artifact.prompt.clone()),
                     route: Some(artifact.route_name.clone()),
-                    rating: None,
+                    rating: artifact.rating.clone(),
+                    project_id: Some(state.project_id.clone()),
+                    book_id: None,
+                    chapter_id: None,
+                    scene_id: None,
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(
+                        HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID.to_string(),
+                    ),
+                    prompt_version: Some(HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("summary generation failed on initial call")?;
@@ -1419,11 +1737,17 @@ async fn ensure_summary_package_ready(
                     route: artifact.route_name.clone(),
                     original_prompt: artifact.prompt.clone(),
                     prior_output: artifact.combined_output(),
-                    rating: None,
-                    project_id: None,
+                    rating: artifact.rating.clone(),
+                    project_id: Some(state.project_id.clone()),
                     book_id: None,
                     chapter_id: None,
                     scene_id: None,
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(
+                        HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID.to_string(),
+                    ),
+                    prompt_version: Some(HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("summary generation continuation failed")?;
@@ -1526,7 +1850,7 @@ async fn build_scene_prompt(
             format: Some(ContextFormat::Json),
             budget_tokens: Some(SCENE_CONTEXT_TOKEN_BUDGET),
             token_budget: Some(SCENE_CONTEXT_TOKEN_BUDGET),
-            sections: None,
+            sections: Some(host_path_scene_context_sections()),
         })
         .await?;
     let scene_writer_skill = client
@@ -1629,7 +1953,12 @@ fn assemble_host_scene_prompt(
         "target_tone": scene.tone,
         "source_path": scene.source_path,
     }))?;
-    let scene_context_json = serde_json::to_string_pretty(&scene_context)?;
+    let mut envelope_for_prompt = scene_context.clone();
+    if !scene_writer_skill.trim().is_empty() {
+        envelope_for_prompt.standards.clear();
+    }
+    let scene_context_json = serde_json::to_string_pretty(&envelope_for_prompt)?;
+    let hard_constraints_section = format_hard_constraints_section(&scene_context.hard_constraints);
     let packet_section = {
         use spindle_core::style::antislop::{
             WritingPacketHooks, render_compact_shelf_digest_markdown,
@@ -1680,6 +2009,7 @@ fn assemble_host_scene_prompt(
             "{threads_section}",
             "Scene manifest:\n{manifest_json}\n\n",
             "{research_section}",
+            "{hard_constraints_section}",
             "Chapter briefing markdown:\n{briefing_markdown}\n\n",
             "Scene context envelope:\n{scene_context_json}\n\n",
             "Scene-writer skill guidance:\n{scene_writer_skill}\n"
@@ -1689,10 +2019,40 @@ fn assemble_host_scene_prompt(
         threads_section = threads_section,
         manifest_json = manifest_json,
         research_section = research_section,
+        hard_constraints_section = hard_constraints_section,
         briefing_markdown = briefing_markdown,
         scene_context_json = scene_context_json,
         scene_writer_skill = scene_writer_skill,
     ))
+}
+
+/// Section names the host-assembled prompt path requests from
+/// `get_scene_context`. Requesting `"novel"` and `"scene"` explicitly keeps all
+/// novel and scene layers (plus non-truncatable `hard_constraints` and writing
+/// packet hooks) while omitting `"standards"`, because
+/// [`assemble_host_scene_prompt`] already appends the `scene-writer` skill text
+/// directly.
+fn host_path_scene_context_sections() -> Vec<String> {
+    vec!["novel".to_string(), "scene".to_string()]
+}
+
+fn format_hard_constraints_section(
+    hard_constraints: &[spindle_core::models::HardConstraint],
+) -> String {
+    if hard_constraints.is_empty() {
+        return String::new();
+    }
+    let mut section = String::from("Hard constraints (non-truncatable):\n");
+    for constraint in hard_constraints {
+        let statement = constraint.statement.trim();
+        if statement.is_empty() {
+            section.push_str(&format!("- **{}**\n", constraint.id));
+        } else {
+            section.push_str(&format!("- **{}**: {}\n", constraint.id, statement));
+        }
+    }
+    section.push('\n');
+    section
 }
 
 fn build_scene_mcp_pull_prompt(
@@ -2426,6 +2786,7 @@ mod tests {
         promises_due: Vec<NarrativePromiseDueSummary>,
     ) -> SceneContextEnvelope {
         SceneContextEnvelope {
+            hard_constraints: Vec::new(),
             standards: "house standards".to_string(),
             novel: SceneContextNovelLayer {
                 reader_contract: ReaderContract {
@@ -2945,5 +3306,193 @@ mod tests {
             build_scene_mcp_pull_prompt(&state, &chapter, &scene, None, &threads, &promises)
                 .expect("pull prompt still assembles after a failed fetch");
         assert!(!prompt.contains("## Threads to advance"));
+    }
+
+    #[test]
+    fn host_prompt_carries_hard_constraints_untruncated_when_briefing_compacts_them() {
+        use spindle_core::models::HardConstraint;
+
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let mut envelope = sample_envelope(Vec::new(), Vec::new());
+        let secret_statement = format!(
+            "Fact: Dave skimmed the Bellagio vault ({})",
+            "detail-".repeat(40)
+        );
+        let time_statement = "Day 14, 02:15 AM — 3 hours after the pit shift changed.".to_string();
+        let wealth_statement =
+            "Current tracked quantities:\n- character:dave bankroll: destitute, 12 USD".to_string();
+        envelope.hard_constraints = vec![
+            HardConstraint {
+                id: "[IN-WORLD TIME]".to_string(),
+                statement: time_statement.clone(),
+            },
+            HardConstraint {
+                id: "[WEALTH/STATE]".to_string(),
+                statement: wealth_statement.clone(),
+            },
+            HardConstraint {
+                id: "[SECRETS IN PLAY]".to_string(),
+                statement: secret_statement.clone(),
+            },
+        ];
+
+        // Simulate a budget-pressured chapter briefing whose hard constraints were
+        // compacted/omitted.
+        let truncated_briefing = "# Chapter Briefing\n\n## Hard constraints\n- **briefing_constraints_compacted**: Constraint statements omitted; increase budget_tokens for full details.";
+        let prompt = assemble_host_scene_prompt(
+            &state,
+            &chapter,
+            &scene,
+            truncated_briefing,
+            &envelope,
+            "scene-writer skill text",
+            String::new(),
+        )
+        .expect("host prompt assembles");
+
+        assert!(prompt.contains("Hard constraints (non-truncatable):"));
+        assert!(prompt.contains("[IN-WORLD TIME]"));
+        assert!(prompt.contains(&time_statement));
+        assert!(prompt.contains("[WEALTH/STATE]"));
+        assert!(prompt.contains(&wealth_statement));
+        assert!(prompt.contains("[SECRETS IN PLAY]"));
+        assert!(prompt.contains(&secret_statement));
+    }
+
+    #[test]
+    fn host_path_scene_context_sections_excludes_standards_and_prevents_duplicate_skill() {
+        let sections = host_path_scene_context_sections();
+        let input = GetSceneContextInput {
+            project_id: "project:test".to_string(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            character_ids: vec!["character:dave".to_string()],
+            max_character_count: None,
+            location_id: "location:vegas-strip".to_string(),
+            format: Some(ContextFormat::Json),
+            budget_tokens: None,
+            token_budget: None,
+            sections: Some(sections),
+        };
+        assert!(
+            !input.wants_standards(),
+            "host-path get_scene_context must not request standards"
+        );
+        assert!(input.wants_novel_section("world_rules"));
+        assert!(input.wants_novel_section("narrative_promises_due"));
+        assert!(input.wants_scene_section("characters"));
+        assert!(input.wants_scene_section("relationships"));
+
+        let state = sample_state();
+        let chapter = sample_chapter();
+        let scene = sample_scene();
+        let mut envelope = sample_envelope(Vec::new(), Vec::new());
+        let skill_marker = "UNIQUE_SCENE_WRITER_SKILL_BODY_MARKER";
+        envelope.standards = format!("header\n\n{skill_marker}");
+
+        let prompt = assemble_host_scene_prompt(
+            &state,
+            &chapter,
+            &scene,
+            "chapter briefing markdown",
+            &envelope,
+            skill_marker,
+            String::new(),
+        )
+        .expect("host prompt assembles");
+
+        assert_eq!(
+            prompt.matches(skill_marker).count(),
+            1,
+            "scene-writer skill text must appear at most once in the drafter prompt"
+        );
+    }
+
+    #[test]
+    fn max_chapter_content_rating_picks_strictest_scene_rating() {
+        let mut chapter = sample_chapter();
+        let mut s1 = sample_scene();
+        s1.scene_order = 1;
+        s1.content_rating = ContentRating::General;
+        let mut s2 = sample_scene();
+        s2.scene_order = 2;
+        s2.content_rating = ContentRating::Explicit;
+        let mut s3 = sample_scene();
+        s3.scene_order = 3;
+        s3.content_rating = ContentRating::Mature;
+        chapter.scenes = vec![s1, s2, s3];
+
+        assert_eq!(
+            max_chapter_content_rating(&chapter),
+            Some(ContentRating::Explicit)
+        );
+    }
+
+    #[test]
+    fn deterministic_summary_fallback_synthesizes_from_non_prose_when_rating_not_cleared() {
+        let dir = std::env::temp_dir().join(format!(
+            "spindle-harness-summary-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = ArtifactStore::new(dir.clone());
+        let mut chapter = sample_chapter();
+        let mut scene1 = sample_scene();
+        scene1.scene_order = 1;
+        scene1.content_rating = ContentRating::Explicit;
+        let rel_path = ArtifactStore::scene_relative_path(1, 1);
+        scene1.scene_artifact_path = Some(rel_path.clone());
+
+        let sensitive_prose = "SENSITIVE_EXPLICIT_PROSE_NEVER_SENT_TO_UNCLEARED_MODEL";
+        let mut scene_artifact = SceneGenerationArtifact::new(
+            1,
+            1,
+            "draft".to_string(),
+            "explicit-agent".to_string(),
+            Some("explicit".to_string()),
+            "prompt".to_string(),
+        );
+        scene_artifact.package = Some(crate::artifacts::GeneratedScenePackage {
+            full_text: sensitive_prose.to_string(),
+            summary: "Dave reveals the ledger in the penthouse.".to_string(),
+            tone: Some("tense".to_string()),
+            character_states: Vec::new(),
+            canonical_facts: Vec::new(),
+            relationship_updates: Vec::new(),
+            beats: vec![spindle_core::models::AnnotatedBeatInput {
+                beat_type: "reveal".to_string(),
+                summary: "The ledger names the casino owner.".to_string(),
+            }],
+            continuity_notes: vec!["The ledger stays in Dave's coat.".to_string()],
+        });
+        store.save_json(&rel_path, &scene_artifact).unwrap();
+        chapter.scenes = vec![scene1];
+
+        let clearance_err = anyhow::anyhow!(
+            "route `draft` resolved to agent `default-draft`, which is not cleared for rating `explicit`"
+        );
+        assert!(is_summary_rating_clearance_error(&clearance_err));
+
+        let package = synthesize_deterministic_summary_package(&store, &chapter).unwrap();
+        assert!(package.summary.contains("Dave reveals the ledger"));
+        assert!(!package.summary.contains(sensitive_prose));
+        assert!(
+            package
+                .key_events
+                .iter()
+                .all(|event| !event.contains(sensitive_prose))
+        );
+        assert_eq!(
+            package.arc_advances,
+            vec!["Scene 1: The ledger stays in Dave's coat.".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

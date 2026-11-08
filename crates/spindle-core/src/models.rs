@@ -5719,7 +5719,7 @@ pub struct AgentRoutingConfigOutput {
     pub rules: Vec<AgentRoutingRuleSummary>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TestAgentInput {
     pub agent_id: String,
     pub test_prompt: Option<String>,
@@ -5733,6 +5733,22 @@ pub struct TestAgentInput {
     /// routes, especially explicit overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_packet_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -5756,7 +5772,7 @@ pub struct TestAgentOutput {
     pub generation_output_sha256: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ContinueGenerationInput {
     /// The route name used for the original generation (e.g. "draft").
     pub route: String,
@@ -5791,6 +5807,18 @@ pub struct ContinueGenerationInput {
     /// to the drafting agent for richer bootstrap signaling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene_id: Option<String>,
+    /// Optional authoring run id for telemetry attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Optional prompt template identifier override for telemetry attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_template_id: Option<String>,
+    /// Optional prompt template version override for telemetry attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    /// Optional SHA-256 hex digest of the assembled context packet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_packet_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6865,6 +6893,15 @@ pub struct AuthoringStatusCheckpoint {
     /// Additive, serde-default so pre-reader-sim clients ignore it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reader_sim_engagement: Vec<ReaderSimEngagementSummary>,
+    /// Sampled dual-persona review status read from the checkpoint report
+    /// artifact (`complete`, `pending_manual_review`, or
+    /// `pending_dual_persona_review`). Additive, serde-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_review_status: Option<String>,
+    /// Number of sampled dual-persona review outputs persisted in the
+    /// checkpoint report artifact. Additive, serde-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_review_count: Option<usize>,
 }
 
 /// A compact per-chapter reader-sim engagement summary surfaced on

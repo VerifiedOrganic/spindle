@@ -1,0 +1,2699 @@
+{
+  "schema_version": 1,
+  "suite_id": "spindle.prose_judge.v1",
+  "description": "Fixed suite of 30 synthetic scene briefs across 6 projects, 6 genres, 3 POV modes, and 5 scene types (action, dialogue-heavy, quiet-interior, reveal, chapter-closer), each with full Spindle drafter context.",
+  "scene_types": [
+    "action",
+    "dialogue-heavy",
+    "quiet-interior",
+    "reveal",
+    "chapter-closer"
+  ],
+  "briefs": [
+    {
+      "id": "PJ01",
+      "name": "The toll-gate rope cut",
+      "project_id": "proj_river_road",
+      "project_name": "River-Road Ledger",
+      "genre": "fantasy",
+      "scene_type": "action",
+      "pov": {
+        "character": "Mara",
+        "perspective": "third_limited",
+        "voice_profile": "Terse, literal, river-practical; measures danger in rope strain, current speed, and copper coins."
+      },
+      "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+      "target": [
+        1,
+        5,
+        1
+      ],
+      "scene_purpose": "Mara spots the ferryman's daughter's brass compass on the gate sergeant's belt during a winch jam and must cut the tow-rope to seize it, sacrificing her dry salt-pack.",
+      "tension_turn": "Routine barge locking turns into an irreversible theft under river-surge pressure.",
+      "task": "At the North Lock, let Mara spot the missing brass compass on the sergeant's belt as the lock winch jams, and force her to sacrifice her salt-pack to recover it.",
+      "criteria": [
+        "Recognizes the brass compass as the ferryman's daughter's property from Chapter 1.",
+        "Sacrifices the salt-pack in the lock wash as the material cost of seizing the compass.",
+        "Keeps Mara's voice clipped and literal during physical action."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Mara promised the ferryman she would return his daughter's brass compass."
+        },
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Mara traded her blanket for passage and kept one dry salt-pack."
+        },
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "At dusk by North Lock, Ivo spotted a chipped brass compass on the gate sergeant's belt."
+        }
+      ],
+      "rules": [
+        [
+          "Lock forfeiture",
+          "Any cargo dropped into the sluice wash belongs to the lock-house by river law."
+        ]
+      ],
+      "promises": [
+        {
+          "description": "Return the ferryman's daughter's brass compass.",
+          "planted": [
+            1,
+            1
+          ],
+          "planned": [
+            1,
+            8
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "North Lock Sluice",
+          "kind": "infrastructure",
+          "summary": "Narrow stone lock chamber with rusted iron winches and slick timber catwalks."
+        },
+        "in_world_time": {
+          "day": 4,
+          "time_of_day": "dusk",
+          "anchor_note": "Immediately after Ch 1.4 evening arrival at North Lock; rain beginning."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 4 dusk at North Lock Sluice; rain-slick catwalk."
+          },
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Mara carries one dry salt-pack (worth 4 coppers) and zero coin; left boot heel is split."
+          },
+          {
+            "id": "PROMISE DUE",
+            "statement": "Return the ferryman's daughter's brass compass (planted Ch 1.1)."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Mara",
+            "role": "protagonist",
+            "current_state": "Cold, carrying the last dry salt-pack, split left boot.",
+            "voice": "Short, concrete sentences; never ornamental.",
+            "knows": [
+              "The compass has a chipped glass face and belongs to the ferryman's daughter."
+            ],
+            "does_not_know": [
+              "Who sold the compass to the gate sergeant."
+            ]
+          },
+          {
+            "name": "Ivo",
+            "role": "companion",
+            "current_state": "Holding the stern pole on the skiff below.",
+            "voice": "Chatty, theatrical excuses under stress.",
+            "knows": [
+              "Spotted the brass compass on the guard's belt ten minutes ago."
+            ],
+            "does_not_know": [
+              "That Mara is about to cut the tow-line."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Ivo tapped the wet gunwale twice with his pole. 'Belt hook, left hip,' he murmured. 'Don't look all at once.'",
+        "context_markdown": "# Scene Context — River-Road Ledger (PJ01: The toll-gate rope cut)\n\n## Current Placement\n- Project: River-Road Ledger (`proj_river_road`)\n- Genre: fantasy\n- Target: Book 1, Chapter 5, Scene 1\n- Scene Type: action\n- POV: Mara (third_limited)\n- Voice Profile: Terse, literal, river-practical; measures danger in rope strain, current speed, and copper coins.\n\n## Reader Contract\n- Promise: An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.\n\n## Scene Plan & Purpose\n- Scene Purpose: Mara spots the ferryman's daughter's brass compass on the gate sergeant's belt during a winch jam and must cut the tow-rope to seize it, sacrificing her dry salt-pack.\n- Required Dramatic Turn: Routine barge locking turns into an irreversible theft under river-surge pressure.\n- Drafting Task: At the North Lock, let Mara spot the missing brass compass on the sergeant's belt as the lock winch jams, and force her to sacrifice her salt-pack to recover it.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 4, dusk (Immediately after Ch 1.4 evening arrival at North Lock; rain beginning.) at North Lock Sluice.\n- **[LOCATION]**: North Lock Sluice (infrastructure) — Narrow stone lock chamber with rusted iron winches and slick timber catwalks.\n- **[WEALTH/STATE]**: Mara carries one dry salt-pack (worth 4 coppers) and zero coin; left boot heel is split.\n- **[PROMISE DUE]**: Return the ferryman's daughter's brass compass (planted Ch 1.1).\n- **[WORLD RULE: Lock forfeiture]**: Any cargo dropped into the sluice wash belongs to the lock-house by river law.\n\n## Characters Present (Subject Snapshots)\n- **Mara** (protagonist): Cold, carrying the last dry salt-pack, split left boot. | Voice: Short, concrete sentences; never ornamental. | Knows: The compass has a chipped glass face and belongs to the ferryman's daughter. | Withheld/Does NOT know: Who sold the compass to the gate sergeant.\n- **Ivo** (companion): Holding the stern pole on the skiff below. | Voice: Chatty, theatrical excuses under stress. | Knows: Spotted the brass compass on the guard's belt ten minutes ago. | Withheld/Does NOT know: That Mara is about to cut the tow-line.\n\n## Recent Story History\n- Book 1 Ch 1: Mara promised the ferryman she would return his daughter's brass compass.\n- Book 1 Ch 3: Mara traded her blanket for passage and kept one dry salt-pack.\n- Book 1 Ch 4: At dusk by North Lock, Ivo spotted a chipped brass compass on the gate sergeant's belt.\n\n## Previous Scene (closing)\nIvo tapped the wet gunwale twice with his pole. 'Belt hook, left hip,' he murmured. 'Don't look all at once.'\n\n## Open Promises in Play\n- Return the ferryman's daughter's brass compass. (planted B1C1)\n\n## Continuity & Craft Checklist\n- Recognizes the brass compass as the ferryman's daughter's property from Chapter 1.\n- Sacrifices the salt-pack in the lock wash as the material cost of seizing the compass.\n- Keeps Mara's voice clipped and literal during physical action."
+      }
+    },
+    {
+      "id": "PJ02",
+      "name": "The leaking bucket argument",
+      "project_id": "proj_river_road",
+      "project_name": "River-Road Ledger",
+      "genre": "comic fantasy",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Mara",
+        "perspective": "third_limited",
+        "voice_profile": "Clipped, literal, unimpressed by ornate excuses; counts steps and water level."
+      },
+      "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+      "target": [
+        1,
+        3,
+        2
+      ],
+      "scene_purpose": "Mara and Ivo argue up the steep cobble hill over who carries the leaking cedar bucket before the curfew bell finishes tolling, revealing their reluctant fondness through practical compromise.",
+      "tension_turn": "Bickering over a shrinking water ration shifts into shared teamwork when the bucket hoop slips.",
+      "task": "Write the uphill argument over the leaking bucket before the bell stops, preserving Mara's terse literalism and Ivo's elaborate excuses.",
+      "criteria": [
+        "Mara stays terse and literal; Ivo invents elaborate practical excuses.",
+        "The leaking bucket loses water on the climb toward the tolling bell.",
+        "Neither character collapses into generic modern quips."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Mara answered the boatman in clipped literal sentences. Ivo invented a lengthy excuse involving a very respectable goose."
+        },
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "They must carry a leaking bucket uphill before the curfew bell finishes ringing."
+        }
+      ],
+      "rules": [
+        [
+          "Cistern measure",
+          "Buckets delivered below the inner brass rivet forfeit the deposit."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": " cobble-step hill above Weir Gate",
+          "kind": "street",
+          "summary": "Forty-eight slick basalt steps rising from the river weir to the cistern house."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "vespers bell",
+          "anchor_note": "Sixty strokes of the iron curfew bell have just begun."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2 vespers; curfew bell is actively ringing."
+          },
+          {
+            "id": "VOICE GATE",
+            "statement": "Mara speaks in short literal sentences; Ivo uses ornate analogies involving respectable tradesmen and livestock."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Mara",
+            "role": "protagonist",
+            "current_state": "Right boot soaked from the leaking stave.",
+            "voice": "Literal, dry, counts remaining water.",
+            "knows": [
+              "The cistern clerk charges two coppers if the bucket arrives below the brass rivet."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Ivo",
+            "role": "companion",
+            "current_state": "Nursing an entirely imaginary shoulder strain.",
+            "voice": "Elaborate, digressive, affectionate.",
+            "knows": [
+              "His own coat sleeve can plug the split stave if he gives up keeping dry."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The first stroke of the iron bell rolled down the hill. A cold ribbon of river water ran out of the cedar stave onto Mara's ankle.",
+        "context_markdown": "# Scene Context — River-Road Ledger (PJ02: The leaking bucket argument)\n\n## Current Placement\n- Project: River-Road Ledger (`proj_river_road`)\n- Genre: comic fantasy\n- Target: Book 1, Chapter 3, Scene 2\n- Scene Type: dialogue-heavy\n- POV: Mara (third_limited)\n- Voice Profile: Clipped, literal, unimpressed by ornate excuses; counts steps and water level.\n\n## Reader Contract\n- Promise: An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.\n\n## Scene Plan & Purpose\n- Scene Purpose: Mara and Ivo argue up the steep cobble hill over who carries the leaking cedar bucket before the curfew bell finishes tolling, revealing their reluctant fondness through practical compromise.\n- Required Dramatic Turn: Bickering over a shrinking water ration shifts into shared teamwork when the bucket hoop slips.\n- Drafting Task: Write the uphill argument over the leaking bucket before the bell stops, preserving Mara's terse literalism and Ivo's elaborate excuses.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, vespers bell (Sixty strokes of the iron curfew bell have just begun.) at  cobble-step hill above Weir Gate.\n- **[LOCATION]**:  cobble-step hill above Weir Gate (street) — Forty-eight slick basalt steps rising from the river weir to the cistern house.\n- **[VOICE GATE]**: Mara speaks in short literal sentences; Ivo uses ornate analogies involving respectable tradesmen and livestock.\n- **[WORLD RULE: Cistern measure]**: Buckets delivered below the inner brass rivet forfeit the deposit.\n\n## Characters Present (Subject Snapshots)\n- **Mara** (protagonist): Right boot soaked from the leaking stave. | Voice: Literal, dry, counts remaining water. | Knows: The cistern clerk charges two coppers if the bucket arrives below the brass rivet. | Withheld/Does NOT know: None specified.\n- **Ivo** (companion): Nursing an entirely imaginary shoulder strain. | Voice: Elaborate, digressive, affectionate. | Knows: His own coat sleeve can plug the split stave if he gives up keeping dry. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: Mara answered the boatman in clipped literal sentences. Ivo invented a lengthy excuse involving a very respectable goose.\n- Book 1 Ch 2: They must carry a leaking bucket uphill before the curfew bell finishes ringing.\n\n## Previous Scene (closing)\nThe first stroke of the iron bell rolled down the hill. A cold ribbon of river water ran out of the cedar stave onto Mara's ankle.\n\n## Continuity & Craft Checklist\n- Mara stays terse and literal; Ivo invents elaborate practical excuses.\n- The leaking bucket loses water on the climb toward the tolling bell.\n- Neither character collapses into generic modern quips."
+      }
+    },
+    {
+      "id": "PJ03",
+      "name": "Voiceless by the night brazier",
+      "project_id": "proj_river_road",
+      "project_name": "River-Road Ledger",
+      "genre": "fantasy",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Mara",
+        "perspective": "close_third",
+        "voice_profile": "Observant, tactile, unsentimental; tracks sound and heat closely while mute from the ferry charm."
+      },
+      "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+      "target": [
+        1,
+        3,
+        1
+      ],
+      "scene_purpose": "Unable to speak until dawn because of the noon ferry charm, Mara sits by the coal brazier mend-stitching her torn boot and communicates a route decision to Ivo without words.",
+      "tension_turn": "Enforced silence strips away her usual curt defenses, turning a mundane repair into a quiet admission of reliance.",
+      "task": "Write an interior evening scene where voiceless Mara repairs her boot by the brazier and settles tomorrow's route with Ivo without speaking a word.",
+      "criteria": [
+        "Mara does not speak aloud at any point (ferry charm cost holds until dawn).",
+        "Grounded in physical action (boot repair, map/slate, brazier coals) rather than generic brooding.",
+        "Conveys the shift in trust between Mara and Ivo through gesture and object choice."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Every ferry charm costs the speaker their voice until the next dawn."
+        },
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Mara used a charm at noon. Her voice vanished; it is now late evening."
+        }
+      ],
+      "rules": [
+        [
+          "Ferry charm price",
+          "A ferry charm consumes the speaker's voice until the next dawn. A voiceless person cannot invoke another charm."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Barge-men's shelter below Oakhaven",
+          "kind": "shelter",
+          "summary": "Open-sided slate lean-to with a rusted iron coal pan and river fog beyond the posts."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "late evening",
+          "anchor_note": "Hours after noon ferry charm; Mara's voice remains gone until dawn."
+        },
+        "hard_constraints": [
+          {
+            "id": "WORLD RULE",
+            "statement": "Ferry charm price: A ferry charm consumes the speaker's voice until the next dawn. Mara cannot speak or whisper."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2 late evening; dark river fog outside the shelter."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Mara",
+            "role": "protagonist",
+            "current_state": "Completely mute until dawn; waxing thread to mend her left boot.",
+            "voice": "Interior close-third; tactile, unsentimental.",
+            "knows": [
+              "The high road takes two days longer but avoids another ferry toll."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Ivo",
+            "role": "companion",
+            "current_state": "Roasting chestnuts on a shovel blade; watching her throat.",
+            "voice": "Quietly restrained tonight, filling silence gently.",
+            "knows": [
+              "Mara spent her voice at noon to pull their raft clear of the weir."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Ivo set the kettle on the grate and did not ask her a question she couldn't answer.",
+        "context_markdown": "# Scene Context — River-Road Ledger (PJ03: Voiceless by the night brazier)\n\n## Current Placement\n- Project: River-Road Ledger (`proj_river_road`)\n- Genre: fantasy\n- Target: Book 1, Chapter 3, Scene 1\n- Scene Type: quiet-interior\n- POV: Mara (close_third)\n- Voice Profile: Observant, tactile, unsentimental; tracks sound and heat closely while mute from the ferry charm.\n\n## Reader Contract\n- Promise: An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.\n\n## Scene Plan & Purpose\n- Scene Purpose: Unable to speak until dawn because of the noon ferry charm, Mara sits by the coal brazier mend-stitching her torn boot and communicates a route decision to Ivo without words.\n- Required Dramatic Turn: Enforced silence strips away her usual curt defenses, turning a mundane repair into a quiet admission of reliance.\n- Drafting Task: Write an interior evening scene where voiceless Mara repairs her boot by the brazier and settles tomorrow's route with Ivo without speaking a word.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, late evening (Hours after noon ferry charm; Mara's voice remains gone until dawn.) at Barge-men's shelter below Oakhaven.\n- **[LOCATION]**: Barge-men's shelter below Oakhaven (shelter) — Open-sided slate lean-to with a rusted iron coal pan and river fog beyond the posts.\n- **[WORLD RULE]**: Ferry charm price: A ferry charm consumes the speaker's voice until the next dawn. Mara cannot speak or whisper.\n- **[WORLD RULE: Ferry charm price]**: A ferry charm consumes the speaker's voice until the next dawn. A voiceless person cannot invoke another charm.\n\n## Characters Present (Subject Snapshots)\n- **Mara** (protagonist): Completely mute until dawn; waxing thread to mend her left boot. | Voice: Interior close-third; tactile, unsentimental. | Knows: The high road takes two days longer but avoids another ferry toll. | Withheld/Does NOT know: None specified.\n- **Ivo** (companion): Roasting chestnuts on a shovel blade; watching her throat. | Voice: Quietly restrained tonight, filling silence gently. | Knows: Mara spent her voice at noon to pull their raft clear of the weir. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: Every ferry charm costs the speaker their voice until the next dawn.\n- Book 1 Ch 2: Mara used a charm at noon. Her voice vanished; it is now late evening.\n\n## Previous Scene (closing)\nIvo set the kettle on the grate and did not ask her a question she couldn't answer.\n\n## Continuity & Craft Checklist\n- Mara does not speak aloud at any point (ferry charm cost holds until dawn).\n- Grounded in physical action (boot repair, map/slate, brazier coals) rather than generic brooding.\n- Conveys the shift in trust between Mara and Ivo through gesture and object choice."
+      }
+    },
+    {
+      "id": "PJ04",
+      "name": "The torn green sleeve in the tally-room",
+      "project_id": "proj_river_road",
+      "project_name": "River-Road Ledger",
+      "genre": "fantasy",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Ivo",
+        "perspective": "third_limited",
+        "voice_profile": "Sharp-eyed beneath his Performative levity; notices ledger ink, fabric weave, and nervous hands."
+      },
+      "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+      "target": [
+        1,
+        4,
+        2
+      ],
+      "scene_purpose": "Investigating the empty strongbox from Ivo's POV, he discovers the lock was opened with the ferryman's spare brass key rather than forced, while keeping the true culprit (Lysa) unknown.",
+      "tension_turn": "What looked like an outsider's smash-and-grab is revealed to be an inside key-turn, narrowing suspicion without breaking the Ch 1.7 knowledge gate.",
+      "task": "Write Ivo's inspection of the tally-room strongbox. Reveal the key-scratch evidence while keeping Lysa's guilt unknown until Chapter 7.",
+      "criteria": [
+        "Ivo discovers the lock was turned with a wax-fouled key, not pried open.",
+        "Ivo does NOT know Lysa stole the money (knowledge gate: confessed in Ch 7).",
+        "Suspicion falls on multiple green-cloaked travellers without omniscient narrator spoilers."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Ivo counts toll money for the ferryman."
+        },
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "The strongbox is found empty."
+        },
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Ivo finds a torn green sleeve thread, but several travellers wear green."
+        },
+        {
+          "book": 1,
+          "chapter": 7,
+          "summary": "FUTURE CANON (withheld): Lysa confesses privately to Mara that she stole the toll money."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Ferryhouse Tally-Room",
+          "kind": "interior",
+          "summary": "Low-beamed counting room smelling of wet wool, tallow candles, and river mud."
+        },
+        "in_world_time": {
+          "day": 3,
+          "time_of_day": "morning",
+          "anchor_note": "Morning after the strongbox was found empty; rain dripping from the eaves."
+        },
+        "hard_constraints": [
+          {
+            "id": "KNOWLEDGE GATE",
+            "statement": "Ivo cannot know Lysa stole the toll money until Ch 1.7. Several travellers wear green wool."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 3 morning in the Ferryhouse Tally-Room."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Ivo",
+            "role": "protagonist",
+            "current_state": "Kneeling by the oak chest with a tallow stub; blamed by the bailiff.",
+            "voice": "Observant, lightly ironic, defensive of his own ledger accuracy.",
+            "knows": [
+              "A shred of dyed green wool caught on the window latch.",
+              "Three drovers and Lysa all wear Lincoln-green wool."
+            ],
+            "does_not_know": [
+              "That Lysa took the spare key from the herb-crock."
+            ]
+          },
+          {
+            "name": "Bailiff Hobb",
+            "role": "antagonist",
+            "current_state": "Impatient, Wants to arrest the nearest vagrant.",
+            "voice": "Blunt, procedural.",
+            "knows": [
+              "Fourteen silver groats are missing."
+            ],
+            "does_not_know": [
+              "Who took the key."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Bailiff Hobb kicked the open iron lid. 'Forced with a crow-chisel, clear as mud. Sign the warrant, boy.'",
+        "context_markdown": "# Scene Context — River-Road Ledger (PJ04: The torn green sleeve in the tally-room)\n\n## Current Placement\n- Project: River-Road Ledger (`proj_river_road`)\n- Genre: fantasy\n- Target: Book 1, Chapter 4, Scene 2\n- Scene Type: reveal\n- POV: Ivo (third_limited)\n- Voice Profile: Sharp-eyed beneath his Performative levity; notices ledger ink, fabric weave, and nervous hands.\n\n## Reader Contract\n- Promise: An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.\n\n## Scene Plan & Purpose\n- Scene Purpose: Investigating the empty strongbox from Ivo's POV, he discovers the lock was opened with the ferryman's spare brass key rather than forced, while keeping the true culprit (Lysa) unknown.\n- Required Dramatic Turn: What looked like an outsider's smash-and-grab is revealed to be an inside key-turn, narrowing suspicion without breaking the Ch 1.7 knowledge gate.\n- Drafting Task: Write Ivo's inspection of the tally-room strongbox. Reveal the key-scratch evidence while keeping Lysa's guilt unknown until Chapter 7.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 3, morning (Morning after the strongbox was found empty; rain dripping from the eaves.) at Ferryhouse Tally-Room.\n- **[LOCATION]**: Ferryhouse Tally-Room (interior) — Low-beamed counting room smelling of wet wool, tallow candles, and river mud.\n- **[KNOWLEDGE GATE]**: Ivo cannot know Lysa stole the toll money until Ch 1.7. Several travellers wear green wool.\n\n## Characters Present (Subject Snapshots)\n- **Ivo** (protagonist): Kneeling by the oak chest with a tallow stub; blamed by the bailiff. | Voice: Observant, lightly ironic, defensive of his own ledger accuracy. | Knows: A shred of dyed green wool caught on the window latch.; Three drovers and Lysa all wear Lincoln-green wool. | Withheld/Does NOT know: That Lysa took the spare key from the herb-crock.\n- **Bailiff Hobb** (antagonist): Impatient, Wants to arrest the nearest vagrant. | Voice: Blunt, procedural. | Knows: Fourteen silver groats are missing. | Withheld/Does NOT know: Who took the key.\n\n## Recent Story History\n- Book 1 Ch 1: Ivo counts toll money for the ferryman.\n- Book 1 Ch 2: The strongbox is found empty.\n- Book 1 Ch 3: Ivo finds a torn green sleeve thread, but several travellers wear green.\n- Book 1 Ch 7: FUTURE CANON (withheld): Lysa confesses privately to Mara that she stole the toll money.\n\n## Previous Scene (closing)\nBailiff Hobb kicked the open iron lid. 'Forced with a crow-chisel, clear as mud. Sign the warrant, boy.'\n\n## Continuity & Craft Checklist\n- Ivo discovers the lock was turned with a wax-fouled key, not pried open.\n- Ivo does NOT know Lysa stole the money (knowledge gate: confessed in Ch 7).\n- Suspicion falls on multiple green-cloaked travellers without omniscient narrator spoilers."
+      }
+    },
+    {
+      "id": "PJ05",
+      "name": "Southwatch after the rescue",
+      "project_id": "proj_river_road",
+      "project_name": "River-Road Ledger",
+      "genre": "fantasy",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Mara",
+        "perspective": "third_limited",
+        "voice_profile": "Grounded, unsentimental, attentive to small domestic warmth after danger."
+      },
+      "contract": "An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.",
+      "target": [
+        1,
+        3,
+        3
+      ],
+      "scene_purpose": "Close the episode at the way-station after pulling the child from the flooded ditch: deliver emotional resolution for the rescue while leaving natural anticipation over why the child's family name unsettled Ivo.",
+      "tension_turn": "Physical relief settles into quiet interpersonal curiosity without fabricating a cheap cliffhanger attack.",
+      "task": "End the episode after the rescue with emotional satisfaction and a quiet relational hook about why the child's name affected Ivo.",
+      "criteria": [
+        "Resolves the immediate rescue completely (the child is warm and safe).",
+        "Does NOT invent a sudden bandit/monster attack for a false cliffhanger.",
+        "Leaves relational anticipation through Ivo's reaction to the child's surname."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Mara and Ivo pull a child from the flooded ditch."
+        },
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "The child is safe at the station. Ivo has not told Mara why the child's name affected him."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Southwatch Way-Station hearth",
+          "kind": "interior",
+          "summary": "Flagstone hearth room with drying racks, peat smoke, and rain on the shutters."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "night",
+          "anchor_note": "Directly after the ditch rescue; child wrapped by the peat fire."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2 night inside Southwatch Way-Station."
+          },
+          {
+            "id": "PACING RULE",
+            "statement": "Serial publication does not prescribe false cliffhangers; resolve the immediate rescue and close on character tension."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Mara",
+            "role": "protagonist",
+            "current_state": "Wringing ditch-silt from her hem by the peat fire.",
+            "voice": "Practical, observant.",
+            "knows": [
+              "The child is dry and breathing evenly.",
+              "Ivo went pale when the child said his name was Tomas Verney."
+            ],
+            "does_not_know": [
+              "Ivo's past connection to the Verney name."
+            ]
+          },
+          {
+            "name": "Ivo",
+            "role": "companion",
+            "current_state": "Sitting on the woodbox, meticulously scraping mud off a brass buckle.",
+            "voice": "Uncharacteristically brief.",
+            "knows": [
+              "What the name Verney means to him."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The station-wife tucked the heated brick by the boy's feet and latched the inner screen.",
+        "context_markdown": "# Scene Context — River-Road Ledger (PJ05: Southwatch after the rescue)\n\n## Current Placement\n- Project: River-Road Ledger (`proj_river_road`)\n- Genre: fantasy\n- Target: Book 1, Chapter 3, Scene 3\n- Scene Type: chapter-closer\n- POV: Mara (third_limited)\n- Voice Profile: Grounded, unsentimental, attentive to small domestic warmth after danger.\n\n## Reader Contract\n- Promise: An intimate river-road fantasy. Choices have material costs; dialogue stays concrete and lightly wry.\n\n## Scene Plan & Purpose\n- Scene Purpose: Close the episode at the way-station after pulling the child from the flooded ditch: deliver emotional resolution for the rescue while leaving natural anticipation over why the child's family name unsettled Ivo.\n- Required Dramatic Turn: Physical relief settles into quiet interpersonal curiosity without fabricating a cheap cliffhanger attack.\n- Drafting Task: End the episode after the rescue with emotional satisfaction and a quiet relational hook about why the child's name affected Ivo.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, night (Directly after the ditch rescue; child wrapped by the peat fire.) at Southwatch Way-Station hearth.\n- **[LOCATION]**: Southwatch Way-Station hearth (interior) — Flagstone hearth room with drying racks, peat smoke, and rain on the shutters.\n- **[PACING RULE]**: Serial publication does not prescribe false cliffhangers; resolve the immediate rescue and close on character tension.\n\n## Characters Present (Subject Snapshots)\n- **Mara** (protagonist): Wringing ditch-silt from her hem by the peat fire. | Voice: Practical, observant. | Knows: The child is dry and breathing evenly.; Ivo went pale when the child said his name was Tomas Verney. | Withheld/Does NOT know: Ivo's past connection to the Verney name.\n- **Ivo** (companion): Sitting on the woodbox, meticulously scraping mud off a brass buckle. | Voice: Uncharacteristically brief. | Knows: What the name Verney means to him. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: Mara and Ivo pull a child from the flooded ditch.\n- Book 1 Ch 2: The child is safe at the station. Ivo has not told Mara why the child's name affected him.\n\n## Previous Scene (closing)\nThe station-wife tucked the heated brick by the boy's feet and latched the inner screen.\n\n## Continuity & Craft Checklist\n- Resolves the immediate rescue completely (the child is warm and safe).\n- Does NOT invent a sudden bandit/monster attack for a false cliffhanger.\n- Leaves relational anticipation through Ivo's reaction to the child's surname."
+      }
+    },
+    {
+      "id": "PJ06",
+      "name": "Tether snap in the debris wake",
+      "project_id": "proj_orbital_salvage",
+      "project_name": "Kessler Ledger",
+      "genre": "science fiction",
+      "scene_type": "action",
+      "pov": {
+        "character": "Solenne Vance",
+        "perspective": "first_person",
+        "voice_profile": "Clipped EVA telemetry habit; thinks in mass ratios, thruster burn seconds, and seal pressure."
+      },
+      "contract": "Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.",
+      "target": [
+        1,
+        2,
+        1
+      ],
+      "scene_purpose": "When a micrometeorite shears the primary winch line during reactor-core extraction, Solenne must vent her reserve nitrogen bottle rather than fire hot hydrazine thrusters that would slag the salvage tag.",
+      "tension_turn": "Routine core winching becomes a zero-margin cold-gas arrest before the hulk's solar mast sweeps the bay.",
+      "task": "Write the EVA tether failure from Solenne's first-person POV, enforcing the no-hot-thruster rule near the salvage seal and the nitrogen reserve cost.",
+      "criteria": [
+        "First-person POV ('I') in Solenne's clipped technical voice.",
+        "Does NOT fire hot hydrazine thrusters against the salvage seal.",
+        "Spends the reserve cold-gas nitrogen bottle to arrest the drift."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "The crew mortgaged their tug's fuel bond to buy salvage rights on the derelict Vespera."
+        }
+      ],
+      "rules": [
+        [
+          "Beacon thermal limit",
+          "Hydrazine exhaust within 15 meters melts the court telemetry seal and forfeits the claim."
+        ]
+      ],
+      "promises": [
+        {
+          "description": "Deliver Vespera's intact court seal to clear the tug's fuel bond.",
+          "planted": [
+            1,
+            1
+          ],
+          "planned": [
+            1,
+            6
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "Derelict freighter 'Vespera' dorsal truss",
+          "kind": "orbital_wreck",
+          "summary": "Spinning 0.4-rpm titanium truss in low terminator shadow."
+        },
+        "in_world_time": {
+          "day": 12,
+          "time_of_day": "Orbit 14, 18 minutes to umbral eclipse",
+          "anchor_note": "EVA minute 42; suit O2 at 58%."
+        },
+        "hard_constraints": [
+          {
+            "id": "WORLD RULE",
+            "statement": "Court beacon seals carbonize above 400 K; firing hydrazine RCS within 15 meters voids the salvage claim."
+          },
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Cold-gas N2 reserve at 1.4 MPa (one full arrest burn left)."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Orbit 14, 18 minutes before eclipse shadow."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Solenne Vance",
+            "role": "protagonist",
+            "current_state": "Mag-booted to frame rib 7, guiding a 900-kg coolant cask.",
+            "voice": "First-person, precise, dry under pressure.",
+            "knows": [
+              "Hydrazine plume will destroy the wax-lead court beacon on the cask."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Dax",
+            "role": "navigator",
+            "current_state": "On the tug 'Shearwater' 80 meters stand-off, watching radar.",
+            "voice": "Calm, counts seconds to eclipse.",
+            "knows": [
+              "Debris fleck incoming from 270 degrees."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Dax's voice crackled in my ear-cup: 'Fleck on the radar skirt, Sol. Two millimeters, relative three klicks. Hold the winch.'",
+        "context_markdown": "# Scene Context — Kessler Ledger (PJ06: Tether snap in the debris wake)\n\n## Current Placement\n- Project: Kessler Ledger (`proj_orbital_salvage`)\n- Genre: science fiction\n- Target: Book 1, Chapter 2, Scene 1\n- Scene Type: action\n- POV: Solenne Vance (first_person)\n- Voice Profile: Clipped EVA telemetry habit; thinks in mass ratios, thruster burn seconds, and seal pressure.\n\n## Reader Contract\n- Promise: Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.\n\n## Scene Plan & Purpose\n- Scene Purpose: When a micrometeorite shears the primary winch line during reactor-core extraction, Solenne must vent her reserve nitrogen bottle rather than fire hot hydrazine thrusters that would slag the salvage tag.\n- Required Dramatic Turn: Routine core winching becomes a zero-margin cold-gas arrest before the hulk's solar mast sweeps the bay.\n- Drafting Task: Write the EVA tether failure from Solenne's first-person POV, enforcing the no-hot-thruster rule near the salvage seal and the nitrogen reserve cost.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 12, Orbit 14, 18 minutes to umbral eclipse (EVA minute 42; suit O2 at 58%.) at Derelict freighter 'Vespera' dorsal truss.\n- **[LOCATION]**: Derelict freighter 'Vespera' dorsal truss (orbital_wreck) — Spinning 0.4-rpm titanium truss in low terminator shadow.\n- **[WORLD RULE]**: Court beacon seals carbonize above 400 K; firing hydrazine RCS within 15 meters voids the salvage claim.\n- **[WEALTH/STATE]**: Cold-gas N2 reserve at 1.4 MPa (one full arrest burn left).\n- **[WORLD RULE: Beacon thermal limit]**: Hydrazine exhaust within 15 meters melts the court telemetry seal and forfeits the claim.\n\n## Characters Present (Subject Snapshots)\n- **Solenne Vance** (protagonist): Mag-booted to frame rib 7, guiding a 900-kg coolant cask. | Voice: First-person, precise, dry under pressure. | Knows: Hydrazine plume will destroy the wax-lead court beacon on the cask. | Withheld/Does NOT know: None specified.\n- **Dax** (navigator): On the tug 'Shearwater' 80 meters stand-off, watching radar. | Voice: Calm, counts seconds to eclipse. | Knows: Debris fleck incoming from 270 degrees. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: The crew mortgaged their tug's fuel bond to buy salvage rights on the derelict Vespera.\n\n## Previous Scene (closing)\nDax's voice crackled in my ear-cup: 'Fleck on the radar skirt, Sol. Two millimeters, relative three klicks. Hold the winch.'\n\n## Open Promises in Play\n- Deliver Vespera's intact court seal to clear the tug's fuel bond. (planted B1C1)\n\n## Continuity & Craft Checklist\n- First-person POV ('I') in Solenne's clipped technical voice.\n- Does NOT fire hot hydrazine thrusters against the salvage seal.\n- Spends the reserve cold-gas nitrogen bottle to arrest the drift."
+      }
+    },
+    {
+      "id": "PJ07",
+      "name": "Dockside tariff hearing",
+      "project_id": "proj_orbital_salvage",
+      "project_name": "Kessler Ledger",
+      "genre": "science fiction",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Solenne Vance",
+        "perspective": "first_person",
+        "voice_profile": "Dry, blue-collar orbital contractor; quotes subsection numbers and weld serials to bureaucrat bullies."
+      },
+      "contract": "Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.",
+      "target": [
+        1,
+        3,
+        2
+      ],
+      "scene_purpose": "At the Spindle-3 customs cage, Auditor Kael tries to reclassify the recovered coolant cask as hazardous waste to seize it for zero payout; Solenne uses Dax's mass-manifest log to force Kael to certify the full salvage credit.",
+      "tension_turn": "Bureaucratic confiscation flips when Solenne forces Kael to choose between certifying the salvage or logging an uninspected station mass discrepancy.",
+      "task": "Write the customs-cage confrontation between Solenne, Dax, and Auditor Kael, turning the scene on the station mass-ledger rule.",
+      "criteria": [
+        "Maintains Solenne's first-person POV and distinct contrast between Kael's legalese and Dax's deadpan math.",
+        "Uses the mass-balance / customs ledger rule to corner Kael.",
+        "Ends with the salvage credit signed, not a violent shootout."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Solenne brought the Vespera coolant cask in with its indium court seal unbroken."
+        }
+      ],
+      "rules": [
+        [
+          "Spin-balance audit",
+          "Unclassified berth mass over 500 kg triggers an automatic Spin-Control audit of the duty clerk's shift."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Spindle-3 Berth 9 Customs Cage",
+          "kind": "station_office",
+          "summary": "Wire-mesh partition smelling of ozone, recycled coffee, and hydraulic fluid."
+        },
+        "in_world_time": {
+          "day": 13,
+          "time_of_day": "Station Shift 2, 09:40",
+          "anchor_note": "Docking clamps locked; 20 minutes before fuel-bond late penalty accrues."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 13, 09:40; fuel bond penalty triggers at 10:00."
+          },
+          {
+            "id": "WORLD RULE",
+            "statement": "Station spin-balance rule: any berthed mass over 500 kg must be logged as either bonded cargo or station ballast within 30 minutes of hard dock."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Solenne Vance",
+            "role": "protagonist",
+            "current_state": "Still in sweat-salted cooling garment, holding the indium court seal.",
+            "voice": "Direct, procedural when cornered.",
+            "knows": [
+              "Kael takes kickbacks from the scrap syndicate."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Dax",
+            "role": "navigator",
+            "current_state": "Leaning on the mesh counter with the dock-scale printout.",
+            "voice": "Quiet, devastatingly literal with numbers.",
+            "knows": [
+              "The berth strain-gauge already logged 912 kg on hard dock."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Auditor Kael",
+            "role": "antagonist",
+            "current_state": "Holding the red condemnation stamp.",
+            "voice": "Clipped administrative euphemisms.",
+            "knows": [
+              "The fuel bond expires at 10:00."
+            ],
+            "does_not_know": [
+              "That Dax already pulled the automated strain-gauge receipt."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Auditor Kael uncapped his red stylus without looking up from the slate. 'Berth 9 is filing a Class-C condemnation, Captain Vance.'",
+        "context_markdown": "# Scene Context — Kessler Ledger (PJ07: Dockside tariff hearing)\n\n## Current Placement\n- Project: Kessler Ledger (`proj_orbital_salvage`)\n- Genre: science fiction\n- Target: Book 1, Chapter 3, Scene 2\n- Scene Type: dialogue-heavy\n- POV: Solenne Vance (first_person)\n- Voice Profile: Dry, blue-collar orbital contractor; quotes subsection numbers and weld serials to bureaucrat bullies.\n\n## Reader Contract\n- Promise: Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.\n\n## Scene Plan & Purpose\n- Scene Purpose: At the Spindle-3 customs cage, Auditor Kael tries to reclassify the recovered coolant cask as hazardous waste to seize it for zero payout; Solenne uses Dax's mass-manifest log to force Kael to certify the full salvage credit.\n- Required Dramatic Turn: Bureaucratic confiscation flips when Solenne forces Kael to choose between certifying the salvage or logging an uninspected station mass discrepancy.\n- Drafting Task: Write the customs-cage confrontation between Solenne, Dax, and Auditor Kael, turning the scene on the station mass-ledger rule.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 13, Station Shift 2, 09:40 (Docking clamps locked; 20 minutes before fuel-bond late penalty accrues.) at Spindle-3 Berth 9 Customs Cage.\n- **[LOCATION]**: Spindle-3 Berth 9 Customs Cage (station_office) — Wire-mesh partition smelling of ozone, recycled coffee, and hydraulic fluid.\n- **[WORLD RULE]**: Station spin-balance rule: any berthed mass over 500 kg must be logged as either bonded cargo or station ballast within 30 minutes of hard dock.\n- **[WORLD RULE: Spin-balance audit]**: Unclassified berth mass over 500 kg triggers an automatic Spin-Control audit of the duty clerk's shift.\n\n## Characters Present (Subject Snapshots)\n- **Solenne Vance** (protagonist): Still in sweat-salted cooling garment, holding the indium court seal. | Voice: Direct, procedural when cornered. | Knows: Kael takes kickbacks from the scrap syndicate. | Withheld/Does NOT know: None specified.\n- **Dax** (navigator): Leaning on the mesh counter with the dock-scale printout. | Voice: Quiet, devastatingly literal with numbers. | Knows: The berth strain-gauge already logged 912 kg on hard dock. | Withheld/Does NOT know: None specified.\n- **Auditor Kael** (antagonist): Holding the red condemnation stamp. | Voice: Clipped administrative euphemisms. | Knows: The fuel bond expires at 10:00. | Withheld/Does NOT know: That Dax already pulled the automated strain-gauge receipt.\n\n## Recent Story History\n- Book 1 Ch 2: Solenne brought the Vespera coolant cask in with its indium court seal unbroken.\n\n## Previous Scene (closing)\nAuditor Kael uncapped his red stylus without looking up from the slate. 'Berth 9 is filing a Class-C condemnation, Captain Vance.'\n\n## Continuity & Craft Checklist\n- Maintains Solenne's first-person POV and distinct contrast between Kael's legalese and Dax's deadpan math.\n- Uses the mass-balance / customs ledger rule to corner Kael.\n- Ends with the salvage credit signed, not a violent shootout."
+      }
+    },
+    {
+      "id": "PJ08",
+      "name": "Zero-g sleep shift in the airlock spine",
+      "project_id": "proj_orbital_salvage",
+      "project_name": "Kessler Ledger",
+      "genre": "science fiction",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Dax",
+        "perspective": "third_limited",
+        "voice_profile": "Methodical, acoustic-sensitive; measures ship health by fan harmonics and hull pings."
+      },
+      "contract": "Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.",
+      "target": [
+        1,
+        4,
+        1
+      ],
+      "scene_purpose": "During the night coast toward the outer graveyard orbit, Dax listens to the tug's scrubber fan bearings and recalculates the return delta-v margin without waking Solenne.",
+      "tension_turn": "Both passages execute this quiet interior beat well; this brief serves as a closely matched tie calibration case.",
+      "task": "Write Dax's quiet watch in the tug's spine during the Hohmann transfer coast, tracking the scrubber harmonic and tight delta-v margin.",
+      "criteria": [
+        "Third-limited POV closely anchored to Dax.",
+        "Grounded in orbital coast physics and shipboard acoustics.",
+        "Preserves quiet interior mood without artificial melodrama."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "After clearing the Berth 9 bond, the Shearwater burned into a high transfer ellipse."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Tug 'Shearwater' mid-deck spine",
+          "kind": "spacecraft_interior",
+          "summary": "Two-meter aluminum cylinder lined with velcro sleep-sacks and lithium-hydroxide canisters."
+        },
+        "in_world_time": {
+          "day": 15,
+          "time_of_day": "Transfer Coast Hour 11",
+          "anchor_note": "Main engine cold; 14 meters/sec delta-v margin remaining."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 15, Transfer Coast Hour 11; free-fall."
+          },
+          {
+            "id": "WEALTH/STATE",
+            "statement": "14 m/s delta-v reserve after inclination trim."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Dax",
+            "role": "navigator",
+            "current_state": "Hooked by one toe-loop to the ladder rail, slate in hand.",
+            "voice": "Quiet, precise, attentive to small mechanical rhythms.",
+            "knows": [
+              "14 m/s margin leaves only one braking correction."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Solenne Vance",
+            "role": "protagonist",
+            "current_state": "Asleep in the forward restraint bag, bruised collarbone taped.",
+            "voice": "Asleep.",
+            "knows": [],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Solenne zipped the restraint cuff to her chin and was asleep before the thruster gimbal finished parking.",
+        "context_markdown": "# Scene Context — Kessler Ledger (PJ08: Zero-g sleep shift in the airlock spine)\n\n## Current Placement\n- Project: Kessler Ledger (`proj_orbital_salvage`)\n- Genre: science fiction\n- Target: Book 1, Chapter 4, Scene 1\n- Scene Type: quiet-interior\n- POV: Dax (third_limited)\n- Voice Profile: Methodical, acoustic-sensitive; measures ship health by fan harmonics and hull pings.\n\n## Reader Contract\n- Promise: Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.\n\n## Scene Plan & Purpose\n- Scene Purpose: During the night coast toward the outer graveyard orbit, Dax listens to the tug's scrubber fan bearings and recalculates the return delta-v margin without waking Solenne.\n- Required Dramatic Turn: Both passages execute this quiet interior beat well; this brief serves as a closely matched tie calibration case.\n- Drafting Task: Write Dax's quiet watch in the tug's spine during the Hohmann transfer coast, tracking the scrubber harmonic and tight delta-v margin.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 15, Transfer Coast Hour 11 (Main engine cold; 14 meters/sec delta-v margin remaining.) at Tug 'Shearwater' mid-deck spine.\n- **[LOCATION]**: Tug 'Shearwater' mid-deck spine (spacecraft_interior) — Two-meter aluminum cylinder lined with velcro sleep-sacks and lithium-hydroxide canisters.\n- **[WEALTH/STATE]**: 14 m/s delta-v reserve after inclination trim.\n\n## Characters Present (Subject Snapshots)\n- **Dax** (navigator): Hooked by one toe-loop to the ladder rail, slate in hand. | Voice: Quiet, precise, attentive to small mechanical rhythms. | Knows: 14 m/s margin leaves only one braking correction. | Withheld/Does NOT know: None specified.\n- **Solenne Vance** (protagonist): Asleep in the forward restraint bag, bruised collarbone taped. | Voice: Asleep. | Knows: Standard scene awareness. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 3: After clearing the Berth 9 bond, the Shearwater burned into a high transfer ellipse.\n\n## Previous Scene (closing)\nSolenne zipped the restraint cuff to her chin and was asleep before the thruster gimbal finished parking.\n\n## Continuity & Craft Checklist\n- Third-limited POV closely anchored to Dax.\n- Grounded in orbital coast physics and shipboard acoustics.\n- Preserves quiet interior mood without artificial melodrama."
+      }
+    },
+    {
+      "id": "PJ09",
+      "name": "The forged transponder inside the black box",
+      "project_id": "proj_orbital_salvage",
+      "project_name": "Kessler Ledger",
+      "genre": "science fiction",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Dax",
+        "perspective": "third_limited",
+        "voice_profile": "Forensic, unhurried; reads solder joints and EPROM timestamps like a detective."
+      },
+      "contract": "Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.",
+      "target": [
+        1,
+        5,
+        2
+      ],
+      "scene_purpose": "On the workbench, Dax opens the Vespera's secondary beacon module and discovers the ship wasn't abandoned after a meteor strike—its transponder ID was resoldered at Spindle-3 two weeks *after* its official loss date.",
+      "tension_turn": "Salvage paperwork anomaly turns into proof of insurance fraud tied directly to Spindle-3's harbor office.",
+      "task": "Write Dax discovering the post-dated solder stamp inside the beacon module while Solenne watches, respecting the secret-circle constraint.",
+      "criteria": [
+        "Reveals the physical date-code / solder evidence showing the transponder was altered after the official wreck date.",
+        "Honors the secret gate: neither Dax nor Solenne knows yet that Kael's superior signed the drydock work order.",
+        "Grounded in concrete workbench detail."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Insurer Lloyd-Ceres listed the Vespera lost in Week 42."
+        },
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "Dax noticed the secondary beacon casing had non-standard brass screws."
+        }
+      ],
+      "rules": [],
+      "promises": [
+        {
+          "description": "Uncover why Vespera's beacon broadcast on a reserve frequency.",
+          "planted": [
+            1,
+            2
+          ],
+          "planned": [
+            1,
+            5
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "Shearwater aft electronics bench",
+          "kind": "spacecraft_interior",
+          "summary": "Fold-down magnetic tray with magnifier loupe, flux trap, and grounding strap."
+        },
+        "in_world_time": {
+          "day": 16,
+          "time_of_day": "Transfer Coast Hour 22",
+          "anchor_note": "Two hours before apogee burn."
+        },
+        "hard_constraints": [
+          {
+            "id": "SECRETS IN PLAY",
+            "statement": "The beacon EPROM carries a Week-44 lot stamp (two weeks after Vespera's declared loss in Week 42). Neither character knows yet who at Spindle-3 ordered the swap."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 16, Transfer Coast Hour 22."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Dax",
+            "role": "navigator",
+            "current_state": "Wearing a 4x jeweler's loupe and wrist ground-strap.",
+            "voice": "Clinical, understated.",
+            "knows": [
+              "Factory boards use wave-solder; this chip was hand-tacked with rosin flux."
+            ],
+            "does_not_know": [
+              "Director Venn's signature is on the drydock voucher."
+            ]
+          },
+          {
+            "name": "Solenne Vance",
+            "role": "protagonist",
+            "current_state": "Braced in the hatchway holding a bulbsip of cold tea.",
+            "voice": "Skeptical, quick to see commercial motive.",
+            "knows": [
+              "Vespera was declared lost with all hands in Week 42."
+            ],
+            "does_not_know": [
+              "Director Venn's involvement."
+            ]
+          }
+        ],
+        "previous_scene_tail": "The four casing screws stuck to the magnetic strip on Dax's cuff with a soft click.",
+        "context_markdown": "# Scene Context — Kessler Ledger (PJ09: The forged transponder inside the black box)\n\n## Current Placement\n- Project: Kessler Ledger (`proj_orbital_salvage`)\n- Genre: science fiction\n- Target: Book 1, Chapter 5, Scene 2\n- Scene Type: reveal\n- POV: Dax (third_limited)\n- Voice Profile: Forensic, unhurried; reads solder joints and EPROM timestamps like a detective.\n\n## Reader Contract\n- Promise: Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.\n\n## Scene Plan & Purpose\n- Scene Purpose: On the workbench, Dax opens the Vespera's secondary beacon module and discovers the ship wasn't abandoned after a meteor strike—its transponder ID was resoldered at Spindle-3 two weeks *after* its official loss date.\n- Required Dramatic Turn: Salvage paperwork anomaly turns into proof of insurance fraud tied directly to Spindle-3's harbor office.\n- Drafting Task: Write Dax discovering the post-dated solder stamp inside the beacon module while Solenne watches, respecting the secret-circle constraint.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 16, Transfer Coast Hour 22 (Two hours before apogee burn.) at Shearwater aft electronics bench.\n- **[LOCATION]**: Shearwater aft electronics bench (spacecraft_interior) — Fold-down magnetic tray with magnifier loupe, flux trap, and grounding strap.\n- **[SECRETS IN PLAY]**: The beacon EPROM carries a Week-44 lot stamp (two weeks after Vespera's declared loss in Week 42). Neither character knows yet who at Spindle-3 ordered the swap.\n\n## Characters Present (Subject Snapshots)\n- **Dax** (navigator): Wearing a 4x jeweler's loupe and wrist ground-strap. | Voice: Clinical, understated. | Knows: Factory boards use wave-solder; this chip was hand-tacked with rosin flux. | Withheld/Does NOT know: Director Venn's signature is on the drydock voucher.\n- **Solenne Vance** (protagonist): Braced in the hatchway holding a bulbsip of cold tea. | Voice: Skeptical, quick to see commercial motive. | Knows: Vespera was declared lost with all hands in Week 42. | Withheld/Does NOT know: Director Venn's involvement.\n\n## Recent Story History\n- Book 1 Ch 1: Insurer Lloyd-Ceres listed the Vespera lost in Week 42.\n- Book 1 Ch 4: Dax noticed the secondary beacon casing had non-standard brass screws.\n\n## Previous Scene (closing)\nThe four casing screws stuck to the magnetic strip on Dax's cuff with a soft click.\n\n## Open Promises in Play\n- Uncover why Vespera's beacon broadcast on a reserve frequency. (planted B1C2)\n\n## Continuity & Craft Checklist\n- Reveals the physical date-code / solder evidence showing the transponder was altered after the official wreck date.\n- Honors the secret gate: neither Dax nor Solenne knows yet that Kael's superior signed the drydock work order.\n- Grounded in concrete workbench detail."
+      }
+    },
+    {
+      "id": "PJ10",
+      "name": "Brake burn at Graveyard-4",
+      "project_id": "proj_orbital_salvage",
+      "project_name": "Kessler Ledger",
+      "genre": "science fiction",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Solenne Vance",
+        "perspective": "first_person",
+        "voice_profile": "Taut, physical, grounded in g-load and radar return numbers."
+      },
+      "contract": "Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.",
+      "target": [
+        1,
+        5,
+        3
+      ],
+      "scene_purpose": "Close Chapter 5 as the Shearwater completes its 12 m/s capture burn into Graveyard-4 and picks up two warm radiator signatures where only cold derelicts should be.",
+      "tension_turn": "Successful orbital insertion shifts into quiet dread when passive IR shows an already-occupied graveyard.",
+      "task": "Close Chapter 5 on the completion of the capture burn and the passive IR contact in Graveyard-4, leaving 2 m/s in Tank B.",
+      "criteria": [
+        "Accounts for the 14 m/s starting margin minus the ~12 m/s capture burn (leaving ~2 m/s).",
+        "Maintains first-person POV and hard-SF instrument discipline.",
+        "Ends on a concrete instrument observation, not a generic 'what tomorrow would bring' cliché."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "Dax logged 14.2 m/s remaining in Tank B."
+        },
+        {
+          "book": 1,
+          "chapter": 5,
+          "summary": "They discovered the Vespera's transponder was forged in Week 44."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Shearwater flight deck",
+          "kind": "spacecraft_interior",
+          "summary": "Two acceleration couches facing the radar/bolometer hood."
+        },
+        "in_world_time": {
+          "day": 16,
+          "time_of_day": "Transfer Hour 24 (Apogee Capture)",
+          "anchor_note": "12.1 m/s braking burn execution."
+        },
+        "hard_constraints": [
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Tank B starts at 14.2 m/s; capture burn uses 12.1 m/s, leaving 2.1 m/s."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 16, Hour 24 apogee capture."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Solenne Vance",
+            "role": "protagonist",
+            "current_state": "Strapped into left couch, hand on the manual cutoff guard.",
+            "voice": "First-person, terse.",
+            "knows": [
+              "2.1 m/s is barely enough to undock."
+            ],
+            "does_not_know": [
+              "Whose ship is radiating at 310 K in Sector C."
+            ]
+          },
+          {
+            "name": "Dax",
+            "role": "navigator",
+            "current_state": "Calling accelerometer ticks from the right couch.",
+            "voice": "Measured.",
+            "knows": [],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "'Inertial platform locked,' Dax said. 'Twelve point one meters per second on the clock. Igniter armed.'",
+        "context_markdown": "# Scene Context — Kessler Ledger (PJ10: Brake burn at Graveyard-4)\n\n## Current Placement\n- Project: Kessler Ledger (`proj_orbital_salvage`)\n- Genre: science fiction\n- Target: Book 1, Chapter 5, Scene 3\n- Scene Type: chapter-closer\n- POV: Solenne Vance (first_person)\n- Voice Profile: Taut, physical, grounded in g-load and radar return numbers.\n\n## Reader Contract\n- Promise: Hard orbital-salvage SF. Delta-v, suit oxygen, and momentum are strict; no inertialess spaceflight.\n\n## Scene Plan & Purpose\n- Scene Purpose: Close Chapter 5 as the Shearwater completes its 12 m/s capture burn into Graveyard-4 and picks up two warm radiator signatures where only cold derelicts should be.\n- Required Dramatic Turn: Successful orbital insertion shifts into quiet dread when passive IR shows an already-occupied graveyard.\n- Drafting Task: Close Chapter 5 on the completion of the capture burn and the passive IR contact in Graveyard-4, leaving 2 m/s in Tank B.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 16, Transfer Hour 24 (Apogee Capture) (12.1 m/s braking burn execution.) at Shearwater flight deck.\n- **[LOCATION]**: Shearwater flight deck (spacecraft_interior) — Two acceleration couches facing the radar/bolometer hood.\n- **[WEALTH/STATE]**: Tank B starts at 14.2 m/s; capture burn uses 12.1 m/s, leaving 2.1 m/s.\n\n## Characters Present (Subject Snapshots)\n- **Solenne Vance** (protagonist): Strapped into left couch, hand on the manual cutoff guard. | Voice: First-person, terse. | Knows: 2.1 m/s is barely enough to undock. | Withheld/Does NOT know: Whose ship is radiating at 310 K in Sector C.\n- **Dax** (navigator): Calling accelerometer ticks from the right couch. | Voice: Measured. | Knows: Standard scene awareness. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 4: Dax logged 14.2 m/s remaining in Tank B.\n- Book 1 Ch 5: They discovered the Vespera's transponder was forged in Week 44.\n\n## Previous Scene (closing)\n'Inertial platform locked,' Dax said. 'Twelve point one meters per second on the clock. Igniter armed.'\n\n## Continuity & Craft Checklist\n- Accounts for the 14 m/s starting margin minus the ~12 m/s capture burn (leaving ~2 m/s).\n- Maintains first-person POV and hard-SF instrument discipline.\n- Ends on a concrete instrument observation, not a generic 'what tomorrow would bring' cliché."
+      }
+    },
+    {
+      "id": "PJ11",
+      "name": "Foot-chase across the lime-barge locks",
+      "project_id": "proj_canal_noir",
+      "project_name": "Low-Water Warrant",
+      "genre": "noir mystery",
+      "scene_type": "action",
+      "pov": {
+        "character": "Inspector Toma Vane",
+        "perspective": "first_person",
+        "voice_profile": "World-weary municipal investigator; notices wet wool weight, lamp oil, and bad knee cartilage."
+      },
+      "contract": "Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.",
+      "target": [
+        1,
+        2,
+        2
+      ],
+      "scene_purpose": "Chasing the customs runner across the unrailed lime-barges in dense canal fog, Vane catches the runner's satchel on a boat-hook but lets the man go rather than drown him in the caustic lime-wash.",
+      "tension_turn": "Pursuit turns into a split-second moral choice between capturing the suspect and pulling him clear of the slaked-lime hold.",
+      "task": "Write Vane's pursuit across the lime-barges in first-person POV, securing the oilskin ledger while hauling the runner out of the caustic hold.",
+      "criteria": [
+        "First-person POV with Vane's dry, physical noir voice (bad left knee, canal fog).",
+        "Secures the oilskin ledger satchel while preventing the runner from blinding/drowning in the wet lime.",
+        "Action stays grounded and physical."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Vane found the harbor-clerk dead and the duplicate tonnage ledger missing."
+        }
+      ],
+      "rules": [
+        [
+          "Quicklime hazard",
+          "Open lime-scows react violently with moisture; contact blinds or burns skin."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "St. Jude Lime-Wharf",
+          "kind": "industrial_canal",
+          "summary": "Three moored open-hold lime scows steaming in freezing canal drizzle."
+        },
+        "in_world_time": {
+          "day": 1,
+          "time_of_day": "02:15 AM, low water",
+          "anchor_note": "Two hours after the harbor-office break-in."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 1, 02:15 AM in freezing drizzle at St. Jude Lime-Wharf."
+          },
+          {
+            "id": "WORLD RULE",
+            "statement": "Quicklime scows boil on contact with canal water; falling into an open hold causes severe chemical burns."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Inspector Toma Vane",
+            "role": "protagonist",
+            "current_state": "Left knee swollen from the seawall drop, carrying an ash-wood boat hook.",
+            "voice": "First-person, dry, unsentimental.",
+            "knows": [
+              "The runner is carrying the custom-house duplicate stamp book."
+            ],
+            "does_not_know": [
+              "Who paid the runner five florins."
+            ]
+          },
+          {
+            "name": "Rafe (Customs Runner)",
+            "role": "suspect",
+            "current_state": "Panicked, barefoot on frosted tarpaulin.",
+            "voice": "Breathless street cant.",
+            "knows": [
+              "Who hired him."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Ahead in the yellow fog, a tarpaulin hook tore loose with a pistol-crack of frozen canvas.",
+        "context_markdown": "# Scene Context — Low-Water Warrant (PJ11: Foot-chase across the lime-barge locks)\n\n## Current Placement\n- Project: Low-Water Warrant (`proj_canal_noir`)\n- Genre: noir mystery\n- Target: Book 1, Chapter 2, Scene 2\n- Scene Type: action\n- POV: Inspector Toma Vane (first_person)\n- Voice Profile: World-weary municipal investigator; notices wet wool weight, lamp oil, and bad knee cartilage.\n\n## Reader Contract\n- Promise: Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.\n\n## Scene Plan & Purpose\n- Scene Purpose: Chasing the customs runner across the unrailed lime-barges in dense canal fog, Vane catches the runner's satchel on a boat-hook but lets the man go rather than drown him in the caustic lime-wash.\n- Required Dramatic Turn: Pursuit turns into a split-second moral choice between capturing the suspect and pulling him clear of the slaked-lime hold.\n- Drafting Task: Write Vane's pursuit across the lime-barges in first-person POV, securing the oilskin ledger while hauling the runner out of the caustic hold.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 1, 02:15 AM, low water (Two hours after the harbor-office break-in.) at St. Jude Lime-Wharf.\n- **[LOCATION]**: St. Jude Lime-Wharf (industrial_canal) — Three moored open-hold lime scows steaming in freezing canal drizzle.\n- **[WORLD RULE]**: Quicklime scows boil on contact with canal water; falling into an open hold causes severe chemical burns.\n- **[WORLD RULE: Quicklime hazard]**: Open lime-scows react violently with moisture; contact blinds or burns skin.\n\n## Characters Present (Subject Snapshots)\n- **Inspector Toma Vane** (protagonist): Left knee swollen from the seawall drop, carrying an ash-wood boat hook. | Voice: First-person, dry, unsentimental. | Knows: The runner is carrying the custom-house duplicate stamp book. | Withheld/Does NOT know: Who paid the runner five florins.\n- **Rafe (Customs Runner)** (suspect): Panicked, barefoot on frosted tarpaulin. | Voice: Breathless street cant. | Knows: Who hired him. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: Vane found the harbor-clerk dead and the duplicate tonnage ledger missing.\n\n## Previous Scene (closing)\nAhead in the yellow fog, a tarpaulin hook tore loose with a pistol-crack of frozen canvas.\n\n## Continuity & Craft Checklist\n- First-person POV with Vane's dry, physical noir voice (bad left knee, canal fog).\n- Secures the oilskin ledger satchel while preventing the runner from blinding/drowning in the wet lime.\n- Action stays grounded and physical."
+      }
+    },
+    {
+      "id": "PJ12",
+      "name": "Interrogation over the double-stamped manifest",
+      "project_id": "proj_canal_noir",
+      "project_name": "Low-Water Warrant",
+      "genre": "noir mystery",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Clerk Belen",
+        "perspective": "close_third",
+        "voice_profile": "Meticulous, anxious, observant of ink iron-gall oxidation and bureaucratic rank."
+      },
+      "contract": "Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.",
+      "target": [
+        1,
+        3,
+        1
+      ],
+      "scene_purpose": "Harbor-master Orlov pressures Clerk Belen to backdate a quarantine clearance, while Vane sits in the corner pretending to dry his coat; Belen slips Vane the true barge number through a seemingly pedantic question about ink-blotter dates.",
+      "tension_turn": "Intimidation in front of the inspector becomes a covert evidence handoff disguised as clerical fussiness.",
+      "task": "Write the three-way scene in the registry room from Belen's close-third POV as he signals the forged barge number to Vane under Orlov's nose.",
+      "criteria": [
+        "Close-third POV anchored to Belen's clerical anxieties and knowledge of ledger ink.",
+        "Respects the secret-in-play: Orlov does not know Belen already copied Folio 19.",
+        "Belen communicates the clue through dialogue about ledger procedure rather than breaking cover."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Vane recovered the water-stained duplicate ledger from the lime-wharf."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Harbor Registry Counting-House",
+          "kind": "office",
+          "summary": "High sloped mahogany desks, brass gas-jets hissing, smell of iron-gall ink and coal damp."
+        },
+        "in_world_time": {
+          "day": 1,
+          "time_of_day": "08:30 AM",
+          "anchor_note": "Morning after the lime-wharf chase; Vane's coat still steaming by the stove."
+        },
+        "hard_constraints": [
+          {
+            "id": "SECRETS IN PLAY",
+            "statement": "Secret holder: Belen (and Vane). Unaware: Orlov. Belen copied the forged Folio 19 before Orlov arrived; dialogue must not alert Orlov directly."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 1, 08:30 AM in the Harbor Registry."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Clerk Belen",
+            "role": "protagonist",
+            "current_state": "Holding a steel nib over the quarantine register, cuffs pinned neat.",
+            "voice": "Fussy, deferential on the surface, razor-exact about dates.",
+            "knows": [
+              "Folio 19 lists Barge 44 under two different tonnages.",
+              "Orlov's signet wax is on the lower entry."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Harbor-master Orlov",
+            "role": "antagonist",
+            "current_state": "Standing too close to Belen's elbow, smelling of clove brandy.",
+            "voice": "Booming, paternalistic threat.",
+            "knows": [
+              "He wants the Tuesday quarantine line struck out."
+            ],
+            "does_not_know": [
+              "That Belen already passed the blotter sheet to Vane's hat-brim."
+            ]
+          },
+          {
+            "name": "Inspector Toma Vane",
+            "role": "ally",
+            "current_state": "Sitting by the coke stove, nursing his knee.",
+            "voice": "Lazily interruptions.",
+            "knows": [
+              "Watching for Belen's pointer."
+            ],
+            "does_not_know": [
+              "Which barge number on Folio 19 carries the contraband."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Orlov laid two thick fingers on the corner of the blotter. 'Strike the Tuesday entry, Belen. The inspector doesn't care about clerical smudges.'",
+        "context_markdown": "# Scene Context — Low-Water Warrant (PJ12: Interrogation over the double-stamped manifest)\n\n## Current Placement\n- Project: Low-Water Warrant (`proj_canal_noir`)\n- Genre: noir mystery\n- Target: Book 1, Chapter 3, Scene 1\n- Scene Type: dialogue-heavy\n- POV: Clerk Belen (close_third)\n- Voice Profile: Meticulous, anxious, observant of ink iron-gall oxidation and bureaucratic rank.\n\n## Reader Contract\n- Promise: Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.\n\n## Scene Plan & Purpose\n- Scene Purpose: Harbor-master Orlov pressures Clerk Belen to backdate a quarantine clearance, while Vane sits in the corner pretending to dry his coat; Belen slips Vane the true barge number through a seemingly pedantic question about ink-blotter dates.\n- Required Dramatic Turn: Intimidation in front of the inspector becomes a covert evidence handoff disguised as clerical fussiness.\n- Drafting Task: Write the three-way scene in the registry room from Belen's close-third POV as he signals the forged barge number to Vane under Orlov's nose.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 1, 08:30 AM (Morning after the lime-wharf chase; Vane's coat still steaming by the stove.) at Harbor Registry Counting-House.\n- **[LOCATION]**: Harbor Registry Counting-House (office) — High sloped mahogany desks, brass gas-jets hissing, smell of iron-gall ink and coal damp.\n- **[SECRETS IN PLAY]**: Secret holder: Belen (and Vane). Unaware: Orlov. Belen copied the forged Folio 19 before Orlov arrived; dialogue must not alert Orlov directly.\n\n## Characters Present (Subject Snapshots)\n- **Clerk Belen** (protagonist): Holding a steel nib over the quarantine register, cuffs pinned neat. | Voice: Fussy, deferential on the surface, razor-exact about dates. | Knows: Folio 19 lists Barge 44 under two different tonnages.; Orlov's signet wax is on the lower entry. | Withheld/Does NOT know: None specified.\n- **Harbor-master Orlov** (antagonist): Standing too close to Belen's elbow, smelling of clove brandy. | Voice: Booming, paternalistic threat. | Knows: He wants the Tuesday quarantine line struck out. | Withheld/Does NOT know: That Belen already passed the blotter sheet to Vane's hat-brim.\n- **Inspector Toma Vane** (ally): Sitting by the coke stove, nursing his knee. | Voice: Lazily interruptions. | Knows: Watching for Belen's pointer. | Withheld/Does NOT know: Which barge number on Folio 19 carries the contraband.\n\n## Recent Story History\n- Book 1 Ch 2: Vane recovered the water-stained duplicate ledger from the lime-wharf.\n\n## Previous Scene (closing)\nOrlov laid two thick fingers on the corner of the blotter. 'Strike the Tuesday entry, Belen. The inspector doesn't care about clerical smudges.'\n\n## Continuity & Craft Checklist\n- Close-third POV anchored to Belen's clerical anxieties and knowledge of ledger ink.\n- Respects the secret-in-play: Orlov does not know Belen already copied Folio 19.\n- Belen communicates the clue through dialogue about ledger procedure rather than breaking cover."
+      }
+    },
+    {
+      "id": "PJ13",
+      "name": "Counting the dead clerk's effects",
+      "project_id": "proj_canal_noir",
+      "project_name": "Low-Water Warrant",
+      "genre": "noir mystery",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Inspector Toma Vane",
+        "perspective": "first_person",
+        "voice_profile": "Unsentimental, observant; reads a life's poverty and integrity from pocket contents."
+      },
+      "contract": "Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.",
+      "target": [
+        1,
+        3,
+        2
+      ],
+      "scene_purpose": "Alone in the basement property locker at dusk, Vane inventories the murdered clerk's cheap tin watch and three bone buttons, realizing the dead man refused a five-florin bribe despite having a pawn ticket due.",
+      "tension_turn": "Routine property logging deepens Vane's personal stake when the pawn ticket proves the dead clerk died poor on purpose.",
+      "task": "Write Vane's quiet inventory of the dead clerk's effects in the basement locker, turning on the unredeemed pawn ticket.",
+      "criteria": [
+        "First-person POV in Vane's restrained noir register.",
+        "Catalogs specific physical items (tin watch, bone collar-stud, unredeemed pawn ticket).",
+        "Avoids melodramatic speeches or 'emotion cocktail' cliches."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Junior Clerk Mercer was pulled from Basin 3 with his wooden ruler still buttoned in his vest."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Magistrates' Court Basement Property Cage",
+          "kind": "interior",
+          "summary": "Whitewashed brick vault under the canal level; damp saltpeter on the mortar."
+        },
+        "in_world_time": {
+          "day": 1,
+          "time_of_day": "17:45 PM",
+          "anchor_note": "End of Day 1 shift; gas-jet turned to a quarter-flame."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 1, 17:45 PM in the basement property cage."
+          },
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Dead clerk's purse contained 3 brass farthings and an overdue 2-florin pawn ticket for a winter coat."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Inspector Toma Vane",
+            "role": "protagonist",
+            "current_state": "Alone at the zinc table, entering Property Bag 114.",
+            "voice": "First-person, quiet, spare.",
+            "knows": [
+              "Standard dockside hush-money for a falsified lock-sheet is five silver florins."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The turnkey locked the outer grate and left his boots echoing up the stone steps toward street level.",
+        "context_markdown": "# Scene Context — Low-Water Warrant (PJ13: Counting the dead clerk's effects)\n\n## Current Placement\n- Project: Low-Water Warrant (`proj_canal_noir`)\n- Genre: noir mystery\n- Target: Book 1, Chapter 3, Scene 2\n- Scene Type: quiet-interior\n- POV: Inspector Toma Vane (first_person)\n- Voice Profile: Unsentimental, observant; reads a life's poverty and integrity from pocket contents.\n\n## Reader Contract\n- Promise: Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.\n\n## Scene Plan & Purpose\n- Scene Purpose: Alone in the basement property locker at dusk, Vane inventories the murdered clerk's cheap tin watch and three bone buttons, realizing the dead man refused a five-florin bribe despite having a pawn ticket due.\n- Required Dramatic Turn: Routine property logging deepens Vane's personal stake when the pawn ticket proves the dead clerk died poor on purpose.\n- Drafting Task: Write Vane's quiet inventory of the dead clerk's effects in the basement locker, turning on the unredeemed pawn ticket.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 1, 17:45 PM (End of Day 1 shift; gas-jet turned to a quarter-flame.) at Magistrates' Court Basement Property Cage.\n- **[LOCATION]**: Magistrates' Court Basement Property Cage (interior) — Whitewashed brick vault under the canal level; damp saltpeter on the mortar.\n- **[WEALTH/STATE]**: Dead clerk's purse contained 3 brass farthings and an overdue 2-florin pawn ticket for a winter coat.\n\n## Characters Present (Subject Snapshots)\n- **Inspector Toma Vane** (protagonist): Alone at the zinc table, entering Property Bag 114. | Voice: First-person, quiet, spare. | Knows: Standard dockside hush-money for a falsified lock-sheet is five silver florins. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: Junior Clerk Mercer was pulled from Basin 3 with his wooden ruler still buttoned in his vest.\n\n## Previous Scene (closing)\nThe turnkey locked the outer grate and left his boots echoing up the stone steps toward street level.\n\n## Continuity & Craft Checklist\n- First-person POV in Vane's restrained noir register.\n- Catalogs specific physical items (tin watch, bone collar-stud, unredeemed pawn ticket).\n- Avoids melodramatic speeches or 'emotion cocktail' cliches."
+      }
+    },
+    {
+      "id": "PJ14",
+      "name": "The iron-gall oxidation test",
+      "project_id": "proj_canal_noir",
+      "project_name": "Low-Water Warrant",
+      "genre": "noir mystery",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Clerk Belen",
+        "perspective": "close_third",
+        "voice_profile": "Forensic, precise about paper watermarks, gall-ink blackening, and chemical reagents."
+      },
+      "contract": "Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.",
+      "target": [
+        1,
+        4,
+        2
+      ],
+      "scene_purpose": "In the apothecary's back room, Belen touches a drop of prussiate reagent to Folio 19 and proves to Vane that the Harbor-master's signature was written *before* the tonnage figure was altered, exposing the Magistrate's clerk as the second hand.",
+      "tension_turn": "The assumption that Orlov acted alone cracks when the ink layering reveals a higher judicial hand on the same line.",
+      "task": "Write Belen's ink-oxidation test on Folio 19 with Vane watching, revealing the two distinct inks and the second hand.",
+      "criteria": [
+        "Close-third POV anchored to Belen.",
+        "Reveals through concrete chemical/physical detail that two different inks/hands wrote the line.",
+        "Advances the mystery without premature omniscient spoilers."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Belen steered Vane to Scow 44 and Folio 19."
+        }
+      ],
+      "rules": [
+        [
+          "Ink reagent rule",
+          "Copperas-gall ink reacts bright blue to acid ferrocyanide; logwood court ink turns dull violet."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Apothecary Glass-Room behind Weaver's Alley",
+          "kind": "interior",
+          "summary": "Narrow stone workroom lined with blue carboys and spirit lamps."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "11:00 AM",
+          "anchor_note": "Late morning; rain drumming on the skylight."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2, 11:00 AM in the apothecary back room."
+          },
+          {
+            "id": "WORLD RULE",
+            "statement": "Fresh copperas-gall ink turns Prussian blue under ferrocyanide touch within 48 hours; aged gall ink stays brown-black."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Clerk Belen",
+            "role": "protagonist",
+            "current_state": "Steady hand with a drawn-glass capillary tube.",
+            "voice": "Absorbed, exact.",
+            "knows": [
+              "Registry desks use copperas ink; only the Magistrates' bench uses logwood-chromate ink."
+            ],
+            "does_not_know": [
+              "Which magistrate signed the release warrant."
+            ]
+          },
+          {
+            "name": "Inspector Toma Vane",
+            "role": "ally",
+            "current_state": "Holding the spirit-lamp steady.",
+            "voice": "Blunt, pragmatic.",
+            "knows": [
+              "Orlov signed the margin."
+            ],
+            "does_not_know": [
+              "The chemistry of the two inks until Belen shows him."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Vane laid the razored ledger leaf on the white porcelain slab. 'Orlov's loop on the capital O. Plain enough.'",
+        "context_markdown": "# Scene Context — Low-Water Warrant (PJ14: The iron-gall oxidation test)\n\n## Current Placement\n- Project: Low-Water Warrant (`proj_canal_noir`)\n- Genre: noir mystery\n- Target: Book 1, Chapter 4, Scene 2\n- Scene Type: reveal\n- POV: Clerk Belen (close_third)\n- Voice Profile: Forensic, precise about paper watermarks, gall-ink blackening, and chemical reagents.\n\n## Reader Contract\n- Promise: Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.\n\n## Scene Plan & Purpose\n- Scene Purpose: In the apothecary's back room, Belen touches a drop of prussiate reagent to Folio 19 and proves to Vane that the Harbor-master's signature was written *before* the tonnage figure was altered, exposing the Magistrate's clerk as the second hand.\n- Required Dramatic Turn: The assumption that Orlov acted alone cracks when the ink layering reveals a higher judicial hand on the same line.\n- Drafting Task: Write Belen's ink-oxidation test on Folio 19 with Vane watching, revealing the two distinct inks and the second hand.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, 11:00 AM (Late morning; rain drumming on the skylight.) at Apothecary Glass-Room behind Weaver's Alley.\n- **[LOCATION]**: Apothecary Glass-Room behind Weaver's Alley (interior) — Narrow stone workroom lined with blue carboys and spirit lamps.\n- **[WORLD RULE]**: Fresh copperas-gall ink turns Prussian blue under ferrocyanide touch within 48 hours; aged gall ink stays brown-black.\n- **[WORLD RULE: Ink reagent rule]**: Copperas-gall ink reacts bright blue to acid ferrocyanide; logwood court ink turns dull violet.\n\n## Characters Present (Subject Snapshots)\n- **Clerk Belen** (protagonist): Steady hand with a drawn-glass capillary tube. | Voice: Absorbed, exact. | Knows: Registry desks use copperas ink; only the Magistrates' bench uses logwood-chromate ink. | Withheld/Does NOT know: Which magistrate signed the release warrant.\n- **Inspector Toma Vane** (ally): Holding the spirit-lamp steady. | Voice: Blunt, pragmatic. | Knows: Orlov signed the margin. | Withheld/Does NOT know: The chemistry of the two inks until Belen shows him.\n\n## Recent Story History\n- Book 1 Ch 3: Belen steered Vane to Scow 44 and Folio 19.\n\n## Previous Scene (closing)\nVane laid the razored ledger leaf on the white porcelain slab. 'Orlov's loop on the capital O. Plain enough.'\n\n## Continuity & Craft Checklist\n- Close-third POV anchored to Belen.\n- Reveals through concrete chemical/physical detail that two different inks/hands wrote the line.\n- Advances the mystery without premature omniscient spoilers."
+      }
+    },
+    {
+      "id": "PJ15",
+      "name": "The floodgate warrant at midnight",
+      "project_id": "proj_canal_noir",
+      "project_name": "Low-Water Warrant",
+      "genre": "noir mystery",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Inspector Toma Vane",
+        "perspective": "first_person",
+        "voice_profile": "Dry, fatigued, observant of municipal machinery and quiet complicity."
+      },
+      "contract": "Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.",
+      "target": [
+        1,
+        4,
+        3
+      ],
+      "scene_purpose": "Close Chapter 4 at the Outer Weir as Vane serves the impound chain on Scow 44, only to find the bailiff has already opened the sea-sluice by order of the bench—leaving the barge grounded on the mudflat with its secret cargo exposed to the rising tide.",
+      "tension_turn": "An attempted cover-up by draining the basin backfires by stranding the scow's false keel above the mudline.",
+      "task": "Close Chapter 4 in Vane's first-person POV at the drained weir basin as the false keel of Scow 44 sits exposed in the mud.",
+      "criteria": [
+        "First-person POV in Vane's grounded noir voice.",
+        "Turns the drained basin into a physical revelation (the scow's false lead keel).",
+        "Closes on a concrete image without melodramatic cliches."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "Belen proved the tonnage alteration on Folio 19 was written in Magistrates' logwood ink."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Outer Weir Mud-Basin",
+          "kind": "industrial_canal",
+          "summary": "Drained stone basin smelling of river silt, rusted chains, and coal gas."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "23:50 PM",
+          "anchor_note": "Low water; sluice gates cranked open."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2, 23:50 PM at the drained Outer Weir basin."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Inspector Toma Vane",
+            "role": "protagonist",
+            "current_state": "Standing on the stone weir steps with the iron impound padlock.",
+            "voice": "First-person, dry, observant.",
+            "knows": [
+              "Folio 19 understated the barge's weight by 360 stone."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Clerk Belen",
+            "role": "ally",
+            "current_state": "Holding the bull's-eye lantern on the step above.",
+            "voice": "Quietly awed by the physical proof of his math.",
+            "knows": [
+              "A flat-bottomed lime scow should draw only fourteen inches."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The night watchman spat over the coping. 'Came down with a bench order at ten, Inspector. Drained the whole pound to flush the silt.'",
+        "context_markdown": "# Scene Context — Low-Water Warrant (PJ15: The floodgate warrant at midnight)\n\n## Current Placement\n- Project: Low-Water Warrant (`proj_canal_noir`)\n- Genre: noir mystery\n- Target: Book 1, Chapter 4, Scene 3\n- Scene Type: chapter-closer\n- POV: Inspector Toma Vane (first_person)\n- Voice Profile: Dry, fatigued, observant of municipal machinery and quiet complicity.\n\n## Reader Contract\n- Promise: Gaslamp canal-city noir. Clues are physical, violence is clumsy and costly, and municipal corruption runs on double-entry ledgers.\n\n## Scene Plan & Purpose\n- Scene Purpose: Close Chapter 4 at the Outer Weir as Vane serves the impound chain on Scow 44, only to find the bailiff has already opened the sea-sluice by order of the bench—leaving the barge grounded on the mudflat with its secret cargo exposed to the rising tide.\n- Required Dramatic Turn: An attempted cover-up by draining the basin backfires by stranding the scow's false keel above the mudline.\n- Drafting Task: Close Chapter 4 in Vane's first-person POV at the drained weir basin as the false keel of Scow 44 sits exposed in the mud.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, 23:50 PM (Low water; sluice gates cranked open.) at Outer Weir Mud-Basin.\n- **[LOCATION]**: Outer Weir Mud-Basin (industrial_canal) — Drained stone basin smelling of river silt, rusted chains, and coal gas.\n\n## Characters Present (Subject Snapshots)\n- **Inspector Toma Vane** (protagonist): Standing on the stone weir steps with the iron impound padlock. | Voice: First-person, dry, observant. | Knows: Folio 19 understated the barge's weight by 360 stone. | Withheld/Does NOT know: None specified.\n- **Clerk Belen** (ally): Holding the bull's-eye lantern on the step above. | Voice: Quietly awed by the physical proof of his math. | Knows: A flat-bottomed lime scow should draw only fourteen inches. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 4: Belen proved the tonnage alteration on Folio 19 was written in Magistrates' logwood ink.\n\n## Previous Scene (closing)\nThe night watchman spat over the coping. 'Came down with a bench order at ten, Inspector. Drained the whole pound to flush the silt.'\n\n## Continuity & Craft Checklist\n- First-person POV in Vane's grounded noir voice.\n- Turns the drained basin into a physical revelation (the scow's false lead keel).\n- Closes on a concrete image without melodramatic cliches."
+      }
+    },
+    {
+      "id": "PJ16",
+      "name": "Poisoned salt-cup on the gallery stair",
+      "project_id": "proj_ash_court",
+      "project_name": "Treaty of Cinders",
+      "genre": "political intrigue",
+      "scene_type": "action",
+      "pov": {
+        "character": "Envoy Kestrel",
+        "perspective": "third_limited",
+        "voice_profile": "Diplomatic precision under physical threat; tracks court protocol even during an ambush."
+      },
+      "contract": "Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.",
+      "target": [
+        1,
+        3,
+        1
+      ],
+      "scene_purpose": "When a court cupbearer tries to jostle Envoy Kestrel over the unrailed gallery stair while spilling the bitter-ash guest cup, Kestrel pins the assassin with her scabbard-tip without drawing steel (which would breach truce-law) and forces him to drink half the spilled cup.",
+      "tension_turn": "An 'accidental' stair-fall assassination is reversed into a protocol-legal truce compliance check.",
+      "task": "Write the gallery-stair ambush from Kestrel's third-limited POV, keeping her blade sheathed to honor truce-law while turning the cupbearer's momentum.",
+      "criteria": [
+        "Kestrel does NOT bare her steel blade (world rule: bare steel in the salt-hall forfeits the embassy's truce).",
+        "Third-limited POV with Kestrel's measured diplomatic register.",
+        "Resolves the ambush through leverage and protocol."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Regent Soren warned that two border lords wanted the treaty voided on a technicality."
+        }
+      ],
+      "rules": [
+        [
+          "Truce-iron clause",
+          "Drawing bare steel inside the Salt-Hall voids the embassy's bond immediately."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Upper Salt-Gallery Stair",
+          "kind": "palace",
+          "summary": "Polished black marble steps above the treaty floor, lit by resin torches."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "first banquet bell",
+          "anchor_note": "Minutes before the salt-ratification toast."
+        },
+        "hard_constraints": [
+          {
+            "id": "WORLD RULE",
+            "statement": "Truce-iron clause: Any envoy who draws bare steel within the Salt-Hall forfeits their sovereign's border deposit."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2 evening, first banquet bell."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Envoy Kestrel",
+            "role": "protagonist",
+            "current_state": "Climbing the marble turn in stiff embassy brocade, peace-cord tied over her hilt.",
+            "voice": "Cool, observant, protocol-fluent.",
+            "knows": [
+              "Bitter-ash oil smells of bruised almond."
+            ],
+            "does_not_know": [
+              "Which councillor bribed the cupbearer."
+            ]
+          },
+          {
+            "name": "Cupbearer Venn",
+            "role": "assassin",
+            "current_state": "Approaching down-stair with a silver guest-goblet.",
+            "voice": "Feign-clumsy deference.",
+            "knows": [],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The silver peace-cord around Kestrel's sword-throat had been inspected and wax-sealed at the outer doors.",
+        "context_markdown": "# Scene Context — Treaty of Cinders (PJ16: Poisoned salt-cup on the gallery stair)\n\n## Current Placement\n- Project: Treaty of Cinders (`proj_ash_court`)\n- Genre: political intrigue\n- Target: Book 1, Chapter 3, Scene 1\n- Scene Type: action\n- POV: Envoy Kestrel (third_limited)\n- Voice Profile: Diplomatic precision under physical threat; tracks court protocol even during an ambush.\n\n## Reader Contract\n- Promise: Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.\n\n## Scene Plan & Purpose\n- Scene Purpose: When a court cupbearer tries to jostle Envoy Kestrel over the unrailed gallery stair while spilling the bitter-ash guest cup, Kestrel pins the assassin with her scabbard-tip without drawing steel (which would breach truce-law) and forces him to drink half the spilled cup.\n- Required Dramatic Turn: An 'accidental' stair-fall assassination is reversed into a protocol-legal truce compliance check.\n- Drafting Task: Write the gallery-stair ambush from Kestrel's third-limited POV, keeping her blade sheathed to honor truce-law while turning the cupbearer's momentum.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, first banquet bell (Minutes before the salt-ratification toast.) at Upper Salt-Gallery Stair.\n- **[LOCATION]**: Upper Salt-Gallery Stair (palace) — Polished black marble steps above the treaty floor, lit by resin torches.\n- **[WORLD RULE]**: Truce-iron clause: Any envoy who draws bare steel within the Salt-Hall forfeits their sovereign's border deposit.\n- **[WORLD RULE: Truce-iron clause]**: Drawing bare steel inside the Salt-Hall voids the embassy's bond immediately.\n\n## Characters Present (Subject Snapshots)\n- **Envoy Kestrel** (protagonist): Climbing the marble turn in stiff embassy brocade, peace-cord tied over her hilt. | Voice: Cool, observant, protocol-fluent. | Knows: Bitter-ash oil smells of bruised almond. | Withheld/Does NOT know: Which councillor bribed the cupbearer.\n- **Cupbearer Venn** (assassin): Approaching down-stair with a silver guest-goblet. | Voice: Feign-clumsy deference. | Knows: Standard scene awareness. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 2: Regent Soren warned that two border lords wanted the treaty voided on a technicality.\n\n## Previous Scene (closing)\nThe silver peace-cord around Kestrel's sword-throat had been inspected and wax-sealed at the outer doors.\n\n## Continuity & Craft Checklist\n- Kestrel does NOT bare her steel blade (world rule: bare steel in the salt-hall forfeits the embassy's truce).\n- Third-limited POV with Kestrel's measured diplomatic register.\n- Resolves the ambush through leverage and protocol."
+      }
+    },
+    {
+      "id": "PJ17",
+      "name": "Clause Seven in the cedar solar",
+      "project_id": "proj_ash_court",
+      "project_name": "Treaty of Cinders",
+      "genre": "political intrigue",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Regent Soren",
+        "perspective": "close_third",
+        "voice_profile": "Tired statesman counting grain wagons and winter garrisons; allergic to chivalric postures."
+      },
+      "contract": "Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.",
+      "target": [
+        1,
+        3,
+        2
+      ],
+      "scene_purpose": "In the private cedar solar after the stair incident, Regent Soren and Envoy Kestrel trade concessions over Clause Seven: Soren admits his treasury cannot pay the silver indemnity and offers the timber-floating rights instead.",
+      "tension_turn": "Diplomatic bluffing gives way to a real material bargain once both sides drop the pretense of full treasuries.",
+      "task": "Write the private negotiation between Regent Soren and Envoy Kestrel from Soren's close-third POV, turning on the silver-for-timber swap.",
+      "criteria": [
+        "Close-third POV anchored to Soren's pragmatic fiscal calculations.",
+        "Honors the wealth constraint: Soren's vault holds less than 400 marks of silver.",
+        "Distinct voices between weary Soren and crisp Kestrel."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Kestrel survived the gallery-stair ambush without breaking truce-iron."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "The Regent's Cedar Solar",
+          "kind": "palace",
+          "summary": "Small panelled chamber warmed by a tile stove; parchment maps weighted with lead shot."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "late evening",
+          "anchor_note": "One hour after the gallery stair incident."
+        },
+        "hard_constraints": [
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Crown vault holds 380 silver marks; Clause Seven demands 2,000 marks."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2 late evening in the Cedar Solar."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Regent Soren",
+            "role": "protagonist",
+            "current_state": "Rubbing winter-stiff knuckles by the tile stove.",
+            "voice": "Blunt, arithmetical, dryly self-deprecating.",
+            "knows": [
+              "The crown vault has only 380 marks left."
+            ],
+            "does_not_know": [
+              "That Kestrel's shipyards desperately need tall-mast fir more than silver."
+            ]
+          },
+          {
+            "name": "Envoy Kestrel",
+            "role": "counterpart",
+            "current_state": "Unbuttoning her almond-stained outer cuff.",
+            "voice": "Crisp, economical.",
+            "knows": [
+              "Her admiralty is three hundred masts short for spring launch."
+            ],
+            "does_not_know": [
+              "How empty Soren's vault truly is until he shows the tally."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Soren shut the double cedar door and dropped the iron latch-bar himself.",
+        "context_markdown": "# Scene Context — Treaty of Cinders (PJ17: Clause Seven in the cedar solar)\n\n## Current Placement\n- Project: Treaty of Cinders (`proj_ash_court`)\n- Genre: political intrigue\n- Target: Book 1, Chapter 3, Scene 2\n- Scene Type: dialogue-heavy\n- POV: Regent Soren (close_third)\n- Voice Profile: Tired statesman counting grain wagons and winter garrisons; allergic to chivalric postures.\n\n## Reader Contract\n- Promise: Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.\n\n## Scene Plan & Purpose\n- Scene Purpose: In the private cedar solar after the stair incident, Regent Soren and Envoy Kestrel trade concessions over Clause Seven: Soren admits his treasury cannot pay the silver indemnity and offers the timber-floating rights instead.\n- Required Dramatic Turn: Diplomatic bluffing gives way to a real material bargain once both sides drop the pretense of full treasuries.\n- Drafting Task: Write the private negotiation between Regent Soren and Envoy Kestrel from Soren's close-third POV, turning on the silver-for-timber swap.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, late evening (One hour after the gallery stair incident.) at The Regent's Cedar Solar.\n- **[LOCATION]**: The Regent's Cedar Solar (palace) — Small panelled chamber warmed by a tile stove; parchment maps weighted with lead shot.\n- **[WEALTH/STATE]**: Crown vault holds 380 silver marks; Clause Seven demands 2,000 marks.\n\n## Characters Present (Subject Snapshots)\n- **Regent Soren** (protagonist): Rubbing winter-stiff knuckles by the tile stove. | Voice: Blunt, arithmetical, dryly self-deprecating. | Knows: The crown vault has only 380 marks left. | Withheld/Does NOT know: That Kestrel's shipyards desperately need tall-mast fir more than silver.\n- **Envoy Kestrel** (counterpart): Unbuttoning her almond-stained outer cuff. | Voice: Crisp, economical. | Knows: Her admiralty is three hundred masts short for spring launch. | Withheld/Does NOT know: How empty Soren's vault truly is until he shows the tally.\n\n## Recent Story History\n- Book 1 Ch 3: Kestrel survived the gallery-stair ambush without breaking truce-iron.\n\n## Previous Scene (closing)\nSoren shut the double cedar door and dropped the iron latch-bar himself.\n\n## Continuity & Craft Checklist\n- Close-third POV anchored to Soren's pragmatic fiscal calculations.\n- Honors the wealth constraint: Soren's vault holds less than 400 marks of silver.\n- Distinct voices between weary Soren and crisp Kestrel."
+      }
+    },
+    {
+      "id": "PJ18",
+      "name": "Burning the private cipher before matins",
+      "project_id": "proj_ash_court",
+      "project_name": "Treaty of Cinders",
+      "genre": "political intrigue",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Envoy Kestrel",
+        "perspective": "third_limited",
+        "voice_profile": "Disciplined, unsentimental; weighs personal loyalty against state craft through small precise rituals."
+      },
+      "contract": "Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.",
+      "target": [
+        1,
+        4,
+        1
+      ],
+      "scene_purpose": "Alone in the embassy guest-chamber before dawn, Kestrel burns her brother's treasonous warning letter in the candle dish leaf by leaf, choosing to protect the timber treaty rather than warn him of Soren's audit.",
+      "tension_turn": "Private familial loyalty yields to hard diplomatic duty as the last cipher line curls into ash.",
+      "task": "Write Kestrel's quiet pre-dawn scene burning the cipher letter in her chamber, conveying the cost of her choice without melodrama.",
+      "criteria": [
+        "Third-limited POV closely anchored to Kestrel.",
+        "Grounded in physical action (parchment ash, brass candle-dish, cold window-glass).",
+        "Shows her choice to let the audit proceed without soap-opera monologuing."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Soren handed over the cupbearer's baggage, which contained a pass sealed in Kestrel's own province."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Embassy West Tower Chamber",
+          "kind": "palace",
+          "summary": "Drafty stone bedchamber with leaded casements and a brass night-candlestick."
+        },
+        "in_world_time": {
+          "day": 3,
+          "time_of_day": "one hour before dawn",
+          "anchor_note": "Before the treaty-signing convocation."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 3, one hour before dawn in the West Tower."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Envoy Kestrel",
+            "role": "protagonist",
+            "current_state": "Dressed for travel, kneeling by the brass candle-pan.",
+            "voice": "Controlled, observant.",
+            "knows": [
+              "Her brother's seal-ring stamped the cupbearer's travel pass."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The wax impression in the oilskin pouch bore the three-heron crest of her brother's customs house.",
+        "context_markdown": "# Scene Context — Treaty of Cinders (PJ18: Burning the private cipher before matins)\n\n## Current Placement\n- Project: Treaty of Cinders (`proj_ash_court`)\n- Genre: political intrigue\n- Target: Book 1, Chapter 4, Scene 1\n- Scene Type: quiet-interior\n- POV: Envoy Kestrel (third_limited)\n- Voice Profile: Disciplined, unsentimental; weighs personal loyalty against state craft through small precise rituals.\n\n## Reader Contract\n- Promise: Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.\n\n## Scene Plan & Purpose\n- Scene Purpose: Alone in the embassy guest-chamber before dawn, Kestrel burns her brother's treasonous warning letter in the candle dish leaf by leaf, choosing to protect the timber treaty rather than warn him of Soren's audit.\n- Required Dramatic Turn: Private familial loyalty yields to hard diplomatic duty as the last cipher line curls into ash.\n- Drafting Task: Write Kestrel's quiet pre-dawn scene burning the cipher letter in her chamber, conveying the cost of her choice without melodrama.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 3, one hour before dawn (Before the treaty-signing convocation.) at Embassy West Tower Chamber.\n- **[LOCATION]**: Embassy West Tower Chamber (palace) — Drafty stone bedchamber with leaded casements and a brass night-candlestick.\n\n## Characters Present (Subject Snapshots)\n- **Envoy Kestrel** (protagonist): Dressed for travel, kneeling by the brass candle-pan. | Voice: Controlled, observant. | Knows: Her brother's seal-ring stamped the cupbearer's travel pass. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 3: Soren handed over the cupbearer's baggage, which contained a pass sealed in Kestrel's own province.\n\n## Previous Scene (closing)\nThe wax impression in the oilskin pouch bore the three-heron crest of her brother's customs house.\n\n## Continuity & Craft Checklist\n- Third-limited POV closely anchored to Kestrel.\n- Grounded in physical action (parchment ash, brass candle-dish, cold window-glass).\n- Shows her choice to let the audit proceed without soap-opera monologuing."
+      }
+    },
+    {
+      "id": "PJ19",
+      "name": "The salt-cellar hallmark",
+      "project_id": "proj_ash_court",
+      "project_name": "Treaty of Cinders",
+      "genre": "political intrigue",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Regent Soren",
+        "perspective": "close_third",
+        "voice_profile": "Dry, historical-minded; reads goldsmith marks and family marriages like an archivist."
+      },
+      "contract": "Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.",
+      "target": [
+        1,
+        4,
+        2
+      ],
+      "scene_purpose": "Inspecting the ceremonial salt-cellar before the noon ratification, Soren discovers the bottom silver plate was switched for pewter alloy—meaning Lady Corin plans to claim the oath-vessel was impure and the treaty void from the moment of signing.",
+      "tension_turn": "Both passages execute this discovery with strong craft and continuity; this brief serves as a closely matched tie case.",
+      "task": "Write Soren's inspection of the ceremonial salt-cellar before the noon convocation, revealing the pewter base swap.",
+      "criteria": [
+        "Close-third POV anchored to Soren.",
+        "Reveals the physical hallmark/alloy swap that would legally invalidate the salt-oath.",
+        "Grounded in court ritual and metalwork detail."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "Soren and Kestrel agreed on the timber-for-silver terms at dawn."
+        }
+      ],
+      "rules": [
+        [
+          "Assay purity rule",
+          "Any oath sworn over un-assayed or base-metal vessels is null under canon law."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Sacristy of the Salt-Hall",
+          "kind": "palace",
+          "summary": "Vaulted stone vestry with linen-draped trestles and silver scales."
+        },
+        "in_world_time": {
+          "day": 3,
+          "time_of_day": "thirty minutes before noon",
+          "anchor_note": "Envoys assembling in the main hall outside."
+        },
+        "hard_constraints": [
+          {
+            "id": "WORLD RULE",
+            "statement": "Treaty salt must be offered in sterling silver bearing the King's Assay crown; base metal voids the oath ab initio."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 3, 11:30 AM in the Sacristy."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Regent Soren",
+            "role": "protagonist",
+            "current_state": "In state wool, weighing the salt-boat in his palm.",
+            "voice": "Observant, dry.",
+            "knows": [
+              "Sterling silver rings clear; leaded pewter thuds dull."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Outside the oak vestry door, the heralds' trumpets sounded the first call to the benches.",
+        "context_markdown": "# Scene Context — Treaty of Cinders (PJ19: The salt-cellar hallmark)\n\n## Current Placement\n- Project: Treaty of Cinders (`proj_ash_court`)\n- Genre: political intrigue\n- Target: Book 1, Chapter 4, Scene 2\n- Scene Type: reveal\n- POV: Regent Soren (close_third)\n- Voice Profile: Dry, historical-minded; reads goldsmith marks and family marriages like an archivist.\n\n## Reader Contract\n- Promise: Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.\n\n## Scene Plan & Purpose\n- Scene Purpose: Inspecting the ceremonial salt-cellar before the noon ratification, Soren discovers the bottom silver plate was switched for pewter alloy—meaning Lady Corin plans to claim the oath-vessel was impure and the treaty void from the moment of signing.\n- Required Dramatic Turn: Both passages execute this discovery with strong craft and continuity; this brief serves as a closely matched tie case.\n- Drafting Task: Write Soren's inspection of the ceremonial salt-cellar before the noon convocation, revealing the pewter base swap.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 3, thirty minutes before noon (Envoys assembling in the main hall outside.) at Sacristy of the Salt-Hall.\n- **[LOCATION]**: Sacristy of the Salt-Hall (palace) — Vaulted stone vestry with linen-draped trestles and silver scales.\n- **[WORLD RULE]**: Treaty salt must be offered in sterling silver bearing the King's Assay crown; base metal voids the oath ab initio.\n- **[WORLD RULE: Assay purity rule]**: Any oath sworn over un-assayed or base-metal vessels is null under canon law.\n\n## Characters Present (Subject Snapshots)\n- **Regent Soren** (protagonist): In state wool, weighing the salt-boat in his palm. | Voice: Observant, dry. | Knows: Sterling silver rings clear; leaded pewter thuds dull. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 4: Soren and Kestrel agreed on the timber-for-silver terms at dawn.\n\n## Previous Scene (closing)\nOutside the oak vestry door, the heralds' trumpets sounded the first call to the benches.\n\n## Continuity & Craft Checklist\n- Close-third POV anchored to Soren.\n- Reveals the physical hallmark/alloy swap that would legally invalidate the salt-oath.\n- Grounded in court ritual and metalwork detail."
+      }
+    },
+    {
+      "id": "PJ20",
+      "name": "Ratification over the iron traveling-cup",
+      "project_id": "proj_ash_court",
+      "project_name": "Treaty of Cinders",
+      "genre": "political intrigue",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Envoy Kestrel",
+        "perspective": "third_limited",
+        "voice_profile": "Composed, theatrical when necessary, attentive to the silent shock on the gallery benches."
+      },
+      "contract": "Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.",
+      "target": [
+        1,
+        4,
+        3
+      ],
+      "scene_purpose": "Close Chapter 4 on the treaty floor as Soren publicly sets aside the rigged state salt-ship and pours the covenant salt into his own assayed silver campaign cup, forcing Lady Corin to witness a valid ratification.",
+      "tension_turn": "Corin's prepared legal trap collapses publicly without a single accusation spoken aloud.",
+      "task": "Close Chapter 4 from Kestrel's POV as Soren substitutes his assayed campaign cup for the rigged state vessel at the ratification table.",
+      "criteria": [
+        "Uses Soren's assayed silver campaign cup to satisfy the Assay rule without causing a riot.",
+        "Third-limited POV from Kestrel observing Soren and Lady Corin's reaction.",
+        "Ends on a crisp dramatic close."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "Soren discovered the state salt-ship had been fitted with a counterfeit pewter base."
+        }
+      ],
+      "rules": [],
+      "promises": [
+        {
+          "description": "Ratify the border treaty before the earls can void the bond.",
+          "planted": [
+            1,
+            1
+          ],
+          "planned": [
+            1,
+            4
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "Great Salt-Hall Dais",
+          "kind": "palace",
+          "summary": "Tiered stone benches surrounding the central treaty altar."
+        },
+        "in_world_time": {
+          "day": 3,
+          "time_of_day": "noon bell",
+          "anchor_note": "Ratification convocation in full session."
+        },
+        "hard_constraints": [
+          {
+            "id": "WORLD RULE",
+            "statement": "Any vessel bearing the Royal Assay stamp satisfies the salt-oath statute."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 3 noon in the Great Salt-Hall."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Envoy Kestrel",
+            "role": "protagonist",
+            "current_state": "Standing opposite Soren at the treaty cloth.",
+            "voice": "Observant, poised.",
+            "knows": [
+              "Soren caught the vessel tampering in the sacristy."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Regent Soren",
+            "role": "ally",
+            "current_state": "Unbuckling the battered silver gill-cup from his belt.",
+            "voice": "Grave, public formality.",
+            "knows": [
+              "His field-cup carries the Mint Master's cold-struck crown from the siege of '79."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Lady Corin",
+            "role": "antagonist",
+            "current_state": "Seated in the first gallery tier with two canon notaries at her elbow.",
+            "voice": "Silent.",
+            "knows": [
+              "She had the state salt-ship's base swapped."
+            ],
+            "does_not_know": [
+              "That Soren checked the vessel before entering."
+            ]
+          }
+        ],
+        "previous_scene_tail": "In the front tier, Lady Corin's notary dipped his quill, waiting for the Regent's hand to touch the gilded ship.",
+        "context_markdown": "# Scene Context — Treaty of Cinders (PJ20: Ratification over the iron traveling-cup)\n\n## Current Placement\n- Project: Treaty of Cinders (`proj_ash_court`)\n- Genre: political intrigue\n- Target: Book 1, Chapter 4, Scene 3\n- Scene Type: chapter-closer\n- POV: Envoy Kestrel (third_limited)\n- Voice Profile: Composed, theatrical when necessary, attentive to the silent shock on the gallery benches.\n\n## Reader Contract\n- Promise: Court intrigue fantasy where oath-law is literal: breaking guest-salt openly voids the peace treaty, so violence disguises itself as accident.\n\n## Scene Plan & Purpose\n- Scene Purpose: Close Chapter 4 on the treaty floor as Soren publicly sets aside the rigged state salt-ship and pours the covenant salt into his own assayed silver campaign cup, forcing Lady Corin to witness a valid ratification.\n- Required Dramatic Turn: Corin's prepared legal trap collapses publicly without a single accusation spoken aloud.\n- Drafting Task: Close Chapter 4 from Kestrel's POV as Soren substitutes his assayed campaign cup for the rigged state vessel at the ratification table.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 3, noon bell (Ratification convocation in full session.) at Great Salt-Hall Dais.\n- **[LOCATION]**: Great Salt-Hall Dais (palace) — Tiered stone benches surrounding the central treaty altar.\n- **[WORLD RULE]**: Any vessel bearing the Royal Assay stamp satisfies the salt-oath statute.\n\n## Characters Present (Subject Snapshots)\n- **Envoy Kestrel** (protagonist): Standing opposite Soren at the treaty cloth. | Voice: Observant, poised. | Knows: Soren caught the vessel tampering in the sacristy. | Withheld/Does NOT know: None specified.\n- **Regent Soren** (ally): Unbuckling the battered silver gill-cup from his belt. | Voice: Grave, public formality. | Knows: His field-cup carries the Mint Master's cold-struck crown from the siege of '79. | Withheld/Does NOT know: None specified.\n- **Lady Corin** (antagonist): Seated in the first gallery tier with two canon notaries at her elbow. | Voice: Silent. | Knows: She had the state salt-ship's base swapped. | Withheld/Does NOT know: That Soren checked the vessel before entering.\n\n## Recent Story History\n- Book 1 Ch 4: Soren discovered the state salt-ship had been fitted with a counterfeit pewter base.\n\n## Previous Scene (closing)\nIn the front tier, Lady Corin's notary dipped his quill, waiting for the Regent's hand to touch the gilded ship.\n\n## Open Promises in Play\n- Ratify the border treaty before the earls can void the bond. (planted B1C1)\n\n## Continuity & Craft Checklist\n- Uses Soren's assayed silver campaign cup to satisfy the Assay rule without causing a riot.\n- Third-limited POV from Kestrel observing Soren and Lady Corin's reaction.\n- Ends on a crisp dramatic close."
+      }
+    },
+    {
+      "id": "PJ21",
+      "name": "Quench-crack under Iron-2 pressure",
+      "project_id": "proj_iron_tier",
+      "project_name": "Crucible Ledger",
+      "genre": "progression fantasy",
+      "scene_type": "action",
+      "pov": {
+        "character": "Forgeling Tamsin",
+        "perspective": "third_limited",
+        "voice_profile": "Tactile smithcraft register; tracks core-heat bands, slag viscosity, and hammer cadence."
+      },
+      "contract": "Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.",
+      "target": [
+        1,
+        3,
+        1
+      ],
+      "scene_purpose": "During the guild trial quench, the brine trough has been salted with alum to crack Tamsin's blade; staying strictly within her Iron-2 heat band, she uses a clay-back differential quench in oil-tallow rather than over-channeling into Copper-1.",
+      "tension_turn": "Sabotaged brine trough forces an artisanal technique pivot instead of a rule-breaking power-up.",
+      "task": "Write Tamsin's trial quench from third-limited POV, respecting her Iron-2 band ceiling and defeating the alum sabotage with tallow-clay quenching.",
+      "criteria": [
+        "Honors the progression band rule: Tamsin stays at Iron-2 and does NOT miraculously jump to Copper-1.",
+        "Identifies the alum sabotage in the brine trough through physical detail.",
+        "Uses the tallow pot and clay spine-coat to complete the quench."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Tamsin advanced from Iron-1 to Iron-2 after paying off her coal-scoria debt."
+        }
+      ],
+      "rules": [
+        [
+          "Band ceiling rule",
+          "An Iron-2 practitioner cannot channel Copper-1 white heat without meridian rupture."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Anvil-Court Trial Pit 4",
+          "kind": "foundry",
+          "summary": "Sunken basalt forge-pit with coke bellows, brine trough, and auditor gallery."
+        },
+        "in_world_time": {
+          "day": 5,
+          "time_of_day": "third heat bell",
+          "anchor_note": "Final ninety seconds of the quenching window."
+        },
+        "hard_constraints": [
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Tamsin's progression band: Iron-2 (max thermal draw: 780 C cherry-red). Mana-ash reserve: 3 grains."
+          },
+          {
+            "id": "WORLD RULE",
+            "statement": "Over-drawing into Copper-1 (white heat) from Iron-2 ruptures the meridian and drops the smith to Iron-1."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Forgeling Tamsin",
+            "role": "protagonist",
+            "current_state": "Forearms blistered, holding a cherry-red shear-steel tang in box-tongs.",
+            "voice": "Focused, physical, craft-obsessed.",
+            "knows": [
+              "Alum crust on a brine trough cools the edge too fast and snaps Iron-2 steel."
+            ],
+            "does_not_know": [
+              "Which apprentice salted Pit 4."
+            ]
+          },
+          {
+            "name": "Auditor Shen",
+            "role": "judge",
+            "current_state": "Watching from the iron rail with a sand-glass.",
+            "voice": "Dry, exact.",
+            "knows": [
+              "Ninety seconds remain in the third heat."
+            ],
+            "does_not_know": [
+              "That the brine was doped with alum."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Above the pit, Auditor Shen inverted the ninety-second glass. 'Quench on the third heat, Forgeling.'",
+        "context_markdown": "# Scene Context — Crucible Ledger (PJ21: Quench-crack under Iron-2 pressure)\n\n## Current Placement\n- Project: Crucible Ledger (`proj_iron_tier`)\n- Genre: progression fantasy\n- Target: Book 1, Chapter 3, Scene 1\n- Scene Type: action\n- POV: Forgeling Tamsin (third_limited)\n- Voice Profile: Tactile smithcraft register; tracks core-heat bands, slag viscosity, and hammer cadence.\n\n## Reader Contract\n- Promise: Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.\n\n## Scene Plan & Purpose\n- Scene Purpose: During the guild trial quench, the brine trough has been salted with alum to crack Tamsin's blade; staying strictly within her Iron-2 heat band, she uses a clay-back differential quench in oil-tallow rather than over-channeling into Copper-1.\n- Required Dramatic Turn: Sabotaged brine trough forces an artisanal technique pivot instead of a rule-breaking power-up.\n- Drafting Task: Write Tamsin's trial quench from third-limited POV, respecting her Iron-2 band ceiling and defeating the alum sabotage with tallow-clay quenching.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 5, third heat bell (Final ninety seconds of the quenching window.) at Anvil-Court Trial Pit 4.\n- **[LOCATION]**: Anvil-Court Trial Pit 4 (foundry) — Sunken basalt forge-pit with coke bellows, brine trough, and auditor gallery.\n- **[WEALTH/STATE]**: Tamsin's progression band: Iron-2 (max thermal draw: 780 C cherry-red). Mana-ash reserve: 3 grains.\n- **[WORLD RULE]**: Over-drawing into Copper-1 (white heat) from Iron-2 ruptures the meridian and drops the smith to Iron-1.\n- **[WORLD RULE: Band ceiling rule]**: An Iron-2 practitioner cannot channel Copper-1 white heat without meridian rupture.\n\n## Characters Present (Subject Snapshots)\n- **Forgeling Tamsin** (protagonist): Forearms blistered, holding a cherry-red shear-steel tang in box-tongs. | Voice: Focused, physical, craft-obsessed. | Knows: Alum crust on a brine trough cools the edge too fast and snaps Iron-2 steel. | Withheld/Does NOT know: Which apprentice salted Pit 4.\n- **Auditor Shen** (judge): Watching from the iron rail with a sand-glass. | Voice: Dry, exact. | Knows: Ninety seconds remain in the third heat. | Withheld/Does NOT know: That the brine was doped with alum.\n\n## Recent Story History\n- Book 1 Ch 2: Tamsin advanced from Iron-1 to Iron-2 after paying off her coal-scoria debt.\n\n## Previous Scene (closing)\nAbove the pit, Auditor Shen inverted the ninety-second glass. 'Quench on the third heat, Forgeling.'\n\n## Continuity & Craft Checklist\n- Honors the progression band rule: Tamsin stays at Iron-2 and does NOT miraculously jump to Copper-1.\n- Identifies the alum sabotage in the brine trough through physical detail.\n- Uses the tallow pot and clay spine-coat to complete the quench."
+      }
+    },
+    {
+      "id": "PJ22",
+      "name": "Auditing the slag-tax ledger",
+      "project_id": "proj_iron_tier",
+      "project_name": "Crucible Ledger",
+      "genre": "progression fantasy",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Auditor Shen",
+        "perspective": "first_person",
+        "voice_profile": "Dry guild accountant; treats magical progression bands as taxable industrial output."
+      },
+      "contract": "Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.",
+      "target": [
+        1,
+        3,
+        2
+      ],
+      "scene_purpose": "In the assay office, Master Venn demands that Shen disqualify Tamsin's oil-quenched blade and bill her for six grains of Copper-tier ash; Shen uses the pit's chimney-soot gauge to prove no Copper-tier draw occurred and bills Venn for the alum contamination instead.",
+      "tension_turn": "Master Venn's attempt to bankrupt an Iron-2 apprentice rebounds onto his own shop's material ledger.",
+      "task": "Write the assay-office dispute from Auditor Shen's first-person POV, turning the argument on the chimney-soot gauge and quantity-state ledger.",
+      "criteria": [
+        "First-person POV in Shen's dry, ledger-minded auditor voice.",
+        "Enforces Tamsin's recorded quantity state (Iron-2, 3 grains mana-ash).",
+        "Uses physical assay evidence rather than shouting."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Tamsin saved her trial blade from an alum-salted trough by quenching in mutton tallow."
+        }
+      ],
+      "rules": [
+        [
+          "Flue-oxide rule",
+          "Copper-tier flame deposits green cupric salt in the hood trap; Iron-tier leaves gray magnetite dust."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Anvil-Court Assay Office",
+          "kind": "office",
+          "summary": "Slate-walled counting room with brass balance pans and flue-soot sample tubes."
+        },
+        "in_world_time": {
+          "day": 5,
+          "time_of_day": "fourth bell afternoon",
+          "anchor_note": "Thirty minutes after Pit 4 trial."
+        },
+        "hard_constraints": [
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Tamsin's ledger state: Band Iron-2, 3 grains mana-ash remaining. Pit 4 flue-trap shows 0 grains Copper-tier oxide."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 5 afternoon in the Assay Office."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Auditor Shen",
+            "role": "protagonist",
+            "current_state": "Weighing Pit 4's glass soot-slide on the micro-balance.",
+            "voice": "First-person, dry, pedantic in service of fairness.",
+            "knows": [
+              "Copper-1 flame leaves green cupric oxide on the flue slide; Pit 4's slide is pure gray iron-ash."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Master Venn",
+            "role": "antagonist",
+            "current_state": "Leaning over the counter in a fur-trimmed Copper-3 apron.",
+            "voice": "Blustering guild entitlement.",
+            "knows": [
+              "His own nephew bought two pounds of fuller's alum yesterday."
+            ],
+            "does_not_know": [
+              "That Shen already scraped the brine trough rim."
+            ]
+          },
+          {
+            "name": "Forgeling Tamsin",
+            "role": "ally",
+            "current_state": "Standing by the door with her oil-blackened blade wrapped in sacking.",
+            "voice": "Short, guarded.",
+            "knows": [
+              "She spent exactly two grains of Iron-2 ash."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Master Venn slapped his brass tally-rod onto my counter. 'Unlawful tier-draw and non-standard quench, Auditor. Dock the girl six grains.'",
+        "context_markdown": "# Scene Context — Crucible Ledger (PJ22: Auditing the slag-tax ledger)\n\n## Current Placement\n- Project: Crucible Ledger (`proj_iron_tier`)\n- Genre: progression fantasy\n- Target: Book 1, Chapter 3, Scene 2\n- Scene Type: dialogue-heavy\n- POV: Auditor Shen (first_person)\n- Voice Profile: Dry guild accountant; treats magical progression bands as taxable industrial output.\n\n## Reader Contract\n- Promise: Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.\n\n## Scene Plan & Purpose\n- Scene Purpose: In the assay office, Master Venn demands that Shen disqualify Tamsin's oil-quenched blade and bill her for six grains of Copper-tier ash; Shen uses the pit's chimney-soot gauge to prove no Copper-tier draw occurred and bills Venn for the alum contamination instead.\n- Required Dramatic Turn: Master Venn's attempt to bankrupt an Iron-2 apprentice rebounds onto his own shop's material ledger.\n- Drafting Task: Write the assay-office dispute from Auditor Shen's first-person POV, turning the argument on the chimney-soot gauge and quantity-state ledger.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 5, fourth bell afternoon (Thirty minutes after Pit 4 trial.) at Anvil-Court Assay Office.\n- **[LOCATION]**: Anvil-Court Assay Office (office) — Slate-walled counting room with brass balance pans and flue-soot sample tubes.\n- **[WEALTH/STATE]**: Tamsin's ledger state: Band Iron-2, 3 grains mana-ash remaining. Pit 4 flue-trap shows 0 grains Copper-tier oxide.\n- **[WORLD RULE: Flue-oxide rule]**: Copper-tier flame deposits green cupric salt in the hood trap; Iron-tier leaves gray magnetite dust.\n\n## Characters Present (Subject Snapshots)\n- **Auditor Shen** (protagonist): Weighing Pit 4's glass soot-slide on the micro-balance. | Voice: First-person, dry, pedantic in service of fairness. | Knows: Copper-1 flame leaves green cupric oxide on the flue slide; Pit 4's slide is pure gray iron-ash. | Withheld/Does NOT know: None specified.\n- **Master Venn** (antagonist): Leaning over the counter in a fur-trimmed Copper-3 apron. | Voice: Blustering guild entitlement. | Knows: His own nephew bought two pounds of fuller's alum yesterday. | Withheld/Does NOT know: That Shen already scraped the brine trough rim.\n- **Forgeling Tamsin** (ally): Standing by the door with her oil-blackened blade wrapped in sacking. | Voice: Short, guarded. | Knows: She spent exactly two grains of Iron-2 ash. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 3: Tamsin saved her trial blade from an alum-salted trough by quenching in mutton tallow.\n\n## Previous Scene (closing)\nMaster Venn slapped his brass tally-rod onto my counter. 'Unlawful tier-draw and non-standard quench, Auditor. Dock the girl six grains.'\n\n## Continuity & Craft Checklist\n- First-person POV in Shen's dry, ledger-minded auditor voice.\n- Enforces Tamsin's recorded quantity state (Iron-2, 3 grains mana-ash).\n- Uses physical assay evidence rather than shouting."
+      }
+    },
+    {
+      "id": "PJ23",
+      "name": "Banking the coke bed at midnight",
+      "project_id": "proj_iron_tier",
+      "project_name": "Crucible Ledger",
+      "genre": "progression fantasy",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Forgeling Tamsin",
+        "perspective": "third_limited",
+        "voice_profile": "Patient, sensory, grounded in coal-ash, calluses, and incremental craft mastery."
+      },
+      "contract": "Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.",
+      "target": [
+        1,
+        4,
+        1
+      ],
+      "scene_purpose": "Alone in the cellar smithy after passing the trial, Tamsin rakes wet slack-coal over her hearth to bank it for the night and files the single notch of Iron-2 into her brass apron-tag, measuring the long road to Copper-1.",
+      "tension_turn": "Quiet physical maintenance turns the abstract rank advancement into a tangible, earned weight.",
+      "task": "Write Tamsin's quiet midnight scene banking her forge and filing her Iron-2 apron notch, keeping her 3-grain ash reserve accurate.",
+      "criteria": [
+        "Third-limited POV in Tamsin's smithcraft register.",
+        "Accurate quantity state: Iron-2 band, 3 grains of mana-ash remaining.",
+        "Avoids solitary-fade clichés ('Hours passed') and grounds the passage of time in concrete tasks."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Auditor Shen certified Tamsin's Iron-2 trial blade and logged 3 grains of remaining ash."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Sub-cellar Forge 12",
+          "kind": "foundry",
+          "summary": "Low brick arch smelling of wet slack-coal, mutton tallow, and quenched scale."
+        },
+        "in_world_time": {
+          "day": 5,
+          "time_of_day": "midnight",
+          "anchor_note": "End of trial day; bellows chained shut."
+        },
+        "hard_constraints": [
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Band: Iron-2; mana-ash reserve: 3 grains; 1 certified shear-steel billet in rack."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 5 midnight in Sub-cellar Forge 12."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Forgeling Tamsin",
+            "role": "protagonist",
+            "current_state": "Sore shoulders, salving a tallow-splatter burn on her wrist.",
+            "voice": "Grounded, unsentimental.",
+            "knows": [
+              "Copper-1 requires 40 grains of refined ash and a seamless weld."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "The padlock on the upper street grate clicked as the night watchman made his twelve-o'clock round.",
+        "context_markdown": "# Scene Context — Crucible Ledger (PJ23: Banking the coke bed at midnight)\n\n## Current Placement\n- Project: Crucible Ledger (`proj_iron_tier`)\n- Genre: progression fantasy\n- Target: Book 1, Chapter 4, Scene 1\n- Scene Type: quiet-interior\n- POV: Forgeling Tamsin (third_limited)\n- Voice Profile: Patient, sensory, grounded in coal-ash, calluses, and incremental craft mastery.\n\n## Reader Contract\n- Promise: Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.\n\n## Scene Plan & Purpose\n- Scene Purpose: Alone in the cellar smithy after passing the trial, Tamsin rakes wet slack-coal over her hearth to bank it for the night and files the single notch of Iron-2 into her brass apron-tag, measuring the long road to Copper-1.\n- Required Dramatic Turn: Quiet physical maintenance turns the abstract rank advancement into a tangible, earned weight.\n- Drafting Task: Write Tamsin's quiet midnight scene banking her forge and filing her Iron-2 apron notch, keeping her 3-grain ash reserve accurate.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 5, midnight (End of trial day; bellows chained shut.) at Sub-cellar Forge 12.\n- **[LOCATION]**: Sub-cellar Forge 12 (foundry) — Low brick arch smelling of wet slack-coal, mutton tallow, and quenched scale.\n- **[WEALTH/STATE]**: Band: Iron-2; mana-ash reserve: 3 grains; 1 certified shear-steel billet in rack.\n\n## Characters Present (Subject Snapshots)\n- **Forgeling Tamsin** (protagonist): Sore shoulders, salving a tallow-splatter burn on her wrist. | Voice: Grounded, unsentimental. | Knows: Copper-1 requires 40 grains of refined ash and a seamless weld. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 3: Auditor Shen certified Tamsin's Iron-2 trial blade and logged 3 grains of remaining ash.\n\n## Previous Scene (closing)\nThe padlock on the upper street grate clicked as the night watchman made his twelve-o'clock round.\n\n## Continuity & Craft Checklist\n- Third-limited POV in Tamsin's smithcraft register.\n- Accurate quantity state: Iron-2 band, 3 grains of mana-ash remaining.\n- Avoids solitary-fade clichés ('Hours passed') and grounds the passage of time in concrete tasks."
+      }
+    },
+    {
+      "id": "PJ24",
+      "name": "The hollow ingot in the guild vault",
+      "project_id": "proj_iron_tier",
+      "project_name": "Crucible Ledger",
+      "genre": "progression fantasy",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Auditor Shen",
+        "perspective": "first_person",
+        "voice_profile": "Dry, methodical; discovers institutional rot through density math and caliper measurements."
+      },
+      "contract": "Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.",
+      "target": [
+        1,
+        4,
+        2
+      ],
+      "scene_purpose": "Running a routine specific-gravity check in the guild tax vault with Tamsin pumping the water-scale, Shen discovers the Copper-3 reserve ingots are cored with cheap lead-slag—meaning someone has been skimming the guild's spirit-copper for months.",
+      "tension_turn": "A petty apprentice sabotage investigation uncovers a vault-wide embezzlement of the guild's progression reserves.",
+      "task": "Write Shen's specific-gravity test in the vault with Tamsin assisting, revealing that the Copper-3 tax ingots are cored with lead-slag.",
+      "criteria": [
+        "First-person POV in Shen's analytical auditor voice.",
+        "Reveals the embezzlement through physical displacement / weight math.",
+        "Honors the secret gate: neither Shen nor Tamsin knows yet whether the Grand Master signed the vault seals."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Master Venn backed down rather than face a formal contamination inquiry."
+        }
+      ],
+      "rules": [],
+      "promises": [
+        {
+          "description": "Audit the guild's quarterly spirit-copper reserve before the Master's convocation.",
+          "planted": [
+            1,
+            1
+          ],
+          "planned": [
+            1,
+            5
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "Lower Assay Hydrostatic Vault",
+          "kind": "vault",
+          "summary": "Flagstone cistern room with bronze displacement tanks and chain hoists."
+        },
+        "in_world_time": {
+          "day": 6,
+          "time_of_day": "first bell morning",
+          "anchor_note": "Before the morning guild-hall opening."
+        },
+        "hard_constraints": [
+          {
+            "id": "SECRETS IN PLAY",
+            "statement": "The Copper-3 ingots have been cored and plugged with lead-slag. Neither Shen nor Tamsin knows yet who holds the second vault key."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 6 early morning in the Hydrostatic Vault."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Auditor Shen",
+            "role": "protagonist",
+            "current_state": "Reading the ivory vernier on the displacement cistern.",
+            "voice": "First-person, dry, exact.",
+            "knows": [
+              "Pure spirit-copper displaces 112 cubic inches per talent; lead-slag displaces 88."
+            ],
+            "does_not_know": [
+              "Who holds the second key."
+            ]
+          },
+          {
+            "name": "Forgeling Tamsin",
+            "role": "ally",
+            "current_state": "Working the chain-hoist cradle.",
+            "voice": "Practical smith's observation.",
+            "knows": [
+              "How a plugged sprue-hole looks on a cast pig."
+            ],
+            "does_not_know": [
+              "Who holds the second key."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Tamsin hooked the bronze stirrup under Ingot 19 and waited for my nod.",
+        "context_markdown": "# Scene Context — Crucible Ledger (PJ24: The hollow ingot in the guild vault)\n\n## Current Placement\n- Project: Crucible Ledger (`proj_iron_tier`)\n- Genre: progression fantasy\n- Target: Book 1, Chapter 4, Scene 2\n- Scene Type: reveal\n- POV: Auditor Shen (first_person)\n- Voice Profile: Dry, methodical; discovers institutional rot through density math and caliper measurements.\n\n## Reader Contract\n- Promise: Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.\n\n## Scene Plan & Purpose\n- Scene Purpose: Running a routine specific-gravity check in the guild tax vault with Tamsin pumping the water-scale, Shen discovers the Copper-3 reserve ingots are cored with cheap lead-slag—meaning someone has been skimming the guild's spirit-copper for months.\n- Required Dramatic Turn: A petty apprentice sabotage investigation uncovers a vault-wide embezzlement of the guild's progression reserves.\n- Drafting Task: Write Shen's specific-gravity test in the vault with Tamsin assisting, revealing that the Copper-3 tax ingots are cored with lead-slag.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 6, first bell morning (Before the morning guild-hall opening.) at Lower Assay Hydrostatic Vault.\n- **[LOCATION]**: Lower Assay Hydrostatic Vault (vault) — Flagstone cistern room with bronze displacement tanks and chain hoists.\n- **[SECRETS IN PLAY]**: The Copper-3 ingots have been cored and plugged with lead-slag. Neither Shen nor Tamsin knows yet who holds the second vault key.\n\n## Characters Present (Subject Snapshots)\n- **Auditor Shen** (protagonist): Reading the ivory vernier on the displacement cistern. | Voice: First-person, dry, exact. | Knows: Pure spirit-copper displaces 112 cubic inches per talent; lead-slag displaces 88. | Withheld/Does NOT know: Who holds the second key.\n- **Forgeling Tamsin** (ally): Working the chain-hoist cradle. | Voice: Practical smith's observation. | Knows: How a plugged sprue-hole looks on a cast pig. | Withheld/Does NOT know: Who holds the second key.\n\n## Recent Story History\n- Book 1 Ch 3: Master Venn backed down rather than face a formal contamination inquiry.\n\n## Previous Scene (closing)\nTamsin hooked the bronze stirrup under Ingot 19 and waited for my nod.\n\n## Open Promises in Play\n- Audit the guild's quarterly spirit-copper reserve before the Master's convocation. (planted B1C1)\n\n## Continuity & Craft Checklist\n- First-person POV in Shen's analytical auditor voice.\n- Reveals the embezzlement through physical displacement / weight math.\n- Honors the secret gate: neither Shen nor Tamsin knows yet whether the Grand Master signed the vault seals."
+      }
+    },
+    {
+      "id": "PJ25",
+      "name": "Sealing the furnace doors before convocation",
+      "project_id": "proj_iron_tier",
+      "project_name": "Crucible Ledger",
+      "genre": "progression fantasy",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Forgeling Tamsin",
+        "perspective": "third_limited",
+        "voice_profile": "Concrete, steady, attentive to heat, weight, and the coming storm in the guild."
+      },
+      "contract": "Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.",
+      "target": [
+        1,
+        4,
+        3
+      ],
+      "scene_purpose": "Close Chapter 4 as Shen locks the tampered Ingot 19 inside Tamsin's sub-cellar coal-bunker for safekeeping until the convocation bell, leaving Tamsin on guard with her Iron-2 shear-steel blade and three grains of ash.",
+      "tension_turn": "Both passages deliver a tight, grounded chapter-closer honoring all band and continuity constraints; this brief serves as our third closely matched tie case.",
+      "task": "Close Chapter 4 from Tamsin's third-limited POV as Ingot 19 is hidden in her coal-bunker before the convocation bell.",
+      "criteria": [
+        "Third-limited POV anchored to Tamsin.",
+        "Accurate state: Iron-2 band, 3 grains of ash, Ingot 19 hidden under the pea-slack.",
+        "Strong chapter-closing cadence without prefab clichés."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 4,
+          "summary": "Shen and Tamsin discovered Ingot 19 was cored with lead-slag."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Sub-cellar Forge 12",
+          "kind": "foundry",
+          "summary": "Low brick arch with chained bellows and deep coal-bunker."
+        },
+        "in_world_time": {
+          "day": 6,
+          "time_of_day": "second bell morning",
+          "anchor_note": "One hour before the guild convocation."
+        },
+        "hard_constraints": [
+          {
+            "id": "WEALTH/STATE",
+            "statement": "Band: Iron-2; mana-ash: 3 grains; Ingot 19 (60 lb cored copper/lead) buried in Forge 12 slack-bunker."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Forgeling Tamsin",
+            "role": "protagonist",
+            "current_state": "Shoveling black pea-slack over the bronze-wrapped ingot.",
+            "voice": "Practical, resolute.",
+            "knows": [
+              "If Venn searches the assay office, Ingot 19 won't be there."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Auditor Shen",
+            "role": "ally",
+            "current_state": "Sealing the bunker receipt with his personal wax.",
+            "voice": "Clipped, businesslike.",
+            "knows": [],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Between them, slung on an ash-wood pole under wet sacking, sixty pounds of cored guild copper came down the cellar steps.",
+        "context_markdown": "# Scene Context — Crucible Ledger (PJ25: Sealing the furnace doors before convocation)\n\n## Current Placement\n- Project: Crucible Ledger (`proj_iron_tier`)\n- Genre: progression fantasy\n- Target: Book 1, Chapter 4, Scene 3\n- Scene Type: chapter-closer\n- POV: Forgeling Tamsin (third_limited)\n- Voice Profile: Concrete, steady, attentive to heat, weight, and the coming storm in the guild.\n\n## Reader Contract\n- Promise: Progression fantasy with strict band accounting: an Iron-2 smith cannot channel Copper-tier flame without venting core-ash and losing a band step.\n\n## Scene Plan & Purpose\n- Scene Purpose: Close Chapter 4 as Shen locks the tampered Ingot 19 inside Tamsin's sub-cellar coal-bunker for safekeeping until the convocation bell, leaving Tamsin on guard with her Iron-2 shear-steel blade and three grains of ash.\n- Required Dramatic Turn: Both passages deliver a tight, grounded chapter-closer honoring all band and continuity constraints; this brief serves as our third closely matched tie case.\n- Drafting Task: Close Chapter 4 from Tamsin's third-limited POV as Ingot 19 is hidden in her coal-bunker before the convocation bell.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 6, second bell morning (One hour before the guild convocation.) at Sub-cellar Forge 12.\n- **[LOCATION]**: Sub-cellar Forge 12 (foundry) — Low brick arch with chained bellows and deep coal-bunker.\n- **[WEALTH/STATE]**: Band: Iron-2; mana-ash: 3 grains; Ingot 19 (60 lb cored copper/lead) buried in Forge 12 slack-bunker.\n\n## Characters Present (Subject Snapshots)\n- **Forgeling Tamsin** (protagonist): Shoveling black pea-slack over the bronze-wrapped ingot. | Voice: Practical, resolute. | Knows: If Venn searches the assay office, Ingot 19 won't be there. | Withheld/Does NOT know: None specified.\n- **Auditor Shen** (ally): Sealing the bunker receipt with his personal wax. | Voice: Clipped, businesslike. | Knows: Standard scene awareness. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 4: Shen and Tamsin discovered Ingot 19 was cored with lead-slag.\n\n## Previous Scene (closing)\nBetween them, slung on an ash-wood pole under wet sacking, sixty pounds of cored guild copper came down the cellar steps.\n\n## Continuity & Craft Checklist\n- Third-limited POV anchored to Tamsin.\n- Accurate state: Iron-2 band, 3 grains of ash, Ingot 19 hidden under the pea-slack.\n- Strong chapter-closing cadence without prefab clichés."
+      }
+    },
+    {
+      "id": "PJ26",
+      "name": "Securing the bell-stock in the flood-belfry",
+      "project_id": "proj_salt_abbey",
+      "project_name": "Vespers at Low Causeway",
+      "genre": "gothic horror",
+      "scene_type": "action",
+      "pov": {
+        "character": "Bell-founder Jude",
+        "perspective": "first_person",
+        "voice_profile": "Craftsman's dread; speaks of bronze tin-ratios, oak gudgeons, and salt-rot while the sea rises."
+      },
+      "contract": "Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.",
+      "target": [
+        1,
+        2,
+        1
+      ],
+      "scene_purpose": "As the spring equinox gale drives spray through the abbey louvers, the unhung mourning-bell begins to hum on the rising tide; Jude must wedge oak chocks under the bronze lip and strap the clapper with tallow-felt before the first tide-wave hits the causeway, sacrificing his thumb-gauge to jam the yoke.",
+      "tension_turn": "Storm-carpentry turns into an urgent containment ritual as the bronze begins to answer the sea.",
+      "task": "Write Jude wedging and muffling the mourning-bell in the gale from first-person POV, sacrificing his brass thumb-caliper to jam the rocking yoke.",
+      "criteria": [
+        "First-person POV in Jude's craftsman-gothic voice.",
+        "Honors the world rule: the bell must not sound a full stroke on the flood tide.",
+        "Jude jams the oak yoke with his brass caliper/gauge as the material cost."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 1,
+          "summary": "Jude discovered the abbey's new mourning-bell had been alloyed with drowned sailors' silver tokens."
+        }
+      ],
+      "rules": [
+        [
+          "Tide-bell rule",
+          "Shipwreck-alloy bronze resonates with the flood tide unless the clapper is bound in tallow-felt."
+        ]
+      ],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "St. Ruan Sea-Belfry",
+          "kind": "abbey_tower",
+          "summary": "Timber-framed bell loft eighty feet above the tide-causeway, salt spray driving through slate louvers."
+        },
+        "in_world_time": {
+          "day": 1,
+          "time_of_day": "equinox dusk, half-flood tide",
+          "anchor_note": "Causeway already three inches under foam."
+        },
+        "hard_constraints": [
+          {
+            "id": "WORLD RULE",
+            "statement": "If the shipwreck-bronze bell tolls a clear note on the flood tide, those named on its rim walk up from the causeway."
+          },
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 1 equinox dusk; gale rising."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Bell-founder Jude",
+            "role": "protagonist",
+            "current_state": "Braced on the wet oak truss with tallow-leather straps.",
+            "voice": "First-person, artisanal, taut with dread.",
+            "knows": [
+              "Prior Malachi melted forty silver sea-tallies into the bronze pour."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Sister Agnes",
+            "role": "ally",
+            "current_state": "Holding the horn lantern below the trapdoor.",
+            "voice": "Spare, liturgical.",
+            "knows": [
+              "The tide reaches the causeway cross in five minutes."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "From the trapdoor below, Sister Agnes called against the wind: 'The white water is over the leper's cross, Master Jude!'",
+        "context_markdown": "# Scene Context — Vespers at Low Causeway (PJ26: Securing the bell-stock in the flood-belfry)\n\n## Current Placement\n- Project: Vespers at Low Causeway (`proj_salt_abbey`)\n- Genre: gothic horror\n- Target: Book 1, Chapter 2, Scene 1\n- Scene Type: action\n- POV: Bell-founder Jude (first_person)\n- Voice Profile: Craftsman's dread; speaks of bronze tin-ratios, oak gudgeons, and salt-rot while the sea rises.\n\n## Reader Contract\n- Promise: Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.\n\n## Scene Plan & Purpose\n- Scene Purpose: As the spring equinox gale drives spray through the abbey louvers, the unhung mourning-bell begins to hum on the rising tide; Jude must wedge oak chocks under the bronze lip and strap the clapper with tallow-felt before the first tide-wave hits the causeway, sacrificing his thumb-gauge to jam the yoke.\n- Required Dramatic Turn: Storm-carpentry turns into an urgent containment ritual as the bronze begins to answer the sea.\n- Drafting Task: Write Jude wedging and muffling the mourning-bell in the gale from first-person POV, sacrificing his brass thumb-caliper to jam the rocking yoke.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 1, equinox dusk, half-flood tide (Causeway already three inches under foam.) at St. Ruan Sea-Belfry.\n- **[LOCATION]**: St. Ruan Sea-Belfry (abbey_tower) — Timber-framed bell loft eighty feet above the tide-causeway, salt spray driving through slate louvers.\n- **[WORLD RULE]**: If the shipwreck-bronze bell tolls a clear note on the flood tide, those named on its rim walk up from the causeway.\n- **[WORLD RULE: Tide-bell rule]**: Shipwreck-alloy bronze resonates with the flood tide unless the clapper is bound in tallow-felt.\n\n## Characters Present (Subject Snapshots)\n- **Bell-founder Jude** (protagonist): Braced on the wet oak truss with tallow-leather straps. | Voice: First-person, artisanal, taut with dread. | Knows: Prior Malachi melted forty silver sea-tallies into the bronze pour. | Withheld/Does NOT know: None specified.\n- **Sister Agnes** (ally): Holding the horn lantern below the trapdoor. | Voice: Spare, liturgical. | Knows: The tide reaches the causeway cross in five minutes. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 1: Jude discovered the abbey's new mourning-bell had been alloyed with drowned sailors' silver tokens.\n\n## Previous Scene (closing)\nFrom the trapdoor below, Sister Agnes called against the wind: 'The white water is over the leper's cross, Master Jude!'\n\n## Continuity & Craft Checklist\n- First-person POV in Jude's craftsman-gothic voice.\n- Honors the world rule: the bell must not sound a full stroke on the flood tide.\n- Jude jams the oak yoke with his brass caliper/gauge as the material cost."
+      }
+    },
+    {
+      "id": "PJ27",
+      "name": "Questioning the Prior in the scriptorium",
+      "project_id": "proj_salt_abbey",
+      "project_name": "Vespers at Low Causeway",
+      "genre": "gothic horror",
+      "scene_type": "dialogue-heavy",
+      "pov": {
+        "character": "Sister Agnes",
+        "perspective": "close_third",
+        "voice_profile": "Austere, observant of monastic rule and small evasions; weighs words like penance."
+      },
+      "contract": "Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.",
+      "target": [
+        1,
+        2,
+        2
+      ],
+      "scene_purpose": "In the cold scriptorium, Sister Agnes confronts Prior Malachi with the sheared brass caliper and forces him to admit why forty names from the wrecked brig *Halcyon* were cast inside the bell's inner lip—not for memorial, but to hold the abbey's salvage mortgage.",
+      "tension_turn": "Pious cover story crumbles under Agnes's exact citation of the burial register vs the salvage roll.",
+      "task": "Write the scriptorium confrontation between Sister Agnes, Jude, and Prior Malachi from Agnes's close-third POV.",
+      "criteria": [
+        "Close-third POV in Agnes's austere monastic register.",
+        "Reveals through dialogue that Malachi withheld the dead sailors' silver tallies from burial to secure the abbey's dike-loan.",
+        "Distinct voices between Agnes, artisanal Jude, and defensive Malachi."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Jude jammed the mourning-bell's yoke with his brass caliper before it could toll on the flood."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Abbey North Scriptorium",
+          "kind": "monastic_room",
+          "summary": "Vaulted stone room smelling of damp vellum, tallow, and kelp smoke."
+        },
+        "in_world_time": {
+          "day": 1,
+          "time_of_day": "compline bell (9 PM)",
+          "anchor_note": "One hour after the belfry muffling; gale still beating the sea-wall."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 1, 9:00 PM at Compline in the North Scriptorium."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Sister Agnes",
+            "role": "protagonist",
+            "current_state": "Standing by the lectern with the soaked burial roll open.",
+            "voice": "Quiet, inexorable, quotes chapter and rubric.",
+            "knows": [
+              "Forty sailors washed ashore from the Halcyon, but only thirty-two silver neck-tallies were buried in the garth."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Bell-founder Jude",
+            "role": "ally",
+            "current_state": "Wrapping his pinched thumb in linen.",
+            "voice": "Blunt craftsman anger.",
+            "knows": [
+              "Silver in a bronze pour lowers the melting point and changes the ring."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Prior Malachi",
+            "role": "antagonist",
+            "current_state": "Warming his ink-horn over the charcoal pan.",
+            "voice": "Evasive clerical cadence.",
+            "knows": [
+              "He melted the eight officers' silver tallies into the bell metal to satisfy the bailiff's assay."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Jude laid the crushed brass caliper across the Prior's clean vellum sheet.",
+        "context_markdown": "# Scene Context — Vespers at Low Causeway (PJ27: Questioning the Prior in the scriptorium)\n\n## Current Placement\n- Project: Vespers at Low Causeway (`proj_salt_abbey`)\n- Genre: gothic horror\n- Target: Book 1, Chapter 2, Scene 2\n- Scene Type: dialogue-heavy\n- POV: Sister Agnes (close_third)\n- Voice Profile: Austere, observant of monastic rule and small evasions; weighs words like penance.\n\n## Reader Contract\n- Promise: Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.\n\n## Scene Plan & Purpose\n- Scene Purpose: In the cold scriptorium, Sister Agnes confronts Prior Malachi with the sheared brass caliper and forces him to admit why forty names from the wrecked brig *Halcyon* were cast inside the bell's inner lip—not for memorial, but to hold the abbey's salvage mortgage.\n- Required Dramatic Turn: Pious cover story crumbles under Agnes's exact citation of the burial register vs the salvage roll.\n- Drafting Task: Write the scriptorium confrontation between Sister Agnes, Jude, and Prior Malachi from Agnes's close-third POV.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 1, compline bell (9 PM) (One hour after the belfry muffling; gale still beating the sea-wall.) at Abbey North Scriptorium.\n- **[LOCATION]**: Abbey North Scriptorium (monastic_room) — Vaulted stone room smelling of damp vellum, tallow, and kelp smoke.\n\n## Characters Present (Subject Snapshots)\n- **Sister Agnes** (protagonist): Standing by the lectern with the soaked burial roll open. | Voice: Quiet, inexorable, quotes chapter and rubric. | Knows: Forty sailors washed ashore from the Halcyon, but only thirty-two silver neck-tallies were buried in the garth. | Withheld/Does NOT know: None specified.\n- **Bell-founder Jude** (ally): Wrapping his pinched thumb in linen. | Voice: Blunt craftsman anger. | Knows: Silver in a bronze pour lowers the melting point and changes the ring. | Withheld/Does NOT know: None specified.\n- **Prior Malachi** (antagonist): Warming his ink-horn over the charcoal pan. | Voice: Evasive clerical cadence. | Knows: He melted the eight officers' silver tallies into the bell metal to satisfy the bailiff's assay. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 2: Jude jammed the mourning-bell's yoke with his brass caliper before it could toll on the flood.\n\n## Previous Scene (closing)\nJude laid the crushed brass caliper across the Prior's clean vellum sheet.\n\n## Continuity & Craft Checklist\n- Close-third POV in Agnes's austere monastic register.\n- Reveals through dialogue that Malachi withheld the dead sailors' silver tallies from burial to secure the abbey's dike-loan.\n- Distinct voices between Agnes, artisanal Jude, and defensive Malachi."
+      }
+    },
+    {
+      "id": "PJ28",
+      "name": "Keeping vigil by the salt-line on the nave flags",
+      "project_id": "proj_salt_abbey",
+      "project_name": "Vespers at Low Causeway",
+      "genre": "gothic horror",
+      "scene_type": "quiet-interior",
+      "pov": {
+        "character": "Sister Agnes",
+        "perspective": "close_third",
+        "voice_profile": "Controlled, vigil-focused; measures fear through candle-inch marks, damp salt lines, and liturgy."
+      },
+      "contract": "Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.",
+      "target": [
+        1,
+        3,
+        1
+      ],
+      "scene_purpose": "During the midnight low-water watch in the dark nave, Agnes chalks the high-water salt line across the threshold flagstones and mends the torn tallow-felt muffler for the next tide.",
+      "tension_turn": "In this pair, the baseline passage delivers superior concrete atmospheric restraint while the candidate passage slips into slop cliches—serving as our fifth baseline-wins test case.",
+      "task": "Write Agnes's midnight vigil in the nave from close-third POV as she chalks the seepage line and stitches the tallow-felt wrap.",
+      "criteria": [
+        "Close-third POV in Agnes's restrained liturgical register.",
+        "Grounded in physical vigil details (chalk line, hour-candle pins, tallow-felt stitching).",
+        "Avoids AI slop patterns ('Hours passed', 'not X but Y', 'mix of X and Y')."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Agnes exposed Prior Malachi's use of the eight missing silver burial tallies in the bell metal."
+        }
+      ],
+      "rules": [],
+      "promises": [],
+      "drafter_context": {
+        "location": {
+          "name": "Abbey Nave West Door",
+          "kind": "church_interior",
+          "summary": "Sunken limestone flags weeping brine under the oak sea-doors."
+        },
+        "in_world_time": {
+          "day": 1,
+          "time_of_day": "midnight ebb tide",
+          "anchor_note": "Six hours before the morning flood tide returns."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 1 midnight ebb tide in the Abbey Nave."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Sister Agnes",
+            "role": "protagonist",
+            "current_state": "Kneeling on a rush mat by the west threshold with needle and fuller's chalk.",
+            "voice": "Quiet, disciplined, observant.",
+            "knows": [
+              "Each spring tide creeps two flagstones further up the nave."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "Overhead in the silent loft, Jude's hammer tapped once as he drove an iron staple into the beam.",
+        "context_markdown": "# Scene Context — Vespers at Low Causeway (PJ28: Keeping vigil by the salt-line on the nave flags)\n\n## Current Placement\n- Project: Vespers at Low Causeway (`proj_salt_abbey`)\n- Genre: gothic horror\n- Target: Book 1, Chapter 3, Scene 1\n- Scene Type: quiet-interior\n- POV: Sister Agnes (close_third)\n- Voice Profile: Controlled, vigil-focused; measures fear through candle-inch marks, damp salt lines, and liturgy.\n\n## Reader Contract\n- Promise: Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.\n\n## Scene Plan & Purpose\n- Scene Purpose: During the midnight low-water watch in the dark nave, Agnes chalks the high-water salt line across the threshold flagstones and mends the torn tallow-felt muffler for the next tide.\n- Required Dramatic Turn: In this pair, the baseline passage delivers superior concrete atmospheric restraint while the candidate passage slips into slop cliches—serving as our fifth baseline-wins test case.\n- Drafting Task: Write Agnes's midnight vigil in the nave from close-third POV as she chalks the seepage line and stitches the tallow-felt wrap.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 1, midnight ebb tide (Six hours before the morning flood tide returns.) at Abbey Nave West Door.\n- **[LOCATION]**: Abbey Nave West Door (church_interior) — Sunken limestone flags weeping brine under the oak sea-doors.\n\n## Characters Present (Subject Snapshots)\n- **Sister Agnes** (protagonist): Kneeling on a rush mat by the west threshold with needle and fuller's chalk. | Voice: Quiet, disciplined, observant. | Knows: Each spring tide creeps two flagstones further up the nave. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 2: Agnes exposed Prior Malachi's use of the eight missing silver burial tallies in the bell metal.\n\n## Previous Scene (closing)\nOverhead in the silent loft, Jude's hammer tapped once as he drove an iron staple into the beam.\n\n## Continuity & Craft Checklist\n- Close-third POV in Agnes's restrained liturgical register.\n- Grounded in physical vigil details (chalk line, hour-candle pins, tallow-felt stitching).\n- Avoids AI slop patterns ('Hours passed', 'not X but Y', 'mix of X and Y')."
+      }
+    },
+    {
+      "id": "PJ29",
+      "name": "Chiseling the eighth name inside the sound-bow",
+      "project_id": "proj_salt_abbey",
+      "project_name": "Vespers at Low Causeway",
+      "genre": "gothic horror",
+      "scene_type": "reveal",
+      "pov": {
+        "character": "Bell-founder Jude",
+        "perspective": "first_person",
+        "voice_profile": "Foundryman's eye for mold-seams, wax letters, and metal grain."
+      },
+      "contract": "Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.",
+      "target": [
+        1,
+        3,
+        2
+      ],
+      "scene_purpose": "Inside the bell's rim with a cold chisel before dawn, Jude scrapes away the verdigris on the eighth silver tally-mark and reveals to Agnes that the eighth name isn't a drowned *Halcyon* officer at all—it is Prior Malachi's own dead brother, whose wreck-insurance paid for the abbey's sea-wall.",
+      "tension_turn": "What looked like opportunistic theft of strangers' grave-silver turns out to be a personal blood-debt anchored in the abbey's foundation.",
+      "task": "Write Jude uncovering the eighth name inside the bell's lip from first-person POV with Agnes holding the taper.",
+      "criteria": [
+        "First-person POV in Jude's bell-founder voice.",
+        "Reveals through physical mold/letter detail that the eighth silver tally belongs to Malachi's brother (Martin Vale), predating the Halcyon.",
+        "Grounded in metalworking and gothic atmosphere."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 2,
+          "summary": "Agnes found eight tallies missing from the Halcyon burial roll."
+        }
+      ],
+      "rules": [],
+      "promises": [
+        {
+          "description": "Free the drowned names from the bell before the morning equinox flood.",
+          "planted": [
+            1,
+            1
+          ],
+          "planned": [
+            1,
+            3
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "St. Ruan Sea-Belfry",
+          "kind": "abbey_tower",
+          "summary": "Cramped timber platform beneath the twelve-hundredweight bronze bell."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "04:30 AM (low slack water)",
+          "anchor_note": "Ninety minutes before the morning flood tide turns."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2, 04:30 AM at low slack water in the belfry."
+          },
+          {
+            "id": "SECRETS IN PLAY",
+            "statement": "Seven tallies are from the Halcyon (cast upside down in the cope); the eighth tally is Martin Vale (Prior Malachi's brother, lost ten years ago on the Anne-Marie)."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Bell-founder Jude",
+            "role": "protagonist",
+            "current_state": "Wedged shoulders-under the bronze lip with a cold cape-chisel.",
+            "voice": "First-person, technical, hushed.",
+            "knows": [
+              "How wax letters are pressed into the false-bell before the cope is rammed."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Sister Agnes",
+            "role": "ally",
+            "current_state": "Holding the beeswax taper inside the bell's mouth.",
+            "voice": "Still, exact.",
+            "knows": [
+              "Prior Malachi's secular surname before his vows was Vale."
+            ],
+            "does_not_know": [
+              "What the eighth stamp reads until Jude scrapes the slag."
+            ]
+          }
+        ],
+        "previous_scene_tail": "Seven white silver blisters had already come away under my chisel, each stamped with the anchor of the northern fleet.",
+        "context_markdown": "# Scene Context — Vespers at Low Causeway (PJ29: Chiseling the eighth name inside the sound-bow)\n\n## Current Placement\n- Project: Vespers at Low Causeway (`proj_salt_abbey`)\n- Genre: gothic horror\n- Target: Book 1, Chapter 3, Scene 2\n- Scene Type: reveal\n- POV: Bell-founder Jude (first_person)\n- Voice Profile: Foundryman's eye for mold-seams, wax letters, and metal grain.\n\n## Reader Contract\n- Promise: Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.\n\n## Scene Plan & Purpose\n- Scene Purpose: Inside the bell's rim with a cold chisel before dawn, Jude scrapes away the verdigris on the eighth silver tally-mark and reveals to Agnes that the eighth name isn't a drowned *Halcyon* officer at all—it is Prior Malachi's own dead brother, whose wreck-insurance paid for the abbey's sea-wall.\n- Required Dramatic Turn: What looked like opportunistic theft of strangers' grave-silver turns out to be a personal blood-debt anchored in the abbey's foundation.\n- Drafting Task: Write Jude uncovering the eighth name inside the bell's lip from first-person POV with Agnes holding the taper.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, 04:30 AM (low slack water) (Ninety minutes before the morning flood tide turns.) at St. Ruan Sea-Belfry.\n- **[LOCATION]**: St. Ruan Sea-Belfry (abbey_tower) — Cramped timber platform beneath the twelve-hundredweight bronze bell.\n- **[SECRETS IN PLAY]**: Seven tallies are from the Halcyon (cast upside down in the cope); the eighth tally is Martin Vale (Prior Malachi's brother, lost ten years ago on the Anne-Marie).\n\n## Characters Present (Subject Snapshots)\n- **Bell-founder Jude** (protagonist): Wedged shoulders-under the bronze lip with a cold cape-chisel. | Voice: First-person, technical, hushed. | Knows: How wax letters are pressed into the false-bell before the cope is rammed. | Withheld/Does NOT know: None specified.\n- **Sister Agnes** (ally): Holding the beeswax taper inside the bell's mouth. | Voice: Still, exact. | Knows: Prior Malachi's secular surname before his vows was Vale. | Withheld/Does NOT know: What the eighth stamp reads until Jude scrapes the slag.\n\n## Recent Story History\n- Book 1 Ch 2: Agnes found eight tallies missing from the Halcyon burial roll.\n\n## Previous Scene (closing)\nSeven white silver blisters had already come away under my chisel, each stamped with the anchor of the northern fleet.\n\n## Open Promises in Play\n- Free the drowned names from the bell before the morning equinox flood. (planted B1C1)\n\n## Continuity & Craft Checklist\n- First-person POV in Jude's bell-founder voice.\n- Reveals through physical mold/letter detail that the eighth silver tally belongs to Malachi's brother (Martin Vale), predating the Halcyon.\n- Grounded in metalworking and gothic atmosphere."
+      }
+    },
+    {
+      "id": "PJ30",
+      "name": "Returning the silver to the causeway ebb",
+      "project_id": "proj_salt_abbey",
+      "project_name": "Vespers at Low Causeway",
+      "genre": "gothic horror",
+      "scene_type": "chapter-closer",
+      "pov": {
+        "character": "Sister Agnes",
+        "perspective": "close_third",
+        "voice_profile": "Liturgical gravity, salt wind, quiet resolution with an honest lingering consequence."
+      },
+      "contract": "Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.",
+      "target": [
+        1,
+        3,
+        3
+      ],
+      "scene_purpose": "Close Chapter 3 at dawn on the causeway as Agnes and Jude bury the seven *Halcyon* tallies in the consecrated garth and drop Martin Vale's eighth tally into the turning tide at the leper's cross—quieting the bell above, while leaving the abbey's unpaid dike-lease to be faced in daylight.",
+      "tension_turn": "Supernatural debt is laid to rest at the cost of the abbey's secular solvency when the bailiff rides in on the low causeway.",
+      "task": "Close Chapter 3 from Agnes's close-third POV as the eight silver shavings are returned and the muffled bell stays silent over the dawn tide.",
+      "criteria": [
+        "Close-third POV in Agnes's austere register.",
+        "Resolves the supernatural bell promise (the bell stays silent as the flood turns).",
+        "Preserves the material consequence: the abbey still owes the dike-reeve's silver."
+      ],
+      "episodes": [
+        {
+          "book": 1,
+          "chapter": 3,
+          "summary": "Jude chiseled all eight silver tallies out of the mourning-bell before the tide turned."
+        }
+      ],
+      "rules": [],
+      "promises": [
+        {
+          "description": "Free the drowned names from the bell before the morning equinox flood.",
+          "planted": [
+            1,
+            1
+          ],
+          "planned": [
+            1,
+            3
+          ]
+        }
+      ],
+      "drafter_context": {
+        "location": {
+          "name": "Low Causeway Leper's Cross",
+          "kind": "coastal_causeway",
+          "summary": "Barnacle-crusted stone cross at the tide-line below the abbey walls."
+        },
+        "in_world_time": {
+          "day": 2,
+          "time_of_day": "dawn flood-turn",
+          "anchor_note": "First gray light; tide turning inward."
+        },
+        "hard_constraints": [
+          {
+            "id": "IN-WORLD TIME",
+            "statement": "Day 2 dawn at the Low Causeway Cross."
+          },
+          {
+            "id": "PROMISE PAYOFF",
+            "statement": "Free the drowned names from the bell before the morning equinox flood."
+          }
+        ],
+        "characters_present": [
+          {
+            "name": "Sister Agnes",
+            "role": "protagonist",
+            "current_state": "Hands raw from lime-turf, holding the eighth silver curl over the tide-run.",
+            "voice": "Solemn, unsentimental.",
+            "knows": [
+              "Seven tallies are now under consecrated turf; the eighth belongs to the channel."
+            ],
+            "does_not_know": []
+          },
+          {
+            "name": "Bell-founder Jude",
+            "role": "ally",
+            "current_state": "Packing his chisels in canvas by the abbey gate.",
+            "voice": "Quiet respect.",
+            "knows": [
+              "The bell is notched eight times inside the lip and will ring flat by a quarter-tone forever."
+            ],
+            "does_not_know": []
+          }
+        ],
+        "previous_scene_tail": "In the garth behind the sea-wall, the last sod of salt-turf settled over the seven *Halcyon* curls.",
+        "context_markdown": "# Scene Context — Vespers at Low Causeway (PJ30: Returning the silver to the causeway ebb)\n\n## Current Placement\n- Project: Vespers at Low Causeway (`proj_salt_abbey`)\n- Genre: gothic horror\n- Target: Book 1, Chapter 3, Scene 3\n- Scene Type: chapter-closer\n- POV: Sister Agnes (close_third)\n- Voice Profile: Liturgical gravity, salt wind, quiet resolution with an honest lingering consequence.\n\n## Reader Contract\n- Promise: Gothic maritime fiction: supernatural dread operates through strict liturgical and tidal rules; bronze cast with drowned-men's silver rings on the flood tide unless muffled with tallow-felt.\n\n## Scene Plan & Purpose\n- Scene Purpose: Close Chapter 3 at dawn on the causeway as Agnes and Jude bury the seven *Halcyon* tallies in the consecrated garth and drop Martin Vale's eighth tally into the turning tide at the leper's cross—quieting the bell above, while leaving the abbey's unpaid dike-lease to be faced in daylight.\n- Required Dramatic Turn: Supernatural debt is laid to rest at the cost of the abbey's secular solvency when the bailiff rides in on the low causeway.\n- Drafting Task: Close Chapter 3 from Agnes's close-third POV as the eight silver shavings are returned and the muffled bell stays silent over the dawn tide.\n\n## Hard Constraints\n- **[IN-WORLD TIME]**: Day 2, dawn flood-turn (First gray light; tide turning inward.) at Low Causeway Leper's Cross.\n- **[LOCATION]**: Low Causeway Leper's Cross (coastal_causeway) — Barnacle-crusted stone cross at the tide-line below the abbey walls.\n- **[PROMISE PAYOFF]**: Free the drowned names from the bell before the morning equinox flood.\n\n## Characters Present (Subject Snapshots)\n- **Sister Agnes** (protagonist): Hands raw from lime-turf, holding the eighth silver curl over the tide-run. | Voice: Solemn, unsentimental. | Knows: Seven tallies are now under consecrated turf; the eighth belongs to the channel. | Withheld/Does NOT know: None specified.\n- **Bell-founder Jude** (ally): Packing his chisels in canvas by the abbey gate. | Voice: Quiet respect. | Knows: The bell is notched eight times inside the lip and will ring flat by a quarter-tone forever. | Withheld/Does NOT know: None specified.\n\n## Recent Story History\n- Book 1 Ch 3: Jude chiseled all eight silver tallies out of the mourning-bell before the tide turned.\n\n## Previous Scene (closing)\nIn the garth behind the sea-wall, the last sod of salt-turf settled over the seven *Halcyon* curls.\n\n## Open Promises in Play\n- Free the drowned names from the bell before the morning equinox flood. (planted B1C1)\n\n## Continuity & Craft Checklist\n- Close-third POV in Agnes's austere register.\n- Resolves the supernatural bell promise (the bell stays silent as the flood turns).\n- Preserves the material consequence: the abbey still owes the dike-reeve's silver."
+      }
+    }
+  ]
+}

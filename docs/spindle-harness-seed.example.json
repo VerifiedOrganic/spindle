@@ -10,6 +10,10 @@
     "Continuity first",
     "Do not introduce facts not grounded in scene context"
   ],
+  "mining_policy": "disabled",
+  "max_revise_attempts": 0,
+  "checkpoint_policy": "manual",
+  "replan_policy": "disabled",
   "chapters": [
     {
       "chapter_number": 11,

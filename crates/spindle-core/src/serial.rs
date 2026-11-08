@@ -229,6 +229,20 @@ pub struct ModelCallRecord {
     pub id: String,
     pub project_id: Option<String>,
     pub scene_id: Option<String>,
+    #[serde(default, alias = "authoring_run_id")]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub prompt_version: Option<String>,
+    #[serde(default)]
+    pub context_packet_hash: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     pub route: String,
     pub adapter_kind: Option<String>,
     pub model_name: Option<String>,
@@ -241,6 +255,12 @@ pub struct ModelCallRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct GetModelUsageInput {
     pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_template_id: Option<String>,
     /// Most recent calls returned (1–200); aggregate counts cover all matching calls.
     pub limit: Option<usize>,
 }

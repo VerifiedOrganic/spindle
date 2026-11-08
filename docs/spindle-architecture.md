@@ -495,6 +495,8 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0029 | `plan_amendment` staging queue + `chapter_plan.plan_revision` (ADR 0003) |
 | V0030 | authoring-run `replan_policy` + per-chapter `replan_status`/`replan_detail` |
 | V0031 | style-learning-from-edits (`project.style_learning` + edit candidates) |
+| V0041 | `model_call` telemetry ledger (`get_model_usage`) |
+| V0047 | `model_call` attribution columns (`scene_id`, `run_id`, `route`, `prompt_template_id`, `prompt_version`, `context_packet_hash`, `temperature`, `top_p`, `max_tokens`) |
 
 ## Where to make changes
 

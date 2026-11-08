@@ -154,6 +154,8 @@ pub struct ChapterSummaryArtifact {
     pub chapter_number: i32,
     pub route_name: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub rating: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub completion_fragments: Vec<String>,
@@ -185,6 +187,7 @@ impl ChapterSummaryArtifact {
             chapter_number,
             route_name,
             agent_id,
+            rating: None,
             prompt,
             completion_fragments: Vec::new(),
             adapter_kind: None,
@@ -195,6 +198,11 @@ impl ChapterSummaryArtifact {
             save_summary_output: None,
             run_id: None,
         }
+    }
+
+    pub fn with_rating(mut self, rating: Option<String>) -> Self {
+        self.rating = rating;
+        self
     }
 
     pub fn combined_output(&self) -> String {

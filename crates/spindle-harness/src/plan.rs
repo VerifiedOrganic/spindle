@@ -1010,6 +1010,10 @@ mod tests {
             },
             checkpoint_interval: 1,
             editorial_directives: vec![],
+            mining_policy: None,
+            max_revise_attempts: None,
+            checkpoint_policy: None,
+            replan_policy: None,
             chapters: vec![
                 ChapterSeed {
                     chapter_number: 1,

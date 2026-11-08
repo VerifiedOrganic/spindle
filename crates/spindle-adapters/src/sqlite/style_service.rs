@@ -501,6 +501,7 @@ impl SqliteSpindleService {
                 book_id: None,
                 chapter_id: None,
                 scene_id: None,
+                ..Default::default()
             }),
         };
 
@@ -557,6 +558,7 @@ impl SqliteSpindleService {
                         book_id: None,
                         chapter_id: None,
                         scene_id: None,
+                        ..Default::default()
                     }),
                 };
                 if let Ok(repair_response) =
@@ -2167,6 +2169,7 @@ impl SqliteSpindleService {
                     book_id: None,
                     chapter_id: input.chapter_id.clone(),
                     scene_id: input.scene_id.clone(),
+                    ..Default::default()
                 }),
             };
 
@@ -2451,6 +2454,7 @@ impl SqliteSpindleService {
                     book_id: None,
                     chapter_id: input.chapter_id.clone(),
                     scene_id: Some(scene.id.clone()),
+                    ..Default::default()
                 }),
             };
 

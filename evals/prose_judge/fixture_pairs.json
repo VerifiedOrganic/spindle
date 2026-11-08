@@ -1,0 +1,847 @@
+{
+  "schema_version": 1,
+  "suite_id": "spindle.prose_judge.v1",
+  "description": "Saved baseline (A) vs candidate (B) prose outputs for the 30 scene briefs. Includes 22 candidate-stronger pairs, 5 baseline-stronger pairs (PJ04, PJ10, PJ15, PJ21, PJ28), and 3 closely matched tie pairs (PJ08, PJ19, PJ25) to test bidirectional discrimination.",
+  "pairs": [
+    {
+      "pair_id": "P001",
+      "case_id": "PJ01",
+      "brief_id": "PJ01",
+      "scene_type": "action",
+      "genre": "fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Mara stood on the lock catwalk as the sun blazed high at noon. It wasn't fear she felt. It was determination. Her heart hammered in her chest and a mix of relief and dread washed over her as she looked at the sergeant.\n\n'I am going to take back my family's sacred compass,' Mara announced in a long, poetic speech, drawing her silver sword. 'You have wronged the river spirits for the last time!'\n\nIvo agreed with identical polished wit. 'Indeed, my dear companion, let us strike swiftly and keep all of our abundant gold coins safe in our dry packs.'\n\nWhen the winch jammed, Mara leaped effortlessly across the stone gap, snatched the compass without losing a single item from her pack, and landed dry on the deck. She didn't know what tomorrow would bring, but everything had changed forever.",
+        "input_tokens": 120,
+        "output_tokens": 141,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Rain greased the iron teeth of the North Lock winch. Below the sluice wall, the skiff bucked against its hemp tow-line, and Mara's split left heel skidded on the wet timber as she braced the lever.\n\nThe gate sergeant leaned over the coping to curse the jammed pawl. There, hooked to his greased leather belt, hung the brass compass—glass chipped across the west point, the exact crack the ferryman's girl had traced for her four days back.\n\n'Hold the pawl!' the sergeant barked, shoving the iron bar at her chest. 'Drop your bundle or the line parts!'\n\nIf she let go of the salt-pack, four coppers of dry curing salt went into the foaming lock-wash. If she held the pack, the sergeant stepped back out of reach.\n\n'Mind the stern, Ivo!' Mara called.\n\n'My wrists are delicate instruments, not mooring posts!' Ivo shouted back from the spray below.\n\nMara let the canvas salt-pack slide from her shoulder. It hit the sluice boil and sank like a stone. As the sergeant lunged to snag the floating tie-cord, her freed left hand took the belt-hook clean, thumb wedging the chipped brass bezel into her palm before her knife sliced the taut tow-rope.",
+        "input_tokens": 482,
+        "output_tokens": 200,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P002",
+      "case_id": "PJ02",
+      "brief_id": "PJ02",
+      "scene_type": "dialogue-heavy",
+      "genre": "comic fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "'You carry it,' Mara hissed angrily.\n'No, you carry it,' Ivo breathed, his eyes flashing with a cocktail of annoyance and amusement.\n'It wasn't a request. It was an order,' Mara gasped.\n\nThey walked up the hill in silence for a while. Both of them sounded exactly the same as they traded slick, modern banter about how annoying chores were. Neither of them mentioned the brass rivet or the curfew bell.\n\nWhen they reached the top of the hill, the bucket was completely full somehow. Mara looked out over the valley. She didn't know what tomorrow would bring.",
+        "input_tokens": 80,
+        "output_tokens": 98,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "'Your side has the dry handle,' Mara said. 'Take it.'\n\n'My left collarbone,' Ivo said, trotting one step above her on the slick basalt, 'was once condemned by a guild apothecary in Oakhaven. He wept into his ledger. He told my mother, *Madam, if this boy lifts wet cedar at an incline, his ribs will unhook like a butcher's shutter.*'\n\n'It's pine,' Mara said. 'And it's leaking on my shin. Twenty-two steps left.'\n\nAbove the roofs, the iron bell clanged its fourteenth stroke. Water hissed through the split stave, dropping a finger's breadth toward the inner brass rivet.\n\n'Pine is worse,' Ivo said. 'Pine has resinous density. A cousin of mine carried a pine firkin for a bishop's laundress and walked sideways until Michaelmas.'\n\nThe iron hoop groaned and slipped half an inch down the wet wood. Mara caught the rim with both thumbs before the stave could splay.\n\n'Plug the seam,' she said, not looking up. 'Or pay the clerk two coppers.'\n\nIvo sighed, stripped off his dry wool cuff, and jammed the folded cloth hard against the split with his palm, taking half the bail's weight in stride. 'If I walk sideways at dawn,' he muttered, 'you're explaining it to the laundress.'",
+        "input_tokens": 425,
+        "output_tokens": 204,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P003",
+      "case_id": "PJ03",
+      "brief_id": "PJ03",
+      "scene_type": "quiet-interior",
+      "genre": "fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Mara sat alone thinking about everything that had happened. Hours passed. It wasn't silence that bothered her. It was the weight of destiny.\n\n'Ivo, I think we should take the ridge road tomorrow,' Mara said softly, her voice raspy from the magical spell.\n\n'I agree completely,' Ivo replied. A mix of relief and gratitude filled her chest as she stared into the fire, wondering what tomorrow would bring.",
+        "input_tokens": 96,
+        "output_tokens": 68,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Beeswax stiffened the hemp thread between Mara's thumb and forefinger. Every time she drew the awl through the wet leather of her left boot heel, the raw hollow behind her collarbone gave a dry click—not pain, just the empty latch where her voice usually sat.\n\nDawn was still six hours upstream. Until the first gray light hit the reeds, she couldn't even clear her throat.\n\nAcross the iron coal pan, Ivo turned three river-chestnuts with the tip of his knife. He had talked for the first mile after the noon weir—about toll-clerks, about a three-legged dog in Sallow, about the criminal price of tallow—until he noticed she was spending her breath trying to huff replies. Since dusk he had gone quiet.\n\nHe unfolded the greased linen road-sheet between their knees and tapped the lower ford with his blade. 'Ferryman there takes copper or a charm,' he said, keeping his eyes on the parchment. 'Ridge track above the lime-kilns adds nine miles of gravel. Hard on a stitched heel.'\n\nMara knotted the waxed hemp, bit the tail short, and picked up a cold cinder from the pan lip. She drew a single black bar across the lower ford, then set her mended boot squarely on the lime-kiln ridge.\n\nIvo looked at the soot mark, then nudged the warmest chestnut across the slate to her knee. 'Gravel it is,' he said.",
+        "input_tokens": 454,
+        "output_tokens": 229,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P004",
+      "case_id": "PJ04",
+      "brief_id": "PJ04",
+      "scene_type": "reveal",
+      "genre": "fantasy",
+      "expected_reference_verdict": "baseline",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Ivo held the tallow stub an inch from the strongbox hasp, shielding the flame with his ink-stained cuff. 'If a man used a crow-chisel on this oak, Bailiff,' he said, 'he was the gentlest burglar in three parishes. He didn't even bruise the varnish.'\n\nHobb grunted, leaning over the counting table. 'Lock's open. Silver's gone. And there's green wool on the shutter hook.'\n\n'Green wool,' Ivo said, pinching the damp thread between thumb and finger, 'is currently on the backs of three sheep-drovers in the taproom, the miller's nephew, and half the river-carters between here and Brambleford.' He tilted the candle toward the keyhole. A crescent of yellow sealing-wax clung to the inner ward—the exact red-yellow beeswax the ferryman used to stopper his spare salt-crocks.\n\nIvo scraped the wax crumb onto his thumbnail. Someone had lifted the spare brass key from the pantry shelf, turned the ward clean, and hooked that green thread on the shutter  solely to make Hobb look toward the yard. Which of the five green coats in the common room had been in the pantry before matins, Ivo could not tell—not yet.",
+        "input_tokens": 76,
+        "output_tokens": 186,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Ivo knelt beside the strongbox, though the narrator already knew that Lysa had stolen the fourteen silver groats to pay her brother's debt, a secret she would confess to Mara in Chapter 7.\n\nIt wasn't a mystery to the universe, but it was a mystery to Ivo. His eyes widened as a mix of confusion and certainty washed over him. 'Lysa must have done this!' Ivo declared aloud, pointing toward the door. 'Only Lysa wears that exact shade of green sleeve!'\n\nBailiff Hobb nodded slowly. Ivo stood up and brushed off his knees, wondering what tomorrow would bring.",
+        "input_tokens": 447,
+        "output_tokens": 98,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P005",
+      "case_id": "PJ05",
+      "brief_id": "PJ05",
+      "scene_type": "chapter-closer",
+      "genre": "fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "The boy was safe for now, though a mix of relief and dread hung in the air. Suddenly, the oak door splintered inward! Three masked assassins leaped through the window with poisoned crossbows!\n\n'Give us the child!' the leader hissed.\n\nIt wasn't over. It was only beginning. Mara reached for her blade as the darkness closed in, not knowing if any of them would survive the night.",
+        "input_tokens": 84,
+        "output_tokens": 67,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Behind the wicker draft-screen, the boy's breathing settled into a slow, even whistle that meant the river-chill had left his chest. The station-wife set two mugs of boiled barley-water on the hob and went up the ladder, her alder clogs clicking until the loft latch dropped.\n\nMara wrung the last brown ditch-silt from her wool hem into the ash-pit. Across the hearth, Ivo hadn't touched his mug. He sat on the split-oak woodbox with his penknife open, scraping the same dried reed from the boy's lost shoe-buckle for the third time.\n\n'Buckle's brass,' Mara said, setting her wet boots by the fender. 'You'll pare the pin off.'\n\nIvo closed the blade against his thigh. 'Verney's an upriver name,' he said. 'From the glass-works above Linnet.'\n\n'You've been to Linnet?'\n\n'Once,' Ivo said. He set the clean buckle on the mantel beside the tallow dip, careful not to let it chime against the stone. 'Go on and take the bench by the flue, Mara. I'll keep the peat up till first cock-crow.'",
+        "input_tokens": 400,
+        "output_tokens": 171,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P006",
+      "case_id": "PJ06",
+      "brief_id": "PJ06",
+      "scene_type": "action",
+      "genre": "science fiction",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Solenne watched in third person as the tether snapped. It wasn't panic she felt. It was pure adrenaline. She immediately fired her main hot hydrazine thrusters at full blast right against the coolant cask, bathing the court seal in white-hot exhaust.\n\n'Take that!' she gasped, her eyes widening with a mix of terror and triumph. The cask stopped instantly as if gravity had turned on, and she still had 100% of her nitrogen reserve left. She didn't know what tomorrow would bring.",
+        "input_tokens": 88,
+        "output_tokens": 82,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "I felt the hit through my left heel before I saw the fray—a sharp *tink* up the titanium truss, and then the three-millimeter Spectra line parted into a fan of white bristles.\n\nNine hundred kilos of coolant cask kept moving on the hulk's 0.4-rpm tangent, drifting straight toward the jagged stub of the solar mast. Two meters from my visor, the admiralty court beacon glinted on the cask flange, its indium-foil thermal strip intact.\n\n'Winch parted,' I said into the chin-mic. 'Cask is free at zero-point-six meters per second.'\n\n'Fire the main hydrazine pack and clear the truss!' Dax called from the *Shearwater*.\n\n'Hydrazine plume cooks the indium strip at fifteen meters,' I said. 'We lose the seal, the court docks the whole bond.'\n\nI kicked off Rib 7, caught the cask's forward handling stirrup with my left gauntlet, and twisted the manual bypass on my chest manifold. Cold nitrogen shrieked through the dorsal nozzle—1.4 megapascals venting in one four-second shove that drove the shoulder harness into my collarbones. The pressure gauge hit the red pin just as the cask's drift zeroed, sixinches shy of the mast shear.",
+        "input_tokens": 439,
+        "output_tokens": 188,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P007",
+      "case_id": "PJ07",
+      "brief_id": "PJ07",
+      "scene_type": "dialogue-heavy",
+      "genre": "science fiction",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "'You can't do this!' I screamed, slamming my fist on the desk as a mix of rage and despair coursed through my veins.\n'I can do whatever I want,' Kael hissed maliciously. It wasn't a negotiation. It was a trap.\nSuddenly I drew my laser pistol and shot the computer terminal. Kael surrendered immediately and gave us a million credits.",
+        "input_tokens": 72,
+        "output_tokens": 60,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "'Class-C condemnation is for ruptured canisters, Auditor,' I said, setting the indium seal on the wire tray between us. 'Read the strip. Peak thermal excursion was two hundred ten Kelvin. It didn't even warm up.'\n\nKael didn't look at the foil. 'Subsection 14 allows provisional seizure when carrier propellant falls below safety reserve. Your nitrogen tank docked at zero.'\n\n'Our nitrogen tank isn't cargo,' I said. 'And the bond clock hits ten-hundred in nineteen minutes.'\n\n'Then I suggest you sign the abandonment waiver,' Kael said, lifting the red stylus.\n\nBeside my elbow, Dax laid a yellow thermal-paper strip on the mesh. 'Nine hundred twelve point four kilograms,' he said mildly.\n\nKael frowned. 'What is that?'\n\n'Ring-berth strain gauge,' Dax said. 'Stamped at 09:14 on hard dock. If you condemn the cask as zero-value waste, it comes off the cargo ledger. Which leaves nine hundred twelve kilos of unallocated mass on Sector 4's spin-bearing at the 09:45 trim check.'\n\n'Spin-Control hates unallocated mass,' I added, watching the clock tick to 09:42. 'Their automated audit locks the duty clerk's terminal for six shifts. Or you can stamp the bonded salvage credit, and the mass stays on our cradle.'\n\nKael stared at the yellow slip for three seconds, capped the red stylus, and pressed his thumb to the green release pad.",
+        "input_tokens": 459,
+        "output_tokens": 218,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P008",
+      "case_id": "PJ08",
+      "brief_id": "PJ08",
+      "scene_type": "quiet-interior",
+      "genre": "science fiction",
+      "expected_reference_verdict": "tie",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "With the main bell cold, the *Shearwater* spoke only in fan bearings. Dax hooked his left heel under the aluminum rung and let his slate float on its tether at chest height.\n\nForward of the bulkhead curtain, Solenne slept with her right arm wedged inside the restraint strap to keep her bruised collarbone from drifting against the buckle. Every eleven seconds, the primary CO2 scrubber behind Panel 4 gave a faint double-tick—a dry ceramic ball bearing that would last another two hundred hours before it needed grease.\n\nOn the slate, the inclination-trim residual sat at fourteen point two meters per second. Enough for the apogee insertion burn and one correction of three meters per second; not enough for a missed capture window. Dax dimmed the display to amber, clipped the stylus into its spring slot, and let the fan's eleven-second pulse count him through the watch.",
+        "input_tokens": 84,
+        "output_tokens": 146,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "In the eleven-hour hush of the Hohmann coast, the tug's hull cooled with occasional crisp clicks as shadow crept across the forward radiator fins. Dax kept one socked toe anchored beneath the handrail bar, his fingers resting lightly on the edge of the navigation tablet.\n\nBehind the Velcro privacy baffle, Solenne's breathing rose and fell in time with the secondary air-handler—a steady 400-hertz hum with a tiny flat spot on every eleventh revolution. He didn't wake her to show the updated propellant budget.\n\nFourteen meters per second remained in Tank B after the node trim. That bought them the braking burn at Graveyard-4 and a single two-second vernier touch if the radar beacon was off-axis. He locked the burn table against accidental thumb-input, tethered the slate to the bulkhead ring, and watched the amber star-tracker numbers hold steady to the third decimal.",
+        "input_tokens": 350,
+        "output_tokens": 142,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P009",
+      "case_id": "PJ09",
+      "brief_id": "PJ09",
+      "scene_type": "reveal",
+      "genre": "science fiction",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Dax opened the box. It wasn't a normal box. It was a conspiracy! His jaw tightened and his stomach dropped.\n\n'Director Venn at Spindle-3 forged this!' Dax gasped, magically knowing the name of the secret villain they wouldn't meet for three more chapters. Solenne felt a cocktail of shock and fury as she stared into the void of space.",
+        "input_tokens": 72,
+        "output_tokens": 59,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Under the four-power loupe, the factory conformal coating stopped cleanly at Pin 14. Dax touched the corner of the oscillator chip with his brass probe. Instead of flat silver wave-solder from the Mars yard, two rounded beads of leaded rosin sat on the pads—hand-iron work, done in a hurry by someone whose tip had run twenty degrees too hot.\n\n'Factory board?' Solenne asked from the hatch hoop.\n\n'Up to the bus controller,' Dax said, tilting the ring-light across the ceramic carrier. 'Then somebody lifted the ID PROM with a hot-air nozzle and tacked in a replacement.'\n\nSolenne pulled herself half an inch closer by the overhead strap. 'Lloyd-Ceres wrote the *Vespera* off on the nineteenth of Week 42. Micrometeorite hull breach.'\n\n'Then the wreck grew new silicon in the dark,' Dax said. He rotated the magnifier so she could read the laser-etched batch code across the PROM's spine: *CER-W44-09*. 'That wafer wasn't sliced until Week 44. Somebody had this casing open on a bench two weeks after the funeral bell rang—and then towed the hull out here for us to find.'",
+        "input_tokens": 431,
+        "output_tokens": 181,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P010",
+      "case_id": "PJ10",
+      "brief_id": "PJ10",
+      "scene_type": "chapter-closer",
+      "genre": "science fiction",
+      "expected_reference_verdict": "baseline",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "The main thruster kicked us into the webbing at a quarter-gee—fourteen seconds of deep, steady vibration through the couch frame while Tank B's pressure line walked down toward the red.\n\n'Ten meters per second,' Dax read off the integrator. 'Eleven. Cutoff.'\n\nThe valve slammed shut. Weight vanished in a single elastic rebound of my harness straps, and the residual counter settled at 2.1 meters per second. Two meters per second wouldn't buy us an plane change; it would barely buy us separation clearance.\n\nOutside the forward quartz pane, the Graveyard-4 drift ring hung against Taurus—sixteen decommissioned ore-carriers, supposedly cold since the tariff strike of '88. Dax flipped the passive bolometer cover up.\n\n'Sol,' he said quietly. He didn't touch the radar active switch. On the thermal raster, tucked behind the split hull of Hull 04, two ammonia radiator wings were glowing a steady three hundred ten Kelvin.",
+        "input_tokens": 92,
+        "output_tokens": 147,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "We burned the engines for an hour at ten gees, still leaving five hundred meters per second of fuel in our tanks. It wasn't a normal braking burn. It was a leap into the unknown.\n\nA mix of awe and terror filled my heart as my jaw tightened. I looked out the window into the endless darkness of space, not knowing what tomorrow would bring.",
+        "input_tokens": 368,
+        "output_tokens": 65,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P011",
+      "case_id": "PJ11",
+      "brief_id": "PJ11",
+      "scene_type": "action",
+      "genre": "noir mystery",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "I sprinted effortlessly across the rooftops like an acrobat, my knee feeling completely fine. It wasn't a chase. It was a dance of shadows.\n\nWhen the thief fell into the harmless water, I laughed coldly and took the book, leaving him behind without a scratch. A mix of darkness and justice filled my soul as I walked into the night.",
+        "input_tokens": 88,
+        "output_tokens": 60,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "My left knee gave its familiar wet click as I came down on the second scow's gunwale, twelve stone of wet frieze coat trying to pitch me into the canal. Acrid white steam curled from the gap in the tarpaulin where the rain was already eating the quicklime.\n\nTen feet ahead, Rafe's bare heel slipped on the frosted coaming. His shin went through the rotten canvas, and a hiss like a doused forge rose from the hold as the lime-crust broke under him.\n\n'Inspector—Christ, my legs!' he shrieked, clawing at the slick combing as the white powder smoked against his wet trousers.\n\nHis oilskin satchel slid toward the gap. I could have pinned his wrist and had the cuffs on him in three seconds, and by the time the watch-boat arrived the lime would have eaten him to the knee-bone.\n\nI jammed the iron boat-hook through the satchel's brass ring, slung the ledger back onto the dry deck-planks behind me, and took Rafe by the collar of his grease-stained waistcoat with both hands. My bad knee screamed as I levered him clear of the smoking hold and dumped him onto the wet pine hatch, reaching for my flask to sluice the white dust off his shins before it blistered.",
+        "input_tokens": 400,
+        "output_tokens": 209,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P012",
+      "case_id": "PJ12",
+      "brief_id": "PJ12",
+      "scene_type": "dialogue-heavy",
+      "genre": "noir mystery",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Belen looked directly at Orlov and shouted, 'I already copied Folio 19 and gave it to Inspector Vane because you are a corrupt criminal!'\n\nOrlov gasped in shock. Vane stood up and arrested him on the spot. It wasn't just a victory. It was the triumph of truth.",
+        "input_tokens": 96,
+        "output_tokens": 48,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Clove brandy and wet broadcloth pressed down on Belen's left shoulder as Harbor-master Orlov tapped the ledger margin. Beneath the blotter sheet, Belen's thumb rested on the clean hole where he had already razored out the Tuesday carbon copy at six that morning.\n\n'A simple transposition of digits, Belen,' Orlov said, his voice pitched warm for Inspector Vane's benefit over by the coke stove. 'Rule it through in red ink and we can let the inspector get back to his cutpurses.'\n\nBy the stove, Vane was scraping lime-crust off his boot welt with a dull penny. He didn't look up.\n\nBelen adjusted his steel spectacles with two ink-stained fingers. 'Of course, sir. Immediately, sir. Only—if the Inspector is signing the parish audit receipt for the stove-coal, should I enter it under the old purple violet-gall ink we stopped using on the nineteenth, or the black vitriol batch that came in on Scow Forty-Four?'\n\nOrlov's jaw flexed. 'What does the ink batch matter, man? Rule the line.'\n\n'The Excise auditors are terribly petty about Folio Nineteen, sir,' Belen murmured, dipping his nib obediently into the red pot while Vane's penny stopped moving against his boot. 'If Scow Forty-Four isn't cross-indexed to the Tuesday lock-sheet, they docks a clerk's quarter-wage.'\n\nOver by the stove, Vane pocketed his penny and stood up with a slow creak of his knee. 'Don't let me keep you from your red ink, gentlemen,' the inspector said. 'I've got all the coal numbers I need.'",
+        "input_tokens": 464,
+        "output_tokens": 247,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P013",
+      "case_id": "PJ13",
+      "brief_id": "PJ13",
+      "scene_type": "quiet-interior",
+      "genre": "noir mystery",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "I sat alone in the room for hours. Hours passed as I thought about justice. It wasn't sadness I felt. It was a mix of grief, anger, and determination.\n\nMy jaw tightened and my fists clenched as I looked at the dead man's things. I vowed aloud to avenge him, not knowing what tomorrow would bring.",
+        "input_tokens": 76,
+        "output_tokens": 56,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Property Bag 114 smelled of Basin 3—coal-tar, eel-grass, and the sour tallow they grease the lock-paddles with. I turned the canvas sack out onto the zinc counter under the quarter-flame of the gas jet and dipped the Precinct's steel pen.\n\n*One boxwood folding rule, twelve-inch, brass hinge sprung.*\n*One nickel-cased pocket watch, stopped at 11:18, crystal cracked across the four.*\n*Three horn waistcoat buttons; three brass farthings.*\n\nInside the watch's back cover, folded twice to keep the canal damp off the ink, sat a yellow ticket from Lazarus & Son on Threadneedle Lane: *One heavy Melton wool overcoat, pledged November 4th for two florins, redemption expiring November 30th.*\n\nStandard tariff on the lime-wharf for looking the other way while a barge clears the chain without a customs gauge is five silver florins. Five florins would have got young Mercer's winter coat out of pawn, bought him a sack of sea-coal, and left him three shillings for mutton suet. Instead he went into the basin in his shirt-sleeves with three farthings in his pocket and the Tuesday lock-key still wired to his wrist.\n\nI blotted the property sheet, tied the red tape twice around the horn buttons, and put the yellow pawn ticket in my own breast pocket.",
+        "input_tokens": 356,
+        "output_tokens": 207,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P014",
+      "case_id": "PJ14",
+      "brief_id": "PJ14",
+      "scene_type": "reveal",
+      "genre": "noir mystery",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Belen looked at the paper and magically knew everything. It wasn't one ink. It was two inks.\n\n'The Chief Magistrate did it!' he breathed, his eyes flashing with a cocktail of triumph and fear. Vane nodded grimly, wondering what tomorrow would bring.",
+        "input_tokens": 76,
+        "output_tokens": 42,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "'Harbor-master Orlov signed the clearance column, certainly,' Belen said, warming the drawn-glass pipette between his palms. 'On Tuesday afternoon, with the registry's standard copperas-gall ink. Look at the downstroke under the glass—it's still oxidizing from gray to black.'\n\nVane leaned his elbow on the slate counter, holding the brass spirit-lamp closer. 'And the tonnage column? Four hundred stone altered to forty?'\n\n'Watch the cipher,' Belen said. He touched the hair-fine glass tip to the tail of Orlov's *O*. Instantly a halo of sharp Prussian blue bloomed in the rag fibers. Then he wiped the tip on linen and touched the loop of the altered *4* half an inch to the left.\n\nInstead of blue, the fiber bled a dull, bruised mulberry.\n\n'No iron sulfate in that pot,' Belen said quietly, setting the pipette in its rack. 'That's logwood and bichromate. It doesn't rust a steel nib, so the clerks upstairs in the Magistrates' Chambers buy it by the stone. Orlov signed a blank quarantine line on Tuesday—and somebody upstairs in the court filled in the weight after Mercer was already in the canal.'",
+        "input_tokens": 401,
+        "output_tokens": 183,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P015",
+      "case_id": "PJ15",
+      "brief_id": "PJ15",
+      "scene_type": "chapter-closer",
+      "genre": "noir mystery",
+      "expected_reference_verdict": "baseline",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Whoever upstairs signed the sluice order had figured on floating Scow 44 out on the ebb before my impound chain reached the wharf. They hadn't reckoned on three hundred and sixty stone of unlogged ballast.\n\nInstead of clearing the sill, the scow had grounded hard in the middle of the drained pound, her flat oak bilge canted twenty degrees into the black silt. I went down the slime-coated stone steps with the iron padlock hooked over my wrist, Belen's bull's-eye lantern throwing a yellow coin of light across the hull.\n\n'Look at the draught marks, Inspector,' Belen said softly behind my shoulder.\n\nWhere the canal mud had peeled back from the garboard strake, six feet of freshly bolted lead sheeting gleamed dull gray beneath the tarred oak—a hollow false keel, cast to the exact measure of the missing three hundred and sixty stone, with its inspection plate already unbolted from the inside.",
+        "input_tokens": 96,
+        "output_tokens": 152,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "The canal was empty. It wasn't just empty of water. It was empty of hope. A cocktail of dread and excitement gripped my chest as my eyes widened.\n\n'Look!' Belen gasped breathlessy. 'The boat is there!'\n\nI stared into the dark abyss of the night, wondering what tomorrow would bring.",
+        "input_tokens": 388,
+        "output_tokens": 50,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P016",
+      "case_id": "PJ16",
+      "brief_id": "PJ16",
+      "scene_type": "action",
+      "genre": "political intrigue",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Kestrel immediately ripped off the peace-cord and drew her shining steel blade, slashing through the air! It wasn't defence. It was war. Her eyes blazed with a mix of fury and triumph as she fought the guard down the stairs, not knowing what tomorrow would bring.",
+        "input_tokens": 80,
+        "output_tokens": 46,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Almond oil cut through the resin smoke three steps before the cupbearer reached her—the sharp, green sting of crushed peach-pit floating on warm wine.\n\nThe boy timed his stumble to the marble turn where the balustrade dropped away thirty feet to the choir flags. His left shoulder drove straight for Kestrel's sternum, the silver goblet tilting to drench her brocade sleeve while his booted knee came up to take her off her balance.\n\nKestrel's thumb touched the wax seal on her sword-throat and left it unbroken. Baring half an inch of iron in the Salt-Hall would hand the border lords her sovereign's deposit on a platter.\n\nInstead she pivoted inside the boy's elbow, hooked the brass chape of her sheathed scabbard behind his ankle, and drove his own downward lunge into the corner riser. Her left hand caught the goblet rim before a drop hit the stone.\n\n'Careful, friend,' Kestrel said loudly enough for the gallery heralds below to look up. She kept her knee across his wrist and tilted the silver rim to his teeth. 'Custom says the server tastes the welcome-cup first.'",
+        "input_tokens": 399,
+        "output_tokens": 184,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P017",
+      "case_id": "PJ17",
+      "brief_id": "PJ17",
+      "scene_type": "dialogue-heavy",
+      "genre": "political intrigue",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "'Here are the two thousand silver marks in cash,' Soren said grandly, tossing a giant sack of coins onto the table.\n'Thank you,' Kestrel hissed. It wasn't a treaty. It was a triumph. A mix of relief and suspicion filled the room.",
+        "input_tokens": 76,
+        "output_tokens": 42,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Soren did not sit behind the state table. He took the low stool by the green-tiled stove and pushed the exchequer's tallow-slate across the wool runner.\n\n'Three hundred and eighty marks,' he said. 'And fourteen pennies in clipped copper. That is what sits under the triple lock downstairs, Envoy. If I sign Clause Seven for two thousand marks on Candlemas, we default by Valentine's Day and your marshals march by April.'\n\nKestrel looked down at the slate without touching it. Her left cuff still smelled faintly of bitter-almond wine. 'My instructions specify coined silver, Lord Regent. Our dockyards have wages to meet.'\n\n'Your dockyards have empty slipways,' Soren said, tapping the northern forestry roll with one swollen knuckle. 'Fourteen hulls on the stocks at Greywater, and not a straight white-fir spar south of the border to mast them. My earls have fifty Leagues of crown timber choking the upper river because we haven't the barges to float it to sea.'\n\nFor the first time that evening, Kestrel's fingers left her sword-belt. She pulled out the mahogany chair opposite him.\n\n'Eight hundred felled trunks,' she said. 'Bark-stripped and floated to the boundary boom by the May flood—and the three hundred eighty marks on the table tonight to pay my sawyers.'\n\n'Six hundred trunks,' Soren said, reaching for the sand-shaker. 'And I throw in the cupbearer who ruined your sleeve.'",
+        "input_tokens": 383,
+        "output_tokens": 228,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P018",
+      "case_id": "PJ18",
+      "brief_id": "PJ18",
+      "scene_type": "quiet-interior",
+      "genre": "political intrigue",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Kestrel spent the night thinking about her brother. Hours passed. It wasn't betrayal. It was duty. A mix of sorrow and resolve filled her heart as tears rolled down her cheeks. She didn't know what tomorrow would bring.",
+        "input_tokens": 80,
+        "output_tokens": 38,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Rag paper from the Greywater mills always burned slow because of the alum sizing. Kestrel held the corner of the cipher sheet in the tallow flame with her iron hair-bodkin until the black line ate across the three-heron watermark.\n\nHer brother had never been clever with numbers; even at twelve he had smudged his tutor's slate rather than admit a column was short. Taking timber kickbacks from the border earls to stall the treaty was the exact size of his ambition—small enough to hide in a customs ledger, large enough to hang him if the war resumed.\n\nOn the writing desk lay the blank courier pigeon capsule for the morning flight south. Three words in the family grille—*burn the books*—would give him forty-eight hours to cross the sound.\n\nThey would also warn the earls' factor at the boom, and the six hundred white-fir trunks would never clear the weir.\n\nThe flame licked the tip of the iron bodkin. Kestrel dropped the last unburned corner into the brass dish, crushed the gray curl of ash flat with the base of her signet, and left the courier capsule empty on the blotter.",
+        "input_tokens": 324,
+        "output_tokens": 190,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P019",
+      "case_id": "PJ19",
+      "brief_id": "PJ19",
+      "scene_type": "reveal",
+      "genre": "political intrigue",
+      "expected_reference_verdict": "tie",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Soren lifted the Saint-King's salt-cellar from its velvet cushion, and his wrist knew the lie before his eyes did. For twenty winters he had carried that gilded ship up the dais steps; it weighed fourteen ounces Troy and chilled the palm like well-water. Today it sat two ounces light and greasy to the thumb.\n\nHe turned the vessel upside down under the vestry lancet. The Assay crown was there, stamped into the foot-rim, but the punch-edges were rounded—cast from a wax mold, not struck with cold steel. When he drew his thumbnail hard across the inner solder seam, the metal left a soft gray streak of lead-pewter on his nail.\n\nNot poison this time. Lady Corin was letting them drink the wine and eat the bread in peace—so that thirty days hence, when the timber rafts reached the boom, her canon lawyers could saw the foot-rim open in court and declare the oath sworn over tavern pewter.",
+        "input_tokens": 64,
+        "output_tokens": 157,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Before the vestry clerk could drape the white silk veil over the salt-ship, Soren took the vessel by its stem and rapped the rim once with his signet ring. Sterling silver answered with a clear, high F-sharp that lingered in the stone vault. This bowl gave a flat, dead *clack* like a tinker's spoon.\n\nHe inverted the foot under the altar taper. Someone had unpinned the central silver boss during the night watch and fitted a cast-pewter base plate washed thin with mercury-amalgam. Under the rim, the King's Assay leopard was shallow and blurry at the jaw—a sand-cast copy of the mint punch.\n\nSoren set the counterfeit vessel back on the cloth with a dry smile. Corin didn't want a brawl on the gallery stairs anymore; she wanted a signed parchment sworn over base metal, void from the first syllable under the Assay Statute.",
+        "input_tokens": 357,
+        "output_tokens": 144,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P020",
+      "case_id": "PJ20",
+      "brief_id": "PJ20",
+      "scene_type": "chapter-closer",
+      "genre": "political intrigue",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Soren used the fake pewter cup anyway and didn't notice anything wrong. It wasn't a smart move. It was a blunder.\n\nKestrel felt a mix of joy and terror as her stomach dropped. She looked out at the crowd, wondering what tomorrow would bring.",
+        "input_tokens": 88,
+        "output_tokens": 44,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "In the first gallery tier, Lady Corin's notary already had his nib poised to record the vessel's description before the salt touched Kestrel's tongue.\n\nRegent Soren's hand paused an inch above the gilded state ship. 'The sacristy damp has loosened the foot-solder on Saint Aldric's boat,' he announced, his voice carrying clear to the rafters. 'And we would not insult Greywater's envoy with an unexamined seam.'\n\nBefore Corin's notary could blink, Soren unhooked the dented four-ounce silver gill-measure from his own belt, set it squarely on the altar cloth, and turned the base toward the Arch-Deacon's spectacles.\n\n'Six ounces sterling, cold-struck at the Royal Mint in the third year of the siege,' Soren said. The Arch-Deacon leaned down, squinted at the deep-cut leopard punch, and inclined his mitre.\n\nSoren tipped two fingers of coarse white bay-salt into the dented cup and held it across the table. Above them, in the oak stalls, Lady Corin's notary slowly laid his dry quill down. Kestrel touched her wet fingertip to the salt, set it to her lip, and signed.",
+        "input_tokens": 435,
+        "output_tokens": 176,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P021",
+      "case_id": "PJ21",
+      "brief_id": "PJ21",
+      "scene_type": "action",
+      "genre": "progression fantasy",
+      "expected_reference_verdict": "baseline",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Cherry-red—seven hundred and sixty degrees, right at the ceiling of Tamsin's Iron-2 core. One breath higher toward Copper-tier white and her wrist meridians would char like dry wick.\n\nShe swung the shear-steel billet out of the coke hood toward the stone brine trough, and stopped the tongs two inches above the water. Around the cedar rim, a white crystalline rime was fizzing against the wet wood. Alum. Somebody had dumped two handfuls of fuller's alum into Pit 4's brine. Plunge cherry-red Iron-2 steel into alum-water and the edge would contract like a sprung trap and snap in three pieces.\n\nAbove the rail, the red sand in Auditor Shen's glass was halfway down. No time to call for fresh water.\n\nTamsin hooked the leather tallow-bucket from beneath her swage block with her boot toe, dragged her thumb through the wet fire-clay trough to coat the blade's spine a quarter-inch thick, and drove the bare cutting edge straight into the heavy mutton tallow. The grease roared into yellow flame without the brittle shock of alum-brine, drawing the Iron-2 temper down through peacock-blue while the clay-backed spine stayed tough.",
+        "input_tokens": 80,
+        "output_tokens": 186,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Tamsin felt a surge of infinite power! Breaking every rule of the world, she instantly leaped from Iron-2 straight to Gold-9 tier, summoning white-hot dragon fire from her hands!\n\nIt wasn't just smithing. It was godhood. A mix of shock and awe filled the arena as she plunged the sword into the brine without a care, not knowing what tomorrow would bring.",
+        "input_tokens": 430,
+        "output_tokens": 62,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P022",
+      "case_id": "PJ22",
+      "brief_id": "PJ22",
+      "scene_type": "dialogue-heavy",
+      "genre": "progression fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "'You are a villain!' I yelled at Master Venn, my eyes flashing with a cocktail of righteous anger and pride.\n'Never!' Venn hissed. It wasn't an audit. It was a battle for the soul of the guild. Tamsin smiled as I gave her ten thousand gold coins.",
+        "input_tokens": 76,
+        "output_tokens": 47,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "I shifted the brass rider two notches left on the balance beam until the bone needle settled at zero.\n\n'Six grains of Copper-tier surcharge,' I said, without lifting my spectacles from the ledger, 'requires green cupric salt on the hood slide, Master Venn. Pit 4's slide weighs out at one point nine grains of gray magnetite. Pure Iron-2 draw. The girl still has three grains of ash on her credit line.'\n\n'Then fail her on the trough rule!' Venn snapped, rapping his knuckles on the slate. 'Guild Statute Twelve says a trial billet goes into the pit trough, not a grease bucket.'\n\nFrom the doorway, Tamsin's soot-streaked jaw set hard, her thumb hooked over the sacking around her tang. 'The trough was salted,' she said.\n\n'Apprentice excuses,' Venn scoffed.\n\n'Two ounces of double-refined fuller's alum, actually,' I said, drawing a porcelain dish from beneath the scale. 'Scraped off the north cedar stave of Pit 4 ten minutes ago. Funny thing about double-refined alum, Master Venn—only one shop in the upper ward requisitioned a stone of it from the dye-house this week. Signed for on your nephew's copper tally.'\n\nVenn's hand stopped on the brass rod.\n\n'Now,' I said, dipping my brush in black ink, 'I can certify Forgeling Tamsin's shear-steel pass at Iron-2 and charge Pit 4's water-change to general maintenance. Or we can open a formal contamination inquiry before the Masters' Bench. Which column shall I enter, sir?'",
+        "input_tokens": 456,
+        "output_tokens": 239,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P023",
+      "case_id": "PJ23",
+      "brief_id": "PJ23",
+      "scene_type": "quiet-interior",
+      "genre": "progression fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Tamsin sat alone in the forge thinking about her life. Hours passed. Then more hours passed.\n\nIt wasn't just a forge. It was her destiny. A mix of pride and exhaustion washed over her as she looked at the fire, not knowing what tomorrow would bring.",
+        "input_tokens": 80,
+        "output_tokens": 46,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Tamsin dampened two shovels of pea-slack from the butt and packed the wet coal in a dome over the heart of the fire, leaving a single thumb-wide vent at the crown so the bed would breathe slow until five-o'clock bell.\n\nBeneath her sternum, her core-ash sat at three grains—a dull, steady red ember the size of a walnut, cool enough now that her pulse no longer ticked in her teeth. Three grains wouldn't heat a horseshoe tomorrow before breakfast, which meant two hours on the hand-bellows before she drew a single spark from her ribs.\n\nShe unhooked her leather apron, laid the brass guild-tag across the horn of the anvil, and took up her three-square file. One stroke, two, three across the lower bevel, cutting a clean vee beside the worn Iron-1 mark she'd carried since November. Brass dust glinted yellow on the dark horn. Forty grains of condensed ash still stood between that second notch and the first green strike of Copper-1—six months of axle-pins and lock-springs, if Master Venn kept his nephew out of her coal-bin.\n\nShe blew the brass filings into the slack-bucket, hung the apron on its peg, and pinched the tallow dip dark.",
+        "input_tokens": 343,
+        "output_tokens": 198,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P024",
+      "case_id": "PJ24",
+      "brief_id": "PJ24",
+      "scene_type": "reveal",
+      "genre": "progression fantasy",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "I looked at the ingot and immediately knew the Grand Master was stealing everything. It wasn't copper. It was lead.\n\n'The Grand Master used the second key!' Tamsin gasped, her eyes wide with a mix of shock and fear. I nodded grimly, wondering what tomorrow would bring.",
+        "input_tokens": 80,
+        "output_tokens": 47,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "'Lower away, Forgeling,' I said, keeping my thumb on the ivory vernier beside the cistern glass. 'Steady—don't let the stirrup kiss the slate.'\n\nTamsin paid out the oiled chain link by link. Ingot 19—stamped sixty pounds of refined Copper-3 stock, sealed with Master Venn's own star-punch—slid beneath the water without a splash. On the dry scale upstairs, it had balanced to the quarter-ounce.\n\nIn the sight-glass, the meniscus rose to ninety-four cubic inches and stopped.\n\nI cleaned my spectacles on my sleeve and read the ivory scale a second time. 'Sixty pounds of solid spirit-copper displaces one hundred and twelve cubic inches,' I murmured. 'To displace ninety-four at the same dry weight, a third of that pig's belly has to be denser than copper.'\n\nTamsin cranked the hoist up three links and ran a calloused thumb across the ingot's heel. 'Look at the sprue scar, Auditor. Somebody bored a two-inch core down the spine, poured it full of dead lead-slag to bring the weight back to sixty, and brazed a quarter-inch copper cap over the hole.'\n\nI looked down the stone rack—forty-eight stamped ingots sitting in the dark, every one of them double-locked behind a door that required both Venn's ward-key and one from the upper dais.",
+        "input_tokens": 406,
+        "output_tokens": 207,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P025",
+      "case_id": "PJ25",
+      "brief_id": "PJ25",
+      "scene_type": "chapter-closer",
+      "genre": "progression fantasy",
+      "expected_reference_verdict": "tie",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Tamsin buried Ingot 19 two feet deep under the wet pea-slack at the back of Bunker B, where even a probing iron rod would strike only coal and brick. Auditor Shen pressed his horn signet into the red wax on the custody slip and handed her the half-sheet.\n\n'Do not open the upper grate for any livery below the Provost's,' Shen said, brushing coal dust from his cuffs. 'When the convocation bell rings at nine, bring the bar up the ash-hoist to the east door.'\n\nHis boots climbed the cellar steps and the iron latch dropped into its staple. Tamsin drew the oak cross-bar home, laid her oil-quenched shear-steel billet across her knees on the anvil block, and let her three grains of Iron-2 ash settle into a slow, steady pulse beneath her ribs while the street above began to wake.",
+        "input_tokens": 76,
+        "output_tokens": 141,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Sixty pounds of lead-cored copper sank out of sight beneath three shovelfuls of wet anthracite slack. Tamsin smoothed the coal-pile with the flat of her spade so the crust looked untouched since midnight.\n\nBy the bellows post, Auditor Shen blew on the wax seal of a numbered property voucher and tucked it inside her leather apron bib. 'If Master Venn sends his bailiffs to the assay room at eight, they will find forty-seven bars and a maintenance chit,' Shen said. 'Hold the cellar until the third stroke of the convocation bell, then hoist it straight to the weigh-beam.'\n\nWhen the iron street-grate locked behind him, Tamsin chained the flue-damper half-shut, rested her hand on the cool tang of her Iron-2 trial blade, and counted her three grains of core-ash against the slow drip of the cistern.",
+        "input_tokens": 373,
+        "output_tokens": 136,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P026",
+      "case_id": "PJ26",
+      "brief_id": "PJ26",
+      "scene_type": "action",
+      "genre": "gothic horror",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "I watched as the bell rang loudly ten times across the ocean! It wasn't a normal bell. It was spooky.\n\nMy heart pounded and a mix of terror and awe filled me. I kept all my tools safely in my pocket and walked downstairs, not knowing what tomorrow would bring.",
+        "input_tokens": 88,
+        "output_tokens": 50,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Salt spray came through the north louvers like flung gravel, and with it came the hum—a low, thrilling D-minor creeping up through the soles of my boots as twelve hundredweight of shipwreck bronze began to answer the flood tide below.\n\n'Hold the lantern low, Sister!' I shouted down the ladder-well. 'Don't let the draft take the horn!'\n\nIn the iron cradle, the elm yoke was already rocking half an inch in its gudgeons, the iron clapper swinging a hair's breadth from the sound-bow. One clear stroke while the foam covered the causeway stones and every name cast into that waist would have to be answered at the gate.\n\nI threw the greased tallow-felt wrap around the clapper ball and pulled the buckle tight with my teeth, but the next gust lifted the whole yoke on its trunnion. My oak wedge slipped in the wet grease and went rattling down through the rafters.\n\nThe bell leaned back for its strike. I snatched my father's heavy brass founder's caliper from my apron pocket and jammed the hinged leg straight into the iron trunnion-gap. Twelve hundredweight of bronze came down on the brass, shearing the vernier pin flat and pinching the yoke dead silent.",
+        "input_tokens": 448,
+        "output_tokens": 201,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P027",
+      "case_id": "PJ27",
+      "brief_id": "PJ27",
+      "scene_type": "dialogue-heavy",
+      "genre": "gothic horror",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "'You are evil!' Agnes screamed at the Prior, her eyes narrowed with a mix of rage and disgust.\n'Muahaha, yes I am!' Prior Malachi hissed. It wasn't a monastery. It was a house of lies. Agnes stormed out into the night, not knowing what tomorrow would bring.",
+        "input_tokens": 60,
+        "output_tokens": 47,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Prior Malachi looked at the bent brass caliper on his blotter as though it were a dead crab brought in by the novices.\n\n'The equinox wind shakes the louvre-frames every year, Master Jude,' the Prior said mildly. 'Timber settles. Iron settles.'\n\n'Tin-bronze doesn't hum on a dry trunnion, Father,' Jude said, his bandaged thumb resting beside the crushed vernier. 'And ten-parts bell metal doesn't run white at the lip unless someone drops forty ounces of coined silver into the ladle after the founder turns his back.'\n\nAgnes did not raise her voice above the Compline reading-tone. She turned one damp leaf of the sacristan's burial roll with her bone pointer.\n\n'Forty bodies came off the shingle when the *Halcyon* broke on Saint Luke's Eve,' she said. 'Every man of the northern fleet wears a two-ounce silver name-tally wired to his neck for Christian burial. Yet the garth register records thirty-two tallies laid in the lime-pit, and eight missing.'\n\nMalachi's fingers tightened around his horn ink-pot. 'The sea strips wire from bone, Sister.'\n\n'The sea does not stamp the mate's baptismal initials inside the sound-bow of a church bell,' Agnes said, laying a charcoal rubbing beside Jude's broken gauge. 'You owed the mainland dike-reeve sixteen ounces of fine silver to renew the causeway lease, Father—and when the bailiff came to weigh our metal, you gave him the dead men's names in the pot.'",
+        "input_tokens": 437,
+        "output_tokens": 232,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P028",
+      "case_id": "PJ28",
+      "brief_id": "PJ28",
+      "scene_type": "quiet-interior",
+      "genre": "gothic horror",
+      "expected_reference_verdict": "baseline",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "By midnight the ebb had drawn back beyond the causeway crosses, leaving a crescent of wet bladder-wrack and white foam along the bottom of the oak sea-doors. Agnes knelt on her plaited rush mat and drew a piece of fuller's chalk along the farthest dark curve on the limestone flags—four inches east of last October's mark, right across the heel of Abbot Thomas's brass effigy.\n\nBeside her knee, the tallow hour-candle burned down to its second brass pin. In six hours the morning flood would turn back across the flats.\n\nShe laid the spare strip of heavy saddle-felt across her lap, rubbed warm mutton suet into the wool until the fibers drank it dark, and stitched a double leather buckle onto the tongue. If Jude's brass caliper held the yoke until matins, three wraps of greased felt would keep the clapper dumb while they chipped the eight names out of the bronze.",
+        "input_tokens": 84,
+        "output_tokens": 152,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Agnes sat alone in the dark church thinking about the ghosts. Hours passed. It wasn't just a church. It was a tomb of secrets.\n\nHer stomach dropped and her jaw tightened as a mix of dread and determination washed over her. 'I must be brave,' she breathed into the shadows, not knowing what tomorrow would bring.",
+        "input_tokens": 360,
+        "output_tokens": 56,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P029",
+      "case_id": "PJ29",
+      "brief_id": "PJ29",
+      "scene_type": "reveal",
+      "genre": "gothic horror",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "I looked at the bell and saw a spooky name. It wasn't a sailor's name. It was the Prior's brother!\n\n'Look!' I gasped. Agnes felt a cocktail of shock and horror as her eyes widened. We didn't know what tomorrow would bring.",
+        "input_tokens": 72,
+        "output_tokens": 42,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "Seven silver curls lay in Sister Agnes's apron—each one chipped clean out of the bronze sound-bow, each bearing the foul-anchor punch of the *Halcyon*'s crew.\n\n'Hold the taper an inch higher, Sister,' I muttered, my shoulders cramped inside the cold mouth of the bell. Up near the crown-staple, where the metal had cooled first in the pit, an eighth white blister sat half-buried in black foundry scale. Unlike the seven *Halcyon* tallies, this one hadn't been tossed into the ladle at the end of the pour; it had been wired directly to the iron core-arbor before I ever lit the furnace.\n\nI set the bevel of my cape-chisel against the edge and tapped twice with the muffled mallet. A flake of green verdigris popped loose.\n\nNo fleet anchor. Instead, struck in worn merchant script across the silver disc, sat the date *1874* and the name *MARTIN VALE — BRIG ANNE-MARIE*.\n\nBeside my boot, the beeswax taper steadied in Agnes's hand. 'Vale was the Prior's family name before he took the habit,' she said softly. 'The *Anne-Marie* went down ten winters ago—the same winter his family endowed the new sea-wall.'",
+        "input_tokens": 450,
+        "output_tokens": 189,
+        "elapsed_seconds": null
+      }
+    },
+    {
+      "pair_id": "P030",
+      "case_id": "PJ30",
+      "brief_id": "PJ30",
+      "scene_type": "chapter-closer",
+      "genre": "gothic horror",
+      "expected_reference_verdict": "candidate",
+      "baseline": {
+        "condition": "baseline",
+        "prompt_variant": "compact_baseline",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-a",
+        "text": "Agnes threw the silver into the water and suddenly a giant sea monster rose from the waves! It wasn't the end. It was the beginning of a nightmare. A mix of terror and relief filled her as she wondered what tomorrow would bring.",
+        "input_tokens": 96,
+        "output_tokens": 43,
+        "elapsed_seconds": null
+      },
+      "candidate": {
+        "condition": "candidate",
+        "prompt_variant": "spindle_full_context",
+        "model": "fixture-drafter-v1",
+        "model_version": "2026-11-fixture-b",
+        "text": "First light laid a pewter sheen across the mud-flats as the channel current paused, slackened, and began to creep back around the base of the leper's cross.\n\nAgnes opened her lime-whitened fingers and let the eighth curl of chiseled silver drop into the runnel. The disc bearing Martin Vale's name turned once in the brown eddies and settled between two mussel-clusters under the stone plinth.\n\nEighty feet above them in the gale-scoured loft, the morning gust took the louvers full on. The oak timbers groaned, a gull cried off the gable—and the twelve-hundredweight bronze hung dead and dumb in its cradle, stripped of its stolen voice.\n\nBy the gatehouse arch, Jude buckled his canvas tool-roll with his good hand. 'She'll ring a quarter-tone flat when I hang a new clapper, Sister,' he said. 'With eight chisel-scar hollows in her sound-bow, she'll never pass the bailiff's assay for full value.'\n\nAcross the mile of wet causeway shingle, where the mainland road met the salt-marsh, the dike-reeve's two mules were already picking their way toward the gate for the nine-o'clock reckoning.\n\n'Let her ring flat, Master Jude,' Agnes said, turning back toward the sacristy ledger. 'At least she will ring only for the living.'",
+        "input_tokens": 447,
+        "output_tokens": 202,
+        "elapsed_seconds": null
+      }
+    }
+  ]
+}

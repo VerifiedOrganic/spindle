@@ -45,7 +45,11 @@ later model failed to repeat the concern.
 
 The local `/console` exposes series backlog, thread history, reader reviews,
 editorial decisions, and staged canon/plan actions beside manuscript reading.
-Use `get_model_usage` to report actual provider tokens and elapsed time;
+Use `get_model_usage` to report actual provider tokens, elapsed time, prompt
+template attribution (`prompt_template_id`, `prompt_version`,
+`context_packet_hash`), and sampling parameters (`temperature`, `top_p`,
+`max_tokens`), optionally filtered by `run_id`, `scene_id`, or
+`prompt_template_id`;
 unknown tokens remain unknown. Inspect deep `audit_coverage` separately from
 finding counts, including heuristic-only and unsampled records.
 
@@ -202,7 +206,9 @@ amendment against its `rationale` and the realized reality:
 The pre-flight enforces the **immutability guard**: an amendment whose target
 chapter already has drafted scenes is rejected at decision time (drafted reality
 is never rewritten). On apply, the amendment replays through `plan_chapter` (or
-`create_narrative_promise`), snapshots the prior plan into `prior_state`, and
+`create_narrative_promise`), re-seeds any active authoring run's chapter and
+scene rows for that undrafted chapter so run reconciliation stays in sync,
+snapshots the prior plan into `prior_state`, and
 bumps `plan_revision` — so the outline keeps recoverable history. Hand the staged
 queue to the **canon-steward** skill's outline-canon discipline; never bulk-apply.
 

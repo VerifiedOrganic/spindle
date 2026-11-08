@@ -144,9 +144,11 @@ chapter has *any persisted scene on the active branch at apply time* is rejected
 (drafted reality is never rewritten by the outline; the guard is checked at
 decision time, not at staging, because drafting may advance between). On apply,
 the amendment replays through the existing plan write path (`plan_chapter`, or
-`create_narrative_promise` for a `promise_followup`), the affected plan slice is
-snapshotted into the amendment's `prior_state` before the write, and
-`plan_revision` increments — so the outline gains recoverable **history**
+`create_narrative_promise` for a `promise_followup`), re-seeds any active
+authoring run's chapter and scene rows for that undrafted chapter so run
+reconciliation stays in sync with the amended outline, snapshots the affected
+plan slice into the amendment's `prior_state` before the write, and increments
+`plan_revision` — so the outline gains recoverable **history**
 (rollback is a new operator edit informed by `prior_state`, not an automated
 revert). A per-decision outcome (`applied` | `rejected` | `failed` |
 `not_reached`) is returned; a real write failure mid-batch stops honestly (earlier

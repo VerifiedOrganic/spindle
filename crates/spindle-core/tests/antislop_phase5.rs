@@ -167,6 +167,71 @@ fn learn_and_apply_suppressions_from_kept_excerpt() {
 }
 
 #[test]
+fn suppression_learning_ignores_distant_typo_fix_and_scopes_narrowly() {
+    let pack = pack();
+    let agent = "The lantern hung by the stable door with teh iron latch.\n\n\
+                 Far down the hall, the clerk waited by the grate.\n\n\
+                 She felt a mix of relief and dread when the letter came.";
+    // Operator only fixes a typo in paragraph 1; paragraph 3 was not in an edited region.
+    let typo_fix = "The lantern hung by the stable door with the iron latch.\n\n\
+                    Far down the hall, the clerk waited by the grate.\n\n\
+                    She felt a mix of relief and dread when the letter came.";
+    let learned_from_typo = learn_suppressions_from_edit(&pack, agent, typo_fix);
+    assert!(
+        learned_from_typo.is_empty(),
+        "a typo fix in another paragraph must not suppress untouched hits: {learned_from_typo:?}"
+    );
+
+    // Same-paragraph minor typo fix must also not suppress.
+    let single_para_agent = "He set teh cup down without drinking. \
+                             She felt a mix of relief and dread when the letter came.";
+    let single_para_typo = "He set the cup down without drinking. \
+                            She felt a mix of relief and dread when the letter came.";
+    assert!(
+        learn_suppressions_from_edit(&pack, single_para_agent, single_para_typo).is_empty(),
+        "a 1-word typo fix in the same paragraph must not suppress adjacent hits"
+    );
+
+    // When a marker sentence is deleted, the marker appearing elsewhere must not suppress.
+    let marker_agent = "He shrugged and ran a hand through his hair. \"I don't know.\"\n\n\
+                        She stacked the ledgers on the counter.";
+    let marker_edit = "He wiped the cleaver on his apron. \"Ask her.\"\n\n\
+                       She stacked the ledgers on the counter and shrugged at the rain.";
+    assert!(
+        learn_suppressions_from_edit(&pack, marker_agent, marker_edit).is_empty(),
+        "deleted hit whose marker word appears elsewhere must not learn a suppression"
+    );
+
+    // A learned suppression from a genuinely edited region is scoped to its surrounding span,
+    // not a blanket pass for the same phrase or marker in a different sentence/scene.
+    let edited_agent = "It wasn't anger. It was disappointment.\n\
+                        This wasn't a homecoming. It was a reckoning.\n\
+                        She felt a mix of relief and dread when the letter came.";
+    let edited_operator = "He set the cup down without drinking.\n\
+                           She felt a mix of relief and dread when the letter came.";
+    let learned = learn_suppressions_from_edit(&pack, edited_agent, edited_operator);
+    assert_eq!(learned.len(), 1);
+    let store = SuppressionStore::from_entries(learned);
+
+    let other_scene = "At the harbor gate, Marcus felt a mix of relief and dread as the bell rang.";
+    let other_report = scan_with_options(
+        &pack,
+        &fiction(other_scene),
+        ScanOptions {
+            suppressions: Some(&store),
+            ..ScanOptions::default()
+        },
+    );
+    assert!(
+        other_report
+            .hits
+            .iter()
+            .any(|hit| hit.shelf_id == "emotion_cocktail"),
+        "learned suppression must not suppress a different sentence in another scene: {other_report:?}"
+    );
+}
+
+#[test]
 fn experimental_structural_is_off_by_default_and_not_a_gate() {
     assert!(!experimental_structural_default());
 
