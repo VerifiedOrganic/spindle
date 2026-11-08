@@ -26,5 +26,7 @@ jobs:
       - run: python3 evals/anti_slop.py drift
       - run: python3 evals/anti_slop.py report
       - run: python3 evals/prose_judge.py self-test
+      - run: python3 evals/continuity_recall.py self-test
+      - run: python3 evals/continuity_recall.py
       - run: node crates/spindle-mcp/tests/console_antislop_timeline.cjs
       - run: cargo clippy --workspace --all-targets -- -D warnings

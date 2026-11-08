@@ -25,6 +25,35 @@ const CHAPTER_BRIEFING_RECENT_LIMIT: usize = 3;
 const CHAPTER_BRIEFING_TOKEN_BUDGET: usize = 12_000;
 const SCENE_CONTEXT_TOKEN_BUDGET: usize = 32_000;
 
+/// Stable prompt template identifier for the harness host-embedded scene drafter prompt.
+pub const HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID: &str = "harness.scene_draft_host";
+/// Stable prompt template version for `HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID`.
+pub const HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION: &str = "v1";
+
+/// Stable prompt template identifier for the harness MCP-pull scene drafter prompt.
+pub const HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID: &str = "harness.scene_draft_mcp_pull";
+/// Stable prompt template version for `HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID`.
+pub const HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_VERSION: &str = "v1";
+
+/// Stable prompt template identifier for the harness chapter summary prompt.
+pub const HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID: &str = "harness.chapter_summary";
+/// Stable prompt template version for `HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID`.
+pub const HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION: &str = "v1";
+
+fn infer_authoring_run_id(state_path: &Path) -> Option<String> {
+    let run_dir = state_path.parent()?;
+    let runs_parent = run_dir.parent()?;
+    if runs_parent.file_name()?.to_str()? == "authoring_runs" {
+        run_dir.file_name()?.to_str().map(ToString::to_string)
+    } else {
+        None
+    }
+}
+
+fn compute_prompt_packet_hash(prompt: &str) -> String {
+    format!("{:x}", Sha256::digest(prompt.as_bytes()))
+}
+
 pub struct ExecutionResult {
     pub state: HarnessState,
     pub message: String,
@@ -247,6 +276,9 @@ async fn draft_scene(
 
     if artifact.save_draft_output.is_none() {
         ensure_scene_package_ready(
+            state_path,
+            state,
+            &draft_route,
             client,
             artifact_store,
             &scene,
@@ -1166,9 +1198,15 @@ async fn save_chapter_summary(
     }
 
     if artifact.save_summary_output.is_none() {
-        if let Err(error) =
-            ensure_summary_package_ready(client, artifact_store, &mut artifact, &artifact_path)
-                .await
+        if let Err(error) = ensure_summary_package_ready(
+            state_path,
+            state,
+            client,
+            artifact_store,
+            &mut artifact,
+            &artifact_path,
+        )
+        .await
         {
             if is_summary_rating_clearance_error(&error) {
                 let reason = format!("chapter summary model call SKIPPED: {error}");
@@ -1480,7 +1518,11 @@ async fn load_or_create_scene_artifact(
     Ok(artifact)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ensure_scene_package_ready(
+    state_path: &Path,
+    state: &HarnessState,
+    draft_route: &DraftRouteBinding,
     client: &McpHarnessClient,
     artifact_store: &ArtifactStore,
     scene: &crate::state::SceneState,
@@ -1491,6 +1533,20 @@ async fn ensure_scene_package_ready(
         return Ok(());
     }
 
+    let (prompt_template_id, prompt_version) = if draft_route.caller_should_send_brief {
+        (
+            HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_TEMPLATE_ID,
+            HARNESS_MCP_PULL_SCENE_DRAFT_PROMPT_VERSION,
+        )
+    } else {
+        (
+            HARNESS_HOST_SCENE_DRAFT_PROMPT_TEMPLATE_ID,
+            HARNESS_HOST_SCENE_DRAFT_PROMPT_VERSION,
+        )
+    };
+    let run_id = infer_authoring_run_id(state_path);
+    let context_packet_hash = compute_prompt_packet_hash(&artifact.prompt);
+
     for _ in 0..MAX_GENERATION_ROUNDS {
         if artifact.completion_fragments.is_empty() {
             let response = client
@@ -1499,6 +1555,14 @@ async fn ensure_scene_package_ready(
                     test_prompt: Some(artifact.prompt.clone()),
                     route: Some(artifact.route_name.clone()),
                     rating: artifact.rating.clone(),
+                    project_id: Some(state.project_id.clone()),
+                    book_id: None,
+                    chapter_id: None,
+                    scene_id: scene.scene_id.clone(),
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(prompt_template_id.to_string()),
+                    prompt_version: Some(prompt_version.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("draft generation failed on initial call")?;
@@ -1524,10 +1588,14 @@ async fn ensure_scene_package_ready(
                     original_prompt: artifact.prompt.clone(),
                     prior_output: artifact.combined_output(),
                     rating: artifact.rating.clone(),
-                    project_id: None,
+                    project_id: Some(state.project_id.clone()),
                     book_id: None,
                     chapter_id: None,
-                    scene_id: None,
+                    scene_id: scene.scene_id.clone(),
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(prompt_template_id.to_string()),
+                    prompt_version: Some(prompt_version.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("draft generation continuation failed")?;
@@ -1613,6 +1681,8 @@ async fn load_or_create_summary_artifact(
 }
 
 async fn ensure_summary_package_ready(
+    state_path: &Path,
+    state: &HarnessState,
     client: &McpHarnessClient,
     artifact_store: &ArtifactStore,
     artifact: &mut ChapterSummaryArtifact,
@@ -1622,6 +1692,12 @@ async fn ensure_summary_package_ready(
         return Ok(());
     }
 
+    let run_id = artifact
+        .run_id
+        .clone()
+        .or_else(|| infer_authoring_run_id(state_path));
+    let context_packet_hash = compute_prompt_packet_hash(&artifact.prompt);
+
     for _ in 0..MAX_GENERATION_ROUNDS {
         if artifact.completion_fragments.is_empty() {
             let response = client
@@ -1630,6 +1706,16 @@ async fn ensure_summary_package_ready(
                     test_prompt: Some(artifact.prompt.clone()),
                     route: Some(artifact.route_name.clone()),
                     rating: artifact.rating.clone(),
+                    project_id: Some(state.project_id.clone()),
+                    book_id: None,
+                    chapter_id: None,
+                    scene_id: None,
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(
+                        HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID.to_string(),
+                    ),
+                    prompt_version: Some(HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("summary generation failed on initial call")?;
@@ -1652,10 +1738,16 @@ async fn ensure_summary_package_ready(
                     original_prompt: artifact.prompt.clone(),
                     prior_output: artifact.combined_output(),
                     rating: artifact.rating.clone(),
-                    project_id: None,
+                    project_id: Some(state.project_id.clone()),
                     book_id: None,
                     chapter_id: None,
                     scene_id: None,
+                    run_id: run_id.clone(),
+                    prompt_template_id: Some(
+                        HARNESS_CHAPTER_SUMMARY_PROMPT_TEMPLATE_ID.to_string(),
+                    ),
+                    prompt_version: Some(HARNESS_CHAPTER_SUMMARY_PROMPT_VERSION.to_string()),
+                    context_packet_hash: Some(context_packet_hash.clone()),
                 })
                 .await
                 .context("summary generation continuation failed")?;
