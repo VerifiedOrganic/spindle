@@ -92,14 +92,8 @@ pub(super) fn require_planned_scene_location_and_rating(
     Ok((loc_id, rating))
 }
 
-pub(super) fn authoring_execute_uses_agent_drafting(mode: Option<&str>) -> bool {
-    let Some(mode) = mode else {
-        return false;
-    };
-    matches!(
-        mode.trim().to_ascii_lowercase().as_str(),
-        "agent" | "agents" | "auto" | "automated" | "offload" | "full_agent" | "fully_automated"
-    )
+pub(super) fn authoring_execute_uses_agent_drafting(mode: Option<AuthoringMode>) -> bool {
+    mode.is_some_and(|mode| mode.uses_agent_drafting())
 }
 
 pub(super) fn find_harness_scene(
@@ -202,7 +196,7 @@ impl ToolRouter {
         input: AuthoringExecuteNextInput,
     ) -> anyhow::Result<AuthoringExecuteNextOutput> {
         let project_id = input.project_id.clone();
-        let agent_mode = authoring_execute_uses_agent_drafting(input.mode.as_deref());
+        let agent_mode = authoring_execute_uses_agent_drafting(input.mode);
         let repo = self.service.repository();
 
         let run_id = match input.run_id {

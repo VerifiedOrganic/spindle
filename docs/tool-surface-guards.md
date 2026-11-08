@@ -13,14 +13,18 @@ existing strict-client tests and all `tools/list` snapshots.
   targets. The walker follows schema keywords, visits distinct pointer nodes,
   escapes property names and terminates on cycles. Unresolved/external refs are
   diagnostic findings; the validator has HTTP/file retrieval features disabled.
-- Empty and field-name-only descriptions, emitted implementation jargon and the
-  known provider-specific research promise. String fields named `mode`, `status`,
-  `action`, or ending in `_policy` without enums are review candidates, not proof
-  that those fields should have closed vocabularies.
-- `quality/closed-fields.json` explicitly identifies the currently closed
-  authoring mode and policy fields; missing schema fields/enums are findings.
-  Rust enum conversion and serialized-value parser round trips belong with the
-  later contract cleanup, not guessed from these heuristics.
+- Empty and field-name-only descriptions (`placeholder_description`), emitted
+  implementation jargon (`implementation_jargon`), and provider-specific research
+  promises (`provider_promise`) are enforced at zero findings across the entire
+  catalog. String fields named `mode`, `status`, `action`, or ending in `_policy`
+  without enums are review candidates, not proof that those fields should have
+  closed vocabularies.
+- `quality/closed-fields.json` explicitly identifies the closed authoring mode
+  and policy fields (`authoring_execute_next`, `authoring_prepare_run`, and
+  `authoring_start_run`); missing schema fields or enums fail `tool_schema_lint`
+   immediately, and `closed_set_enum_values_round_trip_through_parsers` verifies
+  that every advertised enum value and compatibility alias round-trips through
+  `parse_arguments` and `serde_json`.
 - `profile_token_budgets`: checks explicit current profile ceilings. Synthetic
   tests independently reject oversized inputs, descriptions and outputs. The
   strict canonical helper has no exemption path and rejects per-tool discovery

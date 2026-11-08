@@ -2270,49 +2270,61 @@ pub struct SaveSceneDraftInput {
     /// placement from the existing chapter instead of requiring numeric fields.
     #[serde(default)]
     pub chapter_id: Option<String>,
+    /// Scene order within the chapter (1-based).
     pub scene_order: i32,
+    /// Full scene prose text.
     #[serde(alias = "content", alias = "text")]
     pub full_text: String,
     /// Use assistant for prose composed or revised by the host AI. Human by
     /// default. Enables opt-in learning from a later human edit, not AI edits.
     #[serde(default)]
     pub authorship: DraftAuthorship,
+    /// Concise scene summary.
     pub summary: String,
+    /// Scene content rating.
     pub content_rating: ContentRating,
+    /// Optional scene tone label.
     pub tone: Option<String>,
-    /// Optional server-side receipt id returned by `continue_generation`.
-    /// Required when saving explicit sexual prose with `content_rating:
-    /// "explicit"`. The receipt is provenance only: it proves the save was
-    /// authorized by a cleared, explicit-capable draft-route generation and
-    /// stamps `draft_origin: agent:<id>`. The caller-supplied `full_text` is
-    /// authoritative and is what Spindle persists — the receipt output is never
-    /// substituted for the prose.
+    // Optional server-side receipt id returned by `continue_generation`.
+    // Required when saving explicit sexual prose with `content_rating:
+    // "explicit"`. The receipt is provenance only: it proves the save was
+    // authorized by a cleared, explicit-capable draft-route generation and
+    // stamps `draft_origin: agent:<id>`. The caller-supplied `full_text` is
+    // authoritative and is what Spindle persists — the receipt output is never
+    // substituted for the prose.
+    /// Optional receipt ID from `continue_generation` (required for `explicit` prose).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_id: Option<String>,
     /// Optional path to the local source file this scene was written from.
-    /// When provided, Spindle tracks the file for divergence detection.
     #[serde(default)]
     pub source_path: Option<String>,
-    /// Optional location (record id returned by create_location) this scene is
-    /// set in. Persisted on the scene so the pre-draft temporal anchor can name
-    /// where the previous scene ended. Re-saving without it preserves the
-    /// existing value (it is never cleared by an omitted field).
+    // Optional location (record id returned by create_location) this scene is
+    // set in. Persisted on the scene so the pre-draft temporal anchor can name
+    // where the previous scene ended. Re-saving without it preserves the
+    // existing value (it is never cleared by an omitted field).
+    /// Optional location record ID where this scene takes place.
     #[serde(default)]
     pub location_id: Option<String>,
+    /// Research source IDs cited by this scene.
     #[serde(default)]
     pub research_source_ids: Vec<String>,
+    /// Research note IDs cited by this scene.
     #[serde(default)]
     pub research_note_ids: Vec<String>,
+    /// Research claim IDs cited by this scene.
     #[serde(default)]
     pub research_claim_ids: Vec<String>,
+    /// Optional research query pack input used during drafting.
     #[serde(default)]
     pub research_query_pack_input: Option<String>,
+    /// Optional research context hash.
     #[serde(default)]
     pub research_context_hash: Option<String>,
-    /// On-page knowledge acquisitions to record with this scene (design §2.3
-    /// path 2). Each entry becomes a knowledge_fact row stamped at this scene's
-    /// placement; a `secret_of_fact_id` link expands that secret's circle of
-    /// trust. Additive — an empty vector behaves exactly as before.
+    // On-page knowledge acquisitions to record with this scene (design §2.3
+    // path 2). Each entry becomes a knowledge_fact row stamped at this scene's
+    // placement; a `secret_of_fact_id` link expands that secret's circle of
+    // trust. Additive — an empty vector behaves exactly as before.
+    /// On-page character knowledge acquisitions recorded with this scene.
     #[serde(default)]
     pub knowledge_learned: Vec<KnowledgeLearnedEntry>,
 }
@@ -2328,10 +2340,11 @@ pub struct SaveSceneDraftOutput {
     #[serde(default)]
     pub agency_warning: Option<AgencyWarning>,
     pub tone_deviation: bool,
-    /// Genre-voice mismatches against the project style contract (reader
-    /// contract style_notes, `style` world rules, narrator voice). A non-empty
-    /// list is a failed style gate — revise before committing. Coarse by
-    /// design; an empty list is not proof the scene is on-genre.
+    // Genre-voice mismatches against the project style contract (reader
+    // contract style_notes, `style` world rules, narrator voice). A non-empty
+    // list is a failed style gate — revise before committing. Coarse by
+    // design; an empty list is not proof the scene is on-genre.
+    /// Genre-voice mismatches against the project style contract.
     #[serde(default)]
     pub style_warnings: Vec<String>,
     pub content_rating_valid: bool,
@@ -2349,15 +2362,17 @@ pub struct SaveSceneDraftOutput {
     pub voice_drift: Vec<VoiceDriftFinding>,
     #[serde(default)]
     pub retcon_findings: Vec<RetconFinding>,
-    /// Intra-scene temporal-coherence advisories (deterministic prose scan):
-    /// unsignaled time-of-day teleports, internal time drift, and unrendered
-    /// declared spans. Advisory-only — every entry is `severity: "warning"` and
-    /// never blocks a save.
+    // Intra-scene temporal-coherence advisories (deterministic prose scan):
+    // unsignaled time-of-day teleports, internal time drift, and unrendered
+    // declared spans. Advisory-only — every entry is `severity: "warning"` and
+    // never blocks a save.
+    /// Advisory intra-scene temporal-coherence findings.
     #[serde(default)]
     pub temporal_findings: Vec<ConsistencyIssue>,
-    /// Fiction anti-slop scan of the saved prose. Soft and hard hits are
-    /// advisory on save — this field never fails the write. Hard over-limit
-    /// fail-closes only on the verify/revise path when that loop is on.
+    // Fiction anti-slop scan of the saved prose. Soft and hard hits are
+    // advisory on save — this field never fails the write. Hard over-limit
+    // fail-closes only on the verify/revise path when that loop is on.
+    /// Fiction anti-slop scan report for the saved prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anti_slop: Option<crate::style::antislop::AntiSlopReport>,
 }
@@ -2653,28 +2668,29 @@ pub struct RelationshipUpdateEntry {
     pub reason: String,
 }
 
-/// One on-page knowledge acquisition flagged in a scene's continuity package
-/// (design §2.3 path 2, the draft-time reveal). Each entry becomes a
-/// `knowledge_fact` row for `character_id`, learned_at = the saving scene's
-/// placement. When `secret_of_fact_id` names a secret canonical fact, the row
-/// links to it and expands that secret's circle of trust from this scene
-/// forward — the reveal mechanism. `None` there records ordinary knowledge.
+// One on-page knowledge acquisition flagged in a scene's continuity package
+// (design §2.3 path 2, the draft-time reveal). Each entry becomes a
+// `knowledge_fact` row for `character_id`, learned_at = the saving scene's
+// placement. When `secret_of_fact_id` names a secret canonical fact, the row
+// links to it and expands that secret's circle of trust from this scene
+// forward — the reveal mechanism. `None` there records ordinary knowledge.
+/// On-page character knowledge acquisition recorded with a scene.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KnowledgeLearnedEntry {
-    /// The character who learns the fact (a create_character record id).
+    /// Character who learns the fact.
     pub character_id: String,
-    /// The fact learned, as a short natural-language statement.
+    /// Short natural-language statement of the learned fact.
     pub fact: String,
-    /// Optional note on how/where it was learned (rendered into the row).
+    /// Optional note on how or where the fact was learned.
     #[serde(default)]
     pub source_summary: Option<String>,
-    /// When set, links this knowledge to a secret canonical fact (its circle of
-    /// trust expands to include `character_id`). The id must reference an
-    /// existing canonical fact marked `secret = 1`, or the save is rejected.
+    // When set, links this knowledge to a secret canonical fact (its circle of
+    // trust expands to include `character_id`). The id must reference an
+    // existing canonical fact marked `secret = 1`, or the save is rejected.
+    /// Optional secret canonical fact ID revealed to this character.
     #[serde(default)]
     pub secret_of_fact_id: Option<String>,
-    /// Whether the reader is meant to know this (dramatic-irony control). When
-    /// omitted, defaults to visible.
+    /// Whether the reader knows this fact (defaults to true).
     #[serde(default)]
     pub reader_visible: Option<bool>,
 }
@@ -6428,22 +6444,21 @@ pub struct CompileManuscriptOutput {
     pub artifact_path: Option<String>,
 }
 
-/// Input for `export_recap` (evolution §3.8): a spoiler-bounded, reader-facing
-/// "previously on" recap of a book up to (and including) `through_chapter`. Pure
-/// read model over chapter summaries and narrative promises on the active
-/// branch; the cursor is the end of `through_chapter` in `book_number`, and the
-/// reader-secret rule (see the resolver's doc comment) governs what a fact/thread
-/// may name. The workspace write is opt-in and mirrors `compile_manuscript`.
+// Input for `export_recap` (evolution §3.8): a spoiler-bounded, reader-facing
+// "previously on" recap of a book up to (and including) `through_chapter`. Pure
+// read model over chapter summaries and narrative promises on the active
+// branch; the cursor is the end of `through_chapter` in `book_number`, and the
+// reader-secret rule (see the resolver's doc comment) governs what a fact/thread
+// may name. The workspace write is opt-in and mirrors `compile_manuscript`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportRecapInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Book number to summarize (1-based).
     pub book_number: i32,
-    /// Inclusive last chapter the recap covers. Everything established after the
-    /// end of this chapter (in this book) is withheld as a spoiler.
+    /// Inclusive last chapter covered by the recap; later chapters are withheld.
     pub through_chapter: i32,
-    /// When true, the recap Markdown is also written to the project's workspace
-    /// artifacts directory under a deterministic filename, and the path is
-    /// returned in `artifact_path`.
+    /// Also write the recap Markdown to the workspace artifacts directory.
     #[serde(default)]
     pub write_to_workspace: bool,
 }
@@ -6453,6 +6468,7 @@ pub struct ExportRecapInput {
 /// a structured empty recap, not an error.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportRecapOutput {
+    /// Rendered recap Markdown.
     pub markdown: String,
     /// Number of chapter summaries at or under the cursor folded into the recap.
     pub chapter_count: usize,
@@ -6464,23 +6480,19 @@ pub struct ExportRecapOutput {
     pub artifact_path: Option<String>,
 }
 
-/// Input for `export_series_bible` (evolution §3.8): a spoiler-bounded,
-/// reader-facing series bible (characters, locations, glossary, factions,
-/// religions) as of an optional cursor. Pure read model over branch entities and
-/// placement-stamped character state; the reader-secret rule governs what may be
-/// named. The workspace write is opt-in and mirrors `compile_manuscript`.
+// Input for `export_series_bible` (evolution §3.8): a spoiler-bounded,
+// reader-facing series bible (characters, locations, glossary, factions,
+// religions) as of an optional cursor. Pure read model over branch entities and
+// placement-stamped character state; the reader-secret rule governs what may be
+// named. The workspace write is opt-in and mirrors `compile_manuscript`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportSeriesBibleInput {
+    /// Project identifier.
     pub project_id: String,
-    /// Optional spoiler cursor. When present, everything established after this
-    /// placement is withheld and character state is taken as-of it. When absent,
-    /// the whole project is covered (cursor = +infinity) — only secrets never
-    /// revealed to the reader are withheld.
+    /// Optional spoiler cursor; state after this placement is withheld.
     #[serde(default)]
     pub through: Option<StoryPlacement>,
-    /// When true, the bible Markdown is also written to the project's workspace
-    /// artifacts directory under a deterministic filename, and the path is
-    /// returned in `artifact_path`.
+    /// Also write the series bible Markdown to the workspace artifacts directory.
     #[serde(default)]
     pub write_to_workspace: bool,
 }
@@ -6750,49 +6762,53 @@ pub enum CanonicalValue {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringStartRunInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Book number (1-based).
     pub book_number: i32,
+    /// Inclusive starting chapter number (1-based).
     pub start_chapter: i32,
+    /// Optional inclusive ending chapter number.
     #[serde(default)]
     pub end_chapter: Option<i32>,
+    /// Optional number of chapters to include starting at `start_chapter`.
     #[serde(default)]
     pub chapter_count: Option<i32>,
+    /// Number of chapters per checkpoint review window (minimum 1).
     pub checkpoint_interval: usize,
+    /// Optional editorial directives carried into the run.
     #[serde(default)]
     pub editorial_directives: Option<Vec<String>>,
+    /// Execution mode (`hybrid` for host drafting or `agent` for routed offload).
     #[serde(default)]
-    pub mode: Option<String>,
-    /// Canon-mining policy for the run (evolution §3.1). Omitted or `None` =
-    /// disabled (behaves exactly as before). Validated against
-    /// {`"disabled"`, `"propose_all"`}; `"propose_all"` stages proposed canon
-    /// deltas per committed scene.
+    pub mode: Option<AuthoringMode>,
+    /// Canon-mining policy (`disabled` or `propose_all` to stage canon deltas per scene).
+    // Omitted, `None`, or `"disabled"` = disabled (persists NULL, behaves
+    // exactly as before; evolution §3.1).
     #[serde(default)]
-    pub mining_policy: Option<String>,
-    /// Bounded in-run verify/revise attempts per scene (evolution §3.2). Omitted,
-    /// `None`, or `0` = disabled: a saved draft goes straight to commit exactly
-    /// as before. `1` or `2` opts the run into scene-scoped verification after
-    /// each draft, feeding any warning-or-worse findings back as a bounded
-    /// revision. Validated `0..=2`; anything else is an input error.
+    pub mining_policy: Option<AuthoringMiningPolicy>,
+    /// Bounded verify/revise attempts per scene (`0..=2`; `0` or omitted disables the loop).
+    // Bounded in-run verify/revise attempts per scene (evolution §3.2). Omitted,
+    // `None`, or `0` = disabled: a saved draft goes straight to commit exactly
+    // as before. `1` or `2` opts the run into scene-scoped verification after
+    // each draft, feeding any warning-or-worse findings back as a bounded
+    // revision. Validated `0..=2`; anything else is an input error.
     #[serde(default)]
     pub max_revise_attempts: Option<i32>,
-    /// Checkpoint policy for the run (evolution §3.3). Omitted, `None`, or
-    /// `"manual"` = the classic 4-step operator checkpoint flow, byte-identical
-    /// to today (I1). `"auto_advisory"` self-clears a checkpoint when no finding
-    /// is `warning`-or-worse; `"auto_strict"` self-clears only on zero findings
-    /// of any severity. Validated against
-    /// {`manual`, `auto_advisory`, `auto_strict`}; an auto policy additionally
-    /// requires review-route coverage across the run's ratings at start
-    /// (preflight). Anything else is an input error.
+    /// Checkpoint review policy (`manual`, `auto_advisory`, or `auto_strict`).
+    // Omitted, `None`, or `"manual"` = the classic 4-step operator checkpoint
+    // flow, byte-identical to today (evolution §3.3, I1). `"auto_advisory"`
+    // self-clears when no finding is `warning`-or-worse; `"auto_strict"`
+    // self-clears only on zero findings. Auto policies require review-route
+    // coverage across the run's ratings at start.
     #[serde(default)]
-    pub checkpoint_policy: Option<String>,
-    /// Living-outline replan policy for the run (ADR 0003, evolution §3.5).
-    /// Omitted, `None`, or `"disabled"` = the loop never replans (behaves exactly
-    /// as before). `"propose_all"` runs a replan pass after each chapter summary,
-    /// staging amendment proposals against the not-yet-drafted future chapters for
-    /// operator ratification (never auto-applied — ADR D5). Validated against
-    /// {`disabled`, `propose_all`}; anything else is an input error.
+    pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+    /// Living-outline replan policy (`disabled` or `propose_all` to stage amendments after chapter summaries).
+    // Omitted, `None`, or `"disabled"` = the loop never replans (ADR 0003,
+    // evolution §3.5). `"propose_all"` stages amendment proposals against
+    // undrafted future chapters for operator ratification (never auto-applied).
     #[serde(default)]
-    pub replan_policy: Option<String>,
+    pub replan_policy: Option<AuthoringReplanPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6804,7 +6820,9 @@ pub struct AuthoringStartRunOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringStatusInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
 }
@@ -6832,15 +6850,13 @@ pub struct AuthoringStatusChapter {
     pub summary_saved: bool,
     pub summary_artifact_path: Option<String>,
     pub scenes: Vec<AuthoringStatusScene>,
-    /// Living-outline replan outcome for this chapter's post-summary pass (ADR
-    /// 0003, evolution §3.5). `None` = replan not attempted (disabled run, or the
-    /// chapter's summary not yet saved); otherwise `staged` | `skipped` |
-    /// `no_targets` | `no_summary` | `error`. Additive, serde-default so
-    /// pre-replan clients ignore it.
+    /// Post-summary replan outcome (`staged`, `skipped`, `no_targets`, `no_summary`, or `error`).
+    // Living-outline replan outcome for this chapter's post-summary pass (ADR
+    // 0003, evolution §3.5). `None` = replan not attempted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replan_status: Option<String>,
-    /// Human-readable detail for the replan outcome (staged amendment count or
-    /// the skip/no-targets reason). Never carries prose (evolution I8).
+    /// Human-readable replan outcome summary (counts or skip reason; never prose).
+    // Never carries prose (evolution I8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replan_detail: Option<String>,
 }
@@ -6852,28 +6868,26 @@ pub struct AuthoringStatusScene {
     pub scene_id: Option<String>,
     pub scene_artifact_path: Option<String>,
     pub blocked_reason: Option<String>,
-    /// Canon-mining outcome for this scene (evolution §3.1). `None` = mining
-    /// not attempted (disabled run or scene not yet past commit); otherwise
-    /// `staged` | `skipped` | `model_output_rejected` | `error`. Additive,
-    /// serde-default so pre-mining clients ignore it.
+    /// Canon-mining outcome (`staged`, `skipped`, `model_output_rejected`, or `error`).
+    // Canon-mining outcome for this scene (evolution §3.1). `None` = mining
+    // not attempted (disabled run or scene not yet past commit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mine_status: Option<String>,
-    /// Human-readable detail for the mining outcome (staged delta count or the
-    /// skip/error reason). Never carries prose (evolution I8).
+    /// Human-readable canon-mining summary (staged delta count or skip/error reason; never prose).
+    // Never carries prose (evolution I8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mine_detail: Option<String>,
-    /// In-run verification outcome for this scene (evolution §3.2). `None` =
-    /// verify not attempted (disabled run, or scene not yet past draft);
-    /// otherwise `clean` | `findings` | `parked_findings` | `error`. Additive,
-    /// serde-default so pre-revise clients ignore it.
+    /// Scene verification outcome (`clean`, `findings`, `parked_findings`, or `error`).
+    // In-run verification outcome for this scene (evolution §3.2). `None` =
+    // verify not attempted (disabled run, or scene not yet past draft).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_status: Option<String>,
-    /// Human-readable detail for the verify outcome (finding counts, the parked
-    /// reason, or the error). Never carries prose (evolution I8).
+    /// Human-readable verification summary (finding counts, parked reason, or error; never prose).
+    // Never carries prose (evolution I8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_detail: Option<String>,
-    /// How many bounded revision passes this scene has already consumed
-    /// (evolution §3.2). `0` for scenes that never entered the revise loop.
+    /// Number of bounded revision passes consumed by this scene.
+    // Evolution §3.2; `0` for scenes that never entered the revise loop.
     #[serde(default)]
     pub revise_attempts: i32,
 }
@@ -6885,68 +6899,53 @@ pub struct AuthoringStatusCheckpoint {
     pub save_point_id: String,
     pub status: String,
     pub report_artifact_path: Option<String>,
-    /// The run's checkpoint policy in force for this checkpoint (evolution
-    /// §3.3). `None` = manual (default). Otherwise `auto_advisory` |
-    /// `auto_strict`. Additive, serde-default so pre-policy clients ignore it.
+    /// Checkpoint policy in force (`auto_advisory` or `auto_strict`; `None` when manual).
+    // Evolution §3.3; additive, serde-default so pre-policy clients ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint_policy: Option<String>,
-    /// Outcome of the in-process auto-checkpoint automation (evolution §3.3).
-    /// `None` = manual policy or automation not yet run; otherwise `approved`
-    /// (self-cleared under policy), `blocked` (findings held it pending_review),
-    /// or `manual` (one or more sampled scenes fell back to manual dual-persona
-    /// review). Ids/enums only, never prose (I8). Additive, serde-default.
+    pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+    /// Auto-checkpoint outcome (`approved`, `blocked`, or `manual`; `None` when manual or pending).
+    // Outcome of the in-process auto-checkpoint automation (evolution §3.3).
+    // Ids/enums only, never prose (I8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_outcome: Option<String>,
-    /// Scene ids whose sampled dual-persona review fell back to manual because
-    /// the `review` route was not rating-cleared for the scene (evolution §3.3
-    /// explicit-manual-fallback, I3). Empty when no scene fell back. Ids only —
-    /// the prose of those scenes was never dispatched anywhere. Additive.
+    /// Scene IDs whose sampled review fell back to manual due to uncleared review routing.
+    // Evolution §3.3 explicit-manual-fallback (I3); ids only, never prose.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_manual_scene_ids: Vec<String>,
-    /// Per-chapter cumulative reader-simulation engagement summary for this
-    /// checkpoint (evolution §3.6), read from the checkpoint report's
-    /// `reader_sim` section. Each entry is `{chapter, engagement}` — engagement
-    /// is `high` | `steady` | `dipping` | `unparsed` | `skipped`. Empty when the
-    /// run's policy is manual (reader-sim runs only under an auto policy) or the
-    /// report has no reader-sim section yet. Enums/ids only, never prose (I8).
-    /// Additive, serde-default so pre-reader-sim clients ignore it.
+    /// Per-chapter cumulative reader-simulation engagement summaries for this checkpoint.
+    // Evolution §3.6; read from the checkpoint report's `reader_sim` section.
+    // Enums/ids only, never prose (I8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reader_sim_engagement: Vec<ReaderSimEngagementSummary>,
-    /// Sampled dual-persona review status read from the checkpoint report
-    /// artifact (`complete`, `pending_manual_review`, or
-    /// `pending_dual_persona_review`). Additive, serde-default.
+    /// Sampled dual-persona review status (`complete`, `pending_manual_review`, or `pending_dual_persona_review`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampled_review_status: Option<String>,
-    /// Number of sampled dual-persona review outputs persisted in the
-    /// checkpoint report artifact. Additive, serde-default.
+    /// Number of sampled dual-persona review outputs persisted in the checkpoint report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampled_review_count: Option<usize>,
 }
 
-/// A compact per-chapter reader-sim engagement summary surfaced on
-/// `authoring_status` (evolution §3.6, R3). Enums/ids only — the reader's notes
-/// and concern text stay in the report artifact, never on the status surface.
+/// Compact per-chapter reader-simulation engagement summary (`high`, `steady`, `dipping`, `unparsed`, or `skipped`).
+// Surfaced on `authoring_status` (evolution §3.6, R3). Enums/ids only — the
+// reader's notes and concern text stay in the report artifact.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ReaderSimEngagementSummary {
+    /// Chapter number (1-based).
     pub chapter: i32,
-    /// `high` | `steady` | `dipping` | `unparsed` | `skipped`.
+    /// Engagement level (`high`, `steady`, `dipping`, `unparsed`, or `skipped`).
     pub engagement: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringExecuteNextInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
-    /// Optional execution mode for drafting steps.
-    ///
-    /// Default is "hybrid": the host assistant drafts non-explicit prose in
-    /// the active chat using Spindle context/tools, while explicit scenes may
-    /// still be routed through the configured explicit draft backend.
-    ///
-    /// Set to "agent" only for fully automated test/offload runs.
+    /// Execution mode (`hybrid` for host drafting or `agent` for routed offload).
     #[serde(default)]
-    pub mode: Option<String>,
+    pub mode: Option<AuthoringMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6960,56 +6959,75 @@ pub struct AuthoringExecuteNextOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringSaveSceneDraftInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Book number (1-based).
     #[serde(default)]
     pub book_number: i32,
+    /// Chapter number (1-based).
     #[serde(default)]
     pub chapter_number: i32,
+    /// Optional chapter record ID.
     #[serde(default)]
     pub chapter_id: Option<String>,
+    /// Scene order within the chapter (1-based).
     pub scene_order: i32,
+    /// Full scene prose text.
     #[serde(alias = "content", alias = "text")]
     pub full_text: String,
     /// Declare assistant for host-AI prose; omission preserves human authorship.
     #[serde(default)]
     pub authorship: DraftAuthorship,
+    /// Concise scene summary.
     pub summary: String,
+    /// Scene content rating.
     pub content_rating: ContentRating,
+    /// Optional scene tone label.
     #[serde(default)]
     pub tone: Option<String>,
+    /// Optional server-side generation receipt ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_id: Option<String>,
+    /// Optional manuscript source path.
     #[serde(default)]
     pub source_path: Option<String>,
-    /// Optional location (create_location record id) this scene is set in.
-    /// Persisted so the next scene's pre-draft temporal anchor can name where
-    /// this scene ended.
+    /// Optional location record ID where the scene takes place.
     #[serde(default)]
     pub location_id: Option<String>,
+    /// Research source IDs cited by this scene.
     #[serde(default)]
     pub research_source_ids: Vec<String>,
+    /// Research note IDs cited by this scene.
     #[serde(default)]
     pub research_note_ids: Vec<String>,
+    /// Research claim IDs cited by this scene.
     #[serde(default)]
     pub research_claim_ids: Vec<String>,
+    /// Optional research query pack input used during drafting.
     #[serde(default)]
     pub research_query_pack_input: Option<String>,
+    /// Optional research context hash.
     #[serde(default)]
     pub research_context_hash: Option<String>,
+    /// Character state updates established in this scene.
     #[serde(default)]
     pub character_states: Vec<CharacterStatePatchEntry>,
+    /// Canonical facts established in this scene.
     #[serde(default)]
     pub canonical_facts: Vec<CanonicalFactEntry>,
+    /// Relationship updates established in this scene.
     #[serde(default)]
     pub relationship_updates: Vec<RelationshipUpdateEntry>,
+    /// Outline beats realized in this scene.
     #[serde(default)]
     pub beats: Vec<AnnotatedBeatInput>,
+    /// Continuity notes recorded with this scene.
     #[serde(default)]
     pub continuity_notes: Vec<String>,
-    /// On-page knowledge acquisitions to record with this scene (design §2.3
-    /// path 2, the reveal mechanism). Passed through to the underlying save.
+    /// On-page character knowledge acquisitions recorded with this scene.
     #[serde(default)]
     pub knowledge_learned: Vec<KnowledgeLearnedEntry>,
 }
@@ -7026,23 +7044,31 @@ pub struct AuthoringSaveSceneDraftOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringReviewCheckpointInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Inclusive first chapter of the checkpoint window.
     pub start_chapter: i32,
+    /// Inclusive last chapter of the checkpoint window.
     pub end_chapter: i32,
+    /// Editorial directives recorded from this checkpoint review.
     pub directives: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringRecordCheckpointAuditInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Inclusive first chapter of the checkpoint window.
     pub start_chapter: i32,
+    /// Inclusive last chapter of the checkpoint window.
     pub end_chapter: i32,
-    /// The structured output returned by check_consistency with deep_check=true
-    /// for this checkpoint's chapter range.
+    /// Structured output returned by `check_consistency` with `deep_check=true` for this range.
     pub deep_consistency: serde_json::Value,
 }
 
@@ -7062,11 +7088,16 @@ pub struct AuthoringReviewCheckpointOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringResolveBlockInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Chapter number of the blocked scene (1-based).
     pub chapter_number: i32,
+    /// Scene order of the blocked scene (1-based).
     pub scene_order: i32,
+    /// Target scene phase (`pending`, `draft_saved`, `changes_committed`, `beats_annotated`, or `redraft`).
     pub target_phase: String,
 }
 
@@ -7079,7 +7110,9 @@ pub struct AuthoringResolveBlockOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringCancelRunInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Optional authoring run ID (defaults to the project's latest run).
     #[serde(default)]
     pub run_id: Option<String>,
 }
@@ -7093,47 +7126,38 @@ pub struct AuthoringCancelRunOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthoringPrepareRunInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Book number (1-based).
     pub book_number: i32,
+    /// Inclusive starting chapter number (1-based).
     pub start_chapter: i32,
+    /// Optional inclusive ending chapter number.
     #[serde(default)]
     pub end_chapter: Option<i32>,
+    /// Optional number of chapters to inspect starting at `start_chapter`.
     #[serde(default)]
     pub chapter_count: Option<i32>,
-    /// Optional canon-mining policy the run will use (evolution §3.1). Prepare
-    /// does not know the policy at prepare time in the normal flow, so this is
-    /// `None` by default and the extra mine-route preflight is skipped;
-    /// `Some("propose_all")` additionally verifies mine-or-review route
-    /// coverage for every planned rating.
+    /// Optional canon-mining policy (`disabled` or `propose_all` to preflight mine/review routes).
+    // Prepare skips the extra mine-route preflight when `None` or `Disabled`;
+    // `ProposeAll` verifies mine-or-review route coverage for every planned rating (evolution §3.1).
     #[serde(default)]
-    pub mining_policy: Option<String>,
-    /// Bounded in-run verify/revise attempts (evolution §3.2). Threaded from
-    /// `authoring_start_run` for validation, but prepare adds **no** route
-    /// preflight for it: scene-scoped verification is deterministic (zero model
-    /// calls) and any revision re-dispatches through the already-preflighted
-    /// `draft` route at the scene's rating. So a non-zero value here neither
-    /// adds a preflight nor changes prepare's `missing_requirements`.
+    pub mining_policy: Option<AuthoringMiningPolicy>,
+    /// Optional bounded verify/revise attempts per scene (`0..=2`).
+    // Threaded from `authoring_start_run` for validation; scene-scoped
+    // verification is deterministic and revision reuses the `draft` route (evolution §3.2).
     #[serde(default)]
     pub max_revise_attempts: Option<i32>,
-    /// Optional checkpoint policy the run will use (evolution §3.3). `None` by
-    /// default (prepare does not know the policy in the normal flow, so the
-    /// review-route preflight is skipped); `Some("auto_advisory")` /
-    /// `Some("auto_strict")` additionally verify the `review` route resolves
-    /// rating-cleared for every planned rating (§3.3 precondition (a); (b) — a
-    /// deep-check-capable review route — collapses into (a) today because the
-    /// same `review` route serves the checkpoint's deep dual-persona pass).
+    /// Optional checkpoint policy (`manual`, `auto_advisory`, or `auto_strict` to preflight review routes).
+    // Auto policies verify the `review` route resolves rating-cleared for every
+    // planned rating (evolution §3.3).
     #[serde(default)]
-    pub checkpoint_policy: Option<String>,
-    /// Optional living-outline replan policy the run will use (ADR 0003,
-    /// evolution §3.5). Threaded from `authoring_start_run` for validation, but
-    /// prepare adds **no** route preflight for it: the replan differ is
-    /// non-prose-bearing (summaries + metadata only, no scene prose — ADR D5), so
-    /// no rating clearance applies, and on a `NoRoute` the differ falls to
-    /// `review` and then skips honestly (never blocks). A non-`None` value here
-    /// therefore neither adds a preflight nor changes prepare's
-    /// `missing_requirements`.
+    pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+    /// Optional living-outline replan policy (`disabled` or `propose_all`).
+    // Threaded from `authoring_start_run` for validation; replanning reads
+    // summaries and metadata only, so no extra rating preflight is added (ADR 0003, evolution §3.5).
     #[serde(default)]
-    pub replan_policy: Option<String>,
+    pub replan_policy: Option<AuthoringReplanPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -7158,96 +7182,271 @@ pub fn normalize_name(input: &str) -> String {
     input.trim().to_lowercase()
 }
 
-/// The valid `mining_policy` values for an authoring run (evolution §3.1).
-/// `"disabled"` leaves the loop exactly as before; `"propose_all"` inserts the
-/// per-scene MineScene step. Kept as a small closed set — additive values ship
-/// with an explicit entry here.
+/// Canonical `mode` values for an authoring run.
+pub const AUTHORING_MODES: [&str; 2] = ["hybrid", "agent"];
+
+/// Execution mode for an authoring run (`hybrid` or `agent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoringMode {
+    #[default]
+    Hybrid,
+    Agent,
+}
+
+impl AuthoringMode {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Agent => "agent",
+        }
+    }
+
+    pub const fn uses_agent_drafting(&self) -> bool {
+        matches!(self, Self::Agent)
+    }
+}
+
+impl std::str::FromStr for AuthoringMode {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "hybrid" => Ok(Self::Hybrid),
+            "agent" | "agents" | "auto" | "automated" | "offload" | "full_agent"
+            | "fully_automated" | "agent_draft" | "agent-draft" | "agent_drafting"
+            | "agent-drafting" | "internal" | "internal_draft" | "internal-draft" => {
+                Ok(Self::Agent)
+            }
+            _ => Err(raw.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthoringMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse::<Self>().map_err(|rejected| {
+            serde::de::Error::custom(format!(
+                "mode must be one of {:?}, got {:?}",
+                AUTHORING_MODES, rejected
+            ))
+        })
+    }
+}
+
+/// Valid `mining_policy` values for an authoring run.
+// Evolution §3.1: `"disabled"` leaves the loop unchanged; `"propose_all"`
+// inserts the per-scene MineScene step.
 pub const AUTHORING_MINING_POLICIES: [&str; 2] = ["disabled", "propose_all"];
 
+/// Canon-mining policy for an authoring run (`disabled` or `propose_all`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoringMiningPolicy {
+    #[default]
+    Disabled,
+    ProposeAll,
+}
+
+impl AuthoringMiningPolicy {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ProposeAll => "propose_all",
+        }
+    }
+
+    pub fn into_persisted_option(self) -> Option<String> {
+        match self {
+            Self::Disabled => None,
+            Self::ProposeAll => Some("propose_all".to_string()),
+        }
+    }
+}
+
+impl std::str::FromStr for AuthoringMiningPolicy {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "propose_all" => Ok(Self::ProposeAll),
+            _ => Err(raw.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthoringMiningPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse::<Self>().map_err(|rejected| {
+            serde::de::Error::custom(format!(
+                "mining_policy must be one of {:?}, got {:?}",
+                AUTHORING_MINING_POLICIES, rejected
+            ))
+        })
+    }
+}
+
 /// Validate and canonicalize an optional `mining_policy` from run input.
-///
-/// - `None` → `Ok(None)` (disabled = default, byte-identical to pre-mining).
-/// - `Some(value)` where trimmed value ∈ {`disabled`, `propose_all`} →
-///   `Ok(Some(canonical))`. `"disabled"` canonicalizes to `None` so the run
-///   persists NULL, matching the pre-upgrade disabled state exactly.
-/// - anything else → `Err(rejected value)` for an input-error message.
+// - `None` or `"disabled"` → `Ok(None)` (persists NULL, matching pre-upgrade runs).
+// - `"propose_all"` → `Ok(Some("propose_all"))`.
+// - anything else → `Err(rejected value)`.
 pub fn validate_mining_policy(policy: Option<&str>) -> Result<Option<String>, String> {
     match policy {
         None => Ok(None),
-        Some(raw) => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            match normalized.as_str() {
-                "disabled" => Ok(None),
-                "propose_all" => Ok(Some("propose_all".to_string())),
-                _ => Err(raw.to_string()),
-            }
+        Some(raw) => raw
+            .parse::<AuthoringMiningPolicy>()
+            .map(AuthoringMiningPolicy::into_persisted_option),
+    }
+}
+
+/// Valid `replan_policy` values for an authoring run.
+// ADR 0003, evolution §3.5: `"disabled"` never replans; `"propose_all"` stages
+// amendment proposals after each chapter summary.
+pub const AUTHORING_REPLAN_POLICIES: [&str; 2] = ["disabled", "propose_all"];
+
+/// Living-outline replan policy for an authoring run (`disabled` or `propose_all`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoringReplanPolicy {
+    #[default]
+    Disabled,
+    ProposeAll,
+}
+
+impl AuthoringReplanPolicy {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ProposeAll => "propose_all",
+        }
+    }
+
+    pub fn into_persisted_option(self) -> Option<String> {
+        match self {
+            Self::Disabled => None,
+            Self::ProposeAll => Some("propose_all".to_string()),
         }
     }
 }
 
-/// The valid `replan_policy` values for an authoring run (ADR 0003, evolution
-/// §3.5). `"disabled"` leaves the loop exactly as before (never replans);
-/// `"propose_all"` runs a replan pass after each chapter summary, staging
-/// amendment proposals against the not-yet-drafted future chapters. Kept as a
-/// small closed set — additive values ship with an explicit entry here. Mirrors
-/// [`AUTHORING_MINING_POLICIES`].
-pub const AUTHORING_REPLAN_POLICIES: [&str; 2] = ["disabled", "propose_all"];
+impl std::str::FromStr for AuthoringReplanPolicy {
+    type Err = String;
 
-/// Validate and canonicalize an optional `replan_policy` from run input (ADR
-/// 0003, evolution §3.5). Mirrors [`validate_mining_policy`] exactly.
-///
-/// - `None` → `Ok(None)` (disabled = default, byte-identical to pre-replan).
-/// - `Some(value)` where trimmed value ∈ {`disabled`, `propose_all`} →
-///   `Ok(Some(canonical))`. `"disabled"` canonicalizes to `None` so the run
-///   persists NULL, matching the pre-upgrade disabled state exactly.
-/// - anything else → `Err(rejected value)` for an input-error message.
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "propose_all" => Ok(Self::ProposeAll),
+            _ => Err(raw.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthoringReplanPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse::<Self>().map_err(|rejected| {
+            serde::de::Error::custom(format!(
+                "replan_policy must be one of {:?}, got {:?}",
+                AUTHORING_REPLAN_POLICIES, rejected
+            ))
+        })
+    }
+}
+
+/// Validate and canonicalize an optional `replan_policy` from run input.
+// Mirrors [`validate_mining_policy`] (ADR 0003, evolution §3.5).
 pub fn validate_replan_policy(policy: Option<&str>) -> Result<Option<String>, String> {
     match policy {
         None => Ok(None),
-        Some(raw) => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            match normalized.as_str() {
-                "disabled" => Ok(None),
-                "propose_all" => Ok(Some("propose_all".to_string())),
-                _ => Err(raw.to_string()),
-            }
+        Some(raw) => raw
+            .parse::<AuthoringReplanPolicy>()
+            .map(AuthoringReplanPolicy::into_persisted_option),
+    }
+}
+
+/// Valid `checkpoint_policy` values for an authoring run.
+// Evolution §3.3: `"manual"` runs the classic 4-step operator checkpoint flow;
+// `"auto_advisory"` and `"auto_strict"` run in-process checkpoint automation.
+pub const AUTHORING_CHECKPOINT_POLICIES: [&str; 3] = ["manual", "auto_advisory", "auto_strict"];
+
+/// Checkpoint review policy for an authoring run (`manual`, `auto_advisory`, or `auto_strict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoringCheckpointPolicy {
+    #[default]
+    Manual,
+    AutoAdvisory,
+    AutoStrict,
+}
+
+impl AuthoringCheckpointPolicy {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::AutoAdvisory => "auto_advisory",
+            Self::AutoStrict => "auto_strict",
+        }
+    }
+
+    pub fn into_persisted_option(self) -> Option<String> {
+        match self {
+            Self::Manual => None,
+            Self::AutoAdvisory => Some("auto_advisory".to_string()),
+            Self::AutoStrict => Some("auto_strict".to_string()),
         }
     }
 }
 
-/// The valid `checkpoint_policy` values for an authoring run (evolution §3.3).
-/// `"manual"` runs the classic 4-step operator checkpoint flow exactly as
-/// before; `"auto_advisory"` and `"auto_strict"` let the harness self-clear a
-/// checkpoint in-process (deep consistency + sampled dual-persona reviews),
-/// approving on a severity threshold. Kept as a small closed set — additive
-/// values ship with an explicit entry here. `manual` remains the default even
-/// after auto policies land (owner decision D-1: `manual` is the global
-/// default; a run opts into an auto policy explicitly).
-pub const AUTHORING_CHECKPOINT_POLICIES: [&str; 3] = ["manual", "auto_advisory", "auto_strict"];
+impl std::str::FromStr for AuthoringCheckpointPolicy {
+    type Err = String;
 
-/// Validate and canonicalize an optional `checkpoint_policy` from run input
-/// (evolution §3.3).
-///
-/// - `None` → `Ok(None)` (manual = default, byte-identical to the pre-policy
-///   4-step checkpoint flow).
-/// - `Some("manual")` → `Ok(None)`. `"manual"` canonicalizes to `None` so the
-///   run persists NULL, matching a pre-upgrade row exactly (I1: manual/NULL is
-///   byte-identical to today).
-/// - `Some(value)` where trimmed value ∈ {`auto_advisory`, `auto_strict`} →
-///   `Ok(Some(canonical))`.
-/// - anything else → `Err(rejected value)` for an input-error message.
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "manual" => Ok(Self::Manual),
+            "auto_advisory" => Ok(Self::AutoAdvisory),
+            "auto_strict" => Ok(Self::AutoStrict),
+            _ => Err(raw.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthoringCheckpointPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse::<Self>().map_err(|rejected| {
+            serde::de::Error::custom(format!(
+                "checkpoint_policy must be one of {:?}, got {:?}",
+                AUTHORING_CHECKPOINT_POLICIES, rejected
+            ))
+        })
+    }
+}
+
+/// Validate and canonicalize an optional `checkpoint_policy` from run input.
+// - `None` or `"manual"` → `Ok(None)` (persists NULL, matching pre-policy runs; evolution §3.3, I1).
+// - `"auto_advisory"` / `"auto_strict"` → `Ok(Some(canonical))`.
+// - anything else → `Err(rejected value)`.
 pub fn validate_checkpoint_policy(policy: Option<&str>) -> Result<Option<String>, String> {
     match policy {
         None => Ok(None),
-        Some(raw) => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            match normalized.as_str() {
-                "manual" => Ok(None),
-                "auto_advisory" => Ok(Some("auto_advisory".to_string())),
-                "auto_strict" => Ok(Some("auto_strict".to_string())),
-                _ => Err(raw.to_string()),
-            }
-        }
+        Some(raw) => raw
+            .parse::<AuthoringCheckpointPolicy>()
+            .map(AuthoringCheckpointPolicy::into_persisted_option),
     }
 }
 
@@ -7322,11 +7521,12 @@ pub fn is_canon_delta_class(class: &str) -> bool {
     CANON_DELTA_CLASSES.contains(&class)
 }
 
-/// A proposed canon delta mined from a committed scene and awaiting operator
-/// ratification (ADR 0001 D2). Read model: timestamps are ISO-8601 strings,
-/// mapped from the stored microsecond representation at the adapter boundary
-/// (mirrors [`SessionActivity`] / [`ProgressionEvent`]). `payload` is the typed
-/// per-class JSON — validated by the write tool the class maps to on apply.
+// A proposed canon delta mined from a committed scene and awaiting operator
+// ratification (ADR 0001 D2). Read model: timestamps are ISO-8601 strings,
+// mapped from the stored microsecond representation at the adapter boundary
+// (mirrors [`SessionActivity`] / [`ProgressionEvent`]). `payload` is the typed
+// per-class JSON — validated by the write tool the class maps to on apply.
+/// A proposed canon delta mined from a committed scene and awaiting operator ratification.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CanonDelta {
     pub id: String,
@@ -7361,20 +7561,24 @@ pub struct CanonDelta {
     pub updated_at: String,
 }
 
-/// Input for `mine_scene_canon` (evolution §3.1): mine one committed scene's
-/// prose into proposed canon deltas awaiting operator ratification. Branch
-/// resolution is implicit — the service mines the project's active branch,
-/// matching the other scene-scoped read passes.
+// Input for `mine_scene_canon` (evolution §3.1): mine one committed scene's
+// prose into proposed canon deltas awaiting operator ratification. Branch
+// resolution is implicit — the service mines the project's active branch,
+// matching the other scene-scoped read passes.
+/// Input for mining one committed scene's prose into proposed canon deltas awaiting operator ratification.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MineSceneCanonInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Scene identifier.
     pub scene_id: String,
 }
 
-/// Output of `mine_scene_canon`. `status` is one of `staged` (deltas persisted),
-/// `skipped` (no cleared route / empty prose — `skip_reason` names why), or
-/// `model_output_rejected` (the model's JSON was malformed; nothing staged). A
-/// skip or rejection never reads as a clean mine (evolution I8).
+// Output of `mine_scene_canon`. `status` is one of `staged` (deltas persisted),
+// `skipped` (no cleared route / empty prose — `skip_reason` names why), or
+// `model_output_rejected` (the model's JSON was malformed; nothing staged). A
+// skip or rejection never reads as a clean mine (evolution I8).
+/// Output of `mine_scene_canon`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MineSceneCanonOutput {
     /// The surviving deltas staged this pass, in prompt order.
@@ -7425,11 +7629,12 @@ pub fn is_plan_amendment_class(class: &str) -> bool {
     PLAN_AMENDMENT_CLASSES.contains(&class)
 }
 
-/// A proposed plan amendment staged by the replan differ and awaiting operator
-/// ratification (ADR 0003 D2). Read model: timestamps are ISO-8601 strings,
-/// mapped from the stored microsecond representation at the adapter boundary
-/// (mirrors [`CanonDelta`]). `payload` is the typed per-class JSON — the minimal
-/// delta against the plan-write input the class applies through (Part B).
+// A proposed plan amendment staged by the replan differ and awaiting operator
+// ratification (ADR 0003 D2). Read model: timestamps are ISO-8601 strings,
+// mapped from the stored microsecond representation at the adapter boundary
+// (mirrors [`CanonDelta`]). `payload` is the typed per-class JSON — the minimal
+// delta against the plan-write input the class applies through (Part B).
+/// A proposed plan amendment staged by the replan differ and awaiting operator ratification.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PlanAmendment {
     pub id: String,
@@ -7448,8 +7653,9 @@ pub struct PlanAmendment {
     /// (which targets a future placement, not a chapter row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_chapter: Option<i32>,
-    /// Typed per-class payload (the minimal delta against the class's plan-write
-    /// input, replayed on apply by Part B).
+    // Typed per-class payload (the minimal delta against the class's plan-write
+    // input, replayed on apply by Part B).
+    /// Typed per-class payload for the plan change.
     pub payload: serde_json::Value,
     /// The replanner's stated reasoning (ids/summaries only, no prose quotes);
     /// mandatory, non-empty, ≤500 chars.
@@ -7464,34 +7670,39 @@ pub struct PlanAmendment {
     /// Ratification audit — who recorded the decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<String>,
-    /// ADR D4 history: the affected plan slice snapshotted at apply time, before
-    /// the write. `None` until an apply captures it (Part B).
+    // ADR D4 history: the affected plan slice snapshotted at apply time, before
+    // the write. `None` until an apply captures it (Part B).
+    /// The affected plan slice snapshotted at apply time, before the write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior_state: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// Input for the replan differ (`replan_chapter`, ADR 0003). The pass audits the
-/// realized reality of `source_chapter` against every not-yet-drafted chapter's
-/// plan strictly after it in the same book, staging amendment proposals the
-/// operator ratifies. Branch resolution is implicit — the differ reads the
-/// project's active branch, matching the other summary-scoped passes.
+// Input for the replan differ (`replan_chapter`, ADR 0003). The pass audits the
+// realized reality of `source_chapter` against every not-yet-drafted chapter's
+// plan strictly after it in the same book, staging amendment proposals the
+// operator ratifies. Branch resolution is implicit — the differ reads the
+// project's active branch, matching the other summary-scoped passes.
+/// Input for auditing a summarized chapter against future undrafted chapter plans to stage amendment proposals.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReplanChapterInput {
+    /// Project identifier.
     pub project_id: String,
+    /// 1-based book number.
     pub book_number: i32,
     /// The just-summarized chapter whose realized reality drives the audit.
     pub source_chapter: i32,
 }
 
-/// Output of `replan_chapter` (ADR 0003). `status` is one of `staged`
-/// (amendments persisted), `no_summary` (the source chapter has no saved
-/// summary — nothing to compare against), `no_targets` (no eligible undrafted
-/// future chapter), `skipped` (no cleared route / transport error —
-/// `skip_reason` names the error class, never prose), or `model_output_rejected`
-/// (the model's JSON was malformed; nothing staged). A skip, no-summary,
-/// no-targets, or rejection never reads as a clean pass (evolution I8).
+// Output of `replan_chapter` (ADR 0003). `status` is one of `staged`
+// (amendments persisted), `no_summary` (the source chapter has no saved
+// summary — nothing to compare against), `no_targets` (no eligible undrafted
+// future chapter), `skipped` (no cleared route / transport error —
+// `skip_reason` names the error class, never prose), or `model_output_rejected`
+// (the model's JSON was malformed; nothing staged). A skip, no-summary,
+// no-targets, or rejection never reads as a clean pass (evolution I8).
+/// Output of `replan_chapter`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReplanChapterOutput {
     /// The surviving amendments staged this pass, in prompt order (cap 8).
@@ -7512,14 +7723,16 @@ pub struct ReplanChapterOutput {
     pub skip_reason: Option<String>,
 }
 
-/// Input for `list_plan_amendments` (ADR 0003): read the living-outline ratify
-/// queue on a project's active branch. Filters compose (AND): `status` narrows
-/// to `staged`/`applied`/`rejected`/`superseded`; `book_number` + `source_chapter`
-/// scope to one replan pass's provenance (both required together — a lone
-/// `book_number` or lone `source_chapter` is an input error). Mirrors
-/// [`ListCanonDeltasInput`].
+// Input for `list_plan_amendments` (ADR 0003): read the living-outline ratify
+// queue on a project's active branch. Filters compose (AND): `status` narrows
+// to `staged`/`applied`/`rejected`/`superseded`; `book_number` + `source_chapter`
+// scope to one replan pass's provenance (both required together — a lone
+// `book_number` or lone `source_chapter` is an input error). Mirrors
+// [`ListCanonDeltasInput`].
+/// Input for listing the living-outline ratification queue on a project's active branch.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListPlanAmendmentsInput {
+    /// Project identifier.
     pub project_id: String,
     /// `staged` | `applied` | `rejected` | `superseded`; `None` returns all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7542,14 +7755,16 @@ pub struct ListPlanAmendmentsOutput {
     pub amendments: Vec<PlanAmendment>,
 }
 
-/// One operator ratification decision on a staged plan amendment (ADR 0003 D5).
-/// `action` is `apply` or `reject`. `edit` optionally replaces the staged
-/// payload (ratify-with-correction) — the edited payload is what is applied AND
-/// recorded on the row. `note` is an operator annotation surfaced in the output
-/// (the `plan_amendment` row has no note column, so it is never persisted).
-/// Mirrors [`CanonDeltaDecisionInput`].
+// One operator ratification decision on a staged plan amendment (ADR 0003 D5).
+// `action` is `apply` or `reject`. `edit` optionally replaces the staged
+// payload (ratify-with-correction) — the edited payload is what is applied AND
+// recorded on the row. `note` is an operator annotation surfaced in the output
+// (the `plan_amendment` row has no note column, so it is never persisted).
+// Mirrors [`CanonDeltaDecisionInput`].
+/// One operator ratification decision on a staged plan amendment.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PlanAmendmentDecisionInput {
+    /// Plan amendment identifier.
     pub amendment_id: String,
     /// `apply` | `reject`.
     pub action: String,
@@ -7563,33 +7778,38 @@ pub struct PlanAmendmentDecisionInput {
     pub note: Option<String>,
 }
 
-/// Input for `decide_plan_amendments` (ADR 0003 D5): the apply dispatcher. All
-/// decisions are pre-flighted before any write; a single pre-flight failure
-/// aborts the whole call with zero writes (decisions on already-decided rows are
-/// input errors — finality). The ADR D3 immutability guard is checked at apply
-/// time for every chapter-targeting class. `decided_by` defaults to `operator`.
-/// Mirrors [`DecideCanonDeltasInput`].
+// Input for `decide_plan_amendments` (ADR 0003 D5): the apply dispatcher. All
+// decisions are pre-flighted before any write; a single pre-flight failure
+// aborts the whole call with zero writes (decisions on already-decided rows are
+// input errors — finality). The ADR D3 immutability guard is checked at apply
+// time for every chapter-targeting class. `decided_by` defaults to `operator`.
+// Mirrors [`DecideCanonDeltasInput`].
+/// Input for applying or rejecting staged plan amendments.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DecidePlanAmendmentsInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Ordered ratification decisions to apply or reject.
     #[serde(default)]
     pub decisions: Vec<PlanAmendmentDecisionInput>,
+    /// Actor recording the decision; defaults to `operator`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<String>,
 }
 
-/// The per-decision outcome in a `decide_plan_amendments` response.
-///
-/// * `applied` — the amendment replayed through its plan write path and the
-///   decision (with the ADR D4 prior-state snapshot) was recorded.
-/// * `rejected` — the amendment was marked rejected; no plan write.
-/// * `failed` — a real write error occurred after pre-flight; earlier applies in
-///   the batch stay applied (they are real outline changes), this row stays
-///   staged.
-/// * `not_reached` — a later decision the dispatcher never got to because an
-///   earlier one failed (this row stays staged).
-///
-/// Mirrors [`CanonDeltaDecisionResult`].
+// The per-decision outcome in a `decide_plan_amendments` response.
+//
+// * `applied` — the amendment replayed through its plan write path and the
+//   decision (with the ADR D4 prior-state snapshot) was recorded.
+// * `rejected` — the amendment was marked rejected; no plan write.
+// * `failed` — a real write error occurred after pre-flight; earlier applies in
+//   the batch stay applied (they are real outline changes), this row stays
+//   staged.
+// * `not_reached` — a later decision the dispatcher never got to because an
+//   earlier one failed (this row stays staged).
+//
+// Mirrors [`CanonDeltaDecisionResult`].
+/// Per-decision outcome in a `decide_plan_amendments` response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PlanAmendmentDecisionResult {
     pub amendment_id: String,
@@ -7619,11 +7839,12 @@ pub struct DecidePlanAmendmentsOutput {
     pub failed_count: usize,
 }
 
-/// A single reader-simulation concern (evolution §3.6 cumulative reader-sim).
-/// `severity` is `info` | `warning` — a craft signal only, never a hard gate:
-/// reader-sim concerns are report-only, matching the sampled-review outcomes
-/// which never fold into the auto-checkpoint verdict counts. `description` is
-/// the model's own concern text (a craft observation, not committed prose).
+// A single reader-simulation concern (evolution §3.6 cumulative reader-sim).
+// `severity` is `info` | `warning` — a craft signal only, never a hard gate:
+// reader-sim concerns are report-only, matching the sampled-review outcomes
+// which never fold into the auto-checkpoint verdict counts. `description` is
+// the model's own concern text (a craft observation, not committed prose).
+/// A single reader-simulation craft concern.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ReaderSimConcern {
     /// `info` | `warning`. A `warning` is a stronger craft signal but does NOT
@@ -7633,14 +7854,16 @@ pub struct ReaderSimConcern {
     pub description: String,
 }
 
-/// Input to the per-chapter cumulative reader-simulation pass (evolution §3.6).
-/// The service resolves the ordered scenes by id, concatenates their prose in
-/// spine order, builds the persona + prior-notes prompt, dispatches through the
-/// `reader_sim` → `review` fallback ladder gated at `rating`, and parses strict
-/// JSON out. Prior notes flow in so the reader accumulates memory chapter to
-/// chapter across a checkpoint range.
+// Input to the per-chapter cumulative reader-simulation pass (evolution §3.6).
+// The service resolves the ordered scenes by id, concatenates their prose in
+// spine order, builds the persona + prior-notes prompt, dispatches through the
+// `reader_sim` → `review` fallback ladder gated at `rating`, and parses strict
+// JSON out. Prior notes flow in so the reader accumulates memory chapter to
+// chapter across a checkpoint range.
+/// Input to the per-chapter cumulative reader-simulation pass.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReaderSimChapterInput {
+    /// Project identifier.
     pub project_id: String,
     /// Active-branch scene ids for this chapter, already ordered by scene spine
     /// (the caller resolves the order from run state). Empty ⇒ nothing to read.
@@ -7657,13 +7880,14 @@ pub struct ReaderSimChapterInput {
     pub prior_notes: String,
 }
 
-/// Outcome of one chapter's reader-simulation pass (evolution §3.6). `status` is
-/// one of `read` (the model returned parseable JSON — `engagement`/`notes`/
-/// `concerns` are populated), `unparsed` (the model output was malformed;
-/// `engagement` is `"unparsed"`, `notes` echoes the caller's prior notes so the
-/// reader loses no memory, and `concerns` is empty), or `skipped` (no cleared
-/// route / transport error / no prose — `skip_reason` names why, never prose).
-/// A skip or an unparsed read never reads as a clean pass (evolution I8).
+// Outcome of one chapter's reader-simulation pass (evolution §3.6). `status` is
+// one of `read` (the model returned parseable JSON — `engagement`/`notes`/
+// `concerns` are populated), `unparsed` (the model output was malformed;
+// `engagement` is `"unparsed"`, `notes` echoes the caller's prior notes so the
+// reader loses no memory, and `concerns` is empty), or `skipped` (no cleared
+// route / transport error / no prose — `skip_reason` names why, never prose).
+// A skip or an unparsed read never reads as a clean pass (evolution I8).
+/// Outcome of one chapter's reader-simulation pass.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReaderSimChapterOutcome {
     /// Updated reader questions. Omitted by older models; an explicit empty
@@ -7703,14 +7927,16 @@ pub struct ChapterRange {
     pub end: i32,
 }
 
-/// Input for `list_canon_deltas` (ADR 0001): read the ratify queue on a
-/// project's active branch. Filters compose (AND): `status` narrows to
-/// `staged`/`applied`/`rejected`/`superseded`; `scene_id` narrows to one
-/// scene's provenance; `chapter_range` resolves to the set of active-branch
-/// scenes in those chapters. `scene_id` and `chapter_range` are mutually
-/// exclusive — supplying both is an input error.
+// Input for `list_canon_deltas` (ADR 0001): read the ratify queue on a
+// project's active branch. Filters compose (AND): `status` narrows to
+// `staged`/`applied`/`rejected`/`superseded`; `scene_id` narrows to one
+// scene's provenance; `chapter_range` resolves to the set of active-branch
+// scenes in those chapters. `scene_id` and `chapter_range` are mutually
+// exclusive — supplying both is an input error.
+/// Input for listing the canon-delta ratification queue on a project's active branch.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListCanonDeltasInput {
+    /// Project identifier.
     pub project_id: String,
     /// `staged` | `applied` | `rejected` | `superseded`; `None` returns all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7731,13 +7957,15 @@ pub struct ListCanonDeltasOutput {
     pub deltas: Vec<CanonDelta>,
 }
 
-/// One operator ratification decision on a staged canon delta (ADR 0001 D3).
-/// `action` is `apply` or `reject`. `edit` optionally replaces the staged
-/// payload (ratify-with-correction) — the edited payload is what is applied AND
-/// recorded on the row. `note` is an operator annotation surfaced in the output
-/// (the `canon_delta` row has no note column, so it is never persisted).
+// One operator ratification decision on a staged canon delta (ADR 0001 D3).
+// `action` is `apply` or `reject`. `edit` optionally replaces the staged
+// payload (ratify-with-correction) — the edited payload is what is applied AND
+// recorded on the row. `note` is an operator annotation surfaced in the output
+// (the `canon_delta` row has no note column, so it is never persisted).
+/// One operator ratification decision on a staged canon delta.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CanonDeltaDecisionInput {
+    /// Canon delta identifier.
     pub delta_id: String,
     /// `apply` | `reject`.
     pub action: String,
@@ -7751,15 +7979,19 @@ pub struct CanonDeltaDecisionInput {
     pub note: Option<String>,
 }
 
-/// Input for `decide_canon_deltas` (ADR 0001 D3): the apply dispatcher. All
-/// decisions are pre-flighted before any write; a single pre-flight failure
-/// aborts the whole call with zero writes (decisions on already-decided rows are
-/// input errors — finality). `decided_by` defaults to `operator`.
+// Input for `decide_canon_deltas` (ADR 0001 D3): the apply dispatcher. All
+// decisions are pre-flighted before any write; a single pre-flight failure
+// aborts the whole call with zero writes (decisions on already-decided rows are
+// input errors — finality). `decided_by` defaults to `operator`.
+/// Input for applying or rejecting staged canon deltas.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DecideCanonDeltasInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Ordered ratification decisions to apply or reject.
     #[serde(default)]
     pub decisions: Vec<CanonDeltaDecisionInput>,
+    /// Actor recording the decision; defaults to `operator`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<String>,
 }
@@ -8441,5 +8673,110 @@ mod tests {
             decoded.relationship_updates[0].reason,
             "Mentor-student. Cole trusts Sam's process."
         );
+    }
+
+    #[test]
+    fn authoring_enums_round_trip_canonical_values_and_compatibility_aliases() {
+        for (raw, expected, uses_agent) in [
+            ("hybrid", AuthoringMode::Hybrid, false),
+            ("  HYBRID ", AuthoringMode::Hybrid, false),
+            ("agent", AuthoringMode::Agent, true),
+            ("  Agent ", AuthoringMode::Agent, true),
+            ("agent_draft", AuthoringMode::Agent, true),
+            ("agent-draft", AuthoringMode::Agent, true),
+            ("agent_drafting", AuthoringMode::Agent, true),
+            ("agent-drafting", AuthoringMode::Agent, true),
+            ("internal", AuthoringMode::Agent, true),
+            ("internal_draft", AuthoringMode::Agent, true),
+            ("internal-draft", AuthoringMode::Agent, true),
+        ] {
+            let parsed: AuthoringMode =
+                serde_json::from_value(serde_json::json!(raw)).expect("parse authoring mode");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.uses_agent_drafting(), uses_agent);
+            let round_tripped: AuthoringMode = serde_json::from_str(
+                &serde_json::to_string(&parsed).expect("serialize authoring mode"),
+            )
+            .expect("round-trip authoring mode");
+            assert_eq!(round_tripped, expected);
+        }
+        assert!(
+            serde_json::from_value::<AuthoringMode>(serde_json::json!("unknown_mode")).is_err()
+        );
+
+        for (raw, expected, persisted) in [
+            ("disabled", AuthoringMiningPolicy::Disabled, None),
+            ("  DISABLED ", AuthoringMiningPolicy::Disabled, None),
+            (
+                "propose_all",
+                AuthoringMiningPolicy::ProposeAll,
+                Some("propose_all".to_string()),
+            ),
+            (
+                "  PROPOSE_ALL ",
+                AuthoringMiningPolicy::ProposeAll,
+                Some("propose_all".to_string()),
+            ),
+        ] {
+            let parsed: AuthoringMiningPolicy =
+                serde_json::from_value(serde_json::json!(raw)).expect("parse mining policy");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.into_persisted_option(), persisted);
+            let round_tripped: AuthoringMiningPolicy = serde_json::from_str(
+                &serde_json::to_string(&parsed).expect("serialize mining policy"),
+            )
+            .expect("round-trip mining policy");
+            assert_eq!(round_tripped, expected);
+        }
+
+        for (raw, expected, persisted) in [
+            ("disabled", AuthoringReplanPolicy::Disabled, None),
+            ("  Disabled ", AuthoringReplanPolicy::Disabled, None),
+            (
+                "propose_all",
+                AuthoringReplanPolicy::ProposeAll,
+                Some("propose_all".to_string()),
+            ),
+            (
+                "  PROPOSE_ALL ",
+                AuthoringReplanPolicy::ProposeAll,
+                Some("propose_all".to_string()),
+            ),
+        ] {
+            let parsed: AuthoringReplanPolicy =
+                serde_json::from_value(serde_json::json!(raw)).expect("parse replan policy");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.into_persisted_option(), persisted);
+            let round_tripped: AuthoringReplanPolicy = serde_json::from_str(
+                &serde_json::to_string(&parsed).expect("serialize replan policy"),
+            )
+            .expect("round-trip replan policy");
+            assert_eq!(round_tripped, expected);
+        }
+
+        for (raw, expected, persisted) in [
+            ("manual", AuthoringCheckpointPolicy::Manual, None),
+            ("  Manual ", AuthoringCheckpointPolicy::Manual, None),
+            (
+                "auto_advisory",
+                AuthoringCheckpointPolicy::AutoAdvisory,
+                Some("auto_advisory".to_string()),
+            ),
+            (
+                "  AUTO_STRICT ",
+                AuthoringCheckpointPolicy::AutoStrict,
+                Some("auto_strict".to_string()),
+            ),
+        ] {
+            let parsed: AuthoringCheckpointPolicy =
+                serde_json::from_value(serde_json::json!(raw)).expect("parse checkpoint policy");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.into_persisted_option(), persisted);
+            let round_tripped: AuthoringCheckpointPolicy = serde_json::from_str(
+                &serde_json::to_string(&parsed).expect("serialize checkpoint policy"),
+            )
+            .expect("round-trip checkpoint policy");
+            assert_eq!(round_tripped, expected);
+        }
     }
 }
