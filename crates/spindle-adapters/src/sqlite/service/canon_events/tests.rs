@@ -1595,17 +1595,18 @@ async fn backfill_all_18_stores_idempotency_progression_dedup_and_shadow_parity(
     // 3. world_state was created via `create_location` initial_state above (`loc_out.location_id`).
 
     // 4. world_rule
-    svc.create_world_rule(CreateWorldRuleInput {
-        project_id: project.project_id.clone(),
-        rule_name: "Iron Ward".into(),
-        rule_type: "magic".into(),
-        description: "Cold iron nullifies spoken sigils within three paces.".into(),
-        established_in: None,
-        relevance_tags: vec!["warding".into(), "iron".into()],
-        scan_pattern: None,
-    })
-    .await
-    .unwrap();
+    let wr_out = svc
+        .create_world_rule(CreateWorldRuleInput {
+            project_id: project.project_id.clone(),
+            rule_name: "Iron Ward".into(),
+            rule_type: "magic".into(),
+            description: "Cold iron nullifies spoken sigils within three paces.".into(),
+            established_in: None,
+            relevance_tags: vec!["warding".into(), "iron".into()],
+            scan_pattern: None,
+        })
+        .await
+        .unwrap();
 
     // 5. knowledge_fact + 6. knows
     let kn_out = svc
@@ -2121,6 +2122,148 @@ async fn backfill_all_18_stores_idempotency_progression_dedup_and_shadow_parity(
         "expected cutover_allowed, blocking_reasons: {:?}",
         readiness.blocking_reasons
     );
+
+    // Metadata-only edit on an existing `world_rule` and `canonical_fact` where the
+    // typed assertion (`ClaimAssertion::Rule` and `banner_color = "obsidian"`) is unchanged:
+    // Reconciliation invalidates the old incarnation events, and the new incarnation
+    // must mint fresh events so the typed fact and rule remain active in `CanonStateViewV1`!
+    svc.update_world_rule(spindle_core::models::UpdateWorldRuleInput {
+        world_rule_id: wr_out.world_rule_id.clone(),
+        changes: serde_json::json!({
+            "relevance_tags": ["warding", "iron", "UpdatedTag"],
+            "scan_pattern": "cold iron"
+        }),
+    })
+    .await
+    .unwrap();
+    svc.repository()
+        .pool()
+        .write({
+            let fid = _new_fact.canonical_fact_id.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE canonical_fact SET aliases = '[\"dark-banner\"]' WHERE id = ?1",
+                    [&fid],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    let report_after_meta_edit = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert!(report_after_meta_edit.total_mapped_count >= 2);
+    assert_eq!(report_after_meta_edit.total_quarantined_count, 0);
+
+    let view_after_meta_edit = svc
+        .canon_state_at(
+            &project.project_id,
+            &main_branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        view_after_meta_edit.entities[&veyra_id]
+            .attributes
+            .get("banner_color")
+            .and_then(|a| a.scalar_value.as_ref()),
+        Some(&ClaimScalar::Text {
+            value: "obsidian".to_string()
+        }),
+        "typed attribute assertion must survive metadata-only edit reconciliation"
+    );
+    assert!(
+        view_after_meta_edit
+            .rules
+            .get(&wr_out.world_rule_id)
+            .is_some_and(|r| r.defined),
+        "typed world_rule assertion must survive metadata-only edit reconciliation"
+    );
+
+    let shadow_after_meta_edit = svc
+        .compare_canon_compatibility_shadow_reads(&project.project_id, &main_branch.id, None)
+        .await
+        .unwrap();
+    assert!(
+        shadow_after_meta_edit.parity_clean,
+        "expected clean shadow parity after metadata-only edit, got: {:#?}",
+        shadow_after_meta_edit.differences
+    );
+
+    // Unchanged rerun after metadata-only edit is 100% idempotent again:
+    let report_idempotent_after_edit = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(report_idempotent_after_edit.total_mapped_count, 0);
+    assert_eq!(
+        report_idempotent_after_edit.total_reused_idempotent_count,
+        total_scanned1
+    );
+
+    // Removing a `DuplicateSkipped` `progression_event` row (and an `applied` `canon_delta` row)
+    // while their authoritative rows (`quantity_state`, `relates_to`) remain unchanged must NOT
+    // invalidate the authoritative rows' events!
+    svc.repository()
+        .pool()
+        .write({
+            let pid = project.project_id.clone();
+            let cd_app_id = cd_applied.id.clone();
+            move |conn| {
+                conn.execute(
+                    "DELETE FROM progression_event WHERE project_id = ?1 AND kind = 'quantity_change'",
+                    [&pid],
+                )?;
+                conn.execute("DELETE FROM canon_delta WHERE id = ?1", [&cd_app_id])?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    let report_after_dup_delete = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(report_after_dup_delete.total_mapped_count, 0);
+    assert_eq!(report_after_dup_delete.total_quarantined_count, 0);
+
+    let view_after_dup_delete = svc
+        .canon_state_at(
+            &project.project_id,
+            &main_branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        view_after_dup_delete.quantity_balance(&veyra_id, "gold"),
+        Some("125"),
+        "removing duplicate progression_event must not invalidate authoritative quantity_state events"
+    );
+    let rel_after_dup_delete = view_after_dup_delete
+        .relationship(&veyra_id, &bram_id)
+        .expect("authoritative relationship must remain active after deleting applied canon_delta");
+    assert_eq!(rel_after_dup_delete.resolved_trust, Some(50));
+    assert_eq!(rel_after_dup_delete.resolved_tension, Some(10));
+
+    let shadow_after_dup_delete = svc
+        .compare_canon_compatibility_shadow_reads(&project.project_id, &main_branch.id, None)
+        .await
+        .unwrap();
+    assert!(
+        shadow_after_dup_delete.parity_clean,
+        "expected clean shadow parity after deleting duplicate rows, got: {:#?}",
+        shadow_after_dup_delete.differences
+    );
 }
 
 #[tokio::test]
@@ -2402,24 +2545,34 @@ async fn backfill_and_shadow_parity_across_nested_branches_ancestor_edits_tombst
         .await
         .unwrap();
 
-    // 2. Mutate `child` (add a new world rule) and backfill so canon_event has the post-savepoint event.
-    svc.create_world_rule(CreateWorldRuleInput {
-        project_id: project.project_id.clone(),
-        rule_name: "Temporary Child Rule".into(),
-        rule_type: "custom".into(),
-        description: "Should vanish when save point is restored.".into(),
-        established_in: None,
-        relevance_tags: Vec::new(),
-        scan_pattern: None,
-    })
-    .await
-    .unwrap();
+    // 2. Mutate `child` (add a new world rule), create a second savepoint `sp_with_rule`,
+    //    and backfill so canon_event has the post-savepoint event (`@inc0`).
+    let temp_rule = svc
+        .create_world_rule(CreateWorldRuleInput {
+            project_id: project.project_id.clone(),
+            rule_name: "Temporary Child Rule".into(),
+            rule_type: "custom".into(),
+            description: "Should vanish when save point is restored.".into(),
+            established_in: None,
+            relevance_tags: Vec::new(),
+            scan_pattern: None,
+        })
+        .await
+        .unwrap();
+    let sp_with_rule = svc
+        .create_save_point(CreateSavePointInput {
+            project_id: project.project_id.clone(),
+            name: "with-child-rule".into(),
+            description: Some("checkpoint with Temporary Child Rule".into()),
+        })
+        .await
+        .unwrap();
     svc.backfill_project_canon(&project.project_id)
         .await
         .unwrap();
 
-    // 3. Restore save point on `child`, rerun `backfill_project_canon`, and verify that stale post-savepoint
-    //    canon events are invalidated and shadow parity is 100% clean!
+    // 3. Restore `sp` (deleting `Temporary Child Rule`), rerun `backfill_project_canon`, and verify that
+    //    stale post-savepoint canon events are invalidated and shadow parity is 100% clean!
     svc.restore_save_point(RestoreSavePointInput {
         project_id: project.project_id.clone(),
         save_point_id: sp.save_point_id.clone(),
@@ -2430,6 +2583,23 @@ async fn backfill_and_shadow_parity_across_nested_branches_ancestor_edits_tombst
         .await
         .unwrap();
 
+    let view_after_delete = svc
+        .canon_state_at(
+            &project.project_id,
+            &child.branch_id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !view_after_delete
+            .rules
+            .contains_key(&temp_rule.world_rule_id),
+        "deleted rule must be invalidated in CanonStateViewV1"
+    );
+
     let post_restore_shadow = svc
         .compare_canon_compatibility_shadow_reads(&project.project_id, &child.branch_id, None)
         .await
@@ -2439,6 +2609,56 @@ async fn backfill_and_shadow_parity_across_nested_branches_ancestor_edits_tombst
         "expected clean shadow parity after savepoint restore, got: {:#?}",
         post_restore_shadow.differences
     );
+
+    // 4. Now restore `sp_with_rule` (which brings back the exact same `Temporary Child Rule` row and snapshot!)
+    //    and rerun `backfill_project_canon`. Verify that the restored row gets a fresh incarnation (`@inc1`),
+    //    does NOT deduplicate to its suppressed `@inc0` events, is active in `view.rules`, and passes shadow parity!
+    svc.restore_save_point(RestoreSavePointInput {
+        project_id: project.project_id.clone(),
+        save_point_id: sp_with_rule.save_point_id.clone(),
+    })
+    .await
+    .unwrap();
+    let re_restore_rep = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert!(re_restore_rep.total_mapped_count >= 1);
+
+    let view_after_re_restore = svc
+        .canon_state_at(
+            &project.project_id,
+            &child.branch_id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        view_after_re_restore
+            .rules
+            .get(&temp_rule.world_rule_id)
+            .is_some_and(|r| r.defined),
+        "restored rule must be re-emitted under a fresh incarnation and active in CanonStateViewV1"
+    );
+
+    let post_re_restore_shadow = svc
+        .compare_canon_compatibility_shadow_reads(&project.project_id, &child.branch_id, None)
+        .await
+        .unwrap();
+    assert!(
+        post_re_restore_shadow.parity_clean,
+        "expected clean shadow parity after delete/restore cycle, got: {:#?}",
+        post_re_restore_shadow.differences
+    );
+
+    // Unchanged rerun after delete/restore cycle is 100% idempotent:
+    let idem_after_re_restore = svc
+        .backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(idem_after_re_restore.total_mapped_count, 0);
     let _ = main_promise;
 }
 

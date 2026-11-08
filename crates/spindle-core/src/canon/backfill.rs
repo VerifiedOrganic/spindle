@@ -233,7 +233,7 @@ pub fn story_placement_to_canon_position(placement: &StoryPlacement) -> Option<C
     )
 }
 
-/// Produces a deterministic, deduplicated proposition ID shared between `knowledge_fact` and `knows`.
+/// Produces a deterministic, collision-resistant proposition ID shared between `knowledge_fact` and `knows`.
 pub fn deduplicated_knowledge_proposition_id(
     normalized_fact: &str,
     secret_of_fact_id: Option<&str>,
@@ -241,21 +241,26 @@ pub fn deduplicated_knowledge_proposition_id(
     if let Some(secret_id) = secret_of_fact_id.map(str::trim).filter(|s| !s.is_empty()) {
         format!("proposition:secret:{secret_id}")
     } else {
-        let slug: String = normalized_fact
-            .trim()
-            .to_lowercase()
+        use sha2::{Digest, Sha256};
+        let canonical = normalized_fact.trim().to_lowercase();
+        let digest = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+        let slug: String = canonical
             .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '_' || *c == '-')
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect();
-        let collapsed = slug
+        let collapsed: String = slug
             .split('_')
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
-            .join("_");
+            .join("_")
+            .chars()
+            .take(32)
+            .collect();
         if collapsed.is_empty() {
-            "proposition:fact:unnamed".to_string()
+            format!("proposition:fact:{digest}")
         } else {
-            format!("proposition:fact:{collapsed}")
+            format!("proposition:fact:{collapsed}:{digest}")
         }
     }
 }

@@ -698,7 +698,7 @@ fn reconcile_branch_source_maps_in_tx(
     now_micros: i64,
 ) -> Result<()> {
     let mut stmt = tx.prepare(
-        "SELECT source_table, legacy_primary_key, event_ids, raw_snapshot \
+        "SELECT source_table, legacy_primary_key, status, event_ids, raw_snapshot \
          FROM canon_source_map \
          WHERE project_id = ?1 AND branch_id = ?2 AND migration_version = ?3",
     )?;
@@ -711,22 +711,44 @@ fn reconcile_branch_source_maps_in_tx(
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
                 ))
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
 
+    let mut stale_tables = BTreeSet::new();
+    for (source_table, pk, _status, _events_json, raw_snap) in &rows {
+        let key = (source_table.clone(), pk.clone());
+        let unchanged = current_snapshots
+            .get(&key)
+            .is_some_and(|curr_snap| curr_snap == raw_snap);
+        if !unchanged {
+            stale_tables.insert(source_table.clone());
+        }
+    }
+
     let mut stale_event_ids = Vec::new();
     let mut stale_keys = Vec::new();
-    for (source_table, pk, events_json, raw_snap) in rows {
-        let key = (source_table, pk);
+    for (source_table, pk, status, events_json, raw_snap) in rows {
+        let key = (source_table.clone(), pk);
         let unchanged = current_snapshots
             .get(&key)
             .is_some_and(|curr_snap| curr_snap == &raw_snap);
-        if !unchanged {
-            let ev_ids: Vec<String> = serde_json::from_str(&events_json).unwrap_or_default();
-            stale_event_ids.extend(ev_ids);
+        let cascade_store = matches!(
+            source_table.as_str(),
+            "character_state"
+                | "quantity_state"
+                | "canonical_fact"
+                | "relates_to"
+                | "relationship_scene_delta"
+        ) && stale_tables.contains(&source_table);
+        if !unchanged || cascade_store {
+            if status == "mapped" {
+                let ev_ids: Vec<String> = serde_json::from_str(&events_json).unwrap_or_default();
+                stale_event_ids.extend(ev_ids);
+            }
             stale_keys.push(key);
         }
     }
@@ -745,7 +767,13 @@ fn reconcile_branch_source_maps_in_tx(
     stale_event_ids.sort();
     stale_event_ids.dedup();
     if !stale_event_ids.is_empty() {
-        let inv_rev = format!("backfill:reconcile:{branch_id}:{now_micros}");
+        let inv_rev = incarnation_revision_id_in_tx(
+            tx,
+            project_id,
+            branch_id,
+            &format!("backfill:reconcile:{branch_id}"),
+            &stale_event_ids.join(","),
+        )?;
         let draft = CanonEventDraftV1 {
             subject: resolved_entity(format!("branch:{branch_id}")),
             payload: CanonEventPayloadV1::SourceInvalidation {
@@ -793,6 +821,35 @@ fn reconcile_branch_source_maps_in_tx(
     Ok(())
 }
 
+fn incarnation_revision_id_in_tx(
+    tx: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+    base_revision_id: &str,
+    raw_snapshot_json: &str,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let snap_hash = format!("{:x}", Sha256::digest(raw_snapshot_json.as_bytes()));
+    let short_hash = &snap_hash[..16];
+    let like_pattern = format!("{base_revision_id}@inc%");
+    let prior_decisions: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM canon_decision \
+         WHERE project_id = ?1 AND branch_id = ?2 \
+           AND (source_revision_id = ?3 OR source_revision_id LIKE ?4)",
+        rusqlite::params![project_id, branch_id, base_revision_id, &like_pattern],
+        |r| r.get(0),
+    )?;
+    let prior_claims: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM canon_claim \
+         WHERE project_id = ?1 AND branch_id = ?2 \
+           AND (revision_id = ?3 OR revision_id LIKE ?4)",
+        rusqlite::params![project_id, branch_id, base_revision_id, &like_pattern],
+        |r| r.get(0),
+    )?;
+    let incarnation = prior_decisions.max(prior_claims);
+    Ok(format!("{base_revision_id}@inc{incarnation}:{short_hash}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_backfill_events_and_source_map_in_tx(
     tx: &rusqlite::Connection,
@@ -809,6 +866,13 @@ fn emit_backfill_events_and_source_map_in_tx(
     counts: &mut CanonStoreBackfillCountsV1,
     now_micros: i64,
 ) -> Result<Vec<String>> {
+    let effective_source_revision_id = incarnation_revision_id_in_tx(
+        tx,
+        project_id,
+        branch_id,
+        &source_revision_id,
+        &raw_snapshot_json,
+    )?;
     let mask_count = drafts
         .iter()
         .filter(|d| matches!(d.payload, CanonEventPayloadV1::CoverageMask { .. }))
@@ -825,7 +889,7 @@ fn emit_backfill_events_and_source_map_in_tx(
             action: CanonPolicyAction::Ratify,
             actor: "system:canon_backfill".to_string(),
             policy_version: CANON_POLICY_VERSION_V1.to_string(),
-            source_revision_id,
+            source_revision_id: effective_source_revision_id,
             target_scene_id,
             replace_prior_scene_revisions: false,
             previous_decision_id: None,
@@ -1148,11 +1212,18 @@ fn backfill_branch_in_tx(
                 && let Some(ev_ids) = fact_event_ids.get(&fact.id)
                 && !ev_ids.is_empty()
             {
-                let inv_rev = format!(
+                let base_inv_rev = format!(
                     "backfill:canonical_fact:superseded:{}:{}",
                     fact.id,
                     fact.superseded_by.as_deref().unwrap_or("unknown")
                 );
+                let inv_rev = incarnation_revision_id_in_tx(
+                    tx,
+                    project_id,
+                    branch_id,
+                    &base_inv_rev,
+                    &ev_ids.join(","),
+                )?;
                 let draft = CanonEventDraftV1 {
                     subject: resolved_entity(
                         fact.subject_id
@@ -1256,7 +1327,12 @@ fn backfill_branch_in_tx(
                     prev_status = state.status.clone();
                     prev_goals = state.goals.iter().cloned().collect();
                     prev_notes = state.notes.iter().cloned().collect();
-                    if let Some(last_ev) = existing.event_ids.last() {
+                    if let Some(last_ev) = existing
+                        .event_ids
+                        .iter()
+                        .rev()
+                        .nth(usize::from(is_non_root))
+                    {
                         prev_pos_meta_event.insert(
                             (state.book_number, state.chapter_number, state.scene_order),
                             last_ev.clone(),
@@ -3503,13 +3579,21 @@ fn backfill_branch_in_tx(
                 _ => None,
             };
 
+            let cd_revision_id = incarnation_revision_id_in_tx(
+                tx,
+                project_id,
+                branch_id,
+                &format!("backfill:canon_delta:{}", cd.id),
+                &raw_snap,
+            )?;
+
             let claim_v1 = ClaimV1 {
                 binding: ClaimBindingV1 {
                     schema_version: CLAIM_SCHEMA_VERSION,
                     project_id: project_id.to_string(),
                     branch_id: branch_id.to_string(),
                     scene_id: Some(cd.scene_id.clone()),
-                    revision_id: format!("backfill:canon_delta:{}", cd.id),
+                    revision_id: cd_revision_id,
                     accepted_text_sha256: "0".repeat(64),
                     position: placement,
                     extraction_run_id: cd

@@ -2536,16 +2536,34 @@ fn backfill_position_and_knowledge_helpers_never_invent_scene_zero() {
     };
     assert_eq!(story_placement_to_canon_position(&p_chapter_only), None);
 
-    // Deduplicated knowledge proposition ID
-    assert_eq!(
-        deduplicated_knowledge_proposition_id("Veyra has the cipher", None),
-        "proposition:fact:veyra_has_the_cipher"
+    // Deduplicated knowledge proposition ID: collision-resistant for punctuation and non-Latin facts,
+    // deterministic across case/whitespace, and preserves secret_of_fact_id grouping.
+    let prop_cipher_1 = deduplicated_knowledge_proposition_id("Veyra has the cipher", None);
+    let prop_cipher_2 = deduplicated_knowledge_proposition_id("  veyra has the cipher  ", None);
+    assert_eq!(prop_cipher_1, prop_cipher_2);
+    assert!(prop_cipher_1.starts_with("proposition:fact:veyra_has_the_cipher:"));
+
+    let prop_gt = deduplicated_knowledge_proposition_id("x > y", None);
+    let prop_lt = deduplicated_knowledge_proposition_id("x < y", None);
+    assert_ne!(
+        prop_gt, prop_lt,
+        "punctuation-distinguished facts must not collide"
     );
+
+    let prop_zh_1 = deduplicated_knowledge_proposition_id("北门有暗道", None);
+    let prop_zh_2 = deduplicated_knowledge_proposition_id("南塔已封锁", None);
+    assert_ne!(prop_zh_1, prop_zh_2, "non-Latin facts must not collide");
+    assert!(!prop_zh_1.ends_with(":unnamed"));
+
     assert_eq!(
         deduplicated_knowledge_proposition_id(
             "Veyra has the cipher",
             Some("canonical_fact:secret_1")
         ),
+        "proposition:secret:canonical_fact:secret_1"
+    );
+    assert_eq!(
+        deduplicated_knowledge_proposition_id("北门有暗道", Some("canonical_fact:secret_1")),
         "proposition:secret:canonical_fact:secret_1"
     );
 }
