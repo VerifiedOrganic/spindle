@@ -14223,6 +14223,26 @@ impl Repository {
             })
             .await
     }
+
+    /// Resolve the effective target branch for canon checks and writes anchored
+    /// to a scene on `scene_branch_id`. If the project's active branch is
+    /// `scene_branch_id` or a descendant branch that inherits from
+    /// `scene_branch_id`, returns the active branch; otherwise returns
+    /// `scene_branch_id`.
+    pub async fn resolve_effective_scene_branch(
+        &self,
+        project_id: &str,
+        scene_branch_id: &str,
+    ) -> Result<String> {
+        let project_id = project_id.to_string();
+        let scene_branch_id = scene_branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                resolve_effective_scene_branch_in_conn(conn, &project_id, &scene_branch_id)
+            })
+            .await
+    }
 }
 
 /// Materialized JSON value that can be bound to a SQLite statement via
@@ -14982,6 +15002,35 @@ pub(crate) fn resolve_branch_lineage_in_conn(
     Ok(chain)
 }
 
+/// Resolve the target branch for canon checks and writes anchored to a scene.
+/// If the project's active branch is `scene_branch_id` or a descendant branch
+/// that inherits from `scene_branch_id`, returns the active branch; otherwise
+/// returns `scene_branch_id`.
+pub(crate) fn resolve_effective_scene_branch_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    scene_branch_id: &str,
+) -> rusqlite::Result<String> {
+    let active_branch_id: Option<String> = conn
+        .query_row(
+            "SELECT active_branch_id FROM project WHERE id = ?1",
+            rusqlite::params![project_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional_inner()?
+        .flatten();
+    if let Some(active_id) = active_branch_id {
+        if active_id == scene_branch_id {
+            return Ok(active_id);
+        }
+        let chain = resolve_branch_lineage_in_conn(conn, Some(project_id), &active_id)?;
+        if chain.iter().any(|b| b == scene_branch_id) {
+            return Ok(active_id);
+        }
+    }
+    Ok(scene_branch_id.to_string())
+}
+
 /// Canonical unordered pair key for a relationship between two characters.
 pub(crate) fn relationship_pair_key(a: &str, b: &str) -> (String, String) {
     if a <= b {
@@ -15734,25 +15783,11 @@ impl CanonTransaction<'_> {
         project_id: &str,
         scene_branch_id: &str,
     ) -> Result<String> {
-        let active_branch_id: Option<String> = self
-            .tx
-            .query_row(
-                "SELECT active_branch_id FROM project WHERE id = ?1",
-                rusqlite::params![project_id],
-                |r| r.get::<_, Option<String>>(0),
-            )
-            .optional_inner()?
-            .flatten();
-        if let Some(active_id) = active_branch_id {
-            if active_id == scene_branch_id {
-                return Ok(active_id);
-            }
-            let chain = resolve_branch_lineage_in_conn(&self.tx, Some(project_id), &active_id)?;
-            if chain.iter().any(|b| b == scene_branch_id) {
-                return Ok(active_id);
-            }
-        }
-        Ok(scene_branch_id.to_string())
+        Ok(resolve_effective_scene_branch_in_conn(
+            &self.tx,
+            project_id,
+            scene_branch_id,
+        )?)
     }
 
     /// Reconcile prior `continuity_package` relationship contributions for a

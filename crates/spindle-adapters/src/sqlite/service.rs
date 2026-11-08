@@ -3999,7 +3999,11 @@ impl SqliteSpindleService {
                 if scene.project_id != input.project_id {
                     anyhow::bail!("scene does not belong to the requested project");
                 }
-                (scene.branch_id.clone(), Some(scene.id.clone()))
+                let effective_branch_id = self
+                    .repository
+                    .resolve_effective_scene_branch(&input.project_id, &scene.branch_id)
+                    .await?;
+                (effective_branch_id, Some(scene.id.clone()))
             }
             None => (
                 self.repository
@@ -4123,7 +4127,11 @@ impl SqliteSpindleService {
         if scene.project_id != fact.project_id {
             anyhow::bail!("scene does not belong to the fact's project");
         }
-        if scene.branch_id != fact.branch_id {
+        let effective_scene_branch = self
+            .repository
+            .resolve_effective_scene_branch(&fact.project_id, &scene.branch_id)
+            .await?;
+        if scene.branch_id != fact.branch_id && effective_scene_branch != fact.branch_id {
             anyhow::bail!("scene is on a different branch than the fact");
         }
         self.repository
@@ -11575,16 +11583,17 @@ impl SqliteSpindleService {
         Ok(spec)
     }
 
-    /// Scan a scene's prose for hits against project-wide world rules.
+    /// Scan a scene's prose for hits against branch-scoped world rules.
     /// Mirrors `services/mod.rs:5737` in 705b835^.
     async fn scan_world_rules(
         &self,
         project_id: &str,
+        branch_id: &str,
         prose: &str,
     ) -> Result<Vec<spindle_core::models::WorldRuleHit>> {
         let rules = self
             .repository
-            .list_world_rules_by_project(project_id)
+            .list_world_rules_by_project_and_branch(project_id, branch_id)
             .await?;
         let scan_rules: Vec<spindle_core::world_rules::ScanRule> = rules
             .iter()
@@ -13075,7 +13084,7 @@ impl SqliteSpindleService {
 
         let project_id = input.project_id.clone();
         let scene_id_input = input.scene_id.clone();
-        let scene = self.repository.get_scene(&scene_id_input).await?;
+        let mut scene = self.repository.get_scene(&scene_id_input).await?;
         if scene.project_id != project_id {
             let error = anyhow::anyhow!("scene does not belong to the requested project");
             return Err(self
@@ -13090,11 +13099,23 @@ impl SqliteSpindleService {
                 .await);
         }
 
+        // Resolve the effective target branch before validation so canon checks
+        // (world rules, canonical-fact contradictions, retcon reachability) and
+        // subsequent writes evaluate against the exact same branch view when
+        // committing through an inherited ancestor scene.
+        let target_branch_id = self
+            .repository
+            .resolve_effective_scene_branch(&project_id, &scene.branch_id)
+            .await?;
+        scene.branch_id = target_branch_id;
+
         let scene_id = scene.id.clone();
         let book_number = scene.book_number;
         let chapter_number = scene.chapter_number;
 
-        let world_rule_hits = self.scan_world_rules(&project_id, &scene.full_text).await?;
+        let world_rule_hits = self
+            .scan_world_rules(&project_id, &scene.branch_id, &scene.full_text)
+            .await?;
 
         // Only Likely hits (pattern match + violation context in surrounding
         // prose) block the commit. Possible hits are returned in the response
@@ -13720,7 +13741,11 @@ impl SqliteSpindleService {
         // light per-scene scanners directly rather than going through
         // `run_phase_four_validator_checks_for_scenes`.
         let world_rule_hits_after_revision = self
-            .scan_world_rules(&input.project_id, &revised_scene.full_text)
+            .scan_world_rules(
+                &input.project_id,
+                &revised_scene.branch_id,
+                &revised_scene.full_text,
+            )
             .await?;
         let voice_drift_after_revision = self
             .scan_voice_drift(&input.project_id, &revised_scene.full_text)
@@ -61085,5 +61110,311 @@ agent = "local-style"
             commit_blocked.is_err(),
             "explicit typed marker status:deceased must produce error and block under BlockErrors"
         );
+    }
+
+    #[tokio::test]
+    async fn commit_scene_changes_validates_against_effective_write_branch_for_inherited_scene() {
+        use spindle_core::models::{
+            CanonicalFactEntry, CanonicalFactScope, CharacterEmotionalProfileData,
+            CharacterVoiceProfileData, CommitContinuityGate, CommitSceneChangesInput,
+            ContentRating, CreateBranchInput, CreateCharacterInput, CreateProjectInput,
+            RegisterCanonicalFactInput, SaveSceneDraftInput, SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "effective-branch-validation".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "branch-aware continuity gate".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let character = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Lyra".to_string(),
+                summary: "Navigator.".to_string(),
+                role: "protagonist".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        // Inherited scene S on `main`.
+        let main_scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Lyra checked the compass on the deck.".to_string(),
+                summary: "Lyra checks the compass.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Parent (`main`) invariant fact: eye_color = "blue".
+        let main_eye_fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project.project_id.clone(),
+                scene_id: Some(main_scene.scene_id.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".to_string()),
+                subject_id: Some(character.character_id.clone()),
+                predicate: Some("eye_color".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("blue".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: Some(CanonicalFactScope::Invariant),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        // Create and switch to child branch.
+        let child_branch = svc
+            .create_branch(CreateBranchInput {
+                project_id: project.project_id.clone(),
+                name: "child-canon-gate".to_string(),
+                description: Some("child branch for continuity gate test".to_string()),
+                parent_branch_id: None,
+                branch_type: "what_if".to_string(),
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: project.project_id.clone(),
+            branch_id: child_branch.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        // Child-only invariant fact: height = 170 (registered via inherited main_scene while child is active).
+        let child_height_fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project.project_id.clone(),
+                scene_id: Some(main_scene.scene_id.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".to_string()),
+                subject_id: Some(character.character_id.clone()),
+                predicate: Some("height".to_string()),
+                value_kind: Some("number".to_string()),
+                value_text: None,
+                value_number: Some(170.0),
+                value_unit: Some("cm".to_string()),
+                value_json: None,
+                aliases: Vec::new(),
+                scope: Some(CanonicalFactScope::Invariant),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        // Override parent's eye_color ("blue") on child with "green".
+        let _child_eye_fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project.project_id.clone(),
+                scene_id: Some(main_scene.scene_id.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("character".to_string()),
+                subject_id: Some(character.character_id.clone()),
+                predicate: Some("eye_color".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("green".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: Some(CanonicalFactScope::Invariant),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: Some(main_eye_fact.canonical_fact_id.clone()),
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        // 1. Committing contradicting `height = 180` through inherited `main_scene` while
+        //    `child` is active MUST see the child-only `height = 170` fact and block under
+        //    `BlockErrors` without writing the contradiction to `child`.
+        let blocked_child_only = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: main_scene.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: vec![CanonicalFactEntry {
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    subject_table: Some("character".to_string()),
+                    subject_id: Some(character.character_id.clone()),
+                    predicate: Some("height".to_string()),
+                    value_kind: Some("number".to_string()),
+                    value_text: None,
+                    value_number: Some(180.0),
+                    value_unit: Some("cm".to_string()),
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: Some(CanonicalFactScope::Invariant),
+                    valid_from: None,
+                    valid_until: None,
+                    context: None,
+                    supersedes_fact_id: None,
+                }],
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: Some(CommitContinuityGate::BlockErrors),
+            })
+            .await;
+        assert!(
+            blocked_child_only.is_err(),
+            "committing height=180 through inherited scene while child has height=170 must be blocked"
+        );
+
+        let child_facts_after_block = svc
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(
+                &project.project_id,
+                &child_branch.branch_id,
+            )
+            .await
+            .unwrap();
+        let height_values: Vec<Option<f64>> = child_facts_after_block
+            .iter()
+            .filter(|f| f.predicate == "height")
+            .map(|f| f.value_number)
+            .collect();
+        assert_eq!(height_values, vec![Some(170.0)]);
+
+        // 2. Committing `eye_color = "green"` (matching child's override of parent's "blue")
+        //    and superseding `child_height_fact` with `height = 172` through inherited
+        //    `main_scene` while `child` is active MUST succeed under `BlockErrors` and not
+        //    be falsely blocked by parent's overridden `eye_color = "blue"`.
+        let valid_child_commit = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: main_scene.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: vec![
+                    CanonicalFactEntry {
+                        fact_type: None,
+                        key: None,
+                        value: None,
+                        subject_table: Some("character".to_string()),
+                        subject_id: Some(character.character_id.clone()),
+                        predicate: Some("eye_color".to_string()),
+                        value_kind: Some("string".to_string()),
+                        value_text: Some("green".to_string()),
+                        value_number: None,
+                        value_unit: None,
+                        value_json: None,
+                        aliases: Vec::new(),
+                        scope: Some(CanonicalFactScope::Invariant),
+                        valid_from: None,
+                        valid_until: None,
+                        context: None,
+                        supersedes_fact_id: None,
+                    },
+                    CanonicalFactEntry {
+                        fact_type: None,
+                        key: None,
+                        value: None,
+                        subject_table: Some("character".to_string()),
+                        subject_id: Some(character.character_id.clone()),
+                        predicate: Some("height".to_string()),
+                        value_kind: Some("number".to_string()),
+                        value_text: None,
+                        value_number: Some(172.0),
+                        value_unit: Some("cm".to_string()),
+                        value_json: None,
+                        aliases: Vec::new(),
+                        scope: Some(CanonicalFactScope::Invariant),
+                        valid_from: None,
+                        valid_until: None,
+                        context: None,
+                        supersedes_fact_id: Some(child_height_fact.canonical_fact_id.clone()),
+                    },
+                ],
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: Some(CommitContinuityGate::BlockErrors),
+            })
+            .await
+            .expect("valid child commit against overridden parent fact should succeed");
+        assert_eq!(valid_child_commit.canonical_facts.len(), 2);
+
+        // Parent (`main`) still has only `eye_color = "blue"` and no `height` fact.
+        let main_facts = svc
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(
+                &project.project_id,
+                &project.branch_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(main_facts.len(), 1);
+        assert_eq!(main_facts[0].predicate, "eye_color");
+        assert_eq!(main_facts[0].value_text.as_deref(), Some("blue"));
     }
 }
