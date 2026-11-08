@@ -15638,21 +15638,23 @@ impl Repository {
         synopsis: &str,
         pov_character_id: Option<&str>,
         scenes: &[(Option<i32>, spindle_core::models::PlanChapterSceneInput)],
+        plan_revision: i64,
     ) -> Result<usize> {
         let project_id = project_id.to_string();
         let branch_id = branch_id.to_string();
         let synopsis = synopsis.to_string();
         let pov_character_id = pov_character_id.map(str::to_string);
         let scenes = scenes.to_vec();
+        let data_dir = self.inner.data_dir.clone();
         let updated_at_micros = timestamp_to_micros(chrono::Utc::now());
 
         self.inner
             .pool
             .write(move |conn| {
                 let tx = conn.transaction()?;
-                let run_ids: Vec<String> = {
+                let runs: Vec<(String, String)> = {
                     let mut stmt = tx.prepare_cached(
-                        "SELECT id FROM authoring_run
+                        "SELECT id, artifacts_dir FROM authoring_run
                          WHERE project_id = ?1
                            AND active_branch_id = ?2
                            AND book_number = ?3
@@ -15662,7 +15664,7 @@ impl Repository {
                     )?;
                     let rows = stmt.query_map(
                         rusqlite::params![&project_id, &branch_id, book_number, chapter_number],
-                        |row| row.get::<_, String>(0),
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )?;
                     rows.collect::<rusqlite::Result<Vec<_>>>()?
                 };
@@ -15677,7 +15679,8 @@ impl Repository {
                 );
 
                 let mut reseeded_runs = 0usize;
-                for run_id in run_ids {
+                let mut stale_artifacts_to_remove: Vec<(String, String)> = Vec::new();
+                for (run_id, artifacts_dir) in runs {
                     let ch_opt: Option<super::records::AuthoringRunChapter> = {
                         let mut stmt = tx.prepare_cached(&ch_sql)?;
                         stmt.query_row(rusqlite::params![&run_id, chapter_number], |r| {
@@ -15706,6 +15709,19 @@ impl Repository {
                         continue;
                     }
 
+                    for sc in &existing_scenes {
+                        if let Some(rel) = sc.scene_artifact_path.as_ref() {
+                            stale_artifacts_to_remove.push((artifacts_dir.clone(), rel.clone()));
+                        }
+                        stale_artifacts_to_remove.push((
+                            artifacts_dir.clone(),
+                            format!(
+                                "scenes/chapter-{chapter_number:04}/scene-{:03}.json",
+                                sc.scene_order
+                            ),
+                        ));
+                    }
+
                     tx.execute(
                         "UPDATE authoring_run_chapter
                          SET planned = 1,
@@ -15721,6 +15737,13 @@ impl Repository {
                     )?;
 
                     for (orig_order, plan_scene) in &scenes {
+                        stale_artifacts_to_remove.push((
+                            artifacts_dir.clone(),
+                            format!(
+                                "scenes/chapter-{chapter_number:04}/scene-{:03}.json",
+                                plan_scene.scene_order
+                            ),
+                        ));
                         let prior = orig_order
                             .and_then(|ord| existing_scenes.iter().find(|s| s.scene_order == ord));
                         let fallback = prior.or_else(|| existing_scenes.first());
@@ -15751,6 +15774,11 @@ impl Repository {
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                         let research_tags_json = serde_json::to_string(&plan_scene.research_tags)
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                        let scene_artifact_path = format!(
+                            "scenes/chapter-{chapter_number:04}/scene-{:03}-r{}.json",
+                            plan_scene.scene_order,
+                            plan_revision.max(1)
+                        );
 
                         tx.execute(
                             "INSERT INTO authoring_run_scene (
@@ -15759,7 +15787,7 @@ impl Repository {
                                 draft_diagnostics, blocked_reason, research_required, research_tags,
                                 explicit_query, mine_status, mine_detail, verify_status, verify_detail,
                                 revise_attempts, last_finding_fingerprint
-                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, NULL, NULL, ?9, ?10, ?11, NULL, NULL, NULL, NULL, 0, NULL)",
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, ?9, NULL, NULL, ?10, ?11, ?12, NULL, NULL, NULL, NULL, 0, NULL)",
                             rusqlite::params![
                                 &run_id,
                                 chapter_number,
@@ -15769,6 +15797,7 @@ impl Repository {
                                 content_rating,
                                 tone,
                                 source_path,
+                                scene_artifact_path,
                                 plan_scene.research_required.map(|required| required as i32),
                                 research_tags_json,
                                 plan_scene.explicit_query,
@@ -15784,6 +15813,18 @@ impl Repository {
                 }
 
                 tx.commit()?;
+
+                let runtime_root = crate::workspace::runtime_dir(&data_dir);
+                for (artifacts_dir, rel) in stale_artifacts_to_remove {
+                    for root in [
+                        std::path::PathBuf::from(&artifacts_dir),
+                        data_dir.join(&artifacts_dir),
+                        runtime_root.join(&artifacts_dir),
+                    ] {
+                        let _ = std::fs::remove_file(root.join(&rel));
+                    }
+                }
+
                 Ok(reseeded_runs)
             })
             .await

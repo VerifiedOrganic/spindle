@@ -5402,7 +5402,7 @@ impl ToolRouter {
             authoring_sample_checkpoint_scene_ids(harness_state, start_chapter, end_chapter)?;
         let mut sampled_reviews: Vec<serde_json::Value> = Vec::new();
         let mut pending_manual: Vec<String> = Vec::new();
-        for scene_id in &sampled_scene_ids {
+        for (idx, scene_id) in sampled_scene_ids.iter().enumerate() {
             match self
                 .service
                 .run_dual_persona_review(spindle_core::models::RunDualPersonaReviewInput {
@@ -5437,16 +5437,16 @@ impl ToolRouter {
                     if auto_checkpoint_error_is_rating_not_covered(&error) {
                         pending_manual.push(scene_id.clone());
                     } else {
-                        if !sampled_reviews.is_empty() {
-                            let _ = authoring_record_checkpoint_sampled_reviews(
-                                harness_state,
-                                &state_path,
-                                start_chapter,
-                                end_chapter,
-                                sampled_reviews,
-                                &pending_manual,
-                            );
-                        }
+                        let mut unreviewed_scenes = pending_manual.clone();
+                        unreviewed_scenes.extend(sampled_scene_ids[idx..].iter().cloned());
+                        let _ = authoring_record_checkpoint_sampled_reviews_failed(
+                            harness_state,
+                            &state_path,
+                            start_chapter,
+                            end_chapter,
+                            sampled_reviews,
+                            &unreviewed_scenes,
+                        );
                         tracing::warn!(
                             run_id,
                             step = "dual_persona_review",
@@ -5459,7 +5459,7 @@ impl ToolRouter {
                             start_chapter,
                             end_chapter,
                             "review_dispatch_failed",
-                            Vec::new(),
+                            pending_manual,
                         ));
                     }
                 }
@@ -6906,6 +6906,45 @@ fn authoring_record_checkpoint_sampled_reviews(
             pending_manual.join(", ")
         );
     }
+    let report_json = serde_json::to_string_pretty(&report)?;
+    std::fs::write(&report_path, report_json).with_context(|| {
+        format!(
+            "failed to update checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn authoring_record_checkpoint_sampled_reviews_failed(
+    harness_state: &spindle_harness::state::HarnessState,
+    state_path: &Path,
+    start_chapter: i32,
+    end_chapter: i32,
+    sampled_reviews: Vec<serde_json::Value>,
+    unreviewed_scenes: &[String],
+) -> anyhow::Result<()> {
+    let report_path =
+        checkpoint_report_path(harness_state, state_path, start_chapter, end_chapter)?;
+    let raw_report = std::fs::read_to_string(&report_path).with_context(|| {
+        format!(
+            "failed to read checkpoint report artifact {}",
+            report_path.display()
+        )
+    })?;
+    let mut report: spindle_harness::artifacts::CheckpointReportArtifact =
+        serde_json::from_str(&raw_report).with_context(|| {
+            format!(
+                "failed to parse checkpoint report artifact {}",
+                report_path.display()
+            )
+        })?;
+    report.sampled_reviews = sampled_reviews;
+    report.sampled_review_status = "incomplete".to_string();
+    report.sampled_review_instruction = format!(
+        "Auto-checkpoint sampled dual-persona review failed during dispatch; unreviewed scenes: {}.",
+        unreviewed_scenes.join(", ")
+    );
     let report_json = serde_json::to_string_pretty(&report)?;
     std::fs::write(&report_path, report_json).with_context(|| {
         format!(

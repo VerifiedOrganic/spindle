@@ -21046,7 +21046,8 @@ impl SqliteSpindleService {
 
         // Keep any active/non-completed authoring run covering this undrafted
         // chapter in sync with the amended chapter plan so reconcile_chapter_plan
-        // does not block the run on synopsis / scene_order / character_ids drift.
+        // does not block the run on synopsis / scene_order / character_ids drift,
+        // and invalidate pre-amendment scene generation artifacts.
         self.repository
             .reseed_authoring_runs_for_chapter_plan(
                 &amendment.project_id,
@@ -21056,6 +21057,7 @@ impl SqliteSpindleService {
                 &synopsis,
                 plan.pov_character_id.as_deref(),
                 &scenes,
+                next_revision,
             )
             .await?;
 
@@ -58222,6 +58224,18 @@ agent = "review-dead"
 
             let run_id = "authoring_run:test-reseed".to_string();
             let now = chrono::Utc::now();
+            let pre_amendment_rel = "scenes/chapter-0002/scene-001.json".to_string();
+            let pre_amendment_file = crate::workspace::runtime_dir(svc.repository().data_dir())
+                .join("../artifacts")
+                .join(&pre_amendment_rel);
+            std::fs::create_dir_all(pre_amendment_file.parent().unwrap()).unwrap();
+            std::fs::write(
+                &pre_amendment_file,
+                r#"{"chapter_number":2,"scene_order":1,"prompt":"stale pre-amendment prompt"}"#,
+            )
+            .unwrap();
+            assert!(pre_amendment_file.exists());
+
             svc.repository()
                 .save_authoring_run(
                     AuthoringRun {
@@ -58267,7 +58281,7 @@ agent = "review-dead"
                             source_path: None,
                             phase: "pending".to_string(),
                             scene_id: None,
-                            scene_artifact_path: None,
+                            scene_artifact_path: Some(pre_amendment_rel.clone()),
                             draft_diagnostics: None,
                             blocked_reason: None,
                             research_required: None,
@@ -58310,7 +58324,7 @@ agent = "review-dead"
                 .await
                 .unwrap();
 
-            // 1. synopsis_update
+            // 1. synopsis_update (revision 2): invalidates pre-amendment artifact and assigns -r2 paths
             let syn_id = stage(
                 &svc,
                 &project.project_id,
@@ -58320,13 +58334,25 @@ agent = "review-dead"
             )
             .await;
             apply_one(&svc, &project.project_id, &syn_id).await;
-            let (_, chs, _, _) = svc
+            let (_, chs, scs, _) = svc
                 .repository()
                 .get_authoring_run(&run_id)
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(chs[0].synopsis, "the updated future");
+            assert!(
+                !pre_amendment_file.exists(),
+                "pre-amendment scene artifact on disk must be removed when reseeding"
+            );
+            assert_eq!(
+                scs[0].scene_artifact_path.as_deref(),
+                Some("scenes/chapter-0002/scene-001-r1.json")
+            );
+            assert_eq!(
+                scs[1].scene_artifact_path.as_deref(),
+                Some("scenes/chapter-0002/scene-002-r1.json")
+            );
 
             // 2. scene_add (omitting location_id and content_rating; inherits from neighbor)
             let add_id = stage(
