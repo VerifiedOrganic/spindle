@@ -157,6 +157,18 @@ but connected:
 `check_consistency` remains the broad audit surface for branch-scoped
 consistency review.
 
+Canon checks and writes for an inherited scene use the active descendant
+branch, including child-only facts and overrides. Scene relationship deltas are
+replaced on recommit; removing a pair from the continuity package reverses its
+prior contribution. Branch-local relationship totals and their per-scene delta
+ledger travel together through save-point snapshots and restores. Older snapshots
+without a ledger restore with an empty ledger; their historical contributions
+cannot be reconstructed. Canonical fact replacements retain their predecessor
+links through save-point restore and merge; merging applies supersession only to
+facts on the target branch. Voice profiles are keyed to their owning character,
+so inherited characters' profiles are read-only until branch-local profile storage
+is available.
+
 ## The authoring-run editorial loop
 
 The authoring supervisor (`spindle-harness`, driven through the `authoring_*`
@@ -252,9 +264,12 @@ ever reaches an uncleared agent.
 
 ## Staging & ratification (canon deltas + plan amendments)
 
-Machine-derived canon never reaches the bible directly — it lands in a staging
-table and is applied only through an explicit operator decision. Two staging
-classes share one lifecycle:
+While a drafter's structured continuity package (`character_states`,
+`canonical_facts`, `relationship_updates`) is committed directly during
+`commit_scene_changes`, post-commit mined canon deltas and post-chapter plan
+amendments never reach the bible directly — they land in a staging table and
+are applied only through an explicit operator decision. Two staging classes
+share one lifecycle:
 
 - **Canon deltas** (`canon_delta`, migration V0024; ADR 0001). Each committed
   scene can be mined (`mine_scene_canon`, or the run's `mine canon` step) into
@@ -278,13 +293,13 @@ classes share one lifecycle:
   and applying snapshots the prior plan into `prior_state` and bumps
   `chapter_plan.plan_revision` so the outline keeps recoverable history.
 
-Default policy for both is **propose-only** — nothing auto-applies. Canon deltas
-support an opt-in per-class `auto_accept`, but `entity_candidate` and any delta
-carrying `secret_of_fact_id` are excluded unconditionally (circle expansion is
-always a human decision). Plan amendments have **no** auto-accept at all, not even
-as policy. Both class vocabularies are **one-way doors** fixed by their ADRs
-(0001, 0003) — renames/reshapes strand staged rows and break decided-audit replay.
-The `canon-steward` skill teaches both ratification workflows.
+Both staging classes are strictly **propose-only** — nothing auto-applies.
+Authoring runs accept only `mining_policy = "stage_only" | "off"` (any
+`auto_accept` value is rejected at input validation), and plan amendments
+likewise have **no** auto-accept policy. Both class vocabularies are **one-way
+doors** fixed by their ADRs (0001, 0003) — renames/reshapes strand staged rows
+and break decided-audit replay. The `canon-steward` skill teaches both
+ratification workflows.
 
 ## Circle-of-trust secrets
 
@@ -494,6 +509,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0031 | style-learning-from-edits (`project.style_learning` + edit candidates) |
 | V0041 | `model_call` telemetry ledger (`get_model_usage`) |
 | V0047 | `model_call` attribution columns (`scene_id`, `run_id`, `route`, `prompt_template_id`, `prompt_version`, `context_packet_hash`, `temperature`, `top_p`, `max_tokens`) |
+| V0048 | branch-scoped canon uniqueness, per-scene relationship delta ledger, and fact replacement links (renumbered from unshipped V0046 so V0047 databases upgrade in order) |
 
 ## Where to make changes
 
