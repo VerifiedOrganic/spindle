@@ -137,6 +137,7 @@ disposable `spindle-mcp` server and temporary `SPINDLE_DATA_DIR`:
 ## Run
 
 ```sh
+cargo build -p spindle-mcp
 python3 evals/continuity_recall.py self-test
 python3 evals/continuity_recall.py --output evals/results/continuity_recall_baseline.json
 ```
@@ -149,8 +150,16 @@ python3 evals/continuity_recall.py --deep --agent-config /path/to/spindle.toml -
 ```
 
 The checked-in deterministic baseline lives at
-`evals/results/continuity_recall_baseline.json`. CI runs `self-test` and the
-deterministic benchmark on every pull request.
+`evals/results/continuity_recall_baseline.json`. By default the benchmark runs
+`cargo build -p spindle-mcp` and selects the debug executable, so Cargo determines
+which source, build-script and embedded-asset changes require rebuilding. A newer
+test-only/non-build file does not incorrectly reject a current executable.
+An explicit `--binary /path/to/spindle-mcp` or `--no-build` deliberately bypasses
+the build for a chosen artifact; freshness is then the caller's responsibility.
+The default uses Cargo's reported executable path, honoring build configuration
+without falling back to an old conventional path. `--no-build` honors
+`CARGO_TARGET_DIR`. CI runs `self-test` and the deterministic benchmark
+on every pull request.
 
 ---
 

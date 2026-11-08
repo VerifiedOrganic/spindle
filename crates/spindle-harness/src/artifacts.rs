@@ -1,3 +1,6 @@
+mod legacy_extraction;
+pub use legacy_extraction::LegacyPackageExtractor;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
