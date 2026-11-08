@@ -1,5 +1,5 @@
 //! Initial-planning contracts. These never authorize in-run amendments.
-use crate::models::*;
+use crate::models::ContentRating;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -98,7 +98,7 @@ pub enum PlanningOperation {
     SetBookOutline(PlanningSetBookOutlineInput),
     SetChapterOutline(PlanningSetChapterOutlineInput),
     PlanChapter(PlanningPlanChapterInput),
-    UpdateReaderContract(ReaderContract),
+    UpdateReaderContract(PlanningReaderContract),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -107,7 +107,7 @@ pub struct PlanningCreateProjectInput {
     pub name: String,
     pub project_type: String,
     pub genre: String,
-    pub reader_contract: ReaderContract,
+    pub reader_contract: PlanningReaderContract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -122,8 +122,8 @@ pub struct PlanningCreateCharacterInput {
     #[serde(default)]
     pub voice_profile: PlanningCharacterVoiceProfileData,
     #[serde(default)]
-    pub emotional_profile: CharacterEmotionalProfileData,
-    pub initial_state: Option<CharacterStatePatch>,
+    pub emotional_profile: PlanningCharacterEmotionalProfileData,
+    pub initial_state: Option<PlanningCharacterStatePatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -148,7 +148,7 @@ pub struct PlanningCreateWorldRuleInput {
     pub scan_pattern: Option<String>,
     #[serde(default)]
     pub relevance_tags: Vec<String>,
-    pub established_in: Option<EstablishedIn>,
+    pub established_in: Option<PlanningEstablishedIn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -171,7 +171,7 @@ pub struct PlanningCreatePlotLineInput {
     pub summary: String,
     pub status: Option<String>,
     #[serde(default)]
-    pub convergence_points: Vec<StoryPlacement>,
+    pub convergence_points: Vec<PlanningStoryPlacement>,
     #[serde(default)]
     pub connected_conflict_ids: Vec<PlanningRef>,
     #[serde(default)]
@@ -188,9 +188,9 @@ pub struct PlanningCreateConflictInput {
     pub escalation_stages: Vec<String>,
     pub expected_total_cycles: Option<i32>,
     #[serde(default)]
-    pub try_fail_cycles: Vec<TryFailCycleStep>,
+    pub try_fail_cycles: Vec<PlanningTryFailCycleStep>,
     #[serde(default)]
-    pub stated_consequences: Vec<StatedConsequence>,
+    pub stated_consequences: Vec<PlanningStatedConsequence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -198,8 +198,8 @@ pub struct PlanningCreateConflictInput {
 pub struct PlanningCreateThemeInput {
     pub theme_statement: String,
     pub thesis_antithesis: String,
-    pub introduction_point: Option<StoryPlacement>,
-    pub resolution_point: Option<StoryPlacement>,
+    pub introduction_point: Option<PlanningStoryPlacement>,
+    pub resolution_point: Option<PlanningStoryPlacement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -217,8 +217,8 @@ pub struct PlanningCreateMotifInput {
 pub struct PlanningCreateNarrativePromiseInput {
     pub promise_type: String,
     pub description: String,
-    pub planted_at: StoryPlacement,
-    pub planned_payoff: Option<StoryPlacement>,
+    pub planted_at: PlanningStoryPlacement,
+    pub planned_payoff: Option<PlanningStoryPlacement>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -231,7 +231,7 @@ pub struct PlanningCreateCharacterArcInput {
     pub starting_state: String,
     pub ending_state: String,
     #[serde(default)]
-    pub milestones: Vec<CharacterArcMilestone>,
+    pub milestones: Vec<PlanningCharacterArcMilestone>,
     pub thematic_purpose: String,
     #[serde(default)]
     pub connected_theme_ids: Vec<PlanningRef>,
@@ -253,7 +253,7 @@ pub struct PlanningCreatePacingCurveInput {
     pub act_breakpoints: BTreeMap<String, f64>,
     pub scene_type_density: BTreeMap<String, f64>,
     #[serde(default)]
-    pub intensity_points: Vec<IntensityPoint>,
+    pub intensity_points: Vec<PlanningIntensityPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -454,4 +454,201 @@ pub struct DecidePlanningInput {
     pub decision: PlanningDecision,
     pub actor: String,
     pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningReaderContract {
+    pub promise: String,
+    #[serde(default)]
+    pub style_notes: Vec<String>,
+    #[serde(default)]
+    pub boundaries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningCharacterStatePatch {
+    #[serde(default)]
+    pub emotional_state: BTreeMap<String, serde_json::Value>,
+    pub goals: Option<Vec<String>>,
+    pub status: Option<Vec<String>>,
+    pub notes: Option<Vec<String>>,
+    pub source_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningCharacterEmotionalProfileData {
+    #[serde(default)]
+    pub base_emotions: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub suppressed: Vec<String>,
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    #[serde(default)]
+    pub defense_mechanisms: Vec<String>,
+    pub flex_range: Option<PlanningFlexRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningFlexRange {
+    pub low: Option<String>,
+    pub high: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningEstablishedIn {
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningStoryPlacement {
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub scene_order: Option<i32>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningCharacterArcMilestone {
+    pub label: String,
+    pub placement: Option<PlanningStoryPlacement>,
+    pub description: String,
+    #[serde(default)]
+    pub unlocks: Vec<String>,
+    #[serde(default)]
+    pub reached_at: Option<PlanningStoryPlacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningStatedConsequence {
+    pub description: String,
+    pub stated_at: Option<PlanningStoryPlacement>,
+    pub must_demonstrate_by: Option<String>,
+    pub delivered: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningTryFailCycleStep {
+    pub attempt_order: i32,
+    pub label: String,
+    pub outcome: String,
+    pub cost: Option<String>,
+    pub revelation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningIntensityPoint {
+    pub position: f64,
+    pub intensity: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::de::DeserializeOwned;
+    use serde_json::{Value, json};
+
+    fn rejects_extra<T: DeserializeOwned>(mut value: Value) {
+        assert!(
+            serde_json::from_value::<T>(value.clone()).is_ok(),
+            "valid nested fixture must parse"
+        );
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected_field".into(), json!(true));
+        assert!(
+            serde_json::from_value::<T>(value).is_err(),
+            "nested unknown fields must fail closed"
+        );
+    }
+
+    #[test]
+    fn nested_planning_contracts_are_strict() {
+        rejects_extra::<PlanningReaderContract>(json!({"promise":"Discovery"}));
+        rejects_extra::<PlanningCharacterStatePatch>(json!({}));
+        rejects_extra::<PlanningCharacterEmotionalProfileData>(json!({}));
+        rejects_extra::<PlanningFlexRange>(json!({}));
+        rejects_extra::<PlanningEstablishedIn>(json!({"book_number":1,"chapter_number":1}));
+        rejects_extra::<PlanningStoryPlacement>(json!({"book_number":1,"chapter_number":1}));
+        rejects_extra::<PlanningCharacterArcMilestone>(
+            json!({"label":"Trust","description":"Accept help"}),
+        );
+        rejects_extra::<PlanningStatedConsequence>(
+            json!({"description":"Exposure","delivered":false}),
+        );
+        rejects_extra::<PlanningTryFailCycleStep>(
+            json!({"attempt_order":1,"label":"Ask","outcome":"Refused"}),
+        );
+        rejects_extra::<PlanningIntensityPoint>(json!({"position":0.0,"intensity":0.5}));
+        rejects_extra::<PlanningCharacterVoiceProfileData>(json!({}));
+        rejects_extra::<PlanningWorldStateInput>(json!({}));
+        rejects_extra::<PlanningChapterOutlineBeat>(
+            json!({"order":1,"summary":"Clue","status":"planned"}),
+        );
+        rejects_extra::<PlanningPlanChapterSceneInput>(
+            json!({"scene_order":1,"summary":"Clue","purpose":"Discovery"}),
+        );
+    }
+
+    fn rejects_at(mut operation: Value, path: &str) {
+        assert!(
+            serde_json::from_value::<PlanningOperation>(operation.clone()).is_ok(),
+            "valid operation fixture must parse"
+        );
+        operation
+            .pointer_mut(path)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected_field".into(), json!(true));
+        assert!(
+            serde_json::from_value::<PlanningOperation>(operation).is_err(),
+            "unknown nested operation input must fail closed"
+        );
+    }
+
+    #[test]
+    fn operation_tree_rejects_nested_unknowns_before_hashing() {
+        rejects_at(
+            json!({"operation":"update_reader_contract","input":{"promise":"Discovery"}}),
+            "/input",
+        );
+        rejects_at(
+            json!({"operation":"create_project","input":{"name":"Harbor","project_type":"novel","genre":"mystery","reader_contract":{"promise":"Discovery"}}}),
+            "/input/reader_contract",
+        );
+        let character = json!({"operation":"create_character","input":{"name":"Ada","summary":"Seeker","role":"lead","voice_profile":{},"emotional_profile":{"flex_range":{}},"initial_state":{}}});
+        for path in [
+            "/input/voice_profile",
+            "/input/emotional_profile",
+            "/input/emotional_profile/flex_range",
+            "/input/initial_state",
+        ] {
+            rejects_at(character.clone(), path);
+        }
+        let arc = json!({"operation":"create_character_arc","input":{"character_id":{"kind":"proposal_ref","value":"cast:ada"},"arc_type":"growth","starting_state":"Alone","ending_state":"Trusting","milestones":[{"label":"Ask","description":"Seek help","placement":{"book_number":1,"chapter_number":2}}],"thematic_purpose":"Trust"}});
+        for path in ["/input/milestones/0", "/input/milestones/0/placement"] {
+            rejects_at(arc.clone(), path);
+        }
+        let conflict = json!({"operation":"create_conflict","input":{"name":"Heir","conflict_type":"mystery","stakes":"Home","try_fail_cycles":[{"attempt_order":1,"label":"Ask","outcome":"Refused"}],"stated_consequences":[{"description":"Exposure","delivered":false,"stated_at":{"book_number":1,"chapter_number":1}}]}});
+        for path in [
+            "/input/try_fail_cycles/0",
+            "/input/stated_consequences/0",
+            "/input/stated_consequences/0/stated_at",
+        ] {
+            rejects_at(conflict.clone(), path);
+        }
+    }
 }

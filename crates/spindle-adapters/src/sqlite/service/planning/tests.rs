@@ -28,7 +28,7 @@ fn artifact(s: &PlanningSession, key: &str) -> StagePlanningInput {
                 name: "Harbor".into(),
                 project_type: "novel".into(),
                 genre: "mystery".into(),
-                reader_contract: ReaderContract {
+                reader_contract: PlanningReaderContract {
                     promise: "Find the heir".into(),
                     style_notes: vec![],
                     boundaries: vec![],
