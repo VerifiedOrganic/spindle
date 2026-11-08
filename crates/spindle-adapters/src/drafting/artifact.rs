@@ -95,6 +95,20 @@ pub fn capture_plain_text(
     validate_artifact(&artifact)?;
     Ok(artifact)
 }
+fn accepted_from_artifact(artifact: &PlainTextDraftArtifactV1) -> AcceptedDraftV1 {
+    AcceptedDraftV1 {
+        placement: artifact.placement.clone(),
+        artifact_id: artifact.artifact_id.clone(),
+        project_id: artifact.project_id.clone(),
+        branch_id: artifact.branch_id.clone(),
+        scene_id: artifact.scene_id.clone(),
+        packet_hash: artifact.packet_hash.clone(),
+        text: artifact.text.clone(),
+        text_sha256: artifact.text_sha256.clone(),
+        rating: artifact.rating.clone(),
+        receipt: artifact.receipt.clone(),
+    }
+}
 pub fn validate_artifact(artifact: &PlainTextDraftArtifactV1) -> anyhow::Result<()> {
     anyhow::ensure!(
         artifact.schema_version == "plain_text_draft_v1",
@@ -154,6 +168,19 @@ pub fn validate_artifact(artifact: &PlainTextDraftArtifactV1) -> anyhow::Result<
             artifact.accepted_text_sha256.as_ref() == Some(&extraction.accepted_text_sha256),
             "stale extraction"
         );
+        if extraction.canon_audit.is_some() {
+            let request = artifact
+                .extraction_request
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("extraction audit requires frozen request"))?;
+            anyhow::ensure!(
+                serde_json::to_vec(&request.accepted)?
+                    == serde_json::to_vec(&accepted_from_artifact(artifact))?,
+                "frozen accepted identity mismatch"
+            );
+            crate::canon_extraction::validate_shadow_projection(extraction, request)
+                .map_err(|_| anyhow::anyhow!("extraction audit binding mismatch"))?;
+        }
     }
     Ok(())
 }
@@ -223,18 +250,7 @@ pub async fn extract_accepted(
         artifact.accepted_text_sha256.as_ref() == Some(&artifact.text_sha256),
         "only accepted text may be extracted"
     );
-    let accepted = AcceptedDraftV1 {
-        placement: artifact.placement.clone(),
-        artifact_id: artifact.artifact_id.clone(),
-        project_id: artifact.project_id.clone(),
-        branch_id: artifact.branch_id.clone(),
-        scene_id: artifact.scene_id.clone(),
-        packet_hash: artifact.packet_hash.clone(),
-        text: artifact.text.clone(),
-        text_sha256: artifact.text_sha256.clone(),
-        rating: artifact.rating.clone(),
-        receipt: artifact.receipt.clone(),
-    };
+    let accepted = accepted_from_artifact(&artifact);
     let request = AcceptedTextExtractionRequestV1 {
         task_id: format!("extract:{}", artifact.artifact_id),
         accepted,

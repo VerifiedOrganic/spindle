@@ -1,3 +1,4 @@
+pub mod canon;
 pub mod canonical_facts;
 pub mod context_bundle;
 pub mod drafting;

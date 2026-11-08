@@ -495,6 +495,7 @@ async fn accepted_only_extraction_preserves_prose_across_failure_restart_and_ret
                     });
                 }
                 Ok(CompatibilityExtractionV1 {
+                    canon_audit: None,
                     accepted_text_sha256: request.accepted.text_sha256.clone(),
                     summary: "A crossing fails.".into(),
                     tone: None,
@@ -588,6 +589,7 @@ async fn mismatched_extraction_hash_stays_parked_without_repeated_paid_attempts(
         > {
             Box::pin(async {
                 Ok(CompatibilityExtractionV1 {
+                    canon_audit: None,
                     accepted_text_sha256: "losing-candidate".into(),
                     summary: "Wrong source".into(),
                     tone: None,

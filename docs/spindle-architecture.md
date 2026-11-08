@@ -254,7 +254,7 @@ Every model pass that carries scene prose is dispatched through **one** gate,
 resolution and additionally verifies the resolved agent's declared `ratings`
 cover the scene's content rating (normalized compare) before any prose leaves the
 process. No call site resolves a prose-bearing route directly. The prose-bearing
-set is the `PROSE_BEARING_ROUTES` constant — `{draft, mine, line_edit,
+set is the `PROSE_BEARING_ROUTES` constant — `{draft, mine, extract, line_edit,
 reader_sim, review}`. When a route cannot serve a rating the pass **skips
 honestly** (a `pass_skipped` journal event + an honest status/finding), falls back
 to the host, or degrades per the pass's ladder — it is never silently downgraded
@@ -285,6 +285,32 @@ name":
 The normative specification is `docs/spindle-evolution-design.md` §4; a recording
 fake-router contract test pins that no request carrying an explicit scene's prose
 ever reaches an uncleared agent.
+
+## Independent canon extraction (shadow contracts)
+
+`spindle-core::canon` defines evidence-bound, versioned claims, explicit coverage
+for ten predicate families, and source-preserving comparisons with legacy drafter
+packages. `spindle-adapters::canon_extraction` supplies an independent `extract`
+invocation and shared host acceptance gate. The invocation receives exact scene
+bytes/hash, known entity display terms and preceding ratified evidence, with no
+drafter package. Invalid quotes/UTF-8 offsets, hashes, resolved IDs, coverage and
+payloads reject the report; missing/uncleared routes and incomplete work remain
+explicit pending/failed outcomes. Unresolved labels remain unresolved proposals.
+
+These are shadow Rust integration APIs with no default authoring cutover or new
+MCP tool. Claims, agreement and confidence do not write canon. The initial engine
+uses rating-cleared non-agentic HTTP routes, a 2,000-output-token cap, 60-second
+foreground timeout and conservative input-byte guard. Token/cost/latency rollout
+gates remain unmeasured. Provider model, configured agent identity and existing
+model-call attribution remain distinct. The accepted-text consumer interface is
+owned by P1; `IndependentCanonExtractor` implements it without replacing its
+exact-text/receipt/retry binding. Its local task cache and optional typed
+`canon_audit` survive successful restart, reject changed-input task reuse, and
+revalidate evidence on load. Compatibility write arrays stay empty. Host reports
+can complete pending tasks through the same gate without replacing completed
+reports. Existing callers without an audit retain their legacy serialization.
+See ADR 0005 and `docs/canon-memory-design.md` for the remaining event-store and
+ratification stages.
 
 ## Staging & ratification (canon deltas + plan amendments)
 

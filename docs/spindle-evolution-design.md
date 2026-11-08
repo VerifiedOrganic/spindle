@@ -379,7 +379,7 @@ This section is normative. The current system, verified:
 
 1. **Prose-bearing is a route property, not a name check.** Replace the hardcoded
    `route_name == "draft"` in `system_prompt_for_request` with a `PROSE_BEARING_ROUTES`
-   constant — `{"draft","mine","line_edit","reader_sim","review"}` — so the explicit appendix
+   constant — `{"draft","mine","extract","line_edit","reader_sim","review"}` — so the explicit appendix
    and rating gates apply uniformly. (The narrow check is cap §1.2-6.)
    *(Implementation refinement — landed:* the **gate** applies uniformly to every
    prose-bearing route, but the **appendix** is split: `draft` keeps the drafting directive
