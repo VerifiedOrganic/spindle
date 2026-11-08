@@ -638,6 +638,7 @@ mod export;
 mod generation;
 mod imports;
 mod narrative;
+mod planning;
 mod plans;
 mod projects;
 mod quantity;

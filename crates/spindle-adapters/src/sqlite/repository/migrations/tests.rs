@@ -140,16 +140,10 @@ async fn main_v0047_database_applies_canon_migration() {
         .unwrap();
     {
         let mut conn = rusqlite::Connection::open(&db_path).unwrap();
-        let migrations = crate::sqlite::migrations::runner()
-            .get_migrations()
-            .iter()
-            .filter(|m| {
-                !m.name()
-                    .contains("canon_branch_and_relationship_idempotency")
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        refinery::Runner::new(&migrations).run(&mut conn).unwrap();
+        crate::sqlite::migrations::runner()
+            .set_target(refinery::Target::Version(47))
+            .run(&mut conn)
+            .unwrap();
         let latest: i32 = conn
             .query_row(
                 "SELECT MAX(version) FROM refinery_schema_history",

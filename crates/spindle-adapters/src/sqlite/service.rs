@@ -454,6 +454,7 @@ mod imports;
 mod narrative;
 mod packet_generation;
 mod plan_amendments;
+mod planning;
 mod projects;
 mod reader_sim;
 mod replan;
