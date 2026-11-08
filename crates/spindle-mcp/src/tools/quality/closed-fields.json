@@ -1,4 +1,5 @@
 {
+  "authoring_execute_next": ["/properties/mode"],
   "authoring_prepare_run": ["/properties/mining_policy", "/properties/checkpoint_policy", "/properties/replan_policy"],
   "authoring_start_run": ["/properties/mode", "/properties/mining_policy", "/properties/checkpoint_policy", "/properties/replan_policy"]
 }

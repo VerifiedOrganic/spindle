@@ -443,7 +443,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<ResearchQueryInput, ResearchQueryOutput>(
             "research_query",
-            "Research a factual question using Gemini, grounded in project context from the Bible",
+            "Research a factual question through the configured research route, grounded in project context from the Bible",
         ),
         tool::<ResearchAddSourceInput, ResearchAddSourceOutput>(
             "research_add_source",
@@ -487,39 +487,39 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<CompileManuscriptInput, CompileManuscriptOutput>(
             "compile_manuscript",
-            "Assemble the committed prose of a book (or an inclusive chapter range within it) on the active branch into one Markdown read-so-far document, with per-chapter and per-scene headings; planned-but-undrafted scenes render an explicit placeholder and are reported in missing_scenes. Optionally writes the Markdown to the project's workspace artifacts directory.",
+            "Compile committed prose for a book or chapter range on the active branch into a Markdown manuscript",
         ),
         tool::<ExportRecapInput, ExportRecapOutput>(
             "export_recap",
-            "Assemble a spoiler-bounded, reader-facing \"previously on\" recap of a book up to (and including) through_chapter on the active branch: a story-so-far section from chapter summaries at/under the cursor, a \"paid off\" section of resolved promises, and a \"questions still hanging\" section of open promises. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
+            "Assemble a spoiler-bounded, reader-facing Markdown recap of a book through a chapter cursor",
         ),
         tool::<ExportSeriesBibleInput, ExportSeriesBibleOutput>(
             "export_series_bible",
-            "Assemble a spoiler-bounded, reader-facing series bible on the active branch as of an optional cursor (through, absent = whole project): character pages with state as-of the cursor and relationship bands, locations, a sorted glossary of terms, and factions/religions when present. Pure read model — no model calls. A secret canonical fact (and any line naming it) is withheld unless a reader-visible reveal has been placed at or before the cursor. Optionally writes the Markdown to the project's workspace artifacts directory.",
+            "Assemble a spoiler-bounded, reader-facing Markdown series bible as of an optional story cursor",
         ),
         tool::<MineSceneCanonInput, MineSceneCanonOutput>(
             "mine_scene_canon",
-            "Mine one committed scene's prose into proposed canon deltas (staged for operator ratification, never auto-applied). One rating-gated model call; malformed model output is rejected and evidence must appear verbatim in the prose. Re-mining a scene supersedes its prior staged deltas. Returns the staged deltas, discard/supersede counts, and a status of staged, skipped (no cleared route or empty scene), or model_output_rejected.",
+            "Mine a committed scene into staged canon-delta proposals awaiting operator ratification",
         ),
         tool::<ListCanonDeltasInput, ListCanonDeltasOutput>(
             "list_canon_deltas",
-            "List the canon deltas mined for a project's active branch (the ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance — either one scene_id OR a chapter_range { book_number, start, end } (mutually exclusive). Results carry each delta's class, payload, verbatim evidence quote, confidence, and status, in deterministic order. Read this before deciding — never bulk-apply without reading the evidence.",
+            "List canon deltas in the ratification queue for a project's active branch",
         ),
         tool::<DecideCanonDeltasInput, DecideCanonDeltasOutput>(
             "decide_canon_deltas",
-            "Ratify a batch of staged canon deltas: each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed in the output; not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, dangling target, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies dispatch to the class's existing write tool (register_canonical_fact, update_promise_status, update_relationship, commit_character_state, record_knowledge, annotate_scene_beats, commit_quantity_state, update_entity for conflict/arc columns, or create_character/location/term). Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
+            "Apply or reject a batch of staged canon deltas after pre-flight validation",
         ),
         tool::<ReplanChapterInput, ReplanChapterOutput>(
             "replan_chapter",
-            "Audit a book's not-yet-drafted chapter plans against the realized reality one just-summarized chapter established, and stage plan-amendment proposals for operator ratification (never auto-applied — ADR 0003 D5). Non-prose-bearing: the differ reads summaries + metadata only (no scene prose), so no rating clearance applies; on a missing route it falls to review then skips honestly, and it never blocks the run. Re-running for the same source chapter supersedes its prior staged amendments. Returns the staged amendments, discard/supersede counts, and a status of staged, no_summary, no_targets, skipped, or model_output_rejected.",
+            "Audit undrafted future chapter plans against a summarized chapter and stage plan-amendment proposals",
         ),
         tool::<ListPlanAmendmentsInput, ListPlanAmendmentsOutput>(
             "list_plan_amendments",
-            "List the plan amendments staged for a project's active branch (the living-outline ratify queue). Filter by status (staged | applied | rejected | superseded) and by provenance (book_number + source_chapter together — the summarized chapter that triggered a replan pass). Each amendment carries its class, the future target_chapter (null for promise_followup), the typed payload, the replanner's rationale (ids/summaries, no prose), confidence, status, and any prior_state snapshot, in deterministic order. Read this — and the rationale — before deciding; never bulk-apply blind.",
+            "List plan amendments in the living-outline ratification queue for a project's active branch",
         ),
         tool::<DecidePlanAmendmentsInput, DecidePlanAmendmentsOutput>(
             "decide_plan_amendments",
-            "Ratify a batch of staged plan amendments (the living outline). Each decision is apply or reject, with an optional edit (a corrected payload applied AND recorded) and an optional operator note (echoed, not persisted). ALL decisions are pre-flighted before ANY write — a bad payload, a target chapter that already has drafted scenes (the immutability guard: drafted reality is never rewritten), a dangling scene_order/incoherent reorder, or a decision on an already-decided row (decisions are final) aborts the whole call with zero writes. Applies replay through the existing plan write path (plan_chapter for the chapter classes, create_narrative_promise for promise_followup), snapshot the prior plan into prior_state, and bump plan_revision. Returns a per-decision outcome (applied | rejected | failed | not_reached) with any created record id.",
+            "Apply or reject a batch of staged plan amendments after pre-flight validation",
         ),
         tool::<ExportBibleInput, ExportBibleOutput>(
             "export_bible",
@@ -591,11 +591,11 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<CommitCharacterStateInput, CommitCharacterStateOutput>(
             "commit_character_state",
-            "Append a character state snapshot from a saved scene. Manual path; authoring runs with a mining_policy stage character_state deltas that apply through this tool after ratification via decide_canon_deltas.",
+            "Append a character state snapshot from a saved scene",
         ),
         tool::<UpdateRelationshipInput, UpdateRelationshipOutput>(
             "update_relationship",
-            "Update trust and tension for one directed relationship. Manual path; authoring runs with a mining_policy stage relationship_shift deltas that apply through this tool after ratification via decide_canon_deltas.",
+            "Update trust and tension for a directed character relationship",
         ),
         tool::<ImportManuscriptInput, ImportManuscriptOutput>(
             "import_manuscript",
@@ -639,7 +639,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<RecordKnowledgeInput, RecordKnowledgeOutput>(
             "record_knowledge",
-            "Record canonical knowledge for a character. Remains the direct reveal path for circle-of-trust expansion (with secret_of_fact_id + learned_at) alongside the save-draft continuity package and the mined knowledge_learned delta — it is not superseded; those flows apply through this same tool.",
+            "Record canonical knowledge for a character on the active branch",
         ),
         tool::<RecordNoteInput, RecordNoteOutput>(
             "record_note",

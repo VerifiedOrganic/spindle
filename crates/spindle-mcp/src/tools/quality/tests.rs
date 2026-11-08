@@ -284,10 +284,129 @@ async fn tool_schema_lint() {
             "legacy diagnostic inventory changed; inspect new pointers above and removed findings in generated diff; canonical lint has no waivers"
         );
     }
+    for forbidden_rule in [
+        "closed_set_missing_enum",
+        "closed_set_missing_field",
+        "implementation_jargon",
+        "provider_promise",
+        "placeholder_description",
+        "unresolved_ref",
+    ] {
+        let offenders: Vec<_> = grouped
+            .iter()
+            .filter_map(|(name, groups)| {
+                groups.get(forbidden_rule).map(|pointers| (name, pointers))
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{forbidden_rule} must have zero findings across all tools: {offenders:?}"
+        );
+    }
     assert!(
         !report.is_empty(),
         "do not claim legacy schemas are lint clean"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn closed_set_enum_values_round_trip_through_parsers() {
+    for mode in ["hybrid", "agent", "  Hybrid ", "AGENT", "agent_draft"] {
+        let exec: AuthoringExecuteNextInput = parse_arguments(
+            serde_json::json!({
+                "project_id": "project:demo",
+                "mode": mode,
+            })
+            .as_object(),
+        )
+        .unwrap();
+        let serialized = serde_json::to_value(&exec).unwrap();
+        let round_trip: AuthoringExecuteNextInput = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round_trip.mode, exec.mode);
+    }
+    assert!(
+        parse_arguments::<AuthoringExecuteNextInput>(
+            serde_json::json!({
+                "project_id": "project:demo",
+                "mode": "invalid_mode",
+            })
+            .as_object(),
+        )
+        .is_err()
+    );
+
+    for mining_policy in ["disabled", "propose_all", "  DISABLED ", "PROPOSE_ALL"] {
+        for checkpoint_policy in ["manual", "auto_advisory", "auto_strict", "  Manual "] {
+            for replan_policy in ["disabled", "propose_all", "  Disabled ", "PROPOSE_ALL"] {
+                let prep: AuthoringPrepareRunInput = parse_arguments(
+                    serde_json::json!({
+                        "project_id": "project:demo",
+                        "book_number": 1,
+                        "start_chapter": 1,
+                        "mining_policy": mining_policy,
+                        "checkpoint_policy": checkpoint_policy,
+                        "replan_policy": replan_policy,
+                    })
+                    .as_object(),
+                )
+                .unwrap();
+                let prep_round_trip: AuthoringPrepareRunInput =
+                    serde_json::from_value(serde_json::to_value(&prep).unwrap()).unwrap();
+                assert_eq!(prep_round_trip.mining_policy, prep.mining_policy);
+                assert_eq!(prep_round_trip.checkpoint_policy, prep.checkpoint_policy);
+                assert_eq!(prep_round_trip.replan_policy, prep.replan_policy);
+
+                let start: AuthoringStartRunInput = parse_arguments(
+                    serde_json::json!({
+                        "project_id": "project:demo",
+                        "book_number": 1,
+                        "start_chapter": 1,
+                        "checkpoint_interval": 2,
+                        "mode": "hybrid",
+                        "mining_policy": mining_policy,
+                        "checkpoint_policy": checkpoint_policy,
+                        "replan_policy": replan_policy,
+                    })
+                    .as_object(),
+                )
+                .unwrap();
+                let start_round_trip: AuthoringStartRunInput =
+                    serde_json::from_value(serde_json::to_value(&start).unwrap()).unwrap();
+                assert_eq!(start_round_trip.mode, start.mode);
+                assert_eq!(start_round_trip.mining_policy, start.mining_policy);
+                assert_eq!(start_round_trip.checkpoint_policy, start.checkpoint_policy);
+                assert_eq!(start_round_trip.replan_policy, start.replan_policy);
+            }
+        }
+    }
+
+    let router = router().await;
+    for (field, invalid) in [
+        ("mode", "unsupported_mode"),
+        ("mining_policy", "auto_accept"),
+        ("checkpoint_policy", "auto"),
+        ("replan_policy", "auto_accept"),
+    ] {
+        let mut args = serde_json::json!({
+            "project_id": "project:demo",
+            "book_number": 1,
+            "start_chapter": 1,
+            "checkpoint_interval": 2,
+        });
+        args[field] = Value::String(invalid.to_owned());
+        let output = structured_json(
+            router
+                .call_tool("authoring_start_run", args.as_object())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(output["status"], "blocked", "{field}={invalid}");
+        assert!(
+            output["message"].as_str().unwrap().contains(field)
+                && output["message"].as_str().unwrap().contains(invalid),
+            "unexpected rejection message for {field}: {output}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

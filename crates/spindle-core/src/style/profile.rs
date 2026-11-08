@@ -757,19 +757,21 @@ pub struct PreviewRefreshStyleProfileOutput {
     pub metric_deltas: StyleCorpusMetricsDeltas,
     pub material_change: bool,
     pub apply_safety: Vec<String>,
-    /// Operator style-edit candidates that will feed the next refresh
-    /// (evolution §3.9). Populated only when the project has pending candidates;
-    /// otherwise all zero/empty. The `included`/`withheld` split reflects the
-    /// source-side rating discipline (evolution §4): explicit candidates are
-    /// withheld unless the style route's resolved agent declares explicit.
+    // Operator style-edit candidates that will feed the next refresh
+    // (evolution §3.9). Populated only when the project has pending candidates;
+    // otherwise all zero/empty. The `included`/`withheld` split reflects the
+    // source-side rating discipline (evolution §4): explicit candidates are
+    // withheld unless the style route's resolved agent declares explicit.
+    /// Operator style-edit candidates that will feed the next refresh.
     #[serde(default)]
     pub style_edit_candidates: StyleEditCandidatesPreview,
 }
 
-/// Preview section describing the operator style-edit candidates a refresh will
-/// consume (evolution §3.9). Carries counts, per-candidate scene refs, and a
-/// BOUNDED diff summary — never the full prose (matching the metadata-only
-/// granularity the refresh preview already uses for file sources).
+// Preview section describing the operator style-edit candidates a refresh will
+// consume (evolution §3.9). Carries counts, per-candidate scene refs, and a
+// BOUNDED diff summary — never the full prose (matching the metadata-only
+// granularity the refresh preview already uses for file sources).
+/// Preview section describing the operator style-edit candidates a refresh will consume.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StyleEditCandidatesPreview {
     /// Number of pending candidates that WILL be fed into this refresh
@@ -782,14 +784,16 @@ pub struct StyleEditCandidatesPreview {
     /// Per included/withheld candidate: a scene ref + bounded diff summary.
     #[serde(default)]
     pub candidates: Vec<StyleEditCandidateRef>,
-    /// Human-readable note when candidates are withheld (evolution §4), e.g.
-    /// "2 explicit candidates withheld: style route not explicit-cleared".
+    // Human-readable note when candidates are withheld (evolution §4), e.g.
+    // "2 explicit candidates withheld: style route not explicit-cleared".
+    /// Human-readable note when candidates are withheld by the rating discipline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withholding_note: Option<String>,
 }
 
-/// One style-edit candidate as it appears in a refresh preview (evolution
-/// §3.9). Metadata + a bounded diff summary only — never the full prose.
+// One style-edit candidate as it appears in a refresh preview (evolution
+// §3.9). Metadata + a bounded diff summary only — never the full prose.
+/// One style-edit candidate as it appears in a refresh preview.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StyleEditCandidateRef {
     pub candidate_id: String,
@@ -808,15 +812,21 @@ pub struct StyleEditCandidateRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RefreshStyleProfileInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Style profile identifier.
     pub profile_id: String,
+    /// Apply the refreshed profile immediately.
     pub apply_after_refresh: Option<bool>,
+    /// Force apply when quality warnings exist.
     pub force_apply: Option<bool>,
+    /// Recompute corpus metrics only.
     pub metrics_only: Option<bool>,
-    /// Operator style-edit candidate ids to DISMISS instead of consuming
-    /// (evolution §3.9). Dismissed candidates are flipped to `dismissed` (they
-    /// never feed a profile) rather than fed as refresh examples. Additive — an
-    /// empty list behaves exactly as before.
+    // Operator style-edit candidate ids to DISMISS instead of consuming
+    // (evolution §3.9). Dismissed candidates are flipped to `dismissed` (they
+    // never feed a profile) rather than fed as refresh examples. Additive — an
+    // empty list behaves exactly as before.
+    /// Candidate ids to dismiss instead of consuming.
     #[serde(default)]
     pub dismiss_candidate_ids: Vec<String>,
 }
@@ -826,13 +836,15 @@ pub struct RefreshStyleProfileOutput {
     pub new_profile: StyleProfileCard,
     pub applied: bool,
     pub application: Option<ApplyStyleProfileOutput>,
-    /// Style-edit candidate ids consumed by this refresh (fed as examples and
-    /// flipped to `consumed`), evolution §3.9. Empty when the project has no
-    /// pending candidates.
+    // Style-edit candidate ids consumed by this refresh (fed as examples and
+    // flipped to `consumed`), evolution §3.9. Empty when the project has no
+    // pending candidates.
+    /// Style-edit candidate ids consumed by this refresh.
     #[serde(default)]
     pub consumed_candidate_ids: Vec<String>,
-    /// Style-edit candidate ids dismissed by this refresh (flipped to
-    /// `dismissed`, never fed), evolution §3.9.
+    // Style-edit candidate ids dismissed by this refresh (flipped to
+    // `dismissed`, never fed), evolution §3.9.
+    /// Style-edit candidate ids dismissed by this refresh.
     #[serde(default)]
     pub dismissed_candidate_ids: Vec<String>,
 }
