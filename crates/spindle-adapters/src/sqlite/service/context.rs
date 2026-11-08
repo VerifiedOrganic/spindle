@@ -4339,7 +4339,7 @@ pub(crate) struct SceneContextWithCoverage {
     pub unavailable_passes: Vec<spindle_core::models::PrepareSceneUnavailablePass>,
 }
 
-fn composite_context_revision_token(
+pub(super) fn composite_context_revision_token(
     deps: &spindle_core::models::ScenePreparationDependencies,
 ) -> String {
     let payload = serde_json::to_vec(deps).unwrap_or_default();

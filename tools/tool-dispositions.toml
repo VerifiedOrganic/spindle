@@ -177,6 +177,13 @@ review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 
 [[tools]]
+name = "commit_scene"
+classification = "retained"
+owner = "scene-writer"
+review_by = "R"
+reason = "Canonical atomic scene commit facade; declared by scene-writer."
+
+[[tools]]
 name = "commit_scene_changes"
 classification = "retained"
 owner = "authoring-supervisor, continuity-editor, revision-manager, scene-writer"

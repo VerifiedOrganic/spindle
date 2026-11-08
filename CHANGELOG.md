@@ -4,6 +4,16 @@
 
 ### Added
 
+- New `commit_scene` MCP tool is the single atomic write for ordinary scene
+  work: it persists prose, the author-declared continuity package, beat
+  annotations, an optional chapter-completion summary, and the writer cursor in
+  one SQLite transaction. Deterministic validation gates run before the write,
+  so blocking findings return no partial writes. `dry_run` previews the same
+  effects without writing, stale preparation tokens and scene versions are
+  rejected, idempotency keys make retries safe, and an authoring-run caller can
+  advance the harness scene phase only after a live success. `save_scene_draft`,
+  `revise_scene`, `authoring_save_scene_draft`, `commit_scene_changes`, and
+  `annotate_scene_beats` keep their existing save-only and branch semantics.
 - New `list_skills`, `get_skill`, and `get_reference` MCP tools expose the
   embedded workflow skills and craft references to clients without MCP resource
   support (e.g. Kimi): they return the same content as the `bible://skills/*`

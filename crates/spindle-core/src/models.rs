@@ -1657,7 +1657,7 @@ impl<'de> Deserialize<'de> for PrepareSceneIntent {
 }
 
 /// Input parameters for `prepare_scene`, assembling a bounded scene preparation packet.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PrepareSceneInput {
     /// Project identifier.
     pub project_id: String,
@@ -1895,6 +1895,631 @@ pub struct PrepareSceneOutput {
     pub drafting_packet_v1: Option<crate::drafting::DraftingPacketV1>,
     /// Coverage, budget, omission, evidence, and degraded-pass report.
     pub coverage: PrepareSceneCoverage,
+}
+
+/// Declared authorship of committed scene prose, independent of provider
+/// rating-clearance receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneAuthorship {
+    /// The author wrote or edited the prose.
+    #[default]
+    Human,
+    /// A connected assistant or configured generation authored the prose.
+    Assistant,
+}
+
+/// Whether a committed scene operation can be undone, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitSceneUndoSupport {
+    /// The prose and its approved derived state can be reversed coherently.
+    Reversible,
+    /// Only a branch checkpoint can restore the prior state.
+    CheckpointOnly,
+    /// The operation has effects that cannot be reversed.
+    Irreversible,
+}
+
+/// Kind of follow-up work a successful commit still requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitSceneFollowUpKind {
+    /// Persist a chapter-completion summary after the final scene.
+    ChapterSummary,
+    /// Run a checkpoint audit for the completed chapter window.
+    CheckpointAudit,
+    /// Stage or ratify mined canon proposals explicitly.
+    CanonMining,
+    /// Advance or resume the enclosing authoring run.
+    AuthoringRun,
+}
+
+/// One required follow-up after a scene commit.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneFollowUp {
+    /// Follow-up category.
+    pub kind: CommitSceneFollowUpKind,
+    /// Human-readable action the caller still needs to take.
+    pub message: String,
+}
+
+/// Story placement used inside the `commit_scene` continuity package.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneStoryPlacement {
+    /// Book number (1-based).
+    pub book_number: i32,
+    /// Chapter number (1-based).
+    pub chapter_number: i32,
+    /// Scene order within the chapter (1-based), when known.
+    #[serde(default)]
+    pub scene_order: Option<i32>,
+    /// Optional note about the placement.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl From<&CommitSceneStoryPlacement> for StoryPlacement {
+    fn from(value: &CommitSceneStoryPlacement) -> Self {
+        Self {
+            book_number: value.book_number,
+            chapter_number: value.chapter_number,
+            scene_order: value.scene_order,
+            note: value.note.clone(),
+        }
+    }
+}
+
+/// Character state fields committed with a scene.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneCharacterStatePatch {
+    /// Emotional-state keys and their new values.
+    #[serde(default)]
+    pub emotional_state: BTreeMap<String, serde_json::Value>,
+    /// Current goals after the scene; omitted entries inherit the prior state.
+    #[serde(default)]
+    pub goals: Option<Vec<String>>,
+    /// Current status descriptors after the scene.
+    #[serde(default)]
+    pub status: Option<Vec<String>>,
+    /// Author notes about the state change.
+    #[serde(default)]
+    pub notes: Option<Vec<String>>,
+    /// Short summary of what caused the change.
+    #[serde(default)]
+    pub source_summary: Option<String>,
+}
+
+impl From<CommitSceneCharacterStatePatch> for CharacterStatePatch {
+    fn from(value: CommitSceneCharacterStatePatch) -> Self {
+        Self {
+            emotional_state: value.emotional_state,
+            goals: value.goals,
+            status: value.status,
+            notes: value.notes,
+            source_summary: value.source_summary,
+        }
+    }
+}
+
+/// One character state change committed with a scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneCharacterStateEntry {
+    /// Character record id whose state changes.
+    pub character_id: String,
+    /// New state fields; omitted fields inherit the prior state.
+    pub changes: CommitSceneCharacterStatePatch,
+}
+
+/// One canonical fact established by the committed scene.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneCanonicalFactEntry {
+    /// Optional fact category label; `predicate` is used when omitted.
+    #[serde(default)]
+    pub fact_type: Option<String>,
+    /// Optional legacy short key; used as the predicate when `predicate` is absent.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Optional legacy value string; `value_text` takes precedence.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Subject table the fact belongs to (for example `character` or `project`).
+    #[serde(default)]
+    pub subject_table: Option<String>,
+    /// Subject record id when the fact is about a specific entity.
+    #[serde(default)]
+    pub subject_id: Option<String>,
+    /// Fact predicate or attribute name.
+    #[serde(default)]
+    pub predicate: Option<String>,
+    /// Value shape (`string`, `number`, or `json`); inferred when omitted.
+    #[serde(default)]
+    pub value_kind: Option<String>,
+    /// Text value for string facts.
+    #[serde(default)]
+    pub value_text: Option<String>,
+    /// Numeric value for numeric facts.
+    #[serde(default)]
+    pub value_number: Option<f64>,
+    /// Unit for a numeric value.
+    #[serde(default)]
+    pub value_unit: Option<String>,
+    /// Structured JSON value for composite facts.
+    #[serde(default)]
+    pub value_json: Option<serde_json::Value>,
+    /// Alternate names that should resolve to this fact.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Whether the fact is invariant, evolving, or conditional.
+    #[serde(default)]
+    pub scope: Option<CanonicalFactScope>,
+    /// Story placement from which the fact is valid.
+    #[serde(default)]
+    pub valid_from: Option<CommitSceneStoryPlacement>,
+    /// Story placement after which the fact is no longer valid.
+    #[serde(default)]
+    pub valid_until: Option<CommitSceneStoryPlacement>,
+    /// Optional context explaining the fact.
+    #[serde(default)]
+    pub context: Option<String>,
+    /// Existing fact id this entry supersedes.
+    #[serde(default)]
+    pub supersedes_fact_id: Option<String>,
+}
+
+impl From<CommitSceneCanonicalFactEntry> for CanonicalFactEntry {
+    fn from(value: CommitSceneCanonicalFactEntry) -> Self {
+        Self {
+            fact_type: value.fact_type,
+            key: value.key,
+            value: value.value,
+            subject_table: value.subject_table,
+            subject_id: value.subject_id,
+            predicate: value.predicate,
+            value_kind: value.value_kind,
+            value_text: value.value_text,
+            value_number: value.value_number,
+            value_unit: value.value_unit,
+            value_json: value.value_json,
+            aliases: value.aliases,
+            scope: value.scope,
+            valid_from: value.valid_from.as_ref().map(StoryPlacement::from),
+            valid_until: value.valid_until.as_ref().map(StoryPlacement::from),
+            context: value.context,
+            supersedes_fact_id: value.supersedes_fact_id,
+        }
+    }
+}
+
+/// One relationship trust/tension change committed with a scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneRelationshipEntry {
+    /// First character record id in the relationship.
+    pub character_a_id: String,
+    /// Second character record id in the relationship.
+    pub character_b_id: String,
+    /// Trust change applied by this scene.
+    pub trust_delta: i32,
+    /// Tension change applied by this scene.
+    pub tension_delta: i32,
+    /// Why the relationship changed.
+    pub reason: String,
+}
+
+impl From<CommitSceneRelationshipEntry> for RelationshipUpdateEntry {
+    fn from(value: CommitSceneRelationshipEntry) -> Self {
+        Self {
+            character_a_id: value.character_a_id,
+            character_b_id: value.character_b_id,
+            trust_delta: value.trust_delta,
+            tension_delta: value.tension_delta,
+            reason: value.reason,
+        }
+    }
+}
+
+/// One on-page knowledge acquisition committed with a scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneKnowledgeEntry {
+    /// Character record id who learns the fact.
+    pub character_id: String,
+    /// Short statement of the learned fact.
+    pub fact: String,
+    /// Optional note on how the fact was learned.
+    #[serde(default)]
+    pub source_summary: Option<String>,
+    /// Secret canonical fact id revealed to this character, when applicable.
+    #[serde(default)]
+    pub secret_of_fact_id: Option<String>,
+    /// Whether the reader also learns the fact; defaults to true.
+    #[serde(default)]
+    pub reader_visible: Option<bool>,
+}
+
+impl From<CommitSceneKnowledgeEntry> for KnowledgeLearnedEntry {
+    fn from(value: CommitSceneKnowledgeEntry) -> Self {
+        Self {
+            character_id: value.character_id,
+            fact: value.fact,
+            source_summary: value.source_summary,
+            secret_of_fact_id: value.secret_of_fact_id,
+            reader_visible: value.reader_visible,
+        }
+    }
+}
+
+/// A quantity reading committed with a scene.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneQuantityState {
+    /// Numeric amount; must be non-negative.
+    #[serde(default)]
+    pub amount: Option<f64>,
+    /// Unit of the amount (for example `gold`).
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// Declared progression band, validated against the project scheme.
+    #[serde(default)]
+    pub band: Option<String>,
+    /// Why the reading changed, when it reflects a deliberate jump.
+    #[serde(default)]
+    pub change_reason: Option<String>,
+}
+
+impl From<CommitSceneQuantityState> for QuantityState {
+    fn from(value: CommitSceneQuantityState) -> Self {
+        Self {
+            amount: value.amount,
+            unit: value.unit,
+            band: value.band,
+            change_reason: value.change_reason,
+        }
+    }
+}
+
+/// One author-declared quantity state committed with a scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneQuantityStateEntry {
+    /// Subject table the quantity belongs to (for example `character`).
+    pub subject_table: String,
+    /// Record id of the subject that owns the quantity.
+    pub subject_id: String,
+    /// Declared measure name, validated against the project scheme when one exists.
+    pub measure: String,
+    /// New quantity reading.
+    pub state: CommitSceneQuantityState,
+}
+
+/// One author-declared narrative promise planted in the committed scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitScenePromiseEntry {
+    /// Promise category (for example `mystery` or `threat`).
+    pub promise_type: String,
+    /// What the prose promises the reader.
+    pub description: String,
+    /// Story placement where the promise is planted.
+    pub planted_at: CommitSceneStoryPlacement,
+    /// Planned payoff placement, when one is known.
+    #[serde(default)]
+    pub planned_payoff: Option<CommitSceneStoryPlacement>,
+    /// Optional author notes about the promise.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+/// One author-declared timeline event established in the committed scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneTimelineEventEntry {
+    /// Short event title.
+    pub title: String,
+    /// Event category (for example `battle` or `discovery`).
+    pub event_type: String,
+    /// Story placement where the event occurs.
+    pub placement: CommitSceneStoryPlacement,
+    /// Summary of what happened.
+    pub summary: String,
+    /// Related entity record ids.
+    #[serde(default)]
+    pub related_entity_ids: Vec<String>,
+}
+
+/// Severity of a scene-commit validation finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitSceneIssueSeverity {
+    /// A blocking finding; the commit wrote nothing.
+    Error,
+    /// An advisory finding that accompanied a successful commit.
+    Warning,
+    /// Purely informational finding.
+    Info,
+}
+
+/// One validation finding returned by `commit_scene`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneIssue {
+    /// Finding severity.
+    pub severity: CommitSceneIssueSeverity,
+    /// Deterministic check that produced the finding.
+    pub check_type: String,
+    /// Human-readable finding.
+    pub message: String,
+    /// Related entity record ids.
+    #[serde(default)]
+    pub entity_ids: Vec<String>,
+    /// Suggested remediation, when one is known.
+    #[serde(default)]
+    pub suggested_action: Option<String>,
+}
+
+/// Typed author-declared continuity package applied with a scene commit.
+///
+/// These are explicit author decisions. Mined canon proposals are never
+/// applied here and still require `decide_canon_deltas` ratification.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneContinuityPackage {
+    /// Character state changes established in this scene.
+    #[serde(default)]
+    pub character_states: Vec<CommitSceneCharacterStateEntry>,
+    /// Canonical facts established in this scene.
+    #[serde(default)]
+    pub canonical_facts: Vec<CommitSceneCanonicalFactEntry>,
+    /// Relationship trust/tension deltas established in this scene.
+    #[serde(default)]
+    pub relationship_updates: Vec<CommitSceneRelationshipEntry>,
+    /// Character knowledge acquired on the page, including secret reveals.
+    #[serde(default)]
+    pub knowledge_learned: Vec<CommitSceneKnowledgeEntry>,
+    /// Quantity readings established in this scene.
+    #[serde(default)]
+    pub quantity_states: Vec<CommitSceneQuantityStateEntry>,
+    /// Narrative promises planted in this scene.
+    #[serde(default)]
+    pub narrative_promises: Vec<CommitScenePromiseEntry>,
+    /// Timeline events established in this scene.
+    #[serde(default)]
+    pub timeline_events: Vec<CommitSceneTimelineEventEntry>,
+}
+
+impl CommitSceneContinuityPackage {
+    /// Total number of declared continuity entries, used to detect empty packages.
+    pub fn len(&self) -> usize {
+        self.character_states.len()
+            + self.canonical_facts.len()
+            + self.relationship_updates.len()
+            + self.knowledge_learned.len()
+            + self.quantity_states.len()
+            + self.narrative_promises.len()
+            + self.timeline_events.len()
+    }
+
+    /// True when no continuity entry is declared.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// One realized beat annotation committed with a scene.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SceneBeatAnnotationInput {
+    /// Beat category (for example `action` or `revelation`).
+    pub beat_type: String,
+    /// What happens in the realized beat.
+    pub summary: String,
+}
+
+/// Optional chapter-completion summary committed with the final scene of a chapter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneChapterSummary {
+    /// Chapter synopsis after this scene.
+    pub summary: String,
+    /// Key events in the chapter.
+    #[serde(default)]
+    pub key_events: Vec<String>,
+    /// Character changes across the chapter.
+    #[serde(default)]
+    pub character_changes: Vec<String>,
+    /// Relationship shifts across the chapter.
+    #[serde(default)]
+    pub relationship_shifts: Vec<String>,
+    /// Character-arc advances across the chapter.
+    #[serde(default)]
+    pub arc_advances: Vec<String>,
+    /// Narrative promise events across the chapter.
+    #[serde(default)]
+    pub promise_events: Vec<String>,
+}
+
+/// Authoring-run scene phase a caller expects before a commit advances it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitSceneRunPhase {
+    /// The scene is planned but no draft exists yet.
+    Pending,
+    /// A draft has been saved for the scene.
+    DraftSaved,
+    /// The scene's continuity changes have been committed.
+    ChangesCommitted,
+    /// Beats have been annotated; the fully committed scene state.
+    BeatsAnnotated,
+}
+
+/// Input for `commit_scene`, the single atomic write for ordinary scene work.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneInput {
+    /// Project identifier.
+    pub project_id: String,
+    /// Branch to write on; defaults to the project's active branch.
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    /// Preparation packet identifier returned by `prepare_scene`.
+    #[serde(default)]
+    pub preparation_id: Option<String>,
+    /// Composite context revision token from `prepare_scene`, revalidated before writing.
+    #[serde(default)]
+    pub context_revision_token: Option<String>,
+    /// Optional individual dependency hashes for detailed staleness reporting.
+    #[serde(default)]
+    pub dependency_tokens: Option<ScenePreparationDependencies>,
+    /// Existing scene identifier; when omitted, provide the placement fields.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Book number (1-based) for a new scene.
+    #[serde(default)]
+    pub book_number: Option<i32>,
+    /// Chapter number (1-based) for a new scene.
+    #[serde(default)]
+    pub chapter_number: Option<i32>,
+    /// Scene order within the chapter (1-based) for a new scene.
+    #[serde(default)]
+    pub scene_order: Option<i32>,
+    /// Expected current scene version; a mismatch rejects the commit as stale.
+    #[serde(default)]
+    pub expected_scene_version: Option<i32>,
+    /// Full scene prose. This text is persisted and never echoed back in the receipt.
+    pub full_text: String,
+    /// Concise scene summary.
+    pub summary: String,
+    /// Scene content rating.
+    pub content_rating: ContentRating,
+    /// Optional location record id where the scene takes place.
+    #[serde(default)]
+    pub location_id: Option<String>,
+    /// Optional scene tone label.
+    #[serde(default)]
+    pub tone: Option<String>,
+    /// Declared authorship of the prose.
+    #[serde(default)]
+    pub authorship: SceneAuthorship,
+    /// Optional provider generation receipt id required for explicit prose.
+    #[serde(default)]
+    pub generation_receipt: Option<String>,
+    /// Typed author-declared continuity changes applied atomically with the prose.
+    #[serde(default)]
+    pub continuity: CommitSceneContinuityPackage,
+    /// Realized beat annotations for the scene.
+    #[serde(default)]
+    pub beat_annotations: Vec<SceneBeatAnnotationInput>,
+    /// Optional chapter-completion summary, normally supplied for the final scene.
+    #[serde(default)]
+    pub chapter_summary: Option<CommitSceneChapterSummary>,
+    /// Optional enclosing authoring run whose phase advances on a live success.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Expected authoring scene phase before the run phase may advance.
+    #[serde(default)]
+    pub expected_phase: Option<CommitSceneRunPhase>,
+    /// When true, run the full preflight and report proposed effects without writing.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Client-generated key that makes retries safe; reuse with different content fails.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+/// Coverage and skipped-check report for a scene commit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneCoverage {
+    /// Deterministic checks that ran during preflight.
+    #[serde(default)]
+    pub checks_run: Vec<String>,
+    /// Checks skipped and why, when a deliberate scope choice was made.
+    #[serde(default)]
+    pub checks_skipped: Vec<String>,
+    /// Total validation findings (blocking and advisory).
+    #[serde(default)]
+    pub findings_total: usize,
+    /// Advisory findings that did not block the commit.
+    #[serde(default)]
+    pub advisory_total: usize,
+}
+
+/// Identifiers produced by applying a scene's continuity package.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneAppliedDeltas {
+    /// Total number of applied continuity entries.
+    #[serde(default)]
+    pub total_applied: usize,
+    /// Created character-state record ids.
+    #[serde(default)]
+    pub character_state_ids: Vec<String>,
+    /// Created canonical-fact record ids.
+    #[serde(default)]
+    pub canonical_fact_ids: Vec<String>,
+    /// Updated relationship record ids.
+    #[serde(default)]
+    pub relationship_ids: Vec<String>,
+    /// Created knowledge-fact record ids.
+    #[serde(default)]
+    pub knowledge_fact_ids: Vec<String>,
+    /// Created quantity-state record ids.
+    #[serde(default)]
+    pub quantity_state_ids: Vec<String>,
+    /// Created narrative-promise record ids.
+    #[serde(default)]
+    pub narrative_promise_ids: Vec<String>,
+    /// Created timeline-event record ids.
+    #[serde(default)]
+    pub timeline_event_ids: Vec<String>,
+}
+
+/// Writer cursor position after a live scene commit.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneCursor {
+    /// Scene identifier recorded on the cursor.
+    pub scene_id: String,
+    /// Book number of the committed scene.
+    pub book_number: i32,
+    /// Chapter number of the committed scene.
+    pub chapter_number: i32,
+    /// Scene order of the committed scene.
+    pub scene_order: i32,
+}
+
+/// Compact receipt returned by `commit_scene`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneOutput {
+    /// Stable operation identifier for audit and undo lookup.
+    pub operation_id: String,
+    /// Scene identifier written or previewed.
+    pub scene_id: String,
+    /// Current scene version after the commit.
+    pub version_number: i32,
+    /// Branch the commit targeted.
+    pub branch_id: String,
+    /// True when this was a dry run with no persisted effects.
+    pub dry_run: bool,
+    /// True when a retried idempotency key returned the original receipt.
+    pub idempotent_replay: bool,
+    /// Blocking and advisory validation findings.
+    #[serde(default)]
+    pub issues: Vec<CommitSceneIssue>,
+    /// Advisory messages that accompanied a successful commit.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// Number of blocking findings; nonzero means no writes occurred.
+    #[serde(default)]
+    pub blocking_count: usize,
+    /// Deterministic checks run or skipped during preflight.
+    pub coverage: CommitSceneCoverage,
+    /// Applied continuity identifiers and counts.
+    pub applied: CommitSceneAppliedDeltas,
+    /// Number of beat annotations written.
+    #[serde(default)]
+    pub beat_count: usize,
+    /// True when a chapter-completion summary was written.
+    #[serde(default)]
+    pub chapter_summary_saved: bool,
+    /// Writer cursor after a live commit, if it moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_cursor: Option<CommitSceneCursor>,
+    /// Work that still requires a later explicit call.
+    #[serde(default)]
+    pub follow_ups: Vec<CommitSceneFollowUp>,
+    /// Whether and how this operation can be undone.
+    pub undo_support: CommitSceneUndoSupport,
+    /// Explanation when undo is limited or unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

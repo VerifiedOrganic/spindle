@@ -654,3 +654,15 @@ results and input validation remain unchanged; compatibility discovery remains
 byte-identical. Full generated discovery falls 45–71% in this slice. Canonical
 input/receipt cleanup, lint completion and target byte ceilings remain pending.
 See [response contract loading](tool-response-contracts.md).
+
+The commit facade now ships `commit_scene`: one atomic SQLite unit of work for
+prose, the author-declared continuity package, beat annotations, an optional
+chapter-completion summary, and the writer cursor. Deterministic world-rule,
+canonical-fact, retcon, temporal, style, stale-preparation, stale-version, and
+provenance checks run before the write transaction opens, so a blocking finding
+returns findings with no partial writes. `dry_run` performs the same preflight
+without a version, receipt claim, journal event, cursor movement, or write;
+idempotency keys replay the stored receipt and reject a reused key with different
+content. Authoring calls may name a run and expected phase, and the harness
+advances its scene phase only after a live success. Legacy save-only and
+branch/revision tools keep their existing semantics for release R.
