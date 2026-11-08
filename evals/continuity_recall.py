@@ -60,17 +60,39 @@ class PlantedContradiction:
     match_tokens: tuple[str, ...]
 
 
+def resolve_agent_config(
+    agent_config: Path | None,
+    environ: dict[str, str] | None = None,
+) -> Path | None:
+    if agent_config is not None:
+        return agent_config.expanduser().resolve()
+    env = os.environ if environ is None else environ
+    raw = env.get("SPINDLE_AGENT_CONFIG") or env.get("SPINDLE_CONFIG")
+    if raw and raw.strip():
+        return Path(raw.strip()).expanduser().resolve()
+    return None
+
+
 class McpClient:
     """Line-delimited JSON-RPC 2.0 MCP client over a disposable server process."""
 
-    def __init__(self, binary: Path, data_dir: Path, agent_config: Path | None = None) -> None:
-        env = os.environ.copy()
+    @staticmethod
+    def build_env(
+        data_dir: Path,
+        agent_config: Path | None = None,
+        base_env: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        env = (os.environ if base_env is None else base_env).copy()
         env["SPINDLE_DATA_DIR"] = str(data_dir)
         env.pop("SPINDLE_HTTP_ADDR", None)
         env.pop("SPINDLE_CONFIG", None)
         env.pop("SPINDLE_AGENT_CONFIG", None)
         if agent_config is not None:
-            env["SPINDLE_CONFIG"] = str(agent_config.resolve())
+            env["SPINDLE_CONFIG"] = str(agent_config.expanduser().resolve())
+        return env
+
+    def __init__(self, binary: Path, data_dir: Path, agent_config: Path | None = None) -> None:
+        env = self.build_env(data_dir, agent_config=agent_config)
         self.proc = subprocess.Popen(
             [str(binary)],
             cwd=str(data_dir),
@@ -1983,14 +2005,19 @@ def run_benchmark(
     deep_check: bool = False,
     agent_config: Path | None = None,
 ) -> dict[str, Any]:
-    if deep_check and agent_config is None and not os.environ.get("SPINDLE_AGENT_CONFIG"):
+    effective_agent_config = (
+        resolve_agent_config(agent_config)
+        if (deep_check or agent_config is not None)
+        else None
+    )
+    if deep_check and effective_agent_config is None:
         raise RuntimeError(
             "--deep requires a configured review route (--agent-config PATH or SPINDLE_AGENT_CONFIG)"
         )
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="spindle-continuity-recall-") as tmp:
-        client = McpClient(binary, Path(tmp), agent_config=agent_config)
+        client = McpClient(binary, Path(tmp), agent_config=effective_agent_config)
         try:
             manuscript_specs = [
                 ("ashfall_expedition", len(ASHFALL_CHAPTERS), seed_ashfall_manuscript),
@@ -2126,6 +2153,28 @@ def run_self_test() -> None:
     assert scored["control_false_positive_count"] == 1
     assert scored["per_type"]["character_attribute"]["recall"] == 1.0
     assert scored["per_type"]["dead_character_acting"]["recall"] == 0.0
+
+    # Verify SPINDLE_AGENT_CONFIG / SPINDLE_CONFIG resolution and forwarding.
+    fallback_cfg = resolve_agent_config(
+        None,
+        environ={"SPINDLE_AGENT_CONFIG": "/tmp/spindle-deep-agents.toml"},
+    )
+    assert fallback_cfg == Path("/tmp/spindle-deep-agents.toml").resolve()
+    forwarded_env = McpClient.build_env(
+        Path("/tmp/spindle-data"),
+        agent_config=fallback_cfg,
+        base_env={"SPINDLE_AGENT_CONFIG": "/tmp/spindle-deep-agents.toml"},
+    )
+    assert forwarded_env.get("SPINDLE_CONFIG") == str(fallback_cfg)
+    assert "SPINDLE_AGENT_CONFIG" not in forwarded_env
+
+    isolated_env = McpClient.build_env(
+        Path("/tmp/spindle-data"),
+        agent_config=None,
+        base_env={"SPINDLE_AGENT_CONFIG": "/tmp/ambient.toml", "SPINDLE_CONFIG": "/tmp/ambient2.toml"},
+    )
+    assert "SPINDLE_CONFIG" not in isolated_env
+    assert "SPINDLE_AGENT_CONFIG" not in isolated_env
     print("continuity_recall.py self-test passed")
 
 

@@ -1012,6 +1012,19 @@ impl ModelRouter {
         rating: Option<&str>,
         context: Option<RequestContext>,
     ) -> anyhow::Result<TestAgentOutput> {
+        self.test_agent_with_context_and_call_id(agent_id, prompt, route, rating, context)
+            .await
+            .map(|(output, _)| output)
+    }
+
+    pub(crate) async fn test_agent_with_context_and_call_id(
+        &self,
+        agent_id: &str,
+        prompt: Option<&str>,
+        route: Option<&str>,
+        rating: Option<&str>,
+        context: Option<RequestContext>,
+    ) -> anyhow::Result<(TestAgentOutput, Option<String>)> {
         let runtime = self
             .runtime
             .read()
@@ -1029,18 +1042,22 @@ impl ModelRouter {
                 context,
             })
             .await?;
-        Ok(TestAgentOutput {
-            agent_id: agent_id.to_string(),
-            route_name,
-            adapter_kind: response.adapter_kind,
-            model_name: response.model_name,
-            health_checked: runtime.health_checks_enabled,
-            output: response.output,
-            truncated: response.truncated,
-            generation_id: None,
-            generation_agent_id: None,
-            generation_output_sha256: None,
-        })
+        let call_id = response.call_id;
+        Ok((
+            TestAgentOutput {
+                agent_id: agent_id.to_string(),
+                route_name,
+                adapter_kind: response.adapter_kind,
+                model_name: response.model_name,
+                health_checked: runtime.health_checks_enabled,
+                output: response.output,
+                truncated: response.truncated,
+                generation_id: None,
+                generation_agent_id: None,
+                generation_output_sha256: None,
+            },
+            call_id,
+        ))
     }
 
     fn resolve_route_for_telemetry(
@@ -4377,8 +4394,237 @@ enabled = false
         );
     }
 
+    #[tokio::test]
+    async fn save_scene_draft_backfills_scene_id_only_for_originating_generation() {
+        use spindle_core::models::{
+            ContentRating, ContinueGenerationInput, GetModelUsageInput, ReviseGenerationInput,
+            SaveSceneDraftInput,
+        };
+
+        let (endpoint, server) = spawn_http_test_server(vec![
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "Scene 1 initial draft prose."}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 30}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "Scene 1 revised draft prose."}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 110, "completion_tokens": 35}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "Scene 2 draft prose."}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 120, "completion_tokens": 40}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "Abandoned draft prose."}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 90, "completion_tokens": 25}
+                })
+                .to_string(),
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("scoped_backfill.db");
+        let pool = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+        let repo = crate::sqlite::Repository::with_model_router(
+            pool.clone(),
+            tmp.path().into(),
+            http_test_router(&endpoint),
+        );
+        let svc = crate::sqlite::SqliteSpindleService::new(repo);
+        let project =
+            serde_json::from_value::<spindle_core::models::CreateProjectInput>(serde_json::json!({
+                "name": "Scoped Backfill Project",
+                "genre": "fantasy",
+                "project_type": "novel",
+                "reader_contract": {
+                    "promise": "tight continuity",
+                    "tone": "taut",
+                    "content_boundaries": ["safe"],
+                    "tropes": [],
+                    "anti_tropes": [],
+                    "emotional_payoffs": ["catharsis"]
+                }
+            }))
+            .unwrap();
+        let project = svc.create_project(project).await.unwrap();
+
+        // Pending generation 1 (initial draft + revision) for scene 1.
+        let gen_1_initial = svc
+            .continue_generation(ContinueGenerationInput {
+                route: "draft".into(),
+                original_prompt: "Draft scene 1 opening.".into(),
+                prior_output: String::new(),
+                rating: Some("general".into()),
+                project_id: Some(project.project_id.clone()),
+                run_id: Some("authoring_run:run-scene-1".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let gen_1_revised = svc
+            .revise_generation(ReviseGenerationInput {
+                generation_id: gen_1_initial.generation_id.clone().expect("gen_1 id"),
+                edit_instructions: "Sharpen the sensory detail.".into(),
+                context: None,
+            })
+            .await
+            .unwrap();
+
+        // Pending generation 2 for scene 2 (created while generation 1 is still unsaved).
+        let gen_2 = svc
+            .continue_generation(ContinueGenerationInput {
+                route: "draft".into(),
+                original_prompt: "Draft scene 2 harbour confrontation.".into(),
+                prior_output: String::new(),
+                rating: Some("general".into()),
+                project_id: Some(project.project_id.clone()),
+                run_id: Some("authoring_run:run-scene-2".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Abandoned generation from another run (never saved to any scene).
+        let _gen_abandoned = svc
+            .continue_generation(ContinueGenerationInput {
+                route: "draft".into(),
+                original_prompt: "Abandoned draft from another run.".into(),
+                prior_output: String::new(),
+                rating: Some("general".into()),
+                project_id: Some(project.project_id.clone()),
+                run_id: Some("authoring_run:run-abandoned".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(server.join().unwrap(), 4);
+
+        // Save scene 1 with generation 1's revised receipt.
+        let scene_1 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 1,
+                full_text: "Scene 1 final text with sharpened sensory detail.".into(),
+                summary: "Scene 1".into(),
+                content_rating: ContentRating::General,
+                generation_id: gen_1_revised.generation_id.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Only generation 1's two originating calls (initial + revision) get scene_1.scene_id.
+        let scene_1_usage = svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                scene_id: Some(scene_1.scene_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            scene_1_usage.total_calls, 2,
+            "scene 1 save must backfill only generation 1's initial and revision calls"
+        );
+        assert!(
+            scene_1_usage
+                .calls
+                .iter()
+                .all(|c| c.run_id.as_deref() == Some("authoring_run:run-scene-1")),
+            "scene 1 calls must all belong to run-scene-1"
+        );
+
+        // Generation 2's call is still pending (scene_id == None).
+        let run_2_before = svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                run_id: Some("authoring_run:run-scene-2".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(run_2_before.total_calls, 1);
+        assert_eq!(
+            run_2_before.calls[0].scene_id, None,
+            "pending generation 2 must not be claimed by scene 1's save"
+        );
+
+        // Reopen a fresh service instance to verify SQLite-persisted receipt->call linkage.
+        let reopened_pool = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+        let reopened_svc =
+            crate::sqlite::SqliteSpindleService::new(crate::sqlite::Repository::with_model_router(
+                reopened_pool,
+                tmp.path().into(),
+                ModelRouter::local_only(),
+            ));
+
+        // Save scene 2 with generation 2's receipt.
+        let scene_2 = reopened_svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: 2,
+                full_text: "Scene 2 harbour confrontation text.".into(),
+                summary: "Scene 2".into(),
+                content_rating: ContentRating::General,
+                generation_id: gen_2.generation_id.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let scene_2_usage = reopened_svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                scene_id: Some(scene_2.scene_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            scene_2_usage.total_calls, 1,
+            "scene 2 save must backfill only generation 2's call"
+        );
+        assert_eq!(
+            scene_2_usage.calls[0].run_id.as_deref(),
+            Some("authoring_run:run-scene-2")
+        );
+
+        // Abandoned generation still has scene_id == None.
+        let abandoned_usage = reopened_svc
+            .get_model_usage(GetModelUsageInput {
+                project_id: Some(project.project_id.clone()),
+                run_id: Some("authoring_run:run-abandoned".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(abandoned_usage.total_calls, 1);
+        assert_eq!(
+            abandoned_usage.calls[0].scene_id, None,
+            "abandoned generation must remain unattributed to any scene"
+        );
+    }
+
     fn http_test_router(endpoint: &str) -> ModelRouter {
-        let route = ModelRoute {
+        let review_route = ModelRoute {
             route_name: "review".to_string(),
             adapter_kind: "http".to_string(),
             model_name: "test-model".to_string(),
@@ -4390,7 +4636,19 @@ enabled = false
             stop: Vec::new(),
             builtin_default: false,
         };
-        let routing_rule = RoutingRule {
+        let draft_route = ModelRoute {
+            route_name: "draft".to_string(),
+            adapter_kind: "http".to_string(),
+            model_name: "test-model".to_string(),
+            purpose: "scene drafting".to_string(),
+            system_prompt: "scene drafting".to_string(),
+            max_tokens: Some(512),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            stop: Vec::new(),
+            builtin_default: false,
+        };
+        let review_rule = RoutingRule {
             route: "review".to_string(),
             agent: "test-agent".to_string(),
             fallback: None,
@@ -4402,6 +4660,18 @@ enabled = false
             stop: Vec::new(),
             rating: None,
         };
+        let draft_rule = RoutingRule {
+            route: "draft".to_string(),
+            agent: "test-agent".to_string(),
+            fallback: None,
+            purpose: Some("scene drafting".to_string()),
+            system_prompt: None,
+            max_tokens: Some(512),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            stop: Vec::new(),
+            rating: None,
+        };
         let agent = ConfiguredAgent {
             id: "test-agent".to_string(),
             name: "Test Agent".to_string(),
@@ -4410,7 +4680,11 @@ enabled = false
             model: "test-model".to_string(),
             api_key_env: None,
             max_context: None,
-            ratings: Vec::new(),
+            ratings: vec![
+                "general".to_string(),
+                "teen".to_string(),
+                "mature".to_string(),
+            ],
             quality_tier: None,
             capabilities: Vec::new(),
             notes: None,
@@ -4424,9 +4698,12 @@ enabled = false
         };
         let runtime = RuntimeConfig {
             source_path: None,
-            routes: BTreeMap::from([(route.route_name.clone(), route)]),
+            routes: BTreeMap::from([
+                (review_route.route_name.clone(), review_route),
+                (draft_route.route_name.clone(), draft_route),
+            ]),
             rating_routes: BTreeMap::new(),
-            routing_rules: vec![routing_rule],
+            routing_rules: vec![review_rule, draft_rule],
             agents: BTreeMap::from([(
                 agent.id.clone(),
                 AgentRuntime {

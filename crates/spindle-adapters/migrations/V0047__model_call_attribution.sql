@@ -13,8 +13,13 @@
 --   - `top_p`               — nucleus sampling top_p when known
 --   - `max_tokens`          — max completion token cap when known
 --
--- All columns are nullable so pre-V0047 rows upgrade in place without data loss.
--- Backfills `scene_id` and `route` from existing `payload` JSON on upgrade.
+-- All `model_call` columns are nullable so pre-V0047 rows upgrade in place
+-- without data loss. Backfills `scene_id` and `route` from existing `payload`
+-- JSON on upgrade.
+--
+-- Also adds `model_call_ids` (JSON array of originating `model_call.id` values)
+-- to `generation_receipt` so `save_scene_draft` backfills `scene_id` only onto
+-- the model call(s) that produced the saved generation receipt.
 -- =============================================================================
 
 ALTER TABLE model_call ADD COLUMN scene_id TEXT;
@@ -26,6 +31,8 @@ ALTER TABLE model_call ADD COLUMN context_packet_hash TEXT;
 ALTER TABLE model_call ADD COLUMN temperature REAL;
 ALTER TABLE model_call ADD COLUMN top_p REAL;
 ALTER TABLE model_call ADD COLUMN max_tokens INTEGER;
+
+ALTER TABLE generation_receipt ADD COLUMN model_call_ids TEXT NOT NULL DEFAULT '[]';
 
 UPDATE model_call
 SET scene_id = json_extract(payload, '$.scene_id'),

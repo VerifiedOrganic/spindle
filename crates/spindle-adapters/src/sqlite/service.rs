@@ -217,6 +217,7 @@ struct GenerationReceiptRecord {
     output_sha256: String,
     output_text: String,
     explicit_capable_agent: bool,
+    model_call_ids: Vec<String>,
 }
 
 /// Running-or-terminal state of a detached dual-persona review job. The result
@@ -4264,10 +4265,10 @@ impl SqliteSpindleService {
             context_packet_hash: input.context_packet_hash.clone(),
         };
         let context = (!context.is_empty()).then_some(context);
-        let mut output = self
+        let (mut output, call_id) = self
             .repository
             .model_router()
-            .test_agent_with_context(
+            .test_agent_with_context_and_call_id(
                 &input.agent_id,
                 input.test_prompt.as_deref(),
                 input.route.as_deref(),
@@ -4277,11 +4278,12 @@ impl SqliteSpindleService {
             .await?;
         if output.route_name == "draft" && !output.output.trim().is_empty() {
             let receipt = self
-                .register_generation_receipt(
+                .register_generation_receipt_with_calls(
                     &output.route_name,
                     input.rating.as_deref(),
                     &output.model_name,
                     &output.output,
+                    call_id.into_iter().collect(),
                 )
                 .await?;
             output.generation_id = Some(receipt.id);
@@ -13692,12 +13694,21 @@ impl SqliteSpindleService {
                 &input.prior_output,
             )
             .await?;
+        let mut call_ids = self
+            .model_call_ids_for_prior_output(&input.route, &input.prior_output)
+            .await;
+        if let Some(call_id) = response.call_id.clone()
+            && !call_ids.contains(&call_id)
+        {
+            call_ids.push(call_id);
+        }
         let receipt = self
-            .register_generation_receipt(
+            .register_generation_receipt_with_calls(
                 &input.route,
                 input.rating.as_deref(),
                 &response.model_name,
                 &format!("{}{}", input.prior_output, response.output),
+                call_ids,
             )
             .await?;
         Ok(ContinueGenerationOutput {
@@ -13733,6 +13744,33 @@ impl SqliteSpindleService {
             anyhow::bail!("edit_instructions must not be empty");
         }
 
+        let inherited_context = if let Some(last_call_id) = source_receipt.model_call_ids.last() {
+            let call_id = last_call_id.clone();
+            self.repository
+                .pool()
+                .read(move |conn| {
+                    Ok(conn
+                        .query_row(
+                            "SELECT project_id, scene_id, run_id FROM model_call WHERE id = ?1",
+                            rusqlite::params![call_id],
+                            |row| {
+                                Ok(crate::ai::RequestContext {
+                                    project_id: row.get(0)?,
+                                    scene_id: row.get(1)?,
+                                    run_id: row.get(2)?,
+                                    ..Default::default()
+                                })
+                            },
+                        )
+                        .ok()
+                        .filter(|ctx| !ctx.is_empty()))
+                })
+                .await
+                .unwrap_or(None)
+        } else {
+            None
+        };
+
         let prompt = build_generation_revision_prompt(
             &source_receipt.output_text,
             edit_instructions,
@@ -13745,15 +13783,22 @@ impl SqliteSpindleService {
                 route: source_receipt.route.clone(),
                 prompt,
                 rating: source_receipt.rating.clone(),
-                context: None,
+                context: inherited_context,
             })
             .await?;
+        let mut call_ids = source_receipt.model_call_ids.clone();
+        if let Some(call_id) = response.call_id.clone()
+            && !call_ids.contains(&call_id)
+        {
+            call_ids.push(call_id);
+        }
         let receipt = self
-            .register_generation_receipt(
+            .register_generation_receipt_with_calls(
                 &source_receipt.route,
                 source_receipt.rating.as_deref(),
                 &response.model_name,
                 &response.output,
+                call_ids,
             )
             .await?;
 
@@ -13767,6 +13812,45 @@ impl SqliteSpindleService {
         })
     }
 
+    async fn model_call_ids_for_prior_output(
+        &self,
+        route: &str,
+        prior_output: &str,
+    ) -> Vec<String> {
+        let normalized = normalized_generation_text(prior_output);
+        if normalized.is_empty() {
+            return Vec::new();
+        }
+        let prior_sha = generation_sha256_hex(normalized.as_bytes());
+        if let Ok(receipts) = self.generation_receipts.read()
+            && let Some(found) = receipts
+                .values()
+                .rev()
+                .find(|r| r.route == route && r.output_sha256 == prior_sha)
+        {
+            return found.model_call_ids.clone();
+        }
+        let route_owned = route.to_string();
+        self.repository
+            .pool()
+            .read(move |conn| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT model_call_ids FROM generation_receipt
+                         WHERE route = ?1 AND output_sha256 = ?2
+                         ORDER BY created_at DESC LIMIT 1",
+                        rusqlite::params![route_owned, prior_sha],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                Ok(raw
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default())
+            })
+            .await
+            .unwrap_or_default()
+    }
+
     /// Register a receipt for a model-router output. Persists the row in the
     /// `generation_receipt` table (migration V0032) so the `generation_id`
     /// survives a primary restart, and also seeds an in-memory read-through
@@ -13776,12 +13860,25 @@ impl SqliteSpindleService {
     ///
     /// The persisted row carries a `GENERATION_RECEIPT_TTL` expiry stamped from
     /// the current wall clock; the `verified_*` lookups enforce it on read.
+    #[cfg(test)]
     async fn register_generation_receipt(
         &self,
         route: &str,
         rating: Option<&str>,
         agent_id: &str,
         output: &str,
+    ) -> Result<GenerationReceiptRecord> {
+        self.register_generation_receipt_with_calls(route, rating, agent_id, output, Vec::new())
+            .await
+    }
+
+    async fn register_generation_receipt_with_calls(
+        &self,
+        route: &str,
+        rating: Option<&str>,
+        agent_id: &str,
+        output: &str,
+        model_call_ids: Vec<String>,
     ) -> Result<GenerationReceiptRecord> {
         use std::sync::atomic::Ordering;
 
@@ -13803,6 +13900,7 @@ impl SqliteSpindleService {
             output_sha256: output_sha256.clone(),
             output_text: output_text.clone(),
             explicit_capable_agent: self.agent_supports_rating(agent_id, "explicit")?,
+            model_call_ids: model_call_ids.clone(),
         };
 
         // Persist (source of truth across restarts). A DB write failure must not
@@ -13834,6 +13932,21 @@ impl SqliteSpindleService {
                 generation_id = %id,
                 "failed to persist generation receipt; it will not survive a restart"
             );
+        } else if !model_call_ids.is_empty() {
+            let receipt_id = id.clone();
+            let call_ids_json =
+                serde_json::to_string(&model_call_ids).unwrap_or_else(|_| "[]".to_string());
+            let _ = self
+                .repository
+                .pool()
+                .write(move |conn| {
+                    conn.execute(
+                        "UPDATE generation_receipt SET model_call_ids = ?1 WHERE id = ?2",
+                        rusqlite::params![call_ids_json, receipt_id],
+                    )?;
+                    Ok(())
+                })
+                .await;
         }
 
         let mut receipts = self
@@ -13898,6 +14011,25 @@ impl SqliteSpindleService {
                 anyhow::anyhow!("generation_id {generation_id:?} was not found or has expired")
             })?;
 
+        let stored_id = stored.id.clone();
+        let model_call_ids = self
+            .repository
+            .pool()
+            .read(move |conn| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT model_call_ids FROM generation_receipt WHERE id = ?1",
+                        rusqlite::params![stored_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                Ok(raw
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default())
+            })
+            .await
+            .unwrap_or_default();
+
         let receipt = GenerationReceiptRecord {
             id: stored.id,
             route: stored.route,
@@ -13906,6 +14038,7 @@ impl SqliteSpindleService {
             output_sha256: stored.output_sha256,
             output_text: stored.output_text,
             explicit_capable_agent: stored.explicit_capable,
+            model_call_ids,
         };
         self.generation_receipts
             .write()
@@ -22880,6 +23013,7 @@ impl SqliteSpindleService {
         let mut draft_origin = (input.authorship
             == spindle_core::models::DraftAuthorship::Assistant)
             .then(|| "assistant:host".to_string());
+        let mut originating_model_call_ids: Vec<String> = Vec::new();
         if matches!(
             input.content_rating,
             spindle_core::models::ContentRating::Explicit
@@ -22960,6 +23094,7 @@ impl SqliteSpindleService {
                         receipt.id
                     ),
                 }
+                originating_model_call_ids = receipt.model_call_ids.clone();
                 receipt_claim = Some((receipt.id.clone(), scene_key));
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             } else if crate::sqlite::import_service::contains_explicit_sexual_prose(
@@ -22983,6 +23118,7 @@ impl SqliteSpindleService {
                 .verified_revisable_draft_receipt(input.generation_id.as_deref())
                 .await?;
             if let Some(receipt) = receipt {
+                originating_model_call_ids = receipt.model_call_ids.clone();
                 draft_origin = Some(format!("agent:{}", receipt.agent_id));
             }
         }
@@ -23073,22 +23209,29 @@ impl SqliteSpindleService {
                     .await?
             }
         };
-        if input.generation_id.is_some() {
+        if !originating_model_call_ids.is_empty() {
             let project_id = save_input.project_id.clone();
             let scene_id = scene.id.clone();
             let _ = self
                 .repository
                 .pool()
                 .write(move |conn| {
-                    conn.execute(
-                        "UPDATE model_call
-                         SET scene_id = ?1,
-                             payload = json_set(payload, '$.scene_id', ?1)
-                         WHERE project_id = ?2
-                           AND route = 'draft'
-                           AND scene_id IS NULL",
-                        rusqlite::params![scene_id, project_id],
-                    )?;
+                    for call_id in &originating_model_call_ids {
+                        conn.execute(
+                            "UPDATE model_call
+                             SET scene_id = ?1,
+                                 project_id = COALESCE(project_id, ?3),
+                                 payload = json_set(
+                                     payload,
+                                     '$.scene_id', ?1,
+                                     '$.project_id', COALESCE(project_id, ?3)
+                                 )
+                             WHERE id = ?2
+                               AND (project_id = ?3 OR project_id IS NULL)
+                               AND scene_id IS NULL",
+                            rusqlite::params![scene_id, call_id, project_id],
+                        )?;
+                    }
                     Ok(())
                 })
                 .await;
