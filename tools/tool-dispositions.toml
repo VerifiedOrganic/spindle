@@ -814,6 +814,13 @@ review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 
 [[tools]]
+name = "prepare_scene"
+classification = "retained"
+owner = "scene-writer"
+review_by = "R"
+reason = "Canonical single-call scene preparation facade; declared by scene-writer."
+
+[[tools]]
 name = "preview_apply_style_profile"
 classification = "retained"
 owner = "editor"

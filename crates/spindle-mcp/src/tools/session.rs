@@ -57,6 +57,7 @@ pub(super) fn tool_supports_session_branch_default(name: &str) -> bool {
     matches!(
         name,
         "get_writer_state"
+            | "prepare_scene"
             | "get_entity"
             | "find_entity"
             | "get_character_snapshot"

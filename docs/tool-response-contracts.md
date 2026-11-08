@@ -1,6 +1,6 @@
 # Optional full response contracts
 
-Generated profiles omit `outputSchema` for 19 explicitly selected large context,
+Generated profiles omit `outputSchema` for 20 explicitly selected large context,
 analysis, alternatives and style-card results. Actual JSON results, input types,
 required/defaulting rules and service validation are unchanged. Scene save,
 revision, commit, authoring-save and import-start receipt schemas stay inline.
@@ -43,7 +43,7 @@ acceptance ceilings are unchanged. These profiles are still transitional:
 large inputs, inline receipts, broad entry dependencies and missing descriptions
 remain. This PR does not claim canonical byte ceilings or lint cleanliness.
 
-Tests validate all 19 full schemas, resource/tool-only loading and invalid names,
+Tests validate all 20 full schemas, resource/tool-only loading and invalid names,
 projection idempotency and input preservation, an actual unchanged structured
 location read against its schema, proxy descriptor parity, HTTP/stdio snapshots,
 and receipt preservation. Optional contract reads expose schema metadata only;
