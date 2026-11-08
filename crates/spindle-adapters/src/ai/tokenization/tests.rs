@@ -335,3 +335,178 @@ async fn native_packet_fails_closed_when_deployment_rejects_larger_window() {
     assert_eq!(body["truncate"], false);
     assert_eq!(body["shift"], false);
 }
+
+#[tokio::test]
+async fn seed_and_eval_messages_share_calibrated_native_transport_and_reject_seed_mismatch() {
+    use crate::drafting::{DraftTokenizer, assemble_packet_with_system};
+    use spindle_core::drafting::EditorialPolicy;
+
+    let (dir, mut config) = fixture();
+    config.probe_mode = ProbeMode::CloudOneToken;
+    let encoder = PinnedTokenizer::load("fixture", config.clone()).unwrap();
+    let samples = calibration_messages()
+        .iter()
+        .zip([9, 10, 8, 646])
+        .map(|(m, n)| ProbeReceipt {
+            model: "fixture".into(),
+            messages_hash: messages_hash(m).unwrap(),
+            input_tokens: n,
+            output_tokens: 1,
+            model_call_id: format!("fixture-{n}"),
+        })
+        .collect();
+    let certificate = encoder.certificate("test", samples).unwrap();
+    let encoder = encoder.verify(&certificate, "test").unwrap();
+
+    let mut packet = crate::drafting::tests::fixture();
+    packet.project_id = "project:proj_eval".into();
+    packet.branch_id = "bible_branch:proj_eval:main".into();
+    let mut budget = crate::drafting::tests::budget();
+    budget.generation_seed = Some(101);
+    let prepared =
+        assemble_packet_with_system(packet.clone(), &budget, Some(&encoder), "Test").unwrap();
+    let packet_count = encoder.count_messages(&prepared.messages).unwrap();
+
+    let legacy_messages = DraftMessages {
+        system: "Legacy system".into(),
+        user: "Legacy user prompt".into(),
+    };
+    let legacy_count = encoder.count_messages(&legacy_messages).unwrap();
+
+    let mut responses = [9, 10, 8, 646].map(|n| response(n, 1)).to_vec();
+    // 1. Packet probe + packet generation (seed 101)
+    responses.push(response(packet_count, 1));
+    responses.push((
+        200,
+        serde_json::json!({
+            "model": "fixture",
+            "done": true,
+            "done_reason": "stop",
+            "prompt_eval_count": packet_count,
+            "eval_count": 6,
+            "message": {"content": "Packet scene draft."}
+        })
+        .to_string(),
+    ));
+    // 2. Legacy baseline probe + legacy generation (seed 101)
+    responses.push(response(legacy_count, 1));
+    responses.push((
+        200,
+        serde_json::json!({
+            "model": "fixture",
+            "done": true,
+            "done_reason": "stop",
+            "prompt_eval_count": legacy_count,
+            "eval_count": 7,
+            "message": {"content": "Legacy scene draft."}
+        })
+        .to_string(),
+    ));
+
+    let (endpoint, captured, server) = spawn_http_capture_server(responses);
+    let router = router(&endpoint, &config, dir.path()).await;
+    router
+        .calibrate_tokenizer("draft", "general")
+        .await
+        .unwrap();
+
+    let pool = router.usage_pool.clone().unwrap();
+    let repository = crate::sqlite::repository::Repository::with_model_router(
+        pool,
+        dir.path().join("data"),
+        router.clone(),
+    );
+    let service = crate::sqlite::service::SqliteSpindleService::new(repository);
+    service
+        .ensure_eval_project_branch(&packet.project_id, &packet.branch_id)
+        .await
+        .unwrap();
+
+    let artifact_path = dir.path().join("packet_seed_101.json");
+    let artifact = service
+        .draft_packet_to_artifact(
+            EditorialPolicy::CritiqueV1,
+            packet.clone(),
+            &budget,
+            None,
+            &artifact_path,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        artifact
+            .prepared_packet
+            .as_ref()
+            .unwrap()
+            .packet
+            .assembly
+            .as_ref()
+            .unwrap()
+            .generation_seed,
+        Some(101)
+    );
+    // Reopening with the same seed succeeds from disk without another HTTP call.
+    let reloaded = service
+        .draft_packet_to_artifact(
+            EditorialPolicy::CritiqueV1,
+            packet.clone(),
+            &budget,
+            None,
+            &artifact_path,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reloaded.receipt.generation_id,
+        artifact.receipt.generation_id
+    );
+    // Reopening the same artifact path with a different seed fails closed.
+    let mut different_seed_budget = budget.clone();
+    different_seed_budget.generation_seed = Some(202);
+    assert!(
+        service
+            .draft_packet_to_artifact(
+                EditorialPolicy::CritiqueV1,
+                packet,
+                &different_seed_budget,
+                None,
+                &artifact_path,
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("seed mismatch")
+    );
+
+    let (eval_budget, settings) = router
+        .eval_draft_budget_and_settings("draft", "general", Some(101))
+        .unwrap();
+    assert_eq!(settings["seed"], 101);
+    assert_eq!(settings["transport"], "ollama_native_chat");
+    assert_eq!(settings["context_window"], 32768);
+    let mut legacy_budget = eval_budget;
+    legacy_budget.output_reserve = budget.output_reserve;
+    let (prompt_hash, counted_input, legacy_resp) = router
+        .draft_eval_messages("draft", "general", &legacy_messages, &legacy_budget, None)
+        .await
+        .unwrap();
+    assert_eq!(counted_input, legacy_count);
+    assert_eq!(prompt_hash, messages_hash(&legacy_messages).unwrap());
+    assert_eq!(legacy_resp.output, "Legacy scene draft.");
+    assert_eq!(legacy_resp.provider_model.as_deref(), Some("fixture"));
+
+    assert_eq!(server.join().unwrap(), 8);
+    let captured = captured.lock().unwrap();
+    let packet_gen: serde_json::Value = serde_json::from_str(&captured[5]).unwrap();
+    let legacy_gen: serde_json::Value = serde_json::from_str(&captured[7]).unwrap();
+    assert_eq!(packet_gen["options"]["seed"], 101);
+    assert_eq!(legacy_gen["options"]["seed"], 101);
+    assert_eq!(
+        packet_gen["options"]["num_ctx"],
+        legacy_gen["options"]["num_ctx"]
+    );
+    assert_eq!(packet_gen["truncate"], false);
+    assert_eq!(legacy_gen["truncate"], false);
+    assert_eq!(packet_gen["shift"], false);
+    assert_eq!(legacy_gen["shift"], false);
+}

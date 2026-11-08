@@ -546,6 +546,8 @@ pub struct ModelRoute {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
     pub stop: Vec<String>,
     /// True only for the built-in `default_routes()` entries — i.e. a route that
     /// no operator agent config has claimed. The local stub for production
@@ -1594,6 +1596,9 @@ impl ModelRouter {
         if let Some(top_p) = route.top_p {
             body["top_p"] = serde_json::json!(top_p);
         }
+        if let Some(seed) = route.seed {
+            body["seed"] = serde_json::json!(seed);
+        }
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
         }
@@ -1677,6 +1682,9 @@ impl ModelRouter {
         });
         if let Some(top_p) = route.top_p {
             body["top_p"] = serde_json::json!(top_p);
+        }
+        if let Some(seed) = route.seed {
+            body["seed"] = serde_json::json!(seed);
         }
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
@@ -2398,6 +2406,7 @@ fn runtime_from_loaded_config(
                 max_tokens: rule.max_tokens,
                 temperature: rule.temperature,
                 top_p: rule.top_p,
+                seed: rule.seed,
                 stop: rule.stop.clone(),
                 // Operator-configured route: NOT a built-in default, so a
                 // local-stub agent bound here is an intentional opt-in and the
@@ -2841,6 +2850,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2853,6 +2863,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2865,6 +2876,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2877,6 +2889,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2889,6 +2902,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2901,6 +2915,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2913,6 +2928,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2925,6 +2941,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -2937,6 +2954,7 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: true,
         },
@@ -4763,6 +4781,7 @@ enabled = false
             max_tokens: Some(256),
             temperature: Some(0.2),
             top_p: Some(0.95),
+            seed: None,
             stop: Vec::new(),
             builtin_default: false,
         };
@@ -4775,6 +4794,7 @@ enabled = false
             max_tokens: Some(512),
             temperature: Some(0.7),
             top_p: Some(0.9),
+            seed: None,
             stop: Vec::new(),
             builtin_default: false,
         };
@@ -4787,6 +4807,7 @@ enabled = false
             max_tokens: Some(256),
             temperature: Some(0.2),
             top_p: Some(0.95),
+            seed: None,
             stop: Vec::new(),
             rating: None,
         };
@@ -4799,6 +4820,7 @@ enabled = false
             max_tokens: Some(512),
             temperature: Some(0.7),
             top_p: Some(0.9),
+            seed: None,
             stop: Vec::new(),
             rating: None,
         };
@@ -4956,6 +4978,7 @@ enabled = false
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             builtin_default: false,
         }
