@@ -29,6 +29,455 @@ pub enum PlanningLevel {
     Scene,
 }
 
+impl PlanningLevel {
+    pub const fn all() -> [Self; 6] {
+        [
+            Self::Contract,
+            Self::CastWorld,
+            Self::SeriesArc,
+            Self::Book,
+            Self::Chapter,
+            Self::Scene,
+        ]
+    }
+
+    pub const fn route_task(self) -> &'static str {
+        match self {
+            Self::Contract | Self::CastWorld | Self::SeriesArc => "plan",
+            Self::Book | Self::Chapter | Self::Scene => "outline",
+        }
+    }
+
+    pub const fn prompt_id(self) -> PlanningPromptId {
+        match self {
+            Self::Contract => PlanningPromptId::PlanningContractV1,
+            Self::CastWorld => PlanningPromptId::PlanningSeedV1,
+            Self::SeriesArc => PlanningPromptId::PlanningSeriesArcV1,
+            Self::Book => PlanningPromptId::OutlineBookV1,
+            Self::Chapter => PlanningPromptId::OutlineChaptersV1,
+            Self::Scene => PlanningPromptId::OutlineManifestV1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningPromptId {
+    #[serde(rename = "planning_contract_v1")]
+    PlanningContractV1,
+    #[serde(rename = "planning_seed_v1")]
+    PlanningSeedV1,
+    #[serde(rename = "planning_series_arc_v1")]
+    PlanningSeriesArcV1,
+    #[serde(rename = "outline_book_v1")]
+    OutlineBookV1,
+    #[serde(rename = "outline_chapters_v1")]
+    OutlineChaptersV1,
+    #[serde(rename = "outline_manifest_v1")]
+    OutlineManifestV1,
+    #[serde(rename = "planning_repair_v1")]
+    PlanningRepairV1,
+}
+
+impl PlanningPromptId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PlanningContractV1 => "planning_contract_v1",
+            Self::PlanningSeedV1 => "planning_seed_v1",
+            Self::PlanningSeriesArcV1 => "planning_series_arc_v1",
+            Self::OutlineBookV1 => "outline_book_v1",
+            Self::OutlineChaptersV1 => "outline_chapters_v1",
+            Self::OutlineManifestV1 => "outline_manifest_v1",
+            Self::PlanningRepairV1 => "planning_repair_v1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningTargetRange {
+    pub book_number: i32,
+    pub chapter_start: i32,
+    pub chapter_end: i32,
+    pub scenes_per_chapter: i32,
+}
+
+impl Default for PlanningTargetRange {
+    fn default() -> Self {
+        Self {
+            book_number: 1,
+            chapter_start: 1,
+            chapter_end: 3,
+            scenes_per_chapter: 2,
+        }
+    }
+}
+
+impl PlanningTargetRange {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedPromiseAction {
+    Plant,
+    Advance,
+    Payoff,
+    Defer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedPromiseEvent {
+    pub promise_ref: PlanningRef,
+    pub action: PlannedPromiseAction,
+    pub placement: PlanningStoryPlacement,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedPov {
+    pub book_number: i32,
+    pub chapter_number: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_order: Option<i32>,
+    pub pov_character_id: PlanningRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedIntensity {
+    pub book_number: i32,
+    pub chapter_number: i32,
+    pub target_intensity: f64,
+    #[serde(default)]
+    pub recovery_beat: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningSchedule {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub promise_events: Vec<PlannedPromiseEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pov_plan: Vec<PlannedPov>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intensity_targets: Vec<PlannedIntensity>,
+}
+
+impl PlanningSchedule {
+    pub fn is_empty(&self) -> bool {
+        self.promise_events.is_empty()
+            && self.pov_plan.is_empty()
+            && self.intensity_targets.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningAuthorQuestion {
+    pub id: String,
+    pub question: String,
+    #[serde(default)]
+    pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningArtifactV1 {
+    pub schema_version: u32,
+    pub level: PlanningLevel,
+    #[serde(default)]
+    pub target_range: PlanningTargetRange,
+    pub rationale: String,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub author_questions: Vec<PlanningAuthorQuestion>,
+    pub operations: Vec<PlanningOperationItem>,
+    #[serde(default)]
+    pub schedule: PlanningSchedule,
+}
+
+impl PlanningArtifactV1 {
+    pub fn canonical_json_schema() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(PlanningArtifactV1))
+            .expect("PlanningArtifactV1 schema serializes")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningFindingSeverity {
+    Blocking,
+    Advisory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningFinding {
+    pub code: String,
+    pub severity: PlanningFindingSeverity,
+    pub path: String,
+    #[serde(default)]
+    pub related_refs: Vec<String>,
+    pub expected: String,
+    pub actual: String,
+    pub repair_hint: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningCostStatus {
+    EstimatedFromConfiguredPrices,
+    #[default]
+    UnknownUnpriced,
+    UnknownMissingProviderUsage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningBudget {
+    pub max_model_calls: u32,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_output_tokens_per_call: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_cost_per_million_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_cost_per_million_usd: Option<f64>,
+}
+
+impl Default for PlanningBudget {
+    fn default() -> Self {
+        Self {
+            max_model_calls: 12,
+            max_input_tokens: 48_000,
+            max_output_tokens: 24_000,
+            max_total_tokens: 72_000,
+            max_output_tokens_per_call: 2_000,
+            max_cost_usd: None,
+            input_cost_per_million_usd: None,
+            output_cost_per_million_usd: None,
+        }
+    }
+}
+
+impl PlanningBudget {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningBudgetUsage {
+    pub model_calls: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub cost_status: PlanningCostStatus,
+}
+
+impl PlanningBudgetUsage {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningOutputSource {
+    Model,
+    Host,
+    Fixture,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningModelCallReceipt {
+    pub attempt_number: u32,
+    pub route_task: String,
+    pub resolved_route: String,
+    pub agent_name: String,
+    pub adapter_kind: String,
+    pub model: String,
+    pub prompt_id: PlanningPromptId,
+    pub prompt_hash: String,
+    pub schema_hash: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub provider_reported_usage: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_usd: Option<f64>,
+    pub cost_status: PlanningCostStatus,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningGenerationReceipt {
+    pub source: PlanningOutputSource,
+    pub prompt_id: PlanningPromptId,
+    pub prompt_hash: String,
+    pub schema_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_task: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub attempts_used: u32,
+    pub repaired: bool,
+    #[serde(default)]
+    pub calls: Vec<PlanningModelCallReceipt>,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningSessionOutcome {
+    Staged,
+    NeedsAuthor,
+    NeedsRoute,
+    ModelOutputRejected,
+    BudgetExhausted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlanningRouteProblem {
+    MissingRoute {
+        route_task: String,
+        allow_review_backend: bool,
+    },
+    LocalStubRejected {
+        route_task: String,
+        resolved_route: String,
+        agent_name: String,
+        adapter_kind: String,
+        builtin_default: bool,
+    },
+    MissingApiKey {
+        route_task: String,
+        resolved_route: String,
+        agent_name: String,
+        env_var: String,
+    },
+    RatingNotCovered {
+        route_task: String,
+        resolved_route: String,
+        agent_name: String,
+        rating_ceiling: ContentRating,
+    },
+    DispatchFailed {
+        route_task: String,
+        resolved_route: String,
+        agent_name: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningHostRequest {
+    pub session_id: String,
+    pub level: PlanningLevel,
+    pub route_task: String,
+    pub prompt_id: PlanningPromptId,
+    pub prompt_hash: String,
+    pub schema_hash: String,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub artifact_schema: serde_json::Value,
+    pub parent_proposals: BTreeMap<String, String>,
+    pub target_range: PlanningTargetRange,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<PlanningRouteProblem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_findings: Vec<PlanningFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningHostSubmission {
+    pub source: PlanningOutputSource,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdvancePlanningInput {
+    pub session_id: String,
+    pub scope: Option<PlanningScope>,
+    pub level: Option<PlanningLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parents: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_range: Option<PlanningTargetRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_review_backend: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ceiling: Option<ContentRating>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<PlanningBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_submission: Option<PlanningHostSubmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningAdvanceReport {
+    pub attempt_id: String,
+    pub session_id: String,
+    pub level: PlanningLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_key: Option<String>,
+    pub outcome: PlanningSessionOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<PlanningProposal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_receipt: Option<PlanningGenerationReceipt>,
+    #[serde(default)]
+    pub findings: Vec<PlanningFinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub author_questions: Vec<PlanningAuthorQuestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_request: Option<PlanningHostRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<PlanningRouteProblem>,
+    pub usage: PlanningBudgetUsage,
+    pub budget: PlanningBudget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanningGate {
@@ -68,6 +517,18 @@ pub struct PlanningSession {
     pub intent_hash: String,
     pub scope: Option<PlanningScope>,
     pub policy: PlanningPolicy,
+    #[serde(default, skip_serializing_if = "PlanningTargetRange::is_default")]
+    pub horizon: PlanningTargetRange,
+    #[serde(default, skip_serializing_if = "PlanningBudget::is_default")]
+    pub budget: PlanningBudget,
+    #[serde(default, skip_serializing_if = "PlanningBudgetUsage::is_default")]
+    pub usage: PlanningBudgetUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ceiling: Option<ContentRating>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_review_backend: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<PlanningSessionOutcome>,
     pub created_at: i64,
 }
 
@@ -413,6 +874,14 @@ pub struct StagePlanningInput {
     pub parents: BTreeMap<String, String>,
     pub operations: Vec<PlanningOperationItem>,
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_range: Option<PlanningTargetRange>,
+    #[serde(default, skip_serializing_if = "PlanningSchedule::is_empty")]
+    pub schedule: PlanningSchedule,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub author_questions: Vec<PlanningAuthorQuestion>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -435,6 +904,10 @@ pub struct PlanningProposal {
     /// checked again under the writer gate.
     #[serde(default)]
     pub base_state: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_receipt: Option<PlanningGenerationReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<PlanningFinding>,
     pub decided_by: Option<String>,
     pub decision_note: Option<String>,
     pub decided_at: Option<i64>,
@@ -510,7 +983,7 @@ pub struct PlanningEstablishedIn {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningStoryPlacement {
     pub book_number: i32,
@@ -604,6 +1077,52 @@ mod tests {
         rejects_extra::<PlanningPlanChapterSceneInput>(
             json!({"scene_order":1,"summary":"Clue","purpose":"Discovery"}),
         );
+        rejects_extra::<PlanningTargetRange>(
+            json!({"book_number":1,"chapter_start":1,"chapter_end":3,"scenes_per_chapter":2}),
+        );
+        rejects_extra::<PlannedPromiseEvent>(json!({
+            "promise_ref":{"kind":"proposal_ref","value":"arc:promise"},
+            "action":"plant",
+            "placement":{"book_number":1,"chapter_number":1}
+        }));
+        rejects_extra::<PlannedPov>(json!({
+            "book_number":1,
+            "chapter_number":1,
+            "pov_character_id":{"kind":"proposal_ref","value":"cast:ada"}
+        }));
+        rejects_extra::<PlannedIntensity>(
+            json!({"book_number":1,"chapter_number":1,"target_intensity":0.5}),
+        );
+        rejects_extra::<PlanningSchedule>(json!({}));
+        rejects_extra::<PlanningAuthorQuestion>(json!({"id":"q1","question":"Which tone?"}));
+        rejects_extra::<PlanningArtifactV1>(json!({
+            "schema_version":1,
+            "level":"contract",
+            "rationale":"Establish contract",
+            "operations":[{"output_ref":"contract:project","operation":{"operation":"update_reader_contract","input":{"promise":"Discovery"}}}]
+        }));
+        rejects_extra::<PlanningFinding>(json!({
+            "code":"ref_unresolved",
+            "severity":"blocking",
+            "path":"/operations/0",
+            "expected":"character",
+            "actual":"missing",
+            "repair_hint":"Use a valid character reference"
+        }));
+        rejects_extra::<PlanningBudget>(json!({
+            "max_model_calls":12,
+            "max_input_tokens":48000,
+            "max_output_tokens":24000,
+            "max_total_tokens":72000,
+            "max_output_tokens_per_call":2000
+        }));
+        rejects_extra::<PlanningBudgetUsage>(json!({
+            "model_calls":0,
+            "input_tokens":0,
+            "output_tokens":0,
+            "total_tokens":0
+        }));
+        rejects_extra::<PlanningHostSubmission>(json!({"source":"host","payload":{}}));
     }
 
     fn rejects_at(mut operation: Value, path: &str) {
