@@ -798,89 +798,86 @@ impl SqliteSpindleService {
         if scene.project_id != character.project_id {
             anyhow::bail!("scene and character must belong to the same project");
         }
-        let latest_state = self
-            .repository
-            .resolve_character_state(
-                &input.character_id,
-                scene.book_number,
-                scene.chapter_number,
-                scene.scene_order + 1,
-            )
-            .await?;
         let progression_delta = serde_json::to_value(&input.changes)?;
+        let changes = input.changes;
 
-        let merged = CharacterStatePatch {
-            emotional_state: if input.changes.emotional_state.is_empty() {
-                latest_state
-                    .as_ref()
-                    .map(|s| s.emotional_state.clone())
-                    .unwrap_or_default()
-            } else {
-                input.changes.emotional_state
-            },
-            goals: Some(input.changes.goals.unwrap_or_else(|| {
-                latest_state
-                    .as_ref()
-                    .map(|s| s.goals.clone())
-                    .unwrap_or_default()
-            })),
-            status: Some(input.changes.status.unwrap_or_else(|| {
-                latest_state
-                    .as_ref()
-                    .map(|s| s.status.clone())
-                    .unwrap_or_default()
-            })),
-            notes: Some(input.changes.notes.unwrap_or_else(|| {
-                latest_state
-                    .as_ref()
-                    .map(|s| s.notes.clone())
-                    .unwrap_or_default()
-            })),
-            source_summary: input
-                .changes
-                .source_summary
-                .or_else(|| latest_state.as_ref().and_then(|s| s.source_summary.clone()))
-                .or_else(|| Some(format!("scene update for {}", character.name))),
-        };
-
-        let state = self
+        let state_id = self
             .repository
-            .append_character_state(AppendCharacterStateParams {
-                project_id: character.project_id.clone(),
-                branch_id: character.branch_id.clone(),
-                character_id: character.id.clone(),
-                scene_id: Some(scene.id.clone()),
-                book_number: scene.book_number,
-                chapter_number: scene.chapter_number,
-                scene_order: scene.scene_order,
-                patch: merged,
-            })
-            .await?;
+            .with_transaction(move |tx| {
+                let latest_state = tx.resolve_character_state_for_branch(
+                    &scene.branch_id,
+                    &character.id,
+                    scene.book_number,
+                    scene.chapter_number,
+                    scene.scene_order + 1,
+                )?;
+                let merged = CharacterStatePatch {
+                    emotional_state: if changes.emotional_state.is_empty() {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.emotional_state.clone())
+                            .unwrap_or_default()
+                    } else {
+                        changes.emotional_state
+                    },
+                    goals: Some(changes.goals.unwrap_or_else(|| {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.goals.clone())
+                            .unwrap_or_default()
+                    })),
+                    status: Some(changes.status.unwrap_or_else(|| {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.status.clone())
+                            .unwrap_or_default()
+                    })),
+                    notes: Some(changes.notes.unwrap_or_else(|| {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.notes.clone())
+                            .unwrap_or_default()
+                    })),
+                    source_summary: changes
+                        .source_summary
+                        .or_else(|| latest_state.as_ref().and_then(|s| s.source_summary.clone()))
+                        .or_else(|| Some(format!("scene update for {}", character.name))),
+                };
 
-        // Best-effort progression event: failure here doesn't roll back the
-        // committed state. Matches the SurrealDB service semantics.
-        let _ = self
-            .repository
-            .append_progression_event(AppendProgressionEventParams {
-                project_id: character.project_id.clone(),
-                branch_id: character.branch_id.clone(),
-                subject_table: "character".to_string(),
-                subject_id: character.id.clone(),
-                overlay_id: None,
-                kind: "character_state_commit".to_string(),
-                delta_json: progression_delta,
-                source_scene_id: Some(scene.id.clone()),
-                placement: Some(StoryPlacement {
+                let state = tx.append_character_state(AppendCharacterStateParams {
+                    project_id: character.project_id.clone(),
+                    branch_id: scene.branch_id.clone(),
+                    character_id: character.id.clone(),
+                    scene_id: Some(scene.id.clone()),
                     book_number: scene.book_number,
                     chapter_number: scene.chapter_number,
-                    scene_order: Some(scene.scene_order),
-                    note: None,
-                }),
-                created_at: chrono::Utc::now(),
-            })
-            .await;
+                    scene_order: scene.scene_order,
+                    patch: merged,
+                })?;
 
-        Ok(CommitCharacterStateOutput { state_id: state.id })
+                tx.append_progression_event(AppendProgressionEventParams {
+                    project_id: character.project_id.clone(),
+                    branch_id: scene.branch_id.clone(),
+                    subject_table: "character".to_string(),
+                    subject_id: character.id.clone(),
+                    overlay_id: None,
+                    kind: "character_state_commit".to_string(),
+                    delta_json: progression_delta,
+                    source_scene_id: Some(scene.id.clone()),
+                    placement: Some(StoryPlacement {
+                        book_number: scene.book_number,
+                        chapter_number: scene.chapter_number,
+                        scene_order: Some(scene.scene_order),
+                        note: None,
+                    }),
+                    created_at: chrono::Utc::now(),
+                })?;
+
+                Ok(state.id)
+            })
+            .await?;
+
+        Ok(CommitCharacterStateOutput { state_id })
     }
 
     /// Update a relationship's trust + tension by deltas, set reason and
@@ -889,6 +886,14 @@ impl SqliteSpindleService {
     pub async fn update_relationship(
         &self,
         input: UpdateRelationshipInput,
+    ) -> Result<UpdateRelationshipOutput> {
+        self.update_relationship_with_source(input, "scene").await
+    }
+
+    pub(crate) async fn update_relationship_with_source(
+        &self,
+        input: UpdateRelationshipInput,
+        source: &str,
     ) -> Result<UpdateRelationshipOutput> {
         let scene = self.repository.get_scene(&input.scene_id).await?;
         let source_character = self.repository.get_character(&input.character_a_id).await?;
@@ -901,7 +906,7 @@ impl SqliteSpindleService {
         }
         let rel = self
             .repository
-            .update_relationship(&scene.branch_id, &input)
+            .update_relationship_with_source(&scene.branch_id, &input, source)
             .await?;
         Ok(UpdateRelationshipOutput {
             relationship_id: format!("relates_to:{}:{}:{}", rel.branch_id, rel.in_id, rel.out_id),
@@ -4051,48 +4056,44 @@ impl SqliteSpindleService {
                 .as_ref()
                 .and_then(|s| s.concealment_note.clone()),
         };
-        let fact = self.repository.create_canonical_fact(params).await?;
-        // Declaration path (design §2.1): when secrecy is declared, write one
-        // knowledge_fact row per holder linking the character into the fact's
-        // circle of trust. The rendered fact text reuses the canonical fact's
-        // value display (the same rendering used for hard constraints), so the
-        // circle rows read like ordinary knowledge. `learned_at = None` (known
-        // from the start) and `reader_visible = true` are handled inside
-        // `link_secret_holder` (dramatic-irony default per design §2.5).
-        if let Some(secrecy) = input.secrecy.as_ref() {
-            let fact_text = crate::format::canonical_fact_hard_constraint(&fact).statement;
-            let normalized_fact = spindle_core::models::normalize_name(&fact_text);
-            for holder_id in &secrecy.holder_ids {
-                self.repository
-                    .link_secret_holder(crate::sqlite::repository::LinkSecretHolderParams {
-                        project_id: fact.project_id.clone(),
-                        branch_id: fact.branch_id.clone(),
-                        character_id: holder_id.clone(),
-                        fact_text: fact_text.clone(),
-                        normalized_fact: normalized_fact.clone(),
-                        source_summary: "secret declared".to_string(),
-                        secret_of_fact_id: fact.id.clone(),
-                    })
-                    .await?;
-            }
-        }
-        let superseded_fact_id = match input.supersedes_fact_id {
-            Some(old) => {
-                self.repository
-                    .supersede_canonical_fact(&old, &fact.id)
-                    .await?;
-                Some(old)
-            }
-            None => None,
-        };
-        self.resolve_phase_four_caches(
-            &fact.project_id,
-            &fact.branch_id,
-            &[PhaseFourCacheId::CanonicalFactProseDrift],
-        )
-        .await?;
+        let secrecy = input.secrecy.clone();
+        let supersedes_fact_id = input.supersedes_fact_id.clone();
+        let (canonical_fact_id, superseded_fact_id) = self
+            .repository
+            .with_transaction(move |tx| {
+                let fact = tx.create_canonical_fact(params)?;
+                if let Some(secrecy) = secrecy.as_ref() {
+                    let fact_text = crate::format::canonical_fact_hard_constraint(&fact).statement;
+                    let normalized_fact = spindle_core::models::normalize_name(&fact_text);
+                    for holder_id in &secrecy.holder_ids {
+                        tx.link_secret_holder(crate::sqlite::repository::LinkSecretHolderParams {
+                            project_id: fact.project_id.clone(),
+                            branch_id: fact.branch_id.clone(),
+                            character_id: holder_id.clone(),
+                            fact_text: fact_text.clone(),
+                            normalized_fact: normalized_fact.clone(),
+                            source_summary: "secret declared".to_string(),
+                            secret_of_fact_id: fact.id.clone(),
+                        })?;
+                    }
+                }
+                let superseded_fact_id = match supersedes_fact_id {
+                    Some(old) => {
+                        tx.supersede_canonical_fact(&fact.branch_id, &old, &fact.id)?;
+                        Some(old)
+                    }
+                    None => None,
+                };
+                tx.resolve_validator_findings_for_validator(
+                    &fact.project_id,
+                    &fact.branch_id,
+                    PhaseFourCacheId::CanonicalFactProseDrift.as_str(),
+                )?;
+                Ok((fact.id, superseded_fact_id))
+            })
+            .await?;
         Ok(RegisterCanonicalFactOutput {
-            canonical_fact_id: fact.id,
+            canonical_fact_id,
             superseded_fact_id,
         })
     }
@@ -4331,7 +4332,11 @@ impl SqliteSpindleService {
             .repository
             .active_branch_id_public(&input.project_id)
             .await?;
-        if character.branch_id != active_branch_id {
+        if !self
+            .repository
+            .branch_inherits_from(&input.project_id, &active_branch_id, &character.branch_id)
+            .await?
+        {
             anyhow::bail!("character must belong to the active branch");
         }
 
@@ -4341,7 +4346,11 @@ impl SqliteSpindleService {
             if scene.project_id != input.project_id {
                 anyhow::bail!("established_in_scene_id must belong to the requested project");
             }
-            if scene.branch_id != active_branch_id {
+            if !self
+                .repository
+                .branch_inherits_from(&input.project_id, &active_branch_id, &scene.branch_id)
+                .await?
+            {
                 anyhow::bail!("established_in_scene_id must belong to the active branch");
             }
         }
@@ -6016,34 +6025,15 @@ impl SqliteSpindleService {
         };
         let branch_id = branch.id.clone();
 
-        // Resolve the project's main branch (per-project design) for
-        // fallback when the requested branch has no scenes/characters/etc.
-        // yet — gives writers a useful view when they switch to a fresh
-        // feature branch.
-        let main_branch_id = self
-            .repository
-            .list_branches_by_project(&project.id)
-            .await?
-            .into_iter()
-            .find(|b| b.name == "main")
-            .map(|b| b.id)
-            .unwrap_or_else(|| branch_id.clone());
-
         let writer_position = self
             .repository
             .get_writer_position(&project.id, &branch_id)
             .await?;
 
-        let mut scenes = self
+        let scenes = self
             .repository
-            .list_scenes_by_project_and_branch(&project.id, &branch_id)
+            .list_scenes_resolved_for_branch(&project.id, &branch_id)
             .await?;
-        if scenes.is_empty() && branch_id != main_branch_id {
-            scenes = self
-                .repository
-                .list_scenes_by_project_and_branch(&project.id, &main_branch_id)
-                .await?;
-        }
 
         let cursor_scene = match input.at_scene_id.as_deref() {
             Some(scene_id) => {
@@ -6063,7 +6053,9 @@ impl SqliteSpindleService {
                 {
                     match self.repository.get_scene(&position_scene_id).await {
                         Ok(scene)
-                            if scene.project_id == project.id && scene.branch_id == branch_id =>
+                            if scene.project_id == project.id
+                                && (scene.branch_id == branch_id
+                                    || scenes.iter().any(|candidate| candidate.id == scene.id)) =>
                         {
                             Some(scene)
                         }
@@ -6142,7 +6134,8 @@ impl SqliteSpindleService {
                 writer_position.as_ref().and_then(|p| p.scene_id.as_ref())
             && let Ok(scene) = self.repository.get_scene(position_scene_id).await
             && scene.project_id == project.id
-            && scene.branch_id == branch_id
+            && (scene.branch_id == branch_id
+                || scenes.iter().any(|candidate| candidate.id == scene.id))
         {
             scene_summary = Some(ScenePositionSummary {
                 scene_id: scene.id.clone(),
@@ -6154,16 +6147,10 @@ impl SqliteSpindleService {
             });
         }
 
-        let mut world_rules = self
+        let world_rules = self
             .repository
             .list_world_rules_by_project_and_branch(&project.id, &branch_id)
             .await?;
-        if world_rules.is_empty() && branch_id != main_branch_id {
-            world_rules = self
-                .repository
-                .list_world_rules_by_project_and_branch(&project.id, &main_branch_id)
-                .await?;
-        }
         let mut hard_constraints = world_rules
             .into_iter()
             .map(|rule| HardConstraint {
@@ -6219,24 +6206,16 @@ impl SqliteSpindleService {
             }
         }
 
-        let mut character_branch_id = branch_id.clone();
-        let mut characters = self
+        let characters = self
             .repository
             .list_characters_by_project_and_branch(&project.id, &branch_id)
             .await?;
-        if characters.is_empty() && branch_id != main_branch_id {
-            characters = self
-                .repository
-                .list_characters_by_project_and_branch(&project.id, &main_branch_id)
-                .await?;
-            character_branch_id = main_branch_id.clone();
-        }
         let character_ids: Vec<String> = characters.iter().map(|c| c.id.clone()).collect();
         let relationships = if character_ids.is_empty() {
             Vec::new()
         } else {
             self.repository
-                .list_relationships_for_characters(&character_branch_id, &character_ids)
+                .list_relationships_for_characters(&branch_id, &character_ids)
                 .await?
         };
 
@@ -11485,30 +11464,12 @@ impl SqliteSpindleService {
         use spindle_core::voice::{
             VoiceDriftCharacter, character_present_in_scene, check_voice_drift,
         };
-        use std::collections::BTreeMap;
 
         let active_branch = self.repository.get_active_branch(project_id).await?;
         let mut characters = self
             .repository
             .list_characters_by_project_and_branch(project_id, &active_branch.id)
             .await?;
-        if active_branch.name != "main" {
-            for branch in self.repository.list_branches_by_project(project_id).await? {
-                if branch.name == "main" {
-                    characters.extend(
-                        self.repository
-                            .list_characters_by_project_and_branch(project_id, &branch.id)
-                            .await?,
-                    );
-                    break;
-                }
-            }
-            let mut deduped = BTreeMap::new();
-            for character in characters {
-                deduped.insert(character.id.clone(), character);
-            }
-            characters = deduped.into_values().collect();
-        }
         characters.retain(|character| {
             character_present_in_scene(
                 prose,
@@ -11558,67 +11519,19 @@ impl SqliteSpindleService {
         use spindle_core::models::RetconFinding;
         use std::collections::BTreeMap;
 
-        let active_branch = self.repository.get_active_branch(project_id).await?;
-        let mut future_knowledge = self
+        let branch_id = &scene.branch_id;
+        let future_knowledge = self
             .repository
-            .list_future_knowledge_by_project_and_branch(project_id, &active_branch.id)
+            .list_future_knowledge_by_project_and_branch(project_id, branch_id)
             .await?;
-        let mut timeline_events = self
+        let timeline_events = self
             .repository
-            .list_timeline_events_by_project_and_branch(project_id, &active_branch.id)
+            .list_timeline_events_by_project_and_branch(project_id, branch_id)
             .await?;
-        let mut temporal_interventions = self
+        let temporal_interventions = self
             .repository
-            .list_temporal_interventions_by_project_and_branch(project_id, &active_branch.id)
+            .list_temporal_interventions_by_project_and_branch(project_id, branch_id)
             .await?;
-        if active_branch.name != "main" {
-            for branch in self.repository.list_branches_by_project(project_id).await? {
-                if branch.name != "main" {
-                    continue;
-                }
-                let main_id = branch.id;
-                let main_future_knowledge = self
-                    .repository
-                    .list_future_knowledge_by_project_and_branch(project_id, &main_id)
-                    .await?;
-                let main_timeline_events = self
-                    .repository
-                    .list_timeline_events_by_project_and_branch(project_id, &main_id)
-                    .await?;
-                let main_temporal_interventions = self
-                    .repository
-                    .list_temporal_interventions_by_project_and_branch(project_id, &main_id)
-                    .await?;
-
-                let mut merged_future_knowledge = main_future_knowledge
-                    .into_iter()
-                    .map(|row| (row.id.clone(), row))
-                    .collect::<BTreeMap<_, _>>();
-                for row in future_knowledge {
-                    merged_future_knowledge.insert(row.id.clone(), row);
-                }
-                future_knowledge = merged_future_knowledge.into_values().collect();
-
-                let mut merged_timeline_events = main_timeline_events
-                    .into_iter()
-                    .map(|row| (row.id.clone(), row))
-                    .collect::<BTreeMap<_, _>>();
-                for row in timeline_events {
-                    merged_timeline_events.insert(row.id.clone(), row);
-                }
-                timeline_events = merged_timeline_events.into_values().collect();
-
-                let mut merged_interventions = main_temporal_interventions
-                    .into_iter()
-                    .map(|row| (row.id.clone(), row))
-                    .collect::<BTreeMap<_, _>>();
-                for row in temporal_interventions {
-                    merged_interventions.insert(row.id.clone(), row);
-                }
-                temporal_interventions = merged_interventions.into_values().collect();
-                break;
-            }
-        }
 
         let scene_position = (scene.book_number, scene.chapter_number, scene.scene_order);
         let mut findings = Vec::new();
@@ -11744,32 +11657,14 @@ impl SqliteSpindleService {
             }
         }
 
-        let mut characters = self
+        let characters = self
             .repository
-            .list_characters_by_project_and_branch(project_id, &active_branch.id)
+            .list_characters_by_project_and_branch(project_id, branch_id)
             .await?;
-        let mut states = self
+        let states = self
             .repository
-            .list_character_states_by_project_and_branch(project_id, &active_branch.id)
+            .list_character_states_by_project_and_branch(project_id, branch_id)
             .await?;
-        if active_branch.name != "main" {
-            for branch in self.repository.list_branches_by_project(project_id).await? {
-                if branch.name != "main" {
-                    continue;
-                }
-                characters.extend(
-                    self.repository
-                        .list_characters_by_project_and_branch(project_id, &branch.id)
-                        .await?,
-                );
-                states.extend(
-                    self.repository
-                        .list_character_states_by_project_and_branch(project_id, &branch.id)
-                        .await?,
-                );
-                break;
-            }
-        }
         let characters_by_id = characters
             .into_iter()
             .map(|character| (character.id.clone(), character))
@@ -11816,7 +11711,7 @@ impl SqliteSpindleService {
         // low-recall advisory tripwire (mapped to a warning, not a hard block).
         let knowledge_facts = self
             .repository
-            .list_knowledge_facts_by_project_and_branch(project_id, &active_branch.id)
+            .list_knowledge_facts_by_project_and_branch(project_id, branch_id)
             .await?;
         for fact in &knowledge_facts {
             let Some(learned_at) = fact.learned_at.as_ref() else {
@@ -13094,7 +12989,7 @@ impl SqliteSpindleService {
         } else {
             let active_facts = self
                 .repository
-                .list_active_canonical_facts_by_project(&project_id)
+                .list_active_canonical_facts_by_project_and_branch(&project_id, &scene.branch_id)
                 .await?;
             let mut candidates: Vec<crate::format::ContradictionCandidate> = active_facts
                 .iter()
@@ -13170,150 +13065,237 @@ impl SqliteSpindleService {
             }
         }
 
-        let mut character_states = Vec::with_capacity(input.character_states.len());
-        for entry in input.character_states {
-            let character_id = entry.character_id.clone();
-            match self
-                .commit_character_state(spindle_core::models::CommitCharacterStateInput {
-                    character_id: entry.character_id,
-                    scene_id: scene_id.clone(),
-                    changes: entry.changes,
-                })
-                .await
-            {
-                Ok(output) => character_states.push(CommitSceneCharacterStateResult {
-                    character_id,
-                    state_id: Some(output.state_id),
-                    error: None,
-                }),
-                Err(error) => character_states.push(CommitSceneCharacterStateResult {
-                    character_id,
-                    state_id: None,
-                    error: Some(format!("{error:#}")),
-                }),
-            }
-        }
+        let tx_project_id = project_id.clone();
+        let tx_scene = scene.clone();
+        let tx_character_states = input.character_states;
+        let tx_canonical_facts = input.canonical_facts;
+        let tx_relationship_updates = input.relationship_updates;
+        let (character_states, canonical_facts, relationship_updates) = self
+            .repository
+            .with_transaction(move |tx| {
+                let mut character_states = Vec::with_capacity(tx_character_states.len());
+                for entry in tx_character_states {
+                    let character = tx.get_character(&entry.character_id)?;
+                    if character.project_id != tx_project_id {
+                        anyhow::bail!(
+                            "character '{}' does not belong to project '{}'",
+                            entry.character_id,
+                            tx_project_id
+                        );
+                    }
+                    let latest_state = tx.resolve_character_state_for_branch(
+                        &tx_scene.branch_id,
+                        &character.id,
+                        tx_scene.book_number,
+                        tx_scene.chapter_number,
+                        tx_scene.scene_order + 1,
+                    )?;
+                    let progression_delta = serde_json::to_value(&entry.changes)?;
+                    let changes = entry.changes;
+                    let merged = CharacterStatePatch {
+                        emotional_state: if changes.emotional_state.is_empty() {
+                            latest_state
+                                .as_ref()
+                                .map(|s| s.emotional_state.clone())
+                                .unwrap_or_default()
+                        } else {
+                            changes.emotional_state
+                        },
+                        goals: Some(changes.goals.unwrap_or_else(|| {
+                            latest_state
+                                .as_ref()
+                                .map(|s| s.goals.clone())
+                                .unwrap_or_default()
+                        })),
+                        status: Some(changes.status.unwrap_or_else(|| {
+                            latest_state
+                                .as_ref()
+                                .map(|s| s.status.clone())
+                                .unwrap_or_default()
+                        })),
+                        notes: Some(changes.notes.unwrap_or_else(|| {
+                            latest_state
+                                .as_ref()
+                                .map(|s| s.notes.clone())
+                                .unwrap_or_default()
+                        })),
+                        source_summary: changes
+                            .source_summary
+                            .or_else(|| {
+                                latest_state.as_ref().and_then(|s| s.source_summary.clone())
+                            })
+                            .or_else(|| Some(format!("scene update for {}", character.name))),
+                    };
+                    let state = tx.append_character_state(AppendCharacterStateParams {
+                        project_id: tx_project_id.clone(),
+                        branch_id: tx_scene.branch_id.clone(),
+                        character_id: character.id.clone(),
+                        scene_id: Some(tx_scene.id.clone()),
+                        book_number: tx_scene.book_number,
+                        chapter_number: tx_scene.chapter_number,
+                        scene_order: tx_scene.scene_order,
+                        patch: merged,
+                    })?;
+                    tx.append_progression_event(AppendProgressionEventParams {
+                        project_id: tx_project_id.clone(),
+                        branch_id: tx_scene.branch_id.clone(),
+                        subject_table: "character".to_string(),
+                        subject_id: character.id.clone(),
+                        overlay_id: None,
+                        kind: "character_state_commit".to_string(),
+                        delta_json: progression_delta,
+                        source_scene_id: Some(tx_scene.id.clone()),
+                        placement: Some(StoryPlacement {
+                            book_number: tx_scene.book_number,
+                            chapter_number: tx_scene.chapter_number,
+                            scene_order: Some(tx_scene.scene_order),
+                            note: None,
+                        }),
+                        created_at: chrono::Utc::now(),
+                    })?;
+                    character_states.push(CommitSceneCharacterStateResult {
+                        character_id: entry.character_id,
+                        state_id: Some(state.id),
+                        error: None,
+                    });
+                }
 
-        let mut canonical_facts = Vec::with_capacity(input.canonical_facts.len());
-        for entry in input.canonical_facts {
-            let fact_type = entry
-                .fact_type
-                .clone()
-                .or_else(|| entry.predicate.clone())
-                .unwrap_or_else(|| "typed_fact".to_string());
-            let key = entry
-                .key
-                .clone()
-                .or_else(|| entry.predicate.clone())
-                .unwrap_or_else(|| "typed_fact".to_string());
-            match self
-                .register_canonical_fact(spindle_core::models::RegisterCanonicalFactInput {
-                    project_id: project_id.clone(),
-                    scene_id: Some(scene_id.clone()),
-                    book_number,
-                    chapter_number,
-                    fact_type: entry.fact_type,
-                    key: entry.key,
-                    value: entry.value,
-                    subject_table: entry.subject_table,
-                    subject_id: entry.subject_id,
-                    predicate: entry.predicate,
-                    value_kind: entry.value_kind,
-                    value_text: entry.value_text,
-                    value_number: entry.value_number,
-                    value_unit: entry.value_unit,
-                    value_json: entry.value_json,
-                    aliases: entry.aliases,
-                    scope: entry.scope,
-                    valid_from: entry.valid_from,
-                    valid_until: entry.valid_until,
-                    legacy_untyped: None,
-                    context: entry.context,
-                    supersedes_fact_id: entry.supersedes_fact_id,
-                    secrecy: None,
-                })
-                .await
-            {
-                Ok(output) => canonical_facts.push(CommitSceneCanonicalFactResult {
-                    fact_type,
-                    key,
-                    canonical_fact_id: Some(output.canonical_fact_id),
-                    superseded_fact_id: output.superseded_fact_id,
-                    error: None,
-                }),
-                Err(error) => canonical_facts.push(CommitSceneCanonicalFactResult {
-                    fact_type,
-                    key,
-                    canonical_fact_id: None,
-                    superseded_fact_id: None,
-                    error: Some(format!("{error:#}")),
-                }),
-            }
-        }
+                let mut canonical_facts = Vec::with_capacity(tx_canonical_facts.len());
+                for entry in tx_canonical_facts {
+                    let fact_type = entry
+                        .fact_type
+                        .clone()
+                        .or_else(|| entry.predicate.clone())
+                        .unwrap_or_else(|| "typed_fact".to_string());
+                    let key = entry
+                        .key
+                        .clone()
+                        .or_else(|| entry.predicate.clone())
+                        .unwrap_or_else(|| "typed_fact".to_string());
+                    let value_kind = entry.value_kind.clone().unwrap_or_else(|| {
+                        if entry.value_number.is_some() {
+                            "number".to_string()
+                        } else if entry.value_json.is_some() {
+                            "json".to_string()
+                        } else {
+                            "string".to_string()
+                        }
+                    });
+                    let predicate = entry
+                        .predicate
+                        .clone()
+                        .or_else(|| entry.key.clone())
+                        .ok_or_else(|| anyhow::anyhow!("predicate or key is required"))?;
+                    let subject_table = entry
+                        .subject_table
+                        .clone()
+                        .unwrap_or_else(|| "project".to_string());
+                    let scope = match entry.scope {
+                        Some(CanonicalFactScope::Invariant) | None => "invariant",
+                        Some(CanonicalFactScope::Evolving) => "evolving",
+                        Some(CanonicalFactScope::Conditional) => "conditional",
+                    }
+                    .to_string();
+                    let fact = tx.create_canonical_fact(
+                        crate::sqlite::repository::CreateCanonicalFactParams {
+                            project_id: tx_project_id.clone(),
+                            branch_id: tx_scene.branch_id.clone(),
+                            scene_id: Some(tx_scene.id.clone()),
+                            book_number,
+                            chapter_number,
+                            subject_table,
+                            subject_id: entry.subject_id,
+                            predicate,
+                            value_kind,
+                            value_text: entry.value_text.or(entry.value),
+                            value_number: entry.value_number,
+                            unit: entry.value_unit,
+                            value_json: entry.value_json,
+                            aliases: entry.aliases,
+                            scope,
+                            valid_from: entry.valid_from,
+                            valid_until: entry.valid_until,
+                            legacy_untyped: false,
+                            secret: false,
+                            concealment_note: None,
+                        },
+                    )?;
+                    let superseded_fact_id = match entry.supersedes_fact_id {
+                        Some(old) => {
+                            tx.supersede_canonical_fact(&fact.branch_id, &old, &fact.id)?;
+                            Some(old)
+                        }
+                        None => None,
+                    };
+                    canonical_facts.push(CommitSceneCanonicalFactResult {
+                        fact_type,
+                        key,
+                        canonical_fact_id: Some(fact.id),
+                        superseded_fact_id,
+                        error: None,
+                    });
+                }
 
-        let mut relationship_updates = Vec::with_capacity(input.relationship_updates.len());
-        for entry in input.relationship_updates {
-            let character_a_id = entry.character_a_id.clone();
-            let character_b_id = entry.character_b_id.clone();
-            match self
-                .update_relationship(spindle_core::models::UpdateRelationshipInput {
-                    character_a_id: entry.character_a_id,
-                    character_b_id: entry.character_b_id,
-                    trust_delta: entry.trust_delta,
-                    tension_delta: entry.tension_delta,
-                    reason: entry.reason,
-                    scene_id: scene_id.clone(),
-                })
-                .await
-            {
-                Ok(output) => relationship_updates.push(CommitSceneRelationshipResult {
-                    character_a_id,
-                    character_b_id,
-                    relationship_id: Some(output.relationship_id),
-                    trust: Some(output.trust),
-                    tension: Some(output.tension),
-                    error: None,
-                }),
-                Err(error) => relationship_updates.push(CommitSceneRelationshipResult {
-                    character_a_id,
-                    character_b_id,
-                    relationship_id: None,
-                    trust: None,
-                    tension: None,
-                    error: Some(format!("{error:#}")),
-                }),
-            }
-        }
+                let mut relationship_updates = Vec::with_capacity(tx_relationship_updates.len());
+                for entry in tx_relationship_updates {
+                    let source_character = tx.get_character(&entry.character_a_id)?;
+                    let target_character = tx.get_character(&entry.character_b_id)?;
+                    if source_character.project_id != target_character.project_id {
+                        anyhow::bail!("relationship characters must belong to the same project");
+                    }
+                    if tx_scene.project_id != source_character.project_id {
+                        anyhow::bail!(
+                            "scene does not belong to the same project as the characters"
+                        );
+                    }
+                    let rel_input = spindle_core::models::UpdateRelationshipInput {
+                        character_a_id: entry.character_a_id.clone(),
+                        character_b_id: entry.character_b_id.clone(),
+                        trust_delta: entry.trust_delta,
+                        tension_delta: entry.tension_delta,
+                        reason: entry.reason,
+                        scene_id: tx_scene.id.clone(),
+                    };
+                    let rel = tx.update_relationship(
+                        &tx_scene.branch_id,
+                        &rel_input,
+                        "continuity_package",
+                    )?;
+                    relationship_updates.push(CommitSceneRelationshipResult {
+                        character_a_id: entry.character_a_id,
+                        character_b_id: entry.character_b_id,
+                        relationship_id: Some(format!(
+                            "relates_to:{}:{}:{}",
+                            rel.branch_id, rel.in_id, rel.out_id
+                        )),
+                        trust: Some(rel.trust),
+                        tension: Some(rel.tension),
+                        error: None,
+                    });
+                }
 
-        // Branch-wide voice_drift resolution as a simplification of the
-        // SurrealDB voice_profile_affected_scene_ids helper. Same approach
-        // used by `set_character_voice_profile` (see the comment there).
-        if character_states.iter().any(|result| result.error.is_none()) {
-            self.resolve_phase_four_caches(
-                &project_id,
-                &scene.branch_id,
-                &[PhaseFourCacheId::VoiceDrift],
-            )
+                if !character_states.is_empty() {
+                    tx.resolve_validator_findings_for_validator(
+                        &tx_project_id,
+                        &tx_scene.branch_id,
+                        PhaseFourCacheId::VoiceDrift.as_str(),
+                    )?;
+                }
+                if !canonical_facts.is_empty() {
+                    tx.resolve_validator_findings_for_validator(
+                        &tx_project_id,
+                        &tx_scene.branch_id,
+                        PhaseFourCacheId::CanonicalFactProseDrift.as_str(),
+                    )?;
+                    tx.resolve_validator_findings_for_scenes(
+                        &tx_scene.branch_id,
+                        std::slice::from_ref(&tx_scene.id),
+                    )?;
+                }
+
+                Ok((character_states, canonical_facts, relationship_updates))
+            })
             .await?;
-        }
-
-        if canonical_facts.iter().any(|result| result.error.is_none()) {
-            // SQLite divergence: the SurrealDB reference resolves only the
-            // `canonical_fact_prose_drift` validator on this specific scene
-            // via `resolve_validator_findings_for_scenes`. The SQLite repo
-            // exposes a per-scene resolver (no validator filter) and a
-            // per-validator branch-wide resolver (no scene filter). Using
-            // the per-scene call here keeps the scoping correct (we don't
-            // want to clear validators for other scenes), at the cost of
-            // also clearing other validator rows on this one scene; the
-            // Phase-4 fan-out below re-populates them.
-            self.repository
-                .resolve_validator_findings_for_scenes(
-                    &scene.branch_id,
-                    std::slice::from_ref(&scene.id),
-                )
-                .await?;
-        }
 
         // ── Phase-4 validator fan-out ───────────────────────────────
         // Re-runs the four Phase-4 validators against just the scene we
@@ -16280,18 +16262,27 @@ impl SqliteSpindleService {
                 .list_scenes_by_project_and_branch(&project.id, &main_branch.id)
                 .await?
         };
-        let source_states = self
+        let source_states: Vec<_> = self
             .repository
             .list_character_states_by_project_and_branch(&project.id, &input.source_branch_id)
-            .await?;
-        let source_relationships = self
+            .await?
+            .into_iter()
+            .filter(|s| s.branch_id == input.source_branch_id)
+            .collect();
+        let source_relationships: Vec<_> = self
             .repository
             .list_relationships_by_branch(&input.source_branch_id)
-            .await?;
-        let source_pacing = self
+            .await?
+            .into_iter()
+            .filter(|r| r.branch_id == input.source_branch_id)
+            .collect();
+        let source_pacing: Vec<_> = self
             .repository
             .list_pacing_trackers_by_project_and_branch(&project.id, &input.source_branch_id)
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|p| p.branch_id == input.source_branch_id)
+            .collect();
 
         let target_local_scene_map: BTreeMap<(i32, i32, i32), &_> = target_local_scenes
             .iter()
@@ -16425,6 +16416,8 @@ impl SqliteSpindleService {
             .repository
             .list_project_quantity_schemes(&project.id, &input.source_branch_id)
             .await?
+            .into_iter()
+            .filter(|s| s.branch_id == input.source_branch_id)
         {
             self.repository
                 .upsert_project_quantity_scheme(&project.id, &target_branch_id, &stored.scheme)
@@ -19647,7 +19640,8 @@ impl SqliteSpindleService {
             "relationship_shift" => {
                 let input: UpdateRelationshipInput =
                     self.deser_with_provenance(delta, payload).await?;
-                self.update_relationship(input).await?;
+                self.update_relationship_with_source(input, "canon_delta")
+                    .await?;
                 Ok(None)
             }
             "character_state" => {
@@ -22421,7 +22415,11 @@ impl SqliteSpindleService {
         }
         let branch_id = match input.branch_id {
             Some(b) => b,
-            None => character.branch_id.clone(),
+            None => {
+                self.repository
+                    .active_branch_id_public(&input.project_id)
+                    .await?
+            }
         };
         // Reveal path (design §2.3.1): a `secret_of_fact_id` link must point at
         // an existing canonical fact that is actually marked secret, or the
@@ -22444,39 +22442,48 @@ impl SqliteSpindleService {
             }
         }
         let normalized_fact = spindle_core::models::normalize_name(&input.fact);
-        let fact = self
+        let project_id = input.project_id.clone();
+        let character_id = input.character_id.clone();
+        let fact_text = input.fact.clone();
+        let source_summary = input.source_summary.clone();
+        let learned_at = input.learned_at.clone();
+        let confidence = input.confidence;
+        let tags = input.tags.clone();
+        let reader_visible = input.reader_visible;
+        let secret_of_fact_id = input.secret_of_fact_id.clone();
+        let tx_branch_id = branch_id.clone();
+
+        let (fact, knows) = self
             .repository
-            .upsert_knowledge_fact(UpsertKnowledgeFactParams {
-                project_id: input.project_id.clone(),
-                branch_id: branch_id.clone(),
-                character_id: input.character_id.clone(),
-                fact: input.fact.clone(),
-                normalized_fact,
-                source_summary: input.source_summary.clone(),
-                learned_at: input.learned_at.clone(),
-                confidence: input.confidence,
-                tags: input.tags.clone(),
-                reader_visible: input.reader_visible,
-                source_import_session_id: None,
-                secret_of_fact_id: input.secret_of_fact_id.clone(),
+            .with_transaction(move |tx| {
+                let fact = tx.upsert_knowledge_fact(UpsertKnowledgeFactParams {
+                    project_id: project_id.clone(),
+                    branch_id: tx_branch_id.clone(),
+                    character_id: character_id.clone(),
+                    fact: fact_text,
+                    normalized_fact,
+                    source_summary: source_summary.clone(),
+                    learned_at: learned_at.clone(),
+                    confidence,
+                    tags,
+                    reader_visible,
+                    source_import_session_id: None,
+                    secret_of_fact_id: secret_of_fact_id.clone(),
+                })?;
+                let knows = tx.upsert_knows(UpsertKnowsParams {
+                    project_id: project_id.clone(),
+                    branch_id: tx_branch_id.clone(),
+                    character_id,
+                    knowledge_fact_id: fact.id.clone(),
+                    source_summary: Some(source_summary),
+                    learned_at,
+                    confidence,
+                    reader_visible,
+                    source_import_session_id: None,
+                })?;
+                Ok((fact, Some(knows)))
             })
             .await?;
-        // Best-effort knows edge linking character → fact.
-        let knows = self
-            .repository
-            .upsert_knows(UpsertKnowsParams {
-                project_id: input.project_id.clone(),
-                branch_id: branch_id.clone(),
-                character_id: input.character_id.clone(),
-                knowledge_fact_id: fact.id.clone(),
-                source_summary: Some(input.source_summary),
-                learned_at: input.learned_at,
-                confidence: input.confidence,
-                reader_visible: input.reader_visible,
-                source_import_session_id: None,
-            })
-            .await
-            .ok();
         let knows_edge_id =
             knows.map(|k| format!("knows:{}:{}:{}", k.branch_id, k.in_id, k.out_id));
 
@@ -26901,14 +26908,136 @@ fn contains_case_insensitive_word_boundary(haystack: &str, needle: &str) -> bool
     false
 }
 
-/// True for character-state status strings that flag a deceased
-/// character (any of "dead", "deceased", "killed", "slain", case-folded).
+/// True when `status` is an explicit typed deceased marker (e.g.
+/// `status:deceased`, `vital:deceased`, `vital_status:dead`, `deceased:true`).
+/// Only explicit typed markers escalate `DeadCharacterAct` to `"error"`;
+/// free-form deceased statuses surface as `"warning"` because prose name
+/// mentions include memories, dialogue references, and corpses.
+fn is_explicit_typed_deceased_marker(status: &str) -> bool {
+    let trimmed = status.trim().to_ascii_lowercase();
+    if let Some((prefix, rest)) = trimmed.split_once([':', '=']) {
+        let key = prefix.trim();
+        let val = rest.trim();
+        let value_token = val
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .find(|t| !t.is_empty())
+            .unwrap_or("");
+        if matches!(
+            key,
+            "status" | "vital" | "vital_status" | "state" | "condition" | "life_status"
+        ) && matches!(value_token, "deceased" | "dead" | "killed" | "slain")
+        {
+            return true;
+        }
+        if matches!(key, "deceased" | "dead") && matches!(value_token, "true" | "yes" | "confirmed")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// True for character-state status strings that flag a deceased character
+/// using explicit or word-boundary status matching while rejecting idioms
+/// ("dead tired", "dead wrong", "dead quiet") and negations ("not dead",
+/// "nearly dead", "presumed dead").
 fn is_dead_status(status: &str) -> bool {
-    let normalized = status.to_ascii_lowercase();
-    normalized.contains("dead")
-        || normalized.contains("deceased")
-        || normalized.contains("killed")
-        || normalized.contains("slain")
+    if is_explicit_typed_deceased_marker(status) {
+        return true;
+    }
+    let normalized = status.trim().to_ascii_lowercase();
+    let cleaned = normalized.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if cleaned.is_empty() {
+        return false;
+    }
+    if matches!(cleaned, "dead" | "deceased" | "killed" | "slain") {
+        return true;
+    }
+
+    let tokens: Vec<&str> = cleaned
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    for (idx, &tok) in tokens.iter().enumerate() {
+        if !matches!(tok, "dead" | "deceased" | "killed" | "slain") {
+            continue;
+        }
+        let prev = idx.checked_sub(1).and_then(|i| tokens.get(i)).copied();
+        let prev2 = idx.checked_sub(2).and_then(|i| tokens.get(i)).copied();
+        let next = tokens.get(idx + 1).copied();
+
+        if matches!(
+            prev,
+            Some(
+                "not"
+                    | "never"
+                    | "nearly"
+                    | "almost"
+                    | "half"
+                    | "presumed"
+                    | "thought"
+                    | "believed"
+                    | "rumored"
+                    | "rumoured"
+                    | "feigned"
+                    | "faked"
+                    | "playing"
+                    | "play"
+                    | "drop"
+                    | "brain"
+                    | "walking"
+            )
+        ) || matches!(prev2, Some("not" | "never" | "presumed" | "thought"))
+        {
+            continue;
+        }
+
+        match tok {
+            "deceased" => return true,
+            "dead" => {
+                // Reject idiomatic intensifiers / compound nouns ("dead tired",
+                // "dead wrong", "dead quiet", "dead silent", "dead weight",
+                // "dead end", "dead center", "dead set", "dead heat", etc.).
+                if prev.is_none()
+                    && (next.is_none()
+                        || matches!(next, Some("in" | "at" | "by" | "from" | "since" | "after")))
+                {
+                    return true;
+                }
+                if matches!(prev, Some("confirmed" | "declared" | "pronounced" | "now"))
+                    && (next.is_none()
+                        || matches!(next, Some("in" | "at" | "by" | "from" | "since" | "after")))
+                {
+                    return true;
+                }
+            }
+            "killed" | "slain" => {
+                // Match passive status clauses ("killed in battle", "slain by
+                // the warden") while rejecting active transitives ("killed a
+                // guard", "killed the lights", "killed time").
+                if prev.is_none()
+                    && (next.is_none()
+                        || matches!(
+                            next,
+                            Some("in" | "by" | "at" | "during" | "on" | "near" | "under" | "after")
+                        ))
+                {
+                    return true;
+                }
+                if matches!(prev, Some("was" | "were" | "is" | "confirmed"))
+                    && (next.is_none()
+                        || matches!(
+                            next,
+                            Some("in" | "by" | "at" | "during" | "on" | "near" | "under" | "after")
+                        ))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Group Phase-4 validator issues into per-validator-id sections (each
@@ -29079,10 +29208,15 @@ fn retcon_finding_to_consistency_issue(
         },
         RetconFinding::DeadCharacterAct {
             character_id,
+            status,
             message,
             ..
         } => spindle_core::models::ConsistencyIssue {
-            severity: "error".to_string(),
+            severity: if is_explicit_typed_deceased_marker(status) {
+                "error".to_string()
+            } else {
+                "warning".to_string()
+            },
             check_type: "retcon_reachability".to_string(),
             message: message.clone(),
             entity_ids: vec![character_id.clone()],
@@ -30367,7 +30501,24 @@ mod tests {
             .map(|rule| rule.rule_name)
             .collect::<Vec<_>>();
 
-        assert_eq!(rule_names, vec!["feature-only rule".to_string()]);
+        assert_eq!(
+            rule_names,
+            vec![
+                "feature-only rule".to_string(),
+                "main-only rule".to_string()
+            ]
+        );
+
+        let main_context = svc
+            .build_phase_four_validator_context(&project.project_id, &project.branch_id, &[])
+            .await
+            .unwrap();
+        let main_rule_names = main_context
+            .world_rules
+            .into_iter()
+            .map(|rule| rule.rule_name)
+            .collect::<Vec<_>>();
+        assert_eq!(main_rule_names, vec!["main-only rule".to_string()]);
     }
 
     /// Exercises the three core dispatch shapes of `read_project_resource`:
@@ -59125,6 +59276,1148 @@ agent = "local-style"
         assert!(
             err.to_string().contains("review job registry lock"),
             "spawn must name the poisoned lock, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_character_state_and_record_knowledge_target_active_branch_and_merge_branch_aware()
+     {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CommitCharacterStateInput, ContentRating, CreateBranchInput, CreateCharacterInput,
+            CreateProjectInput, RecordKnowledgeInput, SaveSceneDraftInput, StoryPlacement,
+            SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "branch-canon-writes".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "branch isolation".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let hero = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Kael".to_string(),
+                summary: "Guard captain of the Citadel.".to_string(),
+                role: "protagonist".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let main_scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Kael walked the Citadel battlements with his bronze badge.".to_string(),
+                summary: "Kael patrols the Citadel.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let mut main_emotions = std::collections::BTreeMap::new();
+        main_emotions.insert("vigilance".to_string(), serde_json::json!(0.8));
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: hero.character_id.clone(),
+            scene_id: main_scene.scene_id.clone(),
+            changes: CharacterStatePatch {
+                emotional_state: main_emotions,
+                goals: Some(vec!["patrol the Citadel".to_string()]),
+                status: Some(vec!["healthy".to_string()]),
+                notes: Some(vec!["carrying bronze badge".to_string()]),
+                source_summary: Some("main patrol".to_string()),
+            },
+        })
+        .await
+        .unwrap();
+
+        let child_branch = svc
+            .create_branch(CreateBranchInput {
+                project_id: project.project_id.clone(),
+                parent_branch_id: Some(project.branch_id.clone()),
+                name: "alt-timeline".to_string(),
+                branch_type: "experiment".to_string(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: project.project_id.clone(),
+            branch_id: child_branch.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        let child_scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "Kael fled into the Catacombs clutching the iron key.".to_string(),
+                summary: "Kael flees into the Catacombs.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Omit `goals` and `status` so they merge from the prior state inherited from `main`.
+        let child_commit = svc
+            .commit_character_state(CommitCharacterStateInput {
+                character_id: hero.character_id.clone(),
+                scene_id: child_scene.scene_id.clone(),
+                changes: CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: Some(vec!["carrying iron key".to_string()]),
+                    source_summary: Some("catacombs escape".to_string()),
+                },
+            })
+            .await
+            .unwrap();
+
+        let child_state = svc
+            .repository
+            .get_character_state_by_id(&child_commit.state_id)
+            .await
+            .unwrap();
+        assert_eq!(child_state.branch_id, child_branch.branch_id);
+        assert_eq!(
+            child_state.goals,
+            vec!["patrol the Citadel".to_string()],
+            "child branch commit must merge prior goals inherited from parent branch"
+        );
+        assert_eq!(
+            child_state.status,
+            vec!["healthy".to_string()],
+            "child branch commit must merge prior status inherited from parent branch"
+        );
+        assert_eq!(
+            child_state.notes,
+            vec!["carrying iron key".to_string()],
+            "explicitly supplied notes replace prior notes on child branch"
+        );
+
+        let all_events = svc
+            .repository
+            .list_all_progression_events(&project.project_id)
+            .await
+            .unwrap();
+        let child_events: Vec<_> = all_events
+            .into_iter()
+            .filter(|e| e.source_scene_id.as_deref() == Some(child_scene.scene_id.as_str()))
+            .collect();
+        assert_eq!(child_events.len(), 1);
+        assert_eq!(child_events[0].branch_id, child_branch.branch_id);
+
+        let knowledge = svc
+            .record_knowledge(RecordKnowledgeInput {
+                project_id: project.project_id.clone(),
+                branch_id: None,
+                character_id: hero.character_id.clone(),
+                fact: "The regent forged the decree".to_string(),
+                source_summary: "witnessed in catacombs".to_string(),
+                learned_at: Some(StoryPlacement {
+                    book_number: 1,
+                    chapter_number: 1,
+                    scene_order: Some(2),
+                    note: None,
+                }),
+                confidence: Some(1.0),
+                tags: Vec::new(),
+                reader_visible: true,
+                secret_of_fact_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(knowledge.fact.branch_id, child_branch.branch_id);
+        assert!(
+            knowledge
+                .knows_edge_id
+                .as_deref()
+                .unwrap()
+                .contains(&child_branch.branch_id)
+        );
+
+        // Main branch must NOT see child-branch state or knowledge writes.
+        let main_resolved = svc
+            .repository
+            .resolve_character_state_for_branch(&project.branch_id, &hero.character_id, 1, 1, 10)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(main_resolved.branch_id, project.branch_id);
+        assert_eq!(
+            main_resolved.notes,
+            vec!["carrying bronze badge".to_string()]
+        );
+
+        let all_knows = svc
+            .repository
+            .list_all_knows(&project.project_id)
+            .await
+            .unwrap();
+        assert!(
+            all_knows
+                .iter()
+                .all(|k| k.branch_id == child_branch.branch_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn child_branch_inherits_parent_chain_canon_and_overrides_parent_rows() {
+        use spindle_core::models::{
+            CanonicalFactScope, ContentRating, CreateBranchInput, CreateProjectInput,
+            CreateWorldRuleInput, RegisterCanonicalFactInput, SaveSceneDraftInput,
+            SwitchBranchInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "branch-inheritance".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "consistent parent chain".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let main_scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Opening scene text.".to_string(),
+                summary: "Opening.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let main_fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project.project_id.clone(),
+                scene_id: Some(main_scene.scene_id.clone()),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("project".to_string()),
+                subject_id: Some(project.project_id.clone()),
+                predicate: Some("sunrise_direction".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("west".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: Some(CanonicalFactScope::Invariant),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        svc.create_world_rule(CreateWorldRuleInput {
+            project_id: project.project_id.clone(),
+            rule_name: "Gravity Law".to_string(),
+            rule_type: "physics".to_string(),
+            description: "Heavy objects fall downward.".to_string(),
+            scan_pattern: None,
+            relevance_tags: Vec::new(),
+            established_in: None,
+        })
+        .await
+        .unwrap();
+
+        let parent_branch = svc
+            .create_branch(CreateBranchInput {
+                project_id: project.project_id.clone(),
+                parent_branch_id: Some(project.branch_id.clone()),
+                name: "book-2-draft".to_string(),
+                branch_type: "arc".to_string(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: project.project_id.clone(),
+            branch_id: parent_branch.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        let parent_fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project.project_id.clone(),
+                scene_id: None,
+                book_number: 1,
+                chapter_number: 2,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("project".to_string()),
+                subject_id: Some(project.project_id.clone()),
+                predicate: Some("northern_pass_state".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("sealed by ice".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: Some(CanonicalFactScope::Evolving),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        let leaf_branch = svc
+            .create_branch(CreateBranchInput {
+                project_id: project.project_id.clone(),
+                parent_branch_id: Some(parent_branch.branch_id.clone()),
+                name: "book-2-alt".to_string(),
+                branch_type: "experiment".to_string(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        svc.switch_branch(SwitchBranchInput {
+            project_id: project.project_id.clone(),
+            branch_id: leaf_branch.branch_id.clone(),
+        })
+        .await
+        .unwrap();
+
+        // Fresh leaf branch sees canonical facts from both parent and main.
+        let inherited_facts = svc
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(
+                &project.project_id,
+                &leaf_branch.branch_id,
+            )
+            .await
+            .unwrap();
+        let inherited_ids: Vec<String> = inherited_facts.iter().map(|f| f.id.clone()).collect();
+        assert!(inherited_ids.contains(&main_fact.canonical_fact_id));
+        assert!(inherited_ids.contains(&parent_fact.canonical_fact_id));
+
+        // Override the world rule on the leaf branch and supersede the parent fact.
+        svc.create_world_rule(CreateWorldRuleInput {
+            project_id: project.project_id.clone(),
+            rule_name: "Gravity Law".to_string(),
+            rule_type: "physics".to_string(),
+            description: "Gravity reverses inside the Spire.".to_string(),
+            scan_pattern: None,
+            relevance_tags: Vec::new(),
+            established_in: None,
+        })
+        .await
+        .unwrap();
+
+        let leaf_fact = svc
+            .register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project.project_id.clone(),
+                scene_id: None,
+                book_number: 1,
+                chapter_number: 3,
+                fact_type: None,
+                key: None,
+                value: None,
+                context: None,
+                subject_table: Some("project".to_string()),
+                subject_id: Some(project.project_id.clone()),
+                predicate: Some("northern_pass_state".to_string()),
+                value_kind: Some("string".to_string()),
+                value_text: Some("thawed by dragonfire".to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: Some(CanonicalFactScope::Evolving),
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: Some(parent_fact.canonical_fact_id.clone()),
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+
+        let leaf_rules = svc
+            .repository
+            .list_world_rules_by_project_and_branch(&project.project_id, &leaf_branch.branch_id)
+            .await
+            .unwrap();
+        assert_eq!(leaf_rules.len(), 1);
+        assert_eq!(
+            leaf_rules[0].description,
+            "Gravity reverses inside the Spire."
+        );
+
+        // Main branch still sees the original rule.
+        let main_rules = svc
+            .repository
+            .list_world_rules_by_project_and_branch(&project.project_id, &project.branch_id)
+            .await
+            .unwrap();
+        assert_eq!(main_rules.len(), 1);
+        assert_eq!(main_rules[0].description, "Heavy objects fall downward.");
+
+        let leaf_active_facts = svc
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(
+                &project.project_id,
+                &leaf_branch.branch_id,
+            )
+            .await
+            .unwrap();
+        let leaf_fact_ids: Vec<String> = leaf_active_facts.iter().map(|f| f.id.clone()).collect();
+        assert!(leaf_fact_ids.contains(&main_fact.canonical_fact_id));
+        assert!(leaf_fact_ids.contains(&leaf_fact.canonical_fact_id));
+        assert!(!leaf_fact_ids.contains(&parent_fact.canonical_fact_id));
+
+        // Parent branch still sees `parent_fact` as active because `leaf_fact` is only on `leaf_branch`.
+        let parent_active_facts = svc
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(
+                &project.project_id,
+                &parent_branch.branch_id,
+            )
+            .await
+            .unwrap();
+        let parent_fact_ids: Vec<String> =
+            parent_active_facts.iter().map(|f| f.id.clone()).collect();
+        assert!(parent_fact_ids.contains(&main_fact.canonical_fact_id));
+        assert!(parent_fact_ids.contains(&parent_fact.canonical_fact_id));
+        assert!(!parent_fact_ids.contains(&leaf_fact.canonical_fact_id));
+    }
+
+    #[tokio::test]
+    async fn commit_scene_changes_is_atomic_on_midway_failure() {
+        use spindle_core::models::{
+            CanonicalFactEntry, CanonicalFactScope, CharacterEmotionalProfileData,
+            CharacterStatePatch, CharacterStatePatchEntry, CharacterVoiceProfileData,
+            CommitContinuityGate, CommitSceneChangesInput, ContentRating, CreateCharacterInput,
+            CreateProjectInput, RelationshipUpdateEntry, SaveSceneDraftInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "atomic-commit".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "all or nothing".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let char_a = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Aria".to_string(),
+                summary: "Protagonist.".to_string(),
+                role: "protagonist".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let scene = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Aria stood in the courtyard and learned the truth.".to_string(),
+                summary: "Aria learns a truth.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Attempt a commit_scene_changes where the first character_state and canonical_fact are valid,
+        // but a relationship_update references a nonexistent character, causing a mid-way failure.
+        let res = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene.scene_id.clone(),
+                character_states: vec![CharacterStatePatchEntry {
+                    character_id: char_a.character_id.clone(),
+                    changes: CharacterStatePatch {
+                        emotional_state: std::collections::BTreeMap::new(),
+                        goals: Some(vec!["find the truth".to_string()]),
+                        status: Some(vec!["unharmed".to_string()]),
+                        notes: None,
+                        source_summary: Some("courtyard scene".to_string()),
+                    },
+                }],
+                canonical_facts: vec![CanonicalFactEntry {
+                    fact_type: None,
+                    key: None,
+                    value: None,
+                    subject_table: Some("project".to_string()),
+                    subject_id: Some(project.project_id.clone()),
+                    predicate: Some("courtyard_fountain".to_string()),
+                    value_kind: Some("string".to_string()),
+                    value_text: Some("dry".to_string()),
+                    value_number: None,
+                    value_unit: None,
+                    value_json: None,
+                    aliases: Vec::new(),
+                    scope: Some(CanonicalFactScope::Invariant),
+                    valid_from: None,
+                    valid_until: None,
+                    context: None,
+                    supersedes_fact_id: None,
+                }],
+                relationship_updates: vec![RelationshipUpdateEntry {
+                    character_a_id: char_a.character_id.clone(),
+                    character_b_id: "nonexistent-character-id".to_string(),
+                    trust_delta: 10,
+                    tension_delta: -5,
+                    reason: "broken ref".to_string(),
+                }],
+                accept_world_rule_risks: true,
+                accept_continuity_risks: true,
+                continuity_gate: Some(CommitContinuityGate::WarnOnly),
+            })
+            .await;
+
+        assert!(
+            res.is_err(),
+            "commit_scene_changes should fail on invalid character_b_id"
+        );
+
+        // Verify that the earlier scene character_state, progression_event, and canonical_fact were rolled back.
+        let states = svc
+            .repository
+            .list_character_states_by_project_and_branch(&project.project_id, &project.branch_id)
+            .await
+            .unwrap();
+        assert!(
+            states.iter().all(|s| s.scene_id.is_none()),
+            "scene character_state must be rolled back (only initial create_character state may exist)"
+        );
+
+        let events = svc
+            .repository
+            .list_all_progression_events(&project.project_id)
+            .await
+            .unwrap();
+        assert!(events.is_empty(), "progression_event must be rolled back");
+
+        let facts = svc
+            .repository
+            .list_canonical_facts_by_project_and_branch(&project.project_id, &project.branch_id)
+            .await
+            .unwrap();
+        assert!(facts.is_empty(), "canonical_fact must be rolled back");
+    }
+
+    #[tokio::test]
+    async fn relationship_updates_are_idempotent_per_scene_and_replace_across_recommit_and_mining()
+    {
+        use crate::sqlite::repository::StageCanonDeltaParams;
+        use spindle_core::models::{
+            CanonDeltaDecisionInput, CharacterEmotionalProfileData, CharacterVoiceProfileData,
+            CommitContinuityGate, CommitSceneChangesInput, ContentRating, CreateCharacterInput,
+            CreateProjectInput, CreateRelationshipInput, DecideCanonDeltasInput,
+            RelationshipUpdateEntry, SaveSceneDraftInput, UpdateRelationshipInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "rel-idempotency".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "no double counting".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let char_a = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Rowan".to_string(),
+                summary: "Knight.".to_string(),
+                role: "protagonist".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let char_b = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Sylvi".to_string(),
+                summary: "Scout.".to_string(),
+                role: "deuteragonist".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        svc.create_relationship(CreateRelationshipInput {
+            character_a_id: char_a.character_id.clone(),
+            character_b_id: char_b.character_id.clone(),
+            relationship_type: "companions".to_string(),
+            initial_trust: 50,
+            initial_tension: 30,
+            dynamics: vec!["wary allies".to_string()],
+        })
+        .await
+        .unwrap();
+
+        let scene1 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Rowan handed Sylvi a ration pack by the fire.".to_string(),
+                summary: "Rowan and Sylvi share camp.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // First commit of scene 1 applies +10 trust, -5 tension (50 -> 60, 30 -> 25).
+        let out1 = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene1.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: vec![RelationshipUpdateEntry {
+                    character_a_id: char_a.character_id.clone(),
+                    character_b_id: char_b.character_id.clone(),
+                    trust_delta: 10,
+                    tension_delta: -5,
+                    reason: "shared rations".to_string(),
+                }],
+                accept_world_rule_risks: true,
+                accept_continuity_risks: true,
+                continuity_gate: Some(CommitContinuityGate::WarnOnly),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out1.relationship_updates[0].trust, Some(60));
+        assert_eq!(out1.relationship_updates[0].tension, Some(25));
+
+        // Recommitting the same scene with the same delta must be idempotent (60, not 70).
+        let out2 = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene1.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: vec![RelationshipUpdateEntry {
+                    character_a_id: char_a.character_id.clone(),
+                    character_b_id: char_b.character_id.clone(),
+                    trust_delta: 10,
+                    tension_delta: -5,
+                    reason: "shared rations".to_string(),
+                }],
+                accept_world_rule_risks: true,
+                accept_continuity_risks: true,
+                continuity_gate: Some(CommitContinuityGate::WarnOnly),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out2.relationship_updates[0].trust, Some(60));
+        assert_eq!(out2.relationship_updates[0].tension, Some(25));
+
+        // Recommitting the revised scene with an updated delta (+15 trust, -10 tension)
+        // replaces the scene's prior (+10, -5) delta -> (65, 20).
+        let out3 = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene1.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: vec![RelationshipUpdateEntry {
+                    character_a_id: char_a.character_id.clone(),
+                    character_b_id: char_b.character_id.clone(),
+                    trust_delta: 15,
+                    tension_delta: -10,
+                    reason: "saved from ambush".to_string(),
+                }],
+                accept_world_rule_risks: true,
+                accept_continuity_risks: true,
+                continuity_gate: Some(CommitContinuityGate::WarnOnly),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out3.relationship_updates[0].trust, Some(65));
+        assert_eq!(out3.relationship_updates[0].tension, Some(20));
+
+        // Accepting a mined `relationship_shift` canon delta for the same scene replaces the scene's
+        // effective delta (+20 trust, -8 tension -> 70, 22) rather than double-counting on top of the
+        // continuity package.
+        let staged_delta = svc
+            .repository
+            .stage_canon_delta(StageCanonDeltaParams {
+                project_id: project.project_id.clone(),
+                branch_id: project.branch_id.clone(),
+                scene_id: scene1.scene_id.clone(),
+                authoring_run_id: None,
+                delta_class: "relationship_shift".to_string(),
+                target_id: None,
+                payload: serde_json::json!({
+                    "character_a_id": char_a.character_id,
+                    "character_b_id": char_b.character_id,
+                    "trust_delta": 20,
+                    "tension_delta": -8,
+                    "reason": "swore an oath",
+                    "scene_id": scene1.scene_id
+                }),
+                evidence: "Rowan handed Sylvi a ration pack by the fire.".to_string(),
+                confidence: "high".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let decide_out = svc
+            .decide_canon_deltas(DecideCanonDeltasInput {
+                project_id: project.project_id.clone(),
+                decided_by: None,
+                decisions: vec![CanonDeltaDecisionInput {
+                    delta_id: staged_delta.id,
+                    action: "apply".to_string(),
+                    edit: None,
+                    note: None,
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(decide_out.applied_count, 1);
+
+        let rels_after_mining = svc
+            .repository
+            .list_relationships_by_branch(&project.branch_id)
+            .await
+            .unwrap();
+        assert_eq!(rels_after_mining.len(), 1);
+        assert_eq!(rels_after_mining[0].trust, 70);
+        assert_eq!(rels_after_mining[0].tension, 22);
+
+        // A second scene accumulates its delta on top of scene 1 (70 + 5 = 75, 22 - 2 = 20).
+        let scene2 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "Rowan and Sylvi crossed the bridge together.".to_string(),
+                summary: "Rowan and Sylvi cross the bridge.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let out_scene2 = svc
+            .update_relationship(UpdateRelationshipInput {
+                character_a_id: char_a.character_id.clone(),
+                character_b_id: char_b.character_id.clone(),
+                trust_delta: 5,
+                tension_delta: -2,
+                reason: "crossed bridge".to_string(),
+                scene_id: scene2.scene_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out_scene2.trust, 75);
+        assert_eq!(out_scene2.tension, 20);
+    }
+
+    #[tokio::test]
+    async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
+        use spindle_core::models::{
+            CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
+            CommitCharacterStateInput, CommitContinuityGate, CommitSceneChangesInput,
+            ContentRating, CreateCharacterInput, CreateProjectInput, SaveSceneDraftInput,
+        };
+
+        assert!(!is_dead_status("dead tired"));
+        assert!(!is_dead_status("dead wrong"));
+        assert!(!is_dead_status("nearly dead"));
+        assert!(!is_dead_status("left for dead"));
+        assert!(!is_dead_status("not dead"));
+        assert!(!is_dead_status("undead"));
+        assert!(!is_dead_status("brain-dead"));
+        assert!(!is_dead_status("killed the lights"));
+        assert!(!is_dead_status("alive and well"));
+
+        assert!(is_dead_status("dead"));
+        assert!(is_dead_status("deceased"));
+        assert!(is_dead_status("slain in battle"));
+        assert!(is_dead_status("killed in battle"));
+        assert!(is_dead_status("status:deceased"));
+        assert!(is_explicit_typed_deceased_marker("status:deceased"));
+        assert!(!is_explicit_typed_deceased_marker("deceased"));
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "dead-check".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "accurate retcon".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let char_tired = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Garrick".to_string(),
+                summary: "Veteran soldier.".to_string(),
+                role: "supporting".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let char_slain = svc
+            .create_character(CreateCharacterInput {
+                aliases: Vec::new(),
+                project_id: project.project_id.clone(),
+                name: "Veyra".to_string(),
+                summary: "Fallen warrior.".to_string(),
+                role: "supporting".to_string(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+
+        let scene1 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Garrick slumped against the wall while Veyra fell in the courtyard."
+                    .to_string(),
+                summary: "Garrick is exhausted; Veyra falls.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: char_tired.character_id.clone(),
+            scene_id: scene1.scene_id.clone(),
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: Some(vec!["dead tired".to_string()]),
+                notes: None,
+                source_summary: Some("after battle".to_string()),
+            },
+        })
+        .await
+        .unwrap();
+
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: char_slain.character_id.clone(),
+            scene_id: scene1.scene_id.clone(),
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: Some(vec!["killed in battle".to_string()]),
+                notes: None,
+                source_summary: Some("fell in courtyard".to_string()),
+            },
+        })
+        .await
+        .unwrap();
+
+        let scene2 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 2,
+                full_text: "Garrick remembered Veyra and whispered a prayer.".to_string(),
+                summary: "Garrick remembers Veyra.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Committing scene2 under BlockErrors should SUCCEED because:
+        // 1. Garrick's "dead tired" does NOT trigger DeadCharacterAct at all.
+        // 2. Veyra's free-form "killed in battle" triggers a "warning", not an "error".
+        let commit_ok = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene2.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: Some(CommitContinuityGate::BlockErrors),
+            })
+            .await
+            .unwrap();
+
+        let dead_issues: Vec<_> = commit_ok
+            .blocking_continuity_findings
+            .iter()
+            .filter(|i| i.check_type == "retcon_reachability")
+            .collect();
+        assert_eq!(dead_issues.len(), 1);
+        assert_eq!(dead_issues[0].severity, "warning");
+        assert!(dead_issues[0].message.contains("Veyra"));
+        assert!(!dead_issues[0].message.contains("Garrick"));
+
+        // Now mark Veyra with an explicit typed deceased marker ("status:deceased") in scene 2
+        // and verify that scene 3 triggers an "error" severity finding that blocks under BlockErrors.
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: char_slain.character_id.clone(),
+            scene_id: scene2.scene_id.clone(),
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: Some(vec!["status:deceased".to_string()]),
+                notes: None,
+                source_summary: Some("explicit deceased marker".to_string()),
+            },
+        })
+        .await
+        .unwrap();
+
+        let scene3 = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 3,
+                full_text: "Veyra stepped into the hall and drew her sword.".to_string(),
+                summary: "Veyra speaks.".to_string(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let commit_blocked = svc
+            .commit_scene_changes(CommitSceneChangesInput {
+                project_id: project.project_id.clone(),
+                scene_id: scene3.scene_id.clone(),
+                character_states: Vec::new(),
+                canonical_facts: Vec::new(),
+                relationship_updates: Vec::new(),
+                accept_world_rule_risks: false,
+                accept_continuity_risks: false,
+                continuity_gate: Some(CommitContinuityGate::BlockErrors),
+            })
+            .await;
+        assert!(
+            commit_blocked.is_err(),
+            "explicit typed marker status:deceased must produce error and block under BlockErrors"
         );
     }
 }

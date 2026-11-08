@@ -884,6 +884,33 @@ impl Repository {
         self.get_project(project_id).await
     }
 
+    /// Return the ancestor branch chain `[branch_id, parent_id, ..., main_id]`
+    /// ordered from most specific (child) to least specific (`main`).
+    pub async fn resolve_branch_lineage(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<String>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id))
+            .await
+    }
+
+    /// True when `branch_id` equals `ancestor_branch_id` or inherits from it
+    /// along the `parent_branch_id` chain (including fallback to `main`).
+    pub async fn branch_inherits_from(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        ancestor_branch_id: &str,
+    ) -> Result<bool> {
+        let lineage = self.resolve_branch_lineage(project_id, branch_id).await?;
+        Ok(lineage.iter().any(|b| b == ancestor_branch_id))
+    }
+
     /// Persist (or clear) the project's narrator-voice directive. Passing an
     /// empty voice clears the column back to NULL.
     pub async fn set_narrator_voice(
@@ -1438,16 +1465,25 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {} FROM project_quantity_scheme \
                      WHERE project_id = ?1 AND branch_id = ?2 AND measure = ?3",
                     crate::sqlite::records::PROJECT_QUANTITY_SCHEME_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(rusqlite::params![&project_id, &branch_id, &measure], |r| {
-                    crate::sqlite::records::StoredQuantityScheme::try_from(r)
-                })
-                .optional_inner()
+                for candidate_branch_id in &chain {
+                    if let Some(scheme) = stmt
+                        .query_row(
+                            rusqlite::params![&project_id, candidate_branch_id, &measure],
+                            |r| crate::sqlite::records::StoredQuantityScheme::try_from(r),
+                        )
+                        .optional_inner()?
+                    {
+                        return Ok(Some(scheme));
+                    }
+                }
+                Ok(None)
             })
             .await
     }
@@ -1462,18 +1498,29 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {} FROM project_quantity_scheme \
                      WHERE project_id = ?1 AND branch_id = ?2 ORDER BY measure",
                     crate::sqlite::records::PROJECT_QUANTITY_SCHEME_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        crate::sqlite::records::StoredQuantityScheme::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(rusqlite::params![&project_id, candidate_branch_id], |r| {
+                            crate::sqlite::records::StoredQuantityScheme::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in rows {
+                        if seen.insert(row.scheme.measure.clone()) {
+                            out.push(row);
+                        }
+                    }
+                }
+                out.sort_by(|a, b| a.scheme.measure.cmp(&b.scheme.measure));
+                Ok(out)
             })
             .await
     }
@@ -1567,6 +1614,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 // Same packing as `format::story_index`.
                 let position = "(book_number * 1000000 + chapter_number * 1000 + scene_order)";
                 let sql = format!(
@@ -1577,18 +1625,43 @@ impl Repository {
                     crate::sqlite::records::QUANTITY_STATE_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(
-                    rusqlite::params![
-                        &project_id,
-                        &branch_id,
-                        &subject_table,
-                        &subject_id,
-                        &measure,
-                        cursor_index,
-                    ],
-                    |r| crate::sqlite::records::StoredQuantityState::try_from(r),
-                )
-                .optional_inner()
+                let mut best: Option<(
+                    (i32, i32, i32),
+                    usize,
+                    crate::sqlite::records::StoredQuantityState,
+                )> = None;
+                for (depth, candidate_branch_id) in chain.iter().enumerate() {
+                    if let Some(candidate) = stmt
+                        .query_row(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                &subject_table,
+                                &subject_id,
+                                &measure,
+                                cursor_index,
+                            ],
+                            |r| crate::sqlite::records::StoredQuantityState::try_from(r),
+                        )
+                        .optional_inner()?
+                    {
+                        let pos = (
+                            candidate.book_number,
+                            candidate.chapter_number,
+                            candidate.scene_order,
+                        );
+                        let replace = match &best {
+                            None => true,
+                            Some((best_pos, best_depth, _)) => {
+                                pos > *best_pos || (pos == *best_pos && depth < *best_depth)
+                            }
+                        };
+                        if replace {
+                            best = Some((pos, depth, candidate));
+                        }
+                    }
+                }
+                Ok(best.map(|(_, _, state)| state))
             })
             .await
     }
@@ -1606,6 +1679,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {} FROM quantity_state WHERE project_id = ?1 AND branch_id = ?2 \
                      ORDER BY subject_table, subject_id, measure, \
@@ -1613,12 +1687,52 @@ impl Repository {
                     crate::sqlite::records::QUANTITY_STATE_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map([&project_id, &branch_id], |r| {
-                        crate::sqlite::records::StoredQuantityState::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut overridden = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map([&project_id, candidate_branch_id], |r| {
+                            crate::sqlite::records::StoredQuantityState::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let mut branch_keys = Vec::new();
+                    for row in rows {
+                        let key = (
+                            row.subject_table.clone(),
+                            row.subject_id.clone(),
+                            row.measure.clone(),
+                            row.book_number,
+                            row.chapter_number,
+                            row.scene_order,
+                        );
+                        if !overridden.contains(&key) {
+                            branch_keys.push(key);
+                            out.push(row);
+                        }
+                    }
+                    overridden.extend(branch_keys);
+                }
+                out.sort_by(|a, b| {
+                    (
+                        &a.subject_table,
+                        &a.subject_id,
+                        &a.measure,
+                        a.book_number,
+                        a.chapter_number,
+                        a.scene_order,
+                        &a.created_at,
+                    )
+                        .cmp(&(
+                            &b.subject_table,
+                            &b.subject_id,
+                            &b.measure,
+                            b.book_number,
+                            b.chapter_number,
+                            b.scene_order,
+                            &b.created_at,
+                        ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -1645,6 +1759,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let position = "(book_number * 1000000 + chapter_number * 1000 + scene_order)";
                 let sql = format!(
                     "SELECT {} FROM quantity_state \
@@ -1655,19 +1770,44 @@ impl Repository {
                     crate::sqlite::records::QUANTITY_STATE_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(
-                    rusqlite::params![
-                        &project_id,
-                        &branch_id,
-                        &subject_table,
-                        &subject_id,
-                        &measure,
-                        book_number,
-                        cursor_index,
-                    ],
-                    |r| crate::sqlite::records::StoredQuantityState::try_from(r),
-                )
-                .optional_inner()
+                let mut best: Option<(
+                    (i32, i32, i32),
+                    usize,
+                    crate::sqlite::records::StoredQuantityState,
+                )> = None;
+                for (depth, candidate_branch_id) in chain.iter().enumerate() {
+                    if let Some(candidate) = stmt
+                        .query_row(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                &subject_table,
+                                &subject_id,
+                                &measure,
+                                book_number,
+                                cursor_index,
+                            ],
+                            |r| crate::sqlite::records::StoredQuantityState::try_from(r),
+                        )
+                        .optional_inner()?
+                    {
+                        let pos = (
+                            candidate.book_number,
+                            candidate.chapter_number,
+                            candidate.scene_order,
+                        );
+                        let replace = match &best {
+                            None => true,
+                            Some((best_pos, best_depth, _)) => {
+                                pos < *best_pos || (pos == *best_pos && depth < *best_depth)
+                            }
+                        };
+                        if replace {
+                            best = Some((pos, depth, candidate));
+                        }
+                    }
+                }
+                Ok(best.map(|(_, _, state)| state))
             })
             .await
     }
@@ -2855,6 +2995,53 @@ impl Repository {
             .await
     }
 
+    /// Resolve the effective scene spine for a branch along its parent chain
+    /// (branch scenes override ancestor scenes at the same
+    /// `(book_number, chapter_number, scene_order)` position).
+    pub async fn list_scenes_resolved_for_branch(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<Scene>> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
+                let sql = format!(
+                    "SELECT {SCENE_COLUMNS} FROM scene \
+                     WHERE project_id = ?1 AND branch_id = ?2 \
+                     ORDER BY book_number, chapter_number, scene_order"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(rusqlite::params![&project_id, candidate_branch_id], |r| {
+                            Scene::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in rows {
+                        let key = (row.book_number, row.chapter_number, row.scene_order);
+                        if seen.insert(key) {
+                            out.push(row);
+                        }
+                    }
+                }
+                out.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, a.scene_order).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        b.scene_order,
+                    ))
+                });
+                Ok(out)
+            })
+            .await
+    }
+
     /// Scenes strictly *before* the supplied position (book, chapter, scene_order)
     /// on the given branch, ordered most-recent first by the SQL and then
     /// reversed to chronological so the caller can `take(limit)` from the end
@@ -2874,6 +3061,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {SCENE_COLUMNS} FROM scene \
                      WHERE project_id = ?1 AND branch_id = ?2 \
@@ -2882,23 +3070,39 @@ impl Repository {
                             OR (book_number = ?3 AND chapter_number < ?4) \
                             OR (book_number = ?3 AND chapter_number = ?4 AND scene_order < ?5) \
                        ) \
-                     ORDER BY book_number DESC, chapter_number DESC, scene_order DESC \
-                     LIMIT ?6"
+                     ORDER BY book_number DESC, chapter_number DESC, scene_order DESC"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let mut rows = stmt
-                    .query_map(
-                        rusqlite::params![
-                            &project_id,
-                            &branch_id,
-                            book_number,
-                            chapter_number,
-                            scene_order,
-                            limit as i64,
-                        ],
-                        |r| Scene::try_from(r),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut seen = std::collections::HashSet::new();
+                let mut rows = Vec::new();
+                for candidate_branch_id in &chain {
+                    let branch_rows = stmt
+                        .query_map(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                book_number,
+                                chapter_number,
+                                scene_order,
+                            ],
+                            |r| Scene::try_from(r),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in branch_rows {
+                        let key = (row.book_number, row.chapter_number, row.scene_order);
+                        if seen.insert(key) {
+                            rows.push(row);
+                        }
+                    }
+                }
+                rows.sort_by(|a, b| {
+                    (b.book_number, b.chapter_number, b.scene_order).cmp(&(
+                        a.book_number,
+                        a.chapter_number,
+                        a.scene_order,
+                    ))
+                });
+                rows.truncate(limit);
                 rows.reverse();
                 Ok(rows)
             })
@@ -3036,6 +3240,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {CHARACTER_STATE_COLUMNS} FROM character_state \
                      WHERE project_id = ?1 AND branch_id = ?2 \
@@ -3044,21 +3249,43 @@ impl Repository {
                          OR (book_number = ?3 AND chapter_number > ?4) \
                          OR (book_number = ?3 AND chapter_number = ?4 AND scene_order > ?5) \
                        ) \
-                     ORDER BY book_number, chapter_number, scene_order"
+                     ORDER BY book_number, chapter_number, scene_order, created_at DESC"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(
-                        rusqlite::params![
-                            &project_id,
-                            &branch_id,
-                            book_number,
-                            chapter_number,
-                            scene_order
-                        ],
-                        |r| CharacterState::try_from(r),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut seen = std::collections::HashSet::new();
+                let mut rows = Vec::new();
+                for candidate_branch_id in &chain {
+                    let branch_rows = stmt
+                        .query_map(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                book_number,
+                                chapter_number,
+                                scene_order
+                            ],
+                            |r| CharacterState::try_from(r),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in branch_rows {
+                        let key = (
+                            row.character_id.clone(),
+                            row.book_number,
+                            row.chapter_number,
+                            row.scene_order,
+                        );
+                        if seen.insert(key) {
+                            rows.push(row);
+                        }
+                    }
+                }
+                rows.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, a.scene_order).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        b.scene_order,
+                    ))
+                });
                 Ok(rows)
             })
             .await
@@ -3519,28 +3746,25 @@ impl Repository {
         branch_id: &str,
         needle: &str,
     ) -> Result<Vec<String>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        let pattern = format!("%{needle}%");
-        self.inner
-            .pool
-            .read(move |conn| {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT id FROM canonical_fact \
-                     WHERE project_id = ?1 AND branch_id = ?2 AND superseded_by IS NULL \
-                       AND (COALESCE(value_text, '') LIKE ?3 \
-                            OR COALESCE(value_json, '') LIKE ?3 \
-                            OR aliases LIKE ?3) \
-                     ORDER BY book_number, chapter_number",
-                )?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id, &pattern], |r| {
-                        r.get::<_, String>(0)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+        let needle_lower = needle.to_lowercase();
+        let facts = self
+            .list_active_canonical_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        Ok(facts
+            .into_iter()
+            .filter(|f| {
+                f.value_text
+                    .as_deref()
+                    .is_some_and(|v| v.to_lowercase().contains(&needle_lower))
+                    || f.value_json
+                        .as_ref()
+                        .is_some_and(|v| v.to_string().to_lowercase().contains(&needle_lower))
+                    || f.aliases
+                        .iter()
+                        .any(|a| a.to_lowercase().contains(&needle_lower))
             })
-            .await
+            .map(|f| f.id)
+            .collect())
     }
 
     /// Knowledge facts on a branch whose text mentions `needle`
@@ -3553,25 +3777,15 @@ impl Repository {
         branch_id: &str,
         needle: &str,
     ) -> Result<Vec<String>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        let pattern = format!("%{needle}%");
-        self.inner
-            .pool
-            .read(move |conn| {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT id FROM knowledge_fact \
-                     WHERE project_id = ?1 AND branch_id = ?2 AND fact LIKE ?3 \
-                     ORDER BY created_at",
-                )?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id, &pattern], |r| {
-                        r.get::<_, String>(0)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        let needle_lower = needle.to_lowercase();
+        let facts = self
+            .list_knowledge_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        Ok(facts
+            .into_iter()
+            .filter(|f| f.fact.to_lowercase().contains(&needle_lower))
+            .map(|f| f.id)
+            .collect())
     }
 
     /// Non-archived arcs of one character on a branch whose notes or
@@ -3615,25 +3829,17 @@ impl Repository {
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<Character>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {CHARACTER_COLUMNS} FROM character \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY normalized_name"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        Character::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        list_branch_scoped(
+            &self.inner.pool,
+            CHARACTER_COLUMNS,
+            "character",
+            "normalized_name",
+            project_id,
+            branch_id,
+            |r| Character::try_from(r),
+            |c| c.normalized_name.clone(),
+        )
+        .await
     }
 
     pub async fn get_character_voice_profile(
@@ -3705,25 +3911,17 @@ impl Repository {
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<Location>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {LOCATION_COLUMNS} FROM location \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY normalized_name"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        Location::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        list_branch_scoped(
+            &self.inner.pool,
+            LOCATION_COLUMNS,
+            "location",
+            "normalized_name",
+            project_id,
+            branch_id,
+            |r| Location::try_from(r),
+            |l| l.normalized_name.clone(),
+        )
+        .await
     }
 
     /// Restore an earlier scene_version's prose into the current scene row,
@@ -4482,6 +4680,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Faction::try_from(r),
+            |f| f.normalized_name.clone(),
         )
         .await
     }
@@ -4499,6 +4698,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Religion::try_from(r),
+            |rel| rel.normalized_name.clone(),
         )
         .await
     }
@@ -4516,6 +4716,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Economy::try_from(r),
+            |e| e.normalized_name.clone(),
         )
         .await
     }
@@ -4533,6 +4734,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Term::try_from(r),
+            |t| t.normalized_term.clone(),
         )
         .await
     }
@@ -4550,6 +4752,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| PlotLine::try_from(r),
+            |p| p.normalized_name.clone(),
         )
         .await
     }
@@ -4567,6 +4770,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Conflict::try_from(r),
+            |c| c.normalized_name.clone(),
         )
         .await
     }
@@ -4584,6 +4788,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Theme::try_from(r),
+            |t| t.theme_statement.clone(),
         )
         .await
     }
@@ -4601,6 +4806,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| Motif::try_from(r),
+            |m| m.normalized_name.clone(),
         )
         .await
     }
@@ -4612,7 +4818,6 @@ impl Repository {
     pub async fn create_world_rule(&self, input: &CreateWorldRuleInput) -> Result<WorldRule> {
         let branch_id = self.active_branch_id(&input.project_id).await?;
         let id = mint_id("world_rule");
-        let id_out = id.clone();
         let project_id = input.project_id.clone();
         let rule_name = input.rule_name.clone();
         let rule_type = input.rule_type.clone();
@@ -4633,14 +4838,21 @@ impl Repository {
         };
         let now = timestamp_to_micros(chrono::Utc::now());
 
-        self.inner
+        let persisted_id = self
+            .inner
             .pool
             .write(move |conn| {
                 conn.execute(
                     "INSERT INTO world_rule (id, project_id, branch_id, rule_name, rule_type, \
                      description, established_in, relevance_tags, scan_pattern, notes, \
                      created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10) \
+                     ON CONFLICT(project_id, branch_id, rule_type, rule_name) DO UPDATE SET \
+                        description = excluded.description, \
+                        established_in = COALESCE(excluded.established_in, world_rule.established_in), \
+                        relevance_tags = COALESCE(excluded.relevance_tags, world_rule.relevance_tags), \
+                        scan_pattern = COALESCE(excluded.scan_pattern, world_rule.scan_pattern), \
+                        updated_at = excluded.updated_at",
                     rusqlite::params![
                         &id,
                         &project_id,
@@ -4654,16 +4866,21 @@ impl Repository {
                         now,
                     ],
                 )?;
-                Ok(())
+                conn.query_row(
+                    "SELECT id FROM world_rule \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND rule_type = ?3 AND rule_name = ?4",
+                    rusqlite::params![&project_id, &branch_id, &rule_type, &rule_name],
+                    |r| r.get::<_, String>(0),
+                )
             })
             .await?;
-        self.get_world_rule(&id_out).await
+        self.get_world_rule(&persisted_id).await
     }
 
     /// Re-home the given world rules onto `target_branch_id` so branch-local
-    /// world-rule canon is not lost on merge. The world_rule table has a
-    /// project-wide `(project_id, rule_type, rule_name)` unique index, so a rule
-    /// cannot be duplicated across branches — the existing row is moved instead.
+    /// world-rule canon is not lost on merge. If the target branch already has
+    /// a rule with the same `(project_id, rule_type, rule_name)`, replace it
+    /// with the child branch's overriding row.
     pub async fn merge_world_rules_to_branch(
         &self,
         target_branch_id: &str,
@@ -4678,13 +4895,42 @@ impl Repository {
         self.inner
             .pool
             .write(move |conn| {
+                let tx = conn.transaction()?;
                 let now = timestamp_to_micros(chrono::Utc::now());
                 for id in &ids {
-                    conn.execute(
+                    if let Some((project_id, rule_type, rule_name)) = tx
+                        .query_row(
+                            "SELECT project_id, rule_type, rule_name FROM world_rule WHERE id = ?1",
+                            [id],
+                            |r| {
+                                Ok((
+                                    r.get::<_, String>(0)?,
+                                    r.get::<_, String>(1)?,
+                                    r.get::<_, String>(2)?,
+                                ))
+                            },
+                        )
+                        .optional_inner()?
+                    {
+                        tx.execute(
+                            "DELETE FROM world_rule \
+                             WHERE project_id = ?1 AND branch_id = ?2 \
+                               AND rule_type = ?3 AND rule_name = ?4 AND id != ?5",
+                            rusqlite::params![
+                                &project_id,
+                                &target_branch_id,
+                                &rule_type,
+                                &rule_name,
+                                id
+                            ],
+                        )?;
+                    }
+                    tx.execute(
                         "UPDATE world_rule SET branch_id = ?1, updated_at = ?2 WHERE id = ?3",
                         rusqlite::params![&target_branch_id, now, id],
                     )?;
                 }
+                tx.commit()?;
                 Ok(())
             })
             .await?;
@@ -4694,9 +4940,9 @@ impl Repository {
     /// Re-home rows of a branch-scoped canon table onto `target_branch_id` by
     /// id (used by branch merges). `table` is a fixed internal constant, never
     /// user input. Re-homing keeps each row's other FKs (e.g. a fact's scene_id)
-    /// valid because the referenced rows still exist; it just moves the row's
-    /// branch attribution, which is correct for a merge and avoids any
-    /// project-wide unique-index collisions that copying would hit.
+    /// valid because the referenced rows still exist; if the target branch has
+    /// an ancestor row with the same natural key, it is replaced by the child's
+    /// overriding row.
     pub async fn rehome_rows_to_branch(
         &self,
         table: &'static str,
@@ -4710,12 +4956,67 @@ impl Repository {
         let target_branch_id = target_branch_id.to_string();
         let ids = ids.to_vec();
         let count = ids.len();
+        let natural_key_col: Option<&'static str> = match table {
+            "faction" | "religion" | "economy" | "plot_line" | "conflict" | "motif"
+            | "system_overlay" => Some("normalized_name"),
+            "term" => Some("normalized_term"),
+            _ => None,
+        };
         self.inner
             .pool
             .write(move |conn| {
+                let tx = conn.transaction()?;
                 for id in &ids {
-                    conn.execute(&sql, rusqlite::params![&target_branch_id, id])?;
+                    if let Some(col) = natural_key_col {
+                        let select_sql =
+                            format!("SELECT project_id, {col} FROM {table} WHERE id = ?1");
+                        if let Some((project_id, key_val)) = tx
+                            .query_row(&select_sql, [id], |r| {
+                                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                            })
+                            .optional_inner()?
+                        {
+                            let delete_sql = format!(
+                                "DELETE FROM {table} \
+                                 WHERE project_id = ?1 AND branch_id = ?2 AND {col} = ?3 AND id != ?4"
+                            );
+                            tx.execute(
+                                &delete_sql,
+                                rusqlite::params![&project_id, &target_branch_id, &key_val, id],
+                            )?;
+                        }
+                    } else if table == "knowledge_fact"
+                        && let Some((project_id, character_id, normalized_fact)) = tx
+                            .query_row(
+                                "SELECT project_id, character_id, normalized_fact \
+                                 FROM knowledge_fact WHERE id = ?1",
+                                [id],
+                                |r| {
+                                    Ok((
+                                        r.get::<_, String>(0)?,
+                                        r.get::<_, String>(1)?,
+                                        r.get::<_, String>(2)?,
+                                    ))
+                                },
+                            )
+                            .optional_inner()?
+                    {
+                        tx.execute(
+                            "DELETE FROM knowledge_fact \
+                             WHERE project_id = ?1 AND branch_id = ?2 \
+                               AND character_id = ?3 AND normalized_fact = ?4 AND id != ?5",
+                            rusqlite::params![
+                                &project_id,
+                                &target_branch_id,
+                                &character_id,
+                                &normalized_fact,
+                                id
+                            ],
+                        )?;
+                    }
+                    tx.execute(&sql, rusqlite::params![&target_branch_id, id])?;
                 }
+                tx.commit()?;
                 Ok(())
             })
             .await?;
@@ -4749,6 +5050,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| WorldRule::try_from(r),
+            |w| (w.rule_type.clone(), w.rule_name.clone()),
         )
         .await
     }
@@ -5171,6 +5473,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| TimelineEvent::try_from(r),
+            |e| e.title.clone(),
         )
         .await
     }
@@ -5314,6 +5617,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| SystemOverlay::try_from(r),
+            |o| o.normalized_name.clone(),
         )
         .await
     }
@@ -5488,6 +5792,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let (sql, has_subject) = if subject_id.is_some() {
                     (
                         format!(
@@ -5510,25 +5815,49 @@ impl Repository {
                     )
                 };
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = if has_subject {
-                    stmt.query_map(
-                        rusqlite::params![
-                            &project_id,
-                            &branch_id,
-                            &subject_table,
-                            &subject_id.unwrap()
-                        ],
-                        |r| CanonicalFact::try_from(r),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?
-                } else {
-                    stmt.query_map(
-                        rusqlite::params![&project_id, &branch_id, &subject_table],
-                        |r| CanonicalFact::try_from(r),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?
-                };
-                Ok(rows)
+                let mut overridden = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = if has_subject {
+                        stmt.query_map(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                &subject_table,
+                                subject_id.as_deref().unwrap()
+                            ],
+                            |r| CanonicalFact::try_from(r),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    } else {
+                        stmt.query_map(
+                            rusqlite::params![&project_id, candidate_branch_id, &subject_table],
+                            |r| CanonicalFact::try_from(r),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                    };
+                    let mut branch_keys = Vec::new();
+                    for row in rows {
+                        let key = (
+                            row.subject_table.clone(),
+                            row.subject_id.clone().unwrap_or_default(),
+                            row.predicate.clone(),
+                        );
+                        if !overridden.contains(&key) {
+                            branch_keys.push(key);
+                            out.push(row);
+                        }
+                    }
+                    overridden.extend(branch_keys);
+                }
+                out.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, &a.created_at).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        &b.created_at,
+                    ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -5566,6 +5895,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {CANONICAL_FACT_COLUMNS} FROM canonical_fact \
                      WHERE project_id = ?1 AND branch_id = ?2 \
@@ -5576,22 +5906,51 @@ impl Repository {
                      ORDER BY book_number, chapter_number"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(
-                        rusqlite::params![&project_id, &branch_id, book_number, chapter_number],
-                        |r| CanonicalFact::try_from(r),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 let placement = spindle_core::models::StoryPlacement {
                     book_number,
                     chapter_number,
                     scene_order: Some(scene_order),
                     note: None,
                 };
-                Ok(rows
-                    .into_iter()
-                    .filter(|fact| fact_at_or_before(fact, &placement))
-                    .collect())
+                let mut overridden = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                book_number,
+                                chapter_number
+                            ],
+                            |r| CanonicalFact::try_from(r),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let mut branch_keys = Vec::new();
+                    for row in rows {
+                        if !fact_at_or_before(&row, &placement) {
+                            continue;
+                        }
+                        let key = (
+                            row.subject_table.clone(),
+                            row.subject_id.clone().unwrap_or_default(),
+                            row.predicate.clone(),
+                        );
+                        if !overridden.contains(&key) {
+                            branch_keys.push(key);
+                            out.push(row);
+                        }
+                    }
+                    overridden.extend(branch_keys);
+                }
+                out.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, &a.created_at).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        &b.created_at,
+                    ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -5632,6 +5991,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let mut subject_clauses = Vec::with_capacity(pairs.len());
                 for idx in 0..pairs.len() {
                     let table_ph = 5 + idx * 2;
@@ -5651,34 +6011,57 @@ impl Repository {
                      ORDER BY book_number, chapter_number"
                 );
 
-                let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-                    Vec::with_capacity(4 + pairs.len() * 2);
-                params.push(Box::new(project_id.clone()));
-                params.push(Box::new(branch_id.clone()));
-                params.push(Box::new(book_number));
-                params.push(Box::new(chapter_number));
-                for (table, subject_id) in &pairs {
-                    params.push(Box::new(table.clone()));
-                    params.push(Box::new(subject_id.clone()));
-                }
-                let param_refs: Vec<&dyn rusqlite::ToSql> =
-                    params.iter().map(|b| b.as_ref()).collect();
-
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(&param_refs[..], |r| CanonicalFact::try_from(r))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 let placement = spindle_core::models::StoryPlacement {
                     book_number,
                     chapter_number,
                     scene_order: Some(scene_order),
                     note: None,
                 };
-                Ok(rows
-                    .into_iter()
-                    .filter(|fact| fact.subject_table != "project")
-                    .filter(|fact| fact_at_or_before(fact, &placement))
-                    .collect())
+                let mut overridden = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                        Vec::with_capacity(4 + pairs.len() * 2);
+                    params.push(Box::new(project_id.clone()));
+                    params.push(Box::new(candidate_branch_id.clone()));
+                    params.push(Box::new(book_number));
+                    params.push(Box::new(chapter_number));
+                    for (table, subject_id) in &pairs {
+                        params.push(Box::new(table.clone()));
+                        params.push(Box::new(subject_id.clone()));
+                    }
+                    let param_refs: Vec<&dyn rusqlite::ToSql> =
+                        params.iter().map(|b| b.as_ref()).collect();
+
+                    let rows = stmt
+                        .query_map(&param_refs[..], |r| CanonicalFact::try_from(r))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let mut branch_keys = Vec::new();
+                    for row in rows {
+                        if row.subject_table == "project" || !fact_at_or_before(&row, &placement) {
+                            continue;
+                        }
+                        let key = (
+                            row.subject_table.clone(),
+                            row.subject_id.clone().unwrap_or_default(),
+                            row.predicate.clone(),
+                        );
+                        if !overridden.contains(&key) {
+                            branch_keys.push(key);
+                            out.push(row);
+                        }
+                    }
+                    overridden.extend(branch_keys);
+                }
+                out.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, &a.created_at).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        &b.created_at,
+                    ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -5694,7 +6077,8 @@ impl Repository {
 
     /// Active (non-superseded) canonical facts on a branch, ordered by
     /// position. Filters out rows whose `superseded_by` points at a still-
-    /// valid newer fact.
+    /// valid newer fact, and inherits ancestor facts along `parent_branch_id`
+    /// unless overridden on a nearer branch by `(subject_table, subject_id, predicate)`.
     pub async fn list_active_canonical_facts_by_project_and_branch(
         &self,
         project_id: &str,
@@ -5705,18 +6089,43 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {CANONICAL_FACT_COLUMNS} FROM canonical_fact \
                      WHERE project_id = ?1 AND branch_id = ?2 AND superseded_by IS NULL \
                      ORDER BY book_number, chapter_number"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        CanonicalFact::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut overridden = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(rusqlite::params![&project_id, candidate_branch_id], |r| {
+                            CanonicalFact::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let mut branch_keys = Vec::new();
+                    for row in rows {
+                        let key = (
+                            row.subject_table.clone(),
+                            row.subject_id.clone().unwrap_or_default(),
+                            row.predicate.clone(),
+                        );
+                        if !overridden.contains(&key) {
+                            branch_keys.push(key);
+                            out.push(row);
+                        }
+                    }
+                    overridden.extend(branch_keys);
+                }
+                out.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, &a.created_at).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        &b.created_at,
+                    ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -5825,18 +6234,43 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {CANONICAL_FACT_COLUMNS} FROM canonical_fact \
                      WHERE project_id = ?1 AND branch_id = ?2 \
                      ORDER BY book_number, chapter_number"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        CanonicalFact::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut overridden = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(rusqlite::params![&project_id, candidate_branch_id], |r| {
+                            CanonicalFact::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let mut branch_keys = Vec::new();
+                    for row in rows {
+                        let key = (
+                            row.subject_table.clone(),
+                            row.subject_id.clone().unwrap_or_default(),
+                            row.predicate.clone(),
+                        );
+                        if !overridden.contains(&key) {
+                            branch_keys.push(key);
+                            out.push(row);
+                        }
+                    }
+                    overridden.extend(branch_keys);
+                }
+                out.sort_by(|a, b| {
+                    (a.book_number, a.chapter_number, &a.created_at).cmp(&(
+                        b.book_number,
+                        b.chapter_number,
+                        &b.created_at,
+                    ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -6020,19 +6454,32 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let mut stmt = conn.prepare_cached(
                     "SELECT character_id, learned_at FROM knowledge_fact \
                      WHERE project_id = ?1 AND branch_id = ?2 AND secret_of_fact_id = ?3",
                 )?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id, &fact_id], |r| {
-                        let character_id: String = r.get(0)?;
-                        let learned_at: Option<StoredStoryPlacement> =
-                            crate::sqlite::row::opt_json(r, 1)?;
-                        Ok((character_id, learned_at))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(
+                            rusqlite::params![&project_id, candidate_branch_id, &fact_id],
+                            |r| {
+                                let character_id: String = r.get(0)?;
+                                let learned_at: Option<StoredStoryPlacement> =
+                                    crate::sqlite::row::opt_json(r, 1)?;
+                                Ok((character_id, learned_at))
+                            },
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for (character_id, learned_at) in rows {
+                        if seen.insert(character_id.clone()) {
+                            out.push((character_id, learned_at));
+                        }
+                    }
+                }
+                Ok(out)
             })
             .await
     }
@@ -8319,8 +8766,13 @@ impl Repository {
                     if let Some(scene_id) = &input.source_scene_id {
                         let scene = tx.query_row(&format!("SELECT {SCENE_COLUMNS} FROM scene WHERE id = ?1"),
                             [scene_id], |row| Scene::try_from(row))?;
-                        anyhow::ensure!(scene.project_id == promise.project_id && scene.branch_id == promise.branch_id,
-                            "promise evidence must belong to the same project and branch");
+                        let scene_lineage =
+                            resolve_branch_lineage_in_conn(&tx, Some(&scene.project_id), &scene.branch_id)?;
+                        anyhow::ensure!(
+                            scene.project_id == promise.project_id
+                                && scene_lineage.iter().any(|b| b == &promise.branch_id),
+                            "promise evidence must belong to the same project and branch"
+                        );
                         if let Some(at) = &at {
                             anyhow::ensure!(at.book_number == scene.book_number && at.chapter_number == scene.chapter_number
                                 && at.scene_order.is_none_or(|order| order == scene.scene_order),
@@ -9201,25 +9653,17 @@ impl Repository {
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<PacingTracker>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {PACING_TRACKER_COLUMNS} FROM pacing_tracker \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY updated_at DESC"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        PacingTracker::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        list_branch_scoped(
+            &self.inner.pool,
+            PACING_TRACKER_COLUMNS,
+            "pacing_tracker",
+            "updated_at DESC",
+            project_id,
+            branch_id,
+            |r| PacingTracker::try_from(r),
+            |t| t.character_arc_id.clone(),
+        )
+        .await
     }
 
     /// List every pacing_config row for a project, across branches. The
@@ -9505,6 +9949,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {} FROM book_digest \
                      WHERE project_id = ?1 AND branch_id = ?2 \
@@ -9512,12 +9957,22 @@ impl Repository {
                     crate::sqlite::records::BOOK_DIGEST_COLUMNS
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map([&project_id, &branch_id], |r| {
-                        crate::sqlite::records::StoredBookDigest::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map([&project_id, candidate_branch_id], |r| {
+                            crate::sqlite::records::StoredBookDigest::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in rows {
+                        if seen.insert(row.book_number) {
+                            out.push(row);
+                        }
+                    }
+                }
+                out.sort_by_key(|d| d.book_number);
+                Ok(out)
             })
             .await
     }
@@ -9534,17 +9989,30 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {CHAPTER_SUMMARY_COLUMNS} FROM chapter_summary \
                      WHERE project_id = ?1 AND branch_id = ?2 \
                        AND book_number = ?3 AND chapter_number = ?4 LIMIT 1"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(
-                    rusqlite::params![&project_id, &branch_id, book_number, chapter_number],
-                    |r| ChapterSummary::try_from(r),
-                )
-                .optional_inner()
+                for candidate_branch_id in &chain {
+                    if let Some(summary) = stmt
+                        .query_row(
+                            rusqlite::params![
+                                &project_id,
+                                candidate_branch_id,
+                                book_number,
+                                chapter_number
+                            ],
+                            |r| ChapterSummary::try_from(r),
+                        )
+                        .optional_inner()?
+                    {
+                        return Ok(Some(summary));
+                    }
+                }
+                Ok(None)
             })
             .await
     }
@@ -9713,24 +10181,19 @@ impl Repository {
         project_id: &str,
     ) -> Result<Vec<ChapterPlan>> {
         let branch_id = self.active_branch_id(project_id).await?;
-        let project_id = project_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {CHAPTER_PLAN_COLUMNS} FROM chapter_plan \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY book_number, chapter_number"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        ChapterPlan::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        let mut plans = list_branch_scoped(
+            &self.inner.pool,
+            CHAPTER_PLAN_COLUMNS,
+            "chapter_plan",
+            "book_number, chapter_number",
+            project_id,
+            &branch_id,
+            |r| ChapterPlan::try_from(r),
+            |p| (p.book_number, p.chapter_number),
+        )
+        .await?;
+        plans.sort_by_key(|p| (p.book_number, p.chapter_number));
+        Ok(plans)
     }
 
     pub async fn delete_chapter_plans_for_chapter(
@@ -9762,24 +10225,19 @@ impl Repository {
         project_id: &str,
     ) -> Result<Vec<ChapterSummary>> {
         let branch_id = self.active_branch_id(project_id).await?;
-        let project_id = project_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {CHAPTER_SUMMARY_COLUMNS} FROM chapter_summary \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY book_number, chapter_number"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        ChapterSummary::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        let mut summaries = list_branch_scoped(
+            &self.inner.pool,
+            CHAPTER_SUMMARY_COLUMNS,
+            "chapter_summary",
+            "book_number, chapter_number",
+            project_id,
+            &branch_id,
+            |r| ChapterSummary::try_from(r),
+            |s| (s.book_number, s.chapter_number),
+        )
+        .await?;
+        summaries.sort_by_key(|s| (s.book_number, s.chapter_number));
+        Ok(summaries)
     }
 
     pub async fn delete_chapter_summaries_for_chapter(
@@ -9840,33 +10298,24 @@ impl Repository {
             .await
     }
 
-    /// Explicit-branch variant for the Phase-4 retcon scanner, which needs
-    /// to merge active-branch + main-branch rows when the project is on a
-    /// non-main working branch.
+    /// Explicit-branch variant for the Phase-4 retcon scanner, which resolves
+    /// along the branch parent chain up to `main`.
     pub async fn list_future_knowledge_by_project_and_branch(
         &self,
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<FutureKnowledge>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {FUTURE_KNOWLEDGE_COLUMNS} FROM future_knowledge \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY character_id, created_at"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        FutureKnowledge::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        list_branch_scoped(
+            &self.inner.pool,
+            FUTURE_KNOWLEDGE_COLUMNS,
+            "future_knowledge",
+            "character_id, created_at",
+            project_id,
+            branch_id,
+            |r| FutureKnowledge::try_from(r),
+            |f| (f.character_id.clone(), f.knowledge_summary.clone()),
+        )
+        .await
     }
 
     pub async fn list_temporal_interventions_by_project(
@@ -9878,33 +10327,24 @@ impl Repository {
             .await
     }
 
-    /// Explicit-branch variant for the Phase-4 retcon scanner, which needs
-    /// to merge active-branch + main-branch rows when the project is on a
-    /// non-main working branch.
+    /// Explicit-branch variant for the Phase-4 retcon scanner, which resolves
+    /// along the branch parent chain up to `main`.
     pub async fn list_temporal_interventions_by_project_and_branch(
         &self,
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<TemporalIntervention>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {TEMPORAL_INTERVENTION_COLUMNS} FROM temporal_intervention \
-                     WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY title"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        TemporalIntervention::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        list_branch_scoped(
+            &self.inner.pool,
+            TEMPORAL_INTERVENTION_COLUMNS,
+            "temporal_intervention",
+            "title",
+            project_id,
+            branch_id,
+            |r| TemporalIntervention::try_from(r),
+            |t| t.title.clone(),
+        )
+        .await
     }
 
     pub async fn list_scene_beat_annotations_by_project(
@@ -9954,7 +10394,7 @@ impl Repository {
     }
 
     /// All relates_to rows involving any of the given characters (either
-    /// in_id or out_id), within a single branch.
+    /// in_id or out_id), resolved along the branch parent chain.
     pub async fn list_relationships_for_characters(
         &self,
         branch_id: &str,
@@ -9968,6 +10408,7 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, None, &branch_id)?;
                 let placeholders = (0..character_ids.len())
                     .map(|i| format!("?{}", i + 2))
                     .collect::<Vec<_>>()
@@ -9978,24 +10419,35 @@ impl Repository {
                        AND (in_id IN ({placeholders}) OR out_id IN ({placeholders})) \
                      ORDER BY relationship_type"
                 );
-                let mut params: Vec<&dyn rusqlite::ToSql> =
-                    Vec::with_capacity(character_ids.len() + 1);
-                params.push(&branch_id);
-                for id in &character_ids {
-                    params.push(id);
-                }
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(&params[..], |r| RelatesTo::try_from(r))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let mut params: Vec<&dyn rusqlite::ToSql> =
+                        Vec::with_capacity(character_ids.len() + 1);
+                    params.push(candidate_branch_id);
+                    for id in &character_ids {
+                        params.push(id);
+                    }
+                    let rows = stmt
+                        .query_map(&params[..], |r| RelatesTo::try_from(r))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in rows {
+                        let key = relationship_pair_key(&row.in_id, &row.out_id);
+                        if seen.insert(key) {
+                            out.push(row);
+                        }
+                    }
+                }
+                Ok(out)
             })
             .await
     }
 
     /// Resolve the most recent character_state for (character, scene) at or
-    /// before that scene's narrative position on a specific branch. Returns
-    /// None if no state has been committed.
+    /// before that scene's narrative position on a specific branch (inheriting
+    /// from ancestor branches along `parent_branch_id`). Returns None if no
+    /// state has been committed.
     pub async fn resolve_character_state_for_branch(
         &self,
         branch_id: &str,
@@ -10009,29 +10461,14 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
-                let sql = format!(
-                    "SELECT {CHARACTER_STATE_COLUMNS} FROM character_state \
-                     WHERE branch_id = ?1 AND character_id = ?2 \
-                       AND ( \
-                            book_number < ?3 \
-                         OR (book_number = ?3 AND chapter_number < ?4) \
-                         OR (book_number = ?3 AND chapter_number = ?4 AND scene_order <= ?5) \
-                       ) \
-                     ORDER BY book_number DESC, chapter_number DESC, scene_order DESC \
-                     LIMIT 1"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(
-                    rusqlite::params![
-                        &branch_id,
-                        &character_id,
-                        book_number,
-                        chapter_number,
-                        scene_order
-                    ],
-                    |r| CharacterState::try_from(r),
+                resolve_character_state_for_branch_in_conn(
+                    conn,
+                    &branch_id,
+                    &character_id,
+                    book_number,
+                    chapter_number,
+                    scene_order,
                 )
-                .optional_inner()
             })
             .await
     }
@@ -10546,7 +10983,7 @@ impl Repository {
                 let dynamics_json = dynamics_json.clone();
                 move |conn| {
                     let tx = conn.transaction()?;
-                    // Look for an existing row in either direction.
+                    // Look for an existing row in either direction on this branch.
                     let mut find = tx.prepare_cached(
                         "SELECT in_id, out_id FROM relates_to \
                          WHERE branch_id = ?1 \
@@ -10578,6 +11015,11 @@ impl Repository {
                                 &existing_out,
                             ],
                         )?;
+                        tx.execute(
+                            "DELETE FROM relationship_scene_delta \
+                             WHERE branch_id = ?1 AND in_id = ?2 AND out_id = ?3",
+                            rusqlite::params![&branch_id_owned, &existing_in, &existing_out],
+                        )?;
                         (existing_in, existing_out)
                     } else {
                         tx.execute(
@@ -10607,94 +11049,32 @@ impl Repository {
         self.get_relationship(branch_id, &in_id, &out_id).await
     }
 
-    /// Apply delta updates to a relationship's trust + tension, set the reason
-    /// and last_scene_id, and bump updated_at. If the scene is the first time
-    /// this pair appears, create the relationship with the deltas as its
-    /// initial trust/tension instead of dropping the continuity update.
+    /// Apply delta updates to a relationship's trust + tension with per-(scene, source)
+    /// idempotency so recommitting a revised scene, retrying after failure, or
+    /// applying a mined `relationship_shift` on top of a drafter continuity package
+    /// replaces the scene's contribution rather than double-counting.
     pub async fn update_relationship(
         &self,
         branch_id: &str,
         input: &UpdateRelationshipInput,
     ) -> Result<RelatesTo> {
+        self.update_relationship_with_source(branch_id, input, "scene")
+            .await
+    }
+
+    pub async fn update_relationship_with_source(
+        &self,
+        branch_id: &str,
+        input: &UpdateRelationshipInput,
+        source: &str,
+    ) -> Result<RelatesTo> {
         let branch_id_owned = branch_id.to_string();
-        let a = input.character_a_id.clone();
-        let b = input.character_b_id.clone();
-        let trust_delta = input.trust_delta;
-        let tension_delta = input.tension_delta;
-        let reason = input.reason.clone();
-        let scene_id = input.scene_id.clone();
-        let now = timestamp_to_micros(chrono::Utc::now());
-
-        let (in_id, out_id) = self
-            .inner
-            .pool
-            .write({
-                let branch_id_owned = branch_id_owned.clone();
-                let a = a.clone();
-                let b = b.clone();
-                move |conn| {
-                    let tx = conn.transaction()?;
-                    let mut find = tx.prepare_cached(
-                        "SELECT in_id, out_id FROM relates_to \
-                         WHERE branch_id = ?1 \
-                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
-                         LIMIT 1",
-                    )?;
-                    let mut rows = find.query(rusqlite::params![&branch_id_owned, &a, &b])?;
-                    let existing: Option<(String, String)> = if let Some(row) = rows.next()? {
-                        Some((row.get(0)?, row.get(1)?))
-                    } else {
-                        None
-                    };
-                    drop(rows);
-                    drop(find);
-
-                    let (in_id, out_id) = if let Some((in_id, out_id)) = existing {
-                        tx.execute(
-                            "UPDATE relates_to SET \
-                                trust = trust + ?1, \
-                                tension = tension + ?2, \
-                                reason = ?3, \
-                                last_scene_id = ?4, \
-                                updated_at = ?5 \
-                             WHERE branch_id = ?6 AND in_id = ?7 AND out_id = ?8",
-                            rusqlite::params![
-                                trust_delta,
-                                tension_delta,
-                                &reason,
-                                &scene_id,
-                                now,
-                                &branch_id_owned,
-                                &in_id,
-                                &out_id,
-                            ],
-                        )?;
-                        (in_id, out_id)
-                    } else {
-                        tx.execute(
-                            "INSERT INTO relates_to (in_id, out_id, branch_id, \
-                             relationship_type, trust, tension, dynamics, reason, last_scene_id, \
-                             updated_at) \
-                             VALUES (?1, ?2, ?3, 'scene_dynamic', ?4, ?5, '[]', ?6, ?7, ?8)",
-                            rusqlite::params![
-                                &a,
-                                &b,
-                                &branch_id_owned,
-                                trust_delta,
-                                tension_delta,
-                                &reason,
-                                &scene_id,
-                                now,
-                            ],
-                        )?;
-                        (a.clone(), b.clone())
-                    };
-                    tx.commit()?;
-                    Ok((in_id, out_id))
-                }
-            })
-            .await?;
-        self.get_relationship(branch_id, &in_id, &out_id).await
+        let input_owned = input.clone();
+        let source_owned = source.to_string();
+        self.with_transaction(move |tx| {
+            tx.update_relationship(&branch_id_owned, &input_owned, &source_owned)
+        })
+        .await
     }
 
     /// Write absolute `trust` / `tension` values onto an existing
@@ -10754,6 +11134,11 @@ impl Repository {
                             &out_id,
                         ],
                     )?;
+                    tx.execute(
+                        "DELETE FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 AND in_id = ?2 AND out_id = ?3",
+                        rusqlite::params![&branch_id_owned, &in_id, &out_id],
+                    )?;
                     tx.commit()?;
                     Ok((in_id, out_id))
                 }
@@ -10762,7 +11147,8 @@ impl Repository {
         self.get_relationship(branch_id, &in_id, &out_id).await
     }
 
-    /// Fetch a single relationship by composite PK.
+    /// Fetch a single relationship by composite PK (resolving along the branch
+    /// parent chain if not overridden locally).
     pub async fn get_relationship(
         &self,
         branch_id: &str,
@@ -10775,15 +11161,26 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, None, &branch_id)?;
                 let sql = format!(
                     "SELECT {RELATES_TO_COLUMNS} FROM relates_to \
-                     WHERE branch_id = ?1 AND in_id = ?2 AND out_id = ?3"
+                     WHERE branch_id = ?1 \
+                       AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                     LIMIT 1"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(rusqlite::params![&branch_id, &in_id, &out_id], |r| {
-                    RelatesTo::try_from(r)
-                })
-                .optional_inner()
+                for candidate_branch_id in &chain {
+                    if let Some(rel) = stmt
+                        .query_row(
+                            rusqlite::params![candidate_branch_id, &in_id, &out_id],
+                            |r| RelatesTo::try_from(r),
+                        )
+                        .optional_inner()?
+                    {
+                        return Ok(Some(rel));
+                    }
+                }
+                Ok(None)
             })
             .await?
             .ok_or_else(|| anyhow!("relationship not found"))
@@ -10794,17 +11191,50 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, None, &branch_id)?;
                 let sql = format!(
                     "SELECT {RELATES_TO_COLUMNS} FROM relates_to \
                      WHERE branch_id = ?1 ORDER BY relationship_type"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map([&branch_id], |r| RelatesTo::try_from(r))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map([candidate_branch_id], |r| RelatesTo::try_from(r))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in rows {
+                        let key = relationship_pair_key(&row.in_id, &row.out_id);
+                        if seen.insert(key) {
+                            out.push(row);
+                        }
+                    }
+                }
+                Ok(out)
             })
             .await
+    }
+
+    /// Execute a multi-step canon unit-of-work inside a single SQLite writer
+    /// transaction. If `f` returns `Err`, the transaction rolls back and zero
+    /// writes are persisted.
+    pub async fn with_transaction<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut CanonTransaction<'_>) -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        self.inner
+            .pool
+            .write(move |conn| {
+                Ok((|| -> Result<R> {
+                    let tx = conn.transaction()?;
+                    let mut unit = CanonTransaction { tx };
+                    let out = f(&mut unit)?;
+                    unit.tx.commit()?;
+                    Ok(out)
+                })())
+            })
+            .await?
     }
 
     // =========================================================================
@@ -11321,7 +11751,8 @@ impl Repository {
     }
 
     /// Most recent character_state row for a character at or before
-    /// (book, chapter, scene_order). Used by snapshot/briefing flows.
+    /// (book, chapter, scene_order), resolved against the project's active
+    /// branch (and its ancestor chain). Used by snapshot/briefing flows.
     pub async fn resolve_character_state(
         &self,
         character_id: &str,
@@ -11333,23 +11764,33 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
-                let sql = format!(
-                    "SELECT {CHARACTER_STATE_COLUMNS} FROM character_state \
-                     WHERE character_id = ?1 \
-                       AND ( \
-                            book_number < ?2 \
-                         OR (book_number = ?2 AND chapter_number < ?3) \
-                         OR (book_number = ?2 AND chapter_number = ?3 AND scene_order <= ?4) \
-                       ) \
-                     ORDER BY book_number DESC, chapter_number DESC, scene_order DESC \
-                     LIMIT 1"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(
-                    rusqlite::params![&character_id, book_number, chapter_number, scene_order],
-                    |r| CharacterState::try_from(r),
+                let Some((project_id, char_branch_id)) = conn
+                    .query_row(
+                        "SELECT project_id, branch_id FROM character WHERE id = ?1",
+                        [&character_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                    )
+                    .optional_inner()?
+                else {
+                    return Ok(None);
+                };
+                let active_branch: Option<String> = conn
+                    .query_row(
+                        "SELECT active_branch_id FROM project WHERE id = ?1",
+                        [&project_id],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .optional_inner()?
+                    .flatten();
+                let target_branch = active_branch.unwrap_or(char_branch_id);
+                resolve_character_state_for_branch_in_conn(
+                    conn,
+                    &target_branch,
+                    &character_id,
+                    book_number,
+                    chapter_number,
+                    scene_order,
                 )
-                .optional_inner()
             })
             .await
     }
@@ -11364,18 +11805,42 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
                 let sql = format!(
                     "SELECT {CHARACTER_STATE_COLUMNS} FROM character_state \
                      WHERE project_id = ?1 AND branch_id = ?2 \
-                     ORDER BY character_id, book_number, chapter_number, scene_order"
+                     ORDER BY character_id, book_number, chapter_number, scene_order, created_at DESC, rowid DESC"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        CharacterState::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for candidate_branch_id in &chain {
+                    let rows = stmt
+                        .query_map(rusqlite::params![&project_id, candidate_branch_id], |r| {
+                            CharacterState::try_from(r)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    for row in rows {
+                        let key = (
+                            row.character_id.clone(),
+                            row.book_number,
+                            row.chapter_number,
+                            row.scene_order,
+                        );
+                        if seen.insert(key) {
+                            out.push(row);
+                        }
+                    }
+                }
+                out.sort_by(|a, b| {
+                    (&a.character_id, a.book_number, a.chapter_number, a.scene_order).cmp(&(
+                        &b.character_id,
+                        b.book_number,
+                        b.chapter_number,
+                        b.scene_order,
+                    ))
+                });
+                Ok(out)
             })
             .await
     }
@@ -11575,6 +12040,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| CharacterArc::try_from(r),
+            |a| (a.character_id.clone(), a.arc_type.clone()),
         )
         .await
     }
@@ -11714,6 +12180,7 @@ impl Repository {
             project_id,
             branch_id,
             |r| NarrativePromise::try_from(r),
+            |p| (p.promise_type.clone(), p.description.clone()),
         )
         .await
     }
@@ -11728,15 +12195,23 @@ impl Repository {
         self.inner
             .pool
             .read(move |conn| {
+                let chain = resolve_branch_lineage_in_conn(conn, None, &branch_id)?;
                 let sql = format!(
                     "SELECT {WORLD_STATE_COLUMNS} FROM world_state \
                      WHERE branch_id = ?1 AND location_id = ?2 LIMIT 1"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
-                stmt.query_row(rusqlite::params![&branch_id, &location_id], |r| {
-                    WorldState::try_from(r)
-                })
-                .optional_inner()
+                for candidate_branch_id in &chain {
+                    if let Some(ws) = stmt
+                        .query_row(rusqlite::params![candidate_branch_id, &location_id], |r| {
+                            WorldState::try_from(r)
+                        })
+                        .optional_inner()?
+                    {
+                        return Ok(Some(ws));
+                    }
+                }
+                Ok(None)
             })
             .await
     }
@@ -11766,86 +12241,83 @@ impl Repository {
             .await
     }
 
-    /// List every knowledge_fact row on a branch, ordered by created_at.
+    /// List every knowledge_fact row on a branch (inheriting from ancestor
+    /// branches along `parent_branch_id`), ordered by created_at.
     pub async fn list_knowledge_facts_by_project_and_branch(
         &self,
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<KnowledgeFact>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {KNOWLEDGE_FACT_COLUMNS} FROM knowledge_fact \
-                     WHERE project_id = ?1 AND branch_id = ?2 ORDER BY created_at"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        KnowledgeFact::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        let mut facts = list_branch_scoped(
+            &self.inner.pool,
+            KNOWLEDGE_FACT_COLUMNS,
+            "knowledge_fact",
+            "created_at",
+            project_id,
+            branch_id,
+            |r| KnowledgeFact::try_from(r),
+            |f| (f.character_id.clone(), f.normalized_fact.clone()),
+        )
+        .await?;
+        facts.sort_by_key(|a| a.created_at);
+        Ok(facts)
     }
 
-    /// List every character_voice_profile row tied to characters in the given
-    /// branch. Joins through `character.branch_id` since voice profiles are
-    /// keyed only by `character_id` themselves.
+    /// List every character_voice_profile row tied to characters visible on the
+    /// given branch (including characters inherited from ancestor branches).
     pub async fn list_voice_profiles_by_project_and_branch(
         &self,
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<CharacterVoiceProfile>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
+        let characters = self
+            .list_characters_by_project_and_branch(project_id, branch_id)
+            .await?;
+        if characters.is_empty() {
+            return Ok(Vec::new());
+        }
+        let char_ids: Vec<String> = characters.into_iter().map(|c| c.id).collect();
         self.inner
             .pool
             .read(move |conn| {
+                let placeholders = (0..char_ids.len())
+                    .map(|i| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 let sql = format!(
                     "SELECT {CHARACTER_VOICE_PROFILE_COLUMNS} FROM character_voice_profile \
-                     WHERE character_id IN ( \
-                       SELECT id FROM character WHERE project_id = ?1 AND branch_id = ?2 \
-                     )"
+                     WHERE character_id IN ({placeholders})"
                 );
                 let mut stmt = conn.prepare_cached(&sql)?;
+                let params: Vec<&dyn rusqlite::ToSql> = char_ids
+                    .iter()
+                    .map(|id| id as &dyn rusqlite::ToSql)
+                    .collect();
                 let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        CharacterVoiceProfile::try_from(r)
-                    })?
+                    .query_map(&params[..], |r| CharacterVoiceProfile::try_from(r))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             })
             .await
     }
 
-    /// List every world_state row on a branch.
+    /// List every world_state row on a branch (inheriting from ancestor branches).
     pub async fn list_world_states_by_project_and_branch(
         &self,
         project_id: &str,
         branch_id: &str,
     ) -> Result<Vec<WorldState>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .read(move |conn| {
-                let sql = format!(
-                    "SELECT {WORLD_STATE_COLUMNS} FROM world_state \
-                     WHERE project_id = ?1 AND branch_id = ?2"
-                );
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![&project_id, &branch_id], |r| {
-                        WorldState::try_from(r)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
-            })
-            .await
+        list_branch_scoped(
+            &self.inner.pool,
+            WORLD_STATE_COLUMNS,
+            "world_state",
+            "location_id",
+            project_id,
+            branch_id,
+            |r| WorldState::try_from(r),
+            |ws| ws.location_id.clone(),
+        )
+        .await
     }
 
     // =========================================================================
@@ -14415,10 +14887,815 @@ pub(crate) fn describe_receipt_scene_key(key: &str) -> String {
     }
 }
 
-/// Shared body for `list_X_by_project_and_branch` methods. Captures the
-/// boilerplate of building the SELECT, binding (project_id, branch_id), and
-/// mapping rows through `TryFrom<&Row>`.
-async fn list_branch_scoped<T, F>(
+/// Walk `bible_branch.parent_branch_id` starting at `branch_id` up to `main`,
+/// returning `[branch_id, parent_id, ..., main_id]`. Child branches appear
+/// before their ancestors so callers can apply child-overrides-parent merge
+/// semantics. If `branch_id` is not found in `bible_branch`, still returns
+/// `[branch_id]` (plus the project's `main` branch if `project_id` is known).
+pub(crate) fn resolve_branch_lineage_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: Option<&str>,
+    branch_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut chain = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut current = Some(branch_id.to_string());
+    let mut resolved_project_id = project_id.map(str::to_owned);
+    let mut stmt =
+        conn.prepare_cached("SELECT parent_branch_id, project_id FROM bible_branch WHERE id = ?1")?;
+    while let Some(bid) = current {
+        if !visited.insert(bid.clone()) {
+            break;
+        }
+        chain.push(bid.clone());
+        let row: Option<(Option<String>, String)> = stmt
+            .query_row([&bid], |r| {
+                Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional_inner()?;
+        match row {
+            Some((parent, pid)) => {
+                if resolved_project_id.is_none() {
+                    resolved_project_id = Some(pid);
+                }
+                current = parent;
+            }
+            None => break,
+        }
+    }
+    if let Some(pid) = resolved_project_id
+        && let Some(main_id) = conn
+            .query_row(
+                "SELECT id FROM bible_branch WHERE project_id = ?1 AND name = 'main' LIMIT 1",
+                [&pid],
+                |r| r.get::<_, String>(0),
+            )
+            .optional_inner()?
+        && !visited.contains(&main_id)
+    {
+        chain.push(main_id);
+    }
+    Ok(chain)
+}
+
+/// Canonical unordered pair key for a relationship between two characters.
+pub(crate) fn relationship_pair_key(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
+}
+
+/// Resolve the most recent `character_state` at or before `(book, chapter, scene_order)`
+/// across `branch_id` and its ancestor chain, with nearer branches breaking ties
+/// at the same narrative position.
+pub(crate) fn resolve_character_state_for_branch_in_conn(
+    conn: &rusqlite::Connection,
+    branch_id: &str,
+    character_id: &str,
+    book_number: i32,
+    chapter_number: i32,
+    scene_order: i32,
+) -> rusqlite::Result<Option<CharacterState>> {
+    let chain = resolve_branch_lineage_in_conn(conn, None, branch_id)?;
+    let sql = format!(
+        "SELECT {CHARACTER_STATE_COLUMNS} FROM character_state \
+         WHERE branch_id = ?1 AND character_id = ?2 \
+           AND ( \
+                book_number < ?3 \
+             OR (book_number = ?3 AND chapter_number < ?4) \
+             OR (book_number = ?3 AND chapter_number = ?4 AND scene_order <= ?5) \
+           ) \
+         ORDER BY book_number DESC, chapter_number DESC, scene_order DESC, created_at DESC, rowid DESC \
+         LIMIT 1"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let mut best: Option<((i32, i32, i32), usize, CharacterState)> = None;
+    for (depth, candidate_branch_id) in chain.iter().enumerate() {
+        if let Some(state) = stmt
+            .query_row(
+                rusqlite::params![
+                    candidate_branch_id,
+                    character_id,
+                    book_number,
+                    chapter_number,
+                    scene_order
+                ],
+                |r| CharacterState::try_from(r),
+            )
+            .optional_inner()?
+        {
+            let pos = (state.book_number, state.chapter_number, state.scene_order);
+            let replace = match &best {
+                None => true,
+                Some((best_pos, best_depth, _)) => {
+                    pos > *best_pos || (pos == *best_pos && depth < *best_depth)
+                }
+            };
+            if replace {
+                best = Some((pos, depth, state));
+            }
+        }
+    }
+    Ok(best.map(|(_, _, state)| state))
+}
+
+/// Repository-level unit-of-work wrapping a single SQLite writer transaction.
+/// Used by multi-step canon write operations (`commit_scene_changes`,
+/// `commit_character_state`, `register_canonical_fact`, `record_knowledge`) so
+/// any mid-way failure rolls back the entire batch with zero partial writes.
+pub struct CanonTransaction<'a> {
+    tx: rusqlite::Transaction<'a>,
+}
+
+impl CanonTransaction<'_> {
+    pub fn get_character(&self, id: &str) -> Result<Character> {
+        let sql = format!("SELECT {CHARACTER_COLUMNS} FROM character WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([id], |r| Character::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("character not found"))
+    }
+
+    pub fn get_scene(&self, id: &str) -> Result<Scene> {
+        let sql = format!("SELECT {SCENE_COLUMNS} FROM scene WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([id], |r| Scene::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("scene not found"))
+    }
+
+    pub fn get_canonical_fact(&self, id: &str) -> Result<CanonicalFact> {
+        let sql = format!("SELECT {CANONICAL_FACT_COLUMNS} FROM canonical_fact WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([id], |r| CanonicalFact::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("canonical_fact not found"))
+    }
+
+    pub fn resolve_character_state_for_branch(
+        &self,
+        branch_id: &str,
+        character_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> Result<Option<CharacterState>> {
+        Ok(resolve_character_state_for_branch_in_conn(
+            &self.tx,
+            branch_id,
+            character_id,
+            book_number,
+            chapter_number,
+            scene_order,
+        )?)
+    }
+
+    pub fn append_character_state(
+        &self,
+        params: AppendCharacterStateParams,
+    ) -> Result<CharacterState> {
+        let id = mint_id("character_state");
+        let emotional_json = serde_json::to_string(&params.patch.emotional_state)
+            .context("serializing emotional_state")?;
+        let goals_json = serde_json::to_string(&params.patch.goals.unwrap_or_default())
+            .context("serializing goals")?;
+        let status_json = serde_json::to_string(&params.patch.status.unwrap_or_default())
+            .context("serializing status")?;
+        let notes_json = serde_json::to_string(&params.patch.notes.unwrap_or_default())
+            .context("serializing notes")?;
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.tx.execute(
+            "INSERT INTO character_state (id, project_id, branch_id, character_id, \
+             scene_id, book_number, chapter_number, scene_order, emotional_state, \
+             goals, status, notes, source_summary, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            rusqlite::params![
+                &id,
+                &params.project_id,
+                &params.branch_id,
+                &params.character_id,
+                &params.scene_id,
+                params.book_number,
+                params.chapter_number,
+                params.scene_order,
+                &emotional_json,
+                &goals_json,
+                &status_json,
+                &notes_json,
+                &params.patch.source_summary,
+                now,
+            ],
+        )?;
+        let sql = format!("SELECT {CHARACTER_STATE_COLUMNS} FROM character_state WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([&id], |r| CharacterState::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("character_state vanished after insert"))
+    }
+
+    pub fn append_progression_event(
+        &self,
+        params: AppendProgressionEventParams,
+    ) -> Result<ProgressionEvent> {
+        let id = mint_id("progression_event");
+        let delta_json = serde_json::to_string(&params.delta_json)?;
+        let placement_stored: Option<StoredStoryPlacement> = params.placement.map(Into::into);
+        let placement_json = match placement_stored.as_ref() {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+        let created_at = timestamp_to_micros(params.created_at);
+        self.tx.execute(
+            "INSERT INTO progression_event (id, project_id, branch_id, subject_table, \
+             subject_id, overlay_id, kind, delta_json, source_scene_id, placement, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                &id,
+                &params.project_id,
+                &params.branch_id,
+                &params.subject_table,
+                &params.subject_id,
+                &params.overlay_id,
+                &params.kind,
+                &delta_json,
+                &params.source_scene_id,
+                &placement_json,
+                created_at,
+            ],
+        )?;
+        let sql =
+            format!("SELECT {PROGRESSION_EVENT_COLUMNS} FROM progression_event WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([&id], |r| ProgressionEvent::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("progression_event not found"))
+    }
+
+    pub fn create_canonical_fact(
+        &self,
+        params: CreateCanonicalFactParams,
+    ) -> Result<CanonicalFact> {
+        let id = mint_id("canonical_fact");
+        let aliases_json = serde_json::to_string(&params.aliases)?;
+        let value_json_str = match params.value_json.as_ref() {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+        let valid_from_stored: Option<StoredStoryPlacement> = params.valid_from.map(Into::into);
+        let valid_from_json = match valid_from_stored.as_ref() {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+        let valid_until_stored: Option<StoredStoryPlacement> = params.valid_until.map(Into::into);
+        let valid_until_json = match valid_until_stored.as_ref() {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let secret_flag = if params.secret { 1 } else { 0 };
+        self.tx.execute(
+            "INSERT INTO canonical_fact (id, project_id, branch_id, scene_id, \
+             source_scene_id, book_number, chapter_number, subject_table, subject_id, \
+             predicate, value_kind, value_number, value_text, value_json, unit, aliases, \
+             scope, valid_from, valid_until, superseded_by, created_at, updated_at, \
+             secret, concealment_note) \
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
+                     ?15, ?16, ?17, ?18, NULL, ?19, ?19, ?20, ?21)",
+            rusqlite::params![
+                &id,
+                &params.project_id,
+                &params.branch_id,
+                &params.scene_id,
+                params.book_number,
+                params.chapter_number,
+                &params.subject_table,
+                &params.subject_id,
+                &params.predicate,
+                &params.value_kind,
+                params.value_number,
+                &params.value_text,
+                &value_json_str,
+                &params.unit,
+                &aliases_json,
+                &params.scope,
+                &valid_from_json,
+                &valid_until_json,
+                now,
+                secret_flag,
+                &params.concealment_note,
+            ],
+        )?;
+        self.get_canonical_fact(&id)
+    }
+
+    pub fn supersede_canonical_fact(
+        &self,
+        branch_id: &str,
+        old_fact_id: &str,
+        new_fact_id: &str,
+    ) -> Result<()> {
+        let old_branch: Option<String> = self
+            .tx
+            .query_row(
+                "SELECT branch_id FROM canonical_fact WHERE id = ?1",
+                [old_fact_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional_inner()?;
+        let Some(old_branch_id) = old_branch else {
+            anyhow::bail!("superseded canonical_fact '{old_fact_id}' not found");
+        };
+        if old_branch_id == branch_id {
+            let now = timestamp_to_micros(chrono::Utc::now());
+            self.tx.execute(
+                "UPDATE canonical_fact SET superseded_by = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![new_fact_id, now, old_fact_id],
+            )?;
+        } else {
+            let lineage = resolve_branch_lineage_in_conn(&self.tx, None, branch_id)?;
+            anyhow::ensure!(
+                lineage.iter().any(|b| b == &old_branch_id),
+                "superseded canonical_fact '{old_fact_id}' does not belong to branch '{branch_id}' or its ancestors"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn link_secret_holder(&self, params: LinkSecretHolderParams) -> Result<KnowledgeFact> {
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let tags_json = serde_json::to_string::<Vec<String>>(&Vec::new())?;
+        let existing_id: Option<String> = self
+            .tx
+            .query_row(
+                "SELECT id FROM knowledge_fact \
+                 WHERE project_id = ?1 AND branch_id = ?2 AND character_id = ?3 \
+                   AND normalized_fact = ?4",
+                rusqlite::params![
+                    &params.project_id,
+                    &params.branch_id,
+                    &params.character_id,
+                    &params.normalized_fact
+                ],
+                |r| r.get::<_, String>(0),
+            )
+            .optional_inner()?;
+
+        let linked_id = match existing_id {
+            Some(id) => {
+                self.tx.execute(
+                    "UPDATE knowledge_fact \
+                     SET secret_of_fact_id = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![&params.secret_of_fact_id, now, &id],
+                )?;
+                id
+            }
+            None => {
+                let id = mint_id_local("knowledge_fact");
+                self.tx.execute(
+                    "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+                     fact, normalized_fact, source_summary, learned_at, confidence, tags, \
+                     reader_visible, source_import_session_id, created_at, updated_at, \
+                     secret_of_fact_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, 1, NULL, ?9, ?9, ?10)",
+                    rusqlite::params![
+                        &id,
+                        &params.project_id,
+                        &params.branch_id,
+                        &params.character_id,
+                        &params.fact_text,
+                        &params.normalized_fact,
+                        &params.source_summary,
+                        &tags_json,
+                        now,
+                        &params.secret_of_fact_id,
+                    ],
+                )?;
+                id
+            }
+        };
+        let sql = format!("SELECT {KNOWLEDGE_FACT_COLUMNS} FROM knowledge_fact WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([&linked_id], |r| KnowledgeFact::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("knowledge_fact not found"))
+    }
+
+    pub fn upsert_knowledge_fact(
+        &self,
+        params: UpsertKnowledgeFactParams,
+    ) -> Result<KnowledgeFact> {
+        let id = mint_id("knowledge_fact");
+        let learned_at_stored: Option<StoredStoryPlacement> = params.learned_at.map(Into::into);
+        let learned_at_json = match learned_at_stored.as_ref() {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+        let tags_json = serde_json::to_string(&params.tags)?;
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let reader_visible = if params.reader_visible { 1 } else { 0 };
+        self.tx.execute(
+            "DELETE FROM knowledge_fact \
+             WHERE project_id = ?1 AND branch_id = ?2 AND character_id = ?3 \
+               AND normalized_fact = ?4",
+            rusqlite::params![
+                &params.project_id,
+                &params.branch_id,
+                &params.character_id,
+                &params.normalized_fact
+            ],
+        )?;
+        self.tx.execute(
+            "INSERT INTO knowledge_fact (id, project_id, branch_id, character_id, \
+             fact, normalized_fact, source_summary, learned_at, confidence, tags, \
+             reader_visible, source_import_session_id, created_at, updated_at, \
+             secret_of_fact_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)",
+            rusqlite::params![
+                &id,
+                &params.project_id,
+                &params.branch_id,
+                &params.character_id,
+                &params.fact,
+                &params.normalized_fact,
+                &params.source_summary,
+                &learned_at_json,
+                params.confidence,
+                &tags_json,
+                reader_visible,
+                &params.source_import_session_id,
+                now,
+                &params.secret_of_fact_id,
+            ],
+        )?;
+        let sql = format!("SELECT {KNOWLEDGE_FACT_COLUMNS} FROM knowledge_fact WHERE id = ?1");
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row([&id], |r| KnowledgeFact::try_from(r))
+            .optional_inner()?
+            .ok_or_else(|| anyhow!("knowledge_fact not found"))
+    }
+
+    pub fn upsert_knows(&self, params: UpsertKnowsParams) -> Result<Knows> {
+        let learned_at_stored: Option<StoredStoryPlacement> = params.learned_at.map(Into::into);
+        let learned_at_json = match learned_at_stored.as_ref() {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let reader_visible = if params.reader_visible { 1 } else { 0 };
+        self.tx.execute(
+            "INSERT INTO knows (in_id, out_id, project_id, branch_id, source_summary, \
+             learned_at, confidence, reader_visible, source_import_session_id, \
+             created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10) \
+             ON CONFLICT (branch_id, in_id, out_id) DO UPDATE SET \
+                 source_summary = excluded.source_summary, \
+                 learned_at = excluded.learned_at, \
+                 confidence = excluded.confidence, \
+                 reader_visible = excluded.reader_visible, \
+                 source_import_session_id = excluded.source_import_session_id, \
+                 updated_at = excluded.updated_at",
+            rusqlite::params![
+                &params.character_id,
+                &params.knowledge_fact_id,
+                &params.project_id,
+                &params.branch_id,
+                &params.source_summary,
+                &learned_at_json,
+                params.confidence,
+                reader_visible,
+                &params.source_import_session_id,
+                now,
+            ],
+        )?;
+        let sql = format!(
+            "SELECT {KNOWS_COLUMNS} FROM knows \
+             WHERE branch_id = ?1 AND in_id = ?2 AND out_id = ?3"
+        );
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row(
+            rusqlite::params![
+                &params.branch_id,
+                &params.character_id,
+                &params.knowledge_fact_id
+            ],
+            |r| Knows::try_from(r),
+        )
+        .optional_inner()?
+        .ok_or_else(|| anyhow!("knows edge not found"))
+    }
+
+    pub fn update_relationship(
+        &self,
+        branch_id: &str,
+        input: &UpdateRelationshipInput,
+        source: &str,
+    ) -> Result<RelatesTo> {
+        let a = &input.character_a_id;
+        let b = &input.character_b_id;
+        let trust_delta = input.trust_delta;
+        let tension_delta = input.tension_delta;
+        let reason = &input.reason;
+        let scene_id = &input.scene_id;
+        let now = timestamp_to_micros(chrono::Utc::now());
+
+        let scene_pos: Option<(String, i32, i32, i32)> = self
+            .tx
+            .query_row(
+                "SELECT project_id, book_number, chapter_number, scene_order \
+                 FROM scene WHERE id = ?1",
+                [scene_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i32>(1)?,
+                        r.get::<_, i32>(2)?,
+                        r.get::<_, i32>(3)?,
+                    ))
+                },
+            )
+            .optional_inner()?;
+        let project_id_hint = scene_pos.as_ref().map(|(pid, _, _, _)| pid.as_str());
+        let chain = resolve_branch_lineage_in_conn(&self.tx, project_id_hint, branch_id)?;
+
+        // Check for an existing row on `branch_id` first.
+        let existing_local: Option<(String, String)> = self
+            .tx
+            .query_row(
+                "SELECT in_id, out_id FROM relates_to \
+                 WHERE branch_id = ?1 \
+                   AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                 LIMIT 1",
+                rusqlite::params![branch_id, a, b],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional_inner()?;
+
+        // If `branch_id` does not yet have a row, check ancestor branches so a
+        // child branch inherits the parent baseline before applying deltas.
+        let mut inherited_ancestor: Option<(String, String, String, i32, i32, String)> = None;
+        if existing_local.is_none() {
+            for ancestor_branch_id in chain.iter().skip(1) {
+                if let Some(row) = self
+                    .tx
+                    .query_row(
+                        "SELECT in_id, out_id, relationship_type, trust, tension, dynamics \
+                         FROM relates_to \
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                         LIMIT 1",
+                        rusqlite::params![ancestor_branch_id, a, b],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, i32>(3)?,
+                                r.get::<_, i32>(4)?,
+                                r.get::<_, String>(5)?,
+                            ))
+                        },
+                    )
+                    .optional_inner()?
+                {
+                    inherited_ancestor = Some(row);
+                    break;
+                }
+            }
+        }
+
+        // Look up any prior delta recorded for this pair + scene (by scene_id or
+        // by narrative position when a revised scene replaced the scene row)
+        // across the branch lineage.
+        let mut prior_delta: Option<(i32, i32)> = None;
+        for candidate_branch_id in &chain {
+            let found = if let Some((_, book_num, chap_num, sc_order)) = &scene_pos {
+                self.tx
+                    .query_row(
+                        "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                           AND (scene_id = ?4 \
+                                OR (book_number = ?5 AND chapter_number = ?6 AND scene_order = ?7)) \
+                         ORDER BY updated_at DESC LIMIT 1",
+                        rusqlite::params![
+                            candidate_branch_id,
+                            a,
+                            b,
+                            scene_id,
+                            book_num,
+                            chap_num,
+                            sc_order
+                        ],
+                        |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i32>(1)?)),
+                    )
+                    .optional_inner()?
+            } else {
+                self.tx
+                    .query_row(
+                        "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                           AND scene_id = ?4 \
+                         ORDER BY updated_at DESC LIMIT 1",
+                        rusqlite::params![candidate_branch_id, a, b, scene_id],
+                        |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i32>(1)?)),
+                    )
+                    .optional_inner()?
+            };
+            if let Some(d) = found {
+                prior_delta = Some(d);
+                break;
+            }
+        }
+
+        let (prior_trust, prior_tension) = prior_delta.unwrap_or((0, 0));
+        let net_trust = trust_delta - prior_trust;
+        let net_tension = tension_delta - prior_tension;
+
+        let (in_id, out_id) = if let Some((in_id, out_id)) = existing_local {
+            self.tx.execute(
+                "UPDATE relates_to SET \
+                    trust = trust + ?1, \
+                    tension = tension + ?2, \
+                    reason = ?3, \
+                    last_scene_id = ?4, \
+                    updated_at = ?5 \
+                 WHERE branch_id = ?6 AND in_id = ?7 AND out_id = ?8",
+                rusqlite::params![
+                    net_trust,
+                    net_tension,
+                    reason,
+                    scene_id,
+                    now,
+                    branch_id,
+                    &in_id,
+                    &out_id,
+                ],
+            )?;
+            (in_id, out_id)
+        } else if let Some((anc_in, anc_out, rel_type, base_trust, base_tension, dynamics)) =
+            inherited_ancestor
+        {
+            self.tx.execute(
+                "INSERT INTO relates_to (in_id, out_id, branch_id, \
+                 relationship_type, trust, tension, dynamics, reason, last_scene_id, \
+                 updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &anc_in,
+                    &anc_out,
+                    branch_id,
+                    &rel_type,
+                    base_trust + net_trust,
+                    base_tension + net_tension,
+                    &dynamics,
+                    reason,
+                    scene_id,
+                    now,
+                ],
+            )?;
+            (anc_in, anc_out)
+        } else {
+            self.tx.execute(
+                "INSERT INTO relates_to (in_id, out_id, branch_id, \
+                 relationship_type, trust, tension, dynamics, reason, last_scene_id, \
+                 updated_at) \
+                 VALUES (?1, ?2, ?3, 'scene_dynamic', ?4, ?5, '[]', ?6, ?7, ?8)",
+                rusqlite::params![
+                    a,
+                    b,
+                    branch_id,
+                    net_trust,
+                    net_tension,
+                    reason,
+                    scene_id,
+                    now,
+                ],
+            )?;
+            (a.clone(), b.clone())
+        };
+
+        // Replace any prior delta row on `branch_id` for this pair + scene.
+        if let Some((_, book_num, chap_num, sc_order)) = &scene_pos {
+            self.tx.execute(
+                "DELETE FROM relationship_scene_delta \
+                 WHERE branch_id = ?1 \
+                   AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                   AND (scene_id = ?4 \
+                        OR (book_number = ?5 AND chapter_number = ?6 AND scene_order = ?7))",
+                rusqlite::params![
+                    branch_id, &in_id, &out_id, scene_id, book_num, chap_num, sc_order
+                ],
+            )?;
+            self.tx.execute(
+                "INSERT INTO relationship_scene_delta \
+                 (branch_id, in_id, out_id, scene_id, source, book_number, chapter_number, \
+                  scene_order, trust_delta, tension_delta, reason, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                rusqlite::params![
+                    branch_id,
+                    &in_id,
+                    &out_id,
+                    scene_id,
+                    source,
+                    book_num,
+                    chap_num,
+                    sc_order,
+                    trust_delta,
+                    tension_delta,
+                    reason,
+                    now,
+                ],
+            )?;
+        } else {
+            self.tx.execute(
+                "DELETE FROM relationship_scene_delta \
+                 WHERE branch_id = ?1 \
+                   AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                   AND scene_id = ?4",
+                rusqlite::params![branch_id, &in_id, &out_id, scene_id],
+            )?;
+            self.tx.execute(
+                "INSERT INTO relationship_scene_delta \
+                 (branch_id, in_id, out_id, scene_id, source, book_number, chapter_number, \
+                  scene_order, trust_delta, tension_delta, reason, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    branch_id,
+                    &in_id,
+                    &out_id,
+                    scene_id,
+                    source,
+                    trust_delta,
+                    tension_delta,
+                    reason,
+                    now,
+                ],
+            )?;
+        }
+
+        let sql = format!(
+            "SELECT {RELATES_TO_COLUMNS} FROM relates_to \
+             WHERE branch_id = ?1 AND in_id = ?2 AND out_id = ?3"
+        );
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row(rusqlite::params![branch_id, &in_id, &out_id], |r| {
+            RelatesTo::try_from(r)
+        })
+        .optional_inner()?
+        .ok_or_else(|| anyhow!("relationship not found"))
+    }
+
+    pub fn resolve_validator_findings_for_validator(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        validator_id: &str,
+    ) -> Result<usize> {
+        let now = timestamp_to_micros(chrono::Utc::now());
+        Ok(self.tx.execute(
+            "UPDATE validator_finding SET resolved_at = ?1 \
+             WHERE project_id = ?2 AND branch_id = ?3 \
+               AND validator_id = ?4 AND resolved_at IS NULL",
+            rusqlite::params![now, project_id, branch_id, validator_id],
+        )?)
+    }
+
+    pub fn resolve_validator_findings_for_scenes(
+        &self,
+        branch_id: &str,
+        scene_ids: &[String],
+    ) -> Result<usize> {
+        if scene_ids.is_empty() {
+            return Ok(0);
+        }
+        let now = timestamp_to_micros(chrono::Utc::now());
+        let placeholders = (0..scene_ids.len())
+            .map(|i| format!("?{}", i + 3))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "UPDATE validator_finding SET resolved_at = ?1 \
+             WHERE branch_id = ?2 AND scene_id IN ({placeholders}) \
+               AND resolved_at IS NULL"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(scene_ids.len() + 2);
+        params.push(&now);
+        params.push(&branch_id);
+        for id in scene_ids {
+            params.push(id);
+        }
+        Ok(self.tx.execute(&sql, &params[..])?)
+    }
+}
+
+/// Shared body for `list_X_by_project_and_branch` methods. Resolves along the
+/// `bible_branch.parent_branch_id` chain so child branches inherit ancestor
+/// canon while overriding ancestor rows that share the same natural key.
+#[allow(clippy::too_many_arguments)]
+async fn list_branch_scoped<T, K, F, KFn>(
     pool: &SqlitePool,
     columns: &'static str,
     table: &'static str,
@@ -14426,23 +15703,42 @@ async fn list_branch_scoped<T, F>(
     project_id: &str,
     branch_id: &str,
     map: F,
+    key_fn: KFn,
 ) -> Result<Vec<T>>
 where
     T: Send + 'static,
+    K: Eq + std::hash::Hash + Send + 'static,
     F: Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T> + Send + Sync + 'static,
+    KFn: Fn(&T) -> K + Send + Sync + 'static,
 {
     let project_id = project_id.to_string();
     let branch_id = branch_id.to_string();
     pool.read(move |conn| {
+        let chain = resolve_branch_lineage_in_conn(conn, Some(&project_id), &branch_id)?;
         let sql = format!(
             "SELECT {columns} FROM {table} \
              WHERE project_id = ?1 AND branch_id = ?2 ORDER BY {order_by}"
         );
         let mut stmt = conn.prepare_cached(&sql)?;
-        let rows = stmt
-            .query_map(rusqlite::params![&project_id, &branch_id], |r| map(r))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let mut overridden = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for candidate_branch_id in &chain {
+            let rows = stmt
+                .query_map(rusqlite::params![&project_id, candidate_branch_id], |r| {
+                    map(r)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut branch_keys = Vec::new();
+            for row in rows {
+                let key = key_fn(&row);
+                if !overridden.contains(&key) {
+                    branch_keys.push(key);
+                    out.push(row);
+                }
+            }
+            overridden.extend(branch_keys);
+        }
+        Ok(out)
     })
     .await
 }

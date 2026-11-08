@@ -252,9 +252,12 @@ ever reaches an uncleared agent.
 
 ## Staging & ratification (canon deltas + plan amendments)
 
-Machine-derived canon never reaches the bible directly — it lands in a staging
-table and is applied only through an explicit operator decision. Two staging
-classes share one lifecycle:
+While a drafter's structured continuity package (`character_states`,
+`canonical_facts`, `relationship_updates`) is committed directly during
+`commit_scene_changes`, post-commit mined canon deltas and post-chapter plan
+amendments never reach the bible directly — they land in a staging table and
+are applied only through an explicit operator decision. Two staging classes
+share one lifecycle:
 
 - **Canon deltas** (`canon_delta`, migration V0024; ADR 0001). Each committed
   scene can be mined (`mine_scene_canon`, or the run's `mine canon` step) into
@@ -278,13 +281,13 @@ classes share one lifecycle:
   and applying snapshots the prior plan into `prior_state` and bumps
   `chapter_plan.plan_revision` so the outline keeps recoverable history.
 
-Default policy for both is **propose-only** — nothing auto-applies. Canon deltas
-support an opt-in per-class `auto_accept`, but `entity_candidate` and any delta
-carrying `secret_of_fact_id` are excluded unconditionally (circle expansion is
-always a human decision). Plan amendments have **no** auto-accept at all, not even
-as policy. Both class vocabularies are **one-way doors** fixed by their ADRs
-(0001, 0003) — renames/reshapes strand staged rows and break decided-audit replay.
-The `canon-steward` skill teaches both ratification workflows.
+Both staging classes are strictly **propose-only** — nothing auto-applies.
+Authoring runs accept only `mining_policy = "stage_only" | "off"` (any
+`auto_accept` value is rejected at input validation), and plan amendments
+likewise have **no** auto-accept policy. Both class vocabularies are **one-way
+doors** fixed by their ADRs (0001, 0003) — renames/reshapes strand staged rows
+and break decided-audit replay. The `canon-steward` skill teaches both
+ratification workflows.
 
 ## Circle-of-trust secrets
 
