@@ -1475,7 +1475,7 @@ impl SqliteSpindleService {
 
         let world_state = if want_world_state {
             self.repository
-                .get_world_state_by_location(&input.location_id)
+                .get_world_state_for_location(&active_branch.id, &input.location_id)
                 .await
                 .ok()
                 .flatten()
@@ -1646,28 +1646,29 @@ impl SqliteSpindleService {
         // knowledge so the drafting model never sees facts a POV character has
         // not reached yet.
         let cursor = story_index(input.book_number, input.chapter_number, input.scene_order);
-        let raw_future_knowledge =
-            if (want_future_knowledge_briefing || want_knowledge_briefing) && !ids.is_empty() {
-                self.repository
-                    .list_future_knowledge_by_project(&input.project_id)
-                    .await?
-                    .into_iter()
-                    .filter(|knowledge| ids.contains(&knowledge.character_id))
-                    // Position gate: only surface future knowledge the character has
-                    // actually reached (learned_at <= cursor) and that has not expired
-                    // (expires_at >= cursor), so the generator is not primed with
-                    // premature reveals across long arcs.
-                    .filter(|knowledge| {
-                        story_index_from_placement(&knowledge.learned_at) <= cursor
-                            && knowledge
-                                .expires_at
-                                .as_ref()
-                                .is_none_or(|expires| story_index_from_placement(expires) >= cursor)
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
+        let raw_future_knowledge = if (want_future_knowledge_briefing || want_knowledge_briefing)
+            && !ids.is_empty()
+        {
+            self.repository
+                .list_future_knowledge_by_project_and_branch(&input.project_id, &active_branch.id)
+                .await?
+                .into_iter()
+                .filter(|knowledge| ids.contains(&knowledge.character_id))
+                // Position gate: only surface future knowledge the character has
+                // actually reached (learned_at <= cursor) and that has not expired
+                // (expires_at >= cursor), so the generator is not primed with
+                // premature reveals across long arcs.
+                .filter(|knowledge| {
+                    story_index_from_placement(&knowledge.learned_at) <= cursor
+                        && knowledge
+                            .expires_at
+                            .as_ref()
+                            .is_none_or(|expires| story_index_from_placement(expires) >= cursor)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let future_knowledge_briefing = if want_future_knowledge_briefing {
             raw_future_knowledge
                 .iter()
@@ -1708,7 +1709,10 @@ impl SqliteSpindleService {
                 .await?;
             let annotations = self
                 .repository
-                .list_scene_beat_annotations_by_project(&input.project_id)
+                .list_scene_beat_annotations_by_project_and_branch(
+                    &input.project_id,
+                    &active_branch.id,
+                )
                 .await?;
             let chapter_means = crate::format::chapter_mean_intensities(&scenes, &annotations);
             // Curve expectation clause (V0022): pull the book's pacing curve
@@ -1975,7 +1979,7 @@ impl SqliteSpindleService {
             // POV: the chapter plan's pov_character_id, when one exists.
             let pov_character_id = self
                 .repository
-                .list_chapter_plans_by_project(&input.project_id)
+                .list_chapter_plans_by_project_and_branch(&input.project_id, &active_branch.id)
                 .await?
                 .into_iter()
                 .find(|plan| {
@@ -1987,7 +1991,7 @@ impl SqliteSpindleService {
             // so circle members outside the present cast still resolve.
             let name_of: std::collections::BTreeMap<String, String> = self
                 .repository
-                .list_characters_by_project(&input.project_id)
+                .list_characters_by_project_and_branch(&input.project_id, &active_branch.id)
                 .await?
                 .into_iter()
                 .map(|character| (character.id, character.name))
@@ -2030,7 +2034,7 @@ impl SqliteSpindleService {
             };
             if let Some(pov_character_id) = self
                 .repository
-                .list_chapter_plans_by_project(&input.project_id)
+                .list_chapter_plans_by_project_and_branch(&input.project_id, &active_branch.id)
                 .await?
                 .into_iter()
                 .find(|plan| {
@@ -2122,7 +2126,7 @@ impl SqliteSpindleService {
         // drafting agent can advance them. No-op when the chapter has no plan.
         let mut active_threads = if let Some(plan) = self
             .repository
-            .list_chapter_plans_by_project(&input.project_id)
+            .list_chapter_plans_by_project_and_branch(&input.project_id, &active_branch.id)
             .await?
             .into_iter()
             .find(|plan| {
@@ -3122,7 +3126,7 @@ impl SqliteSpindleService {
 
         let chapter_plan = self
             .repository
-            .list_chapter_plans_by_project(&project.id)
+            .list_chapter_plans_by_project_and_branch(&project.id, &branch.id)
             .await?
             .into_iter()
             .find(|plan| plan.book_number == book_number && plan.chapter_number == chapter_number);
@@ -3131,7 +3135,18 @@ impl SqliteSpindleService {
             .as_ref()
             .and_then(|plan| plan.scenes.iter().find(|s| s.scene_order == scene_order));
 
-        // Resolve character_ids and location_id from input -> chapter_plan -> project defaults.
+        // When target_scene is inherited from an ancestor branch while chapter_plan was
+        // authored on the requested branch (or when intent is Draft), prefer the branch
+        // plan's cast/location/summary over the ancestor scene's defaults.
+        let prefer_branch_plan = intent == PrepareSceneIntent::Draft
+            || (target_scene
+                .as_ref()
+                .is_some_and(|s| s.branch_id != branch.id)
+                && chapter_plan
+                    .as_ref()
+                    .is_some_and(|p| p.branch_id == branch.id));
+
+        // Resolve character_ids and location_id from input -> chapter_plan -> branch defaults.
         let mut resolved_character_ids = input.character_ids.clone();
         if resolved_character_ids.is_empty() {
             if let Some(plan) = chapter_plan.as_ref() {
@@ -3154,7 +3169,7 @@ impl SqliteSpindleService {
             if resolved_character_ids.is_empty() {
                 for character in self
                     .repository
-                    .list_characters_by_project(&project.id)
+                    .list_characters_by_project_and_branch(&project.id, &branch.id)
                     .await?
                 {
                     resolved_character_ids.push(character.id);
@@ -3167,6 +3182,13 @@ impl SqliteSpindleService {
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
+        {
+            loc_id.to_string()
+        } else if prefer_branch_plan
+            && let Some(loc_id) = planned_scene
+                .and_then(|ps| ps.location_id.as_deref())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
         {
             loc_id.to_string()
         } else if let Some(loc_id) = target_scene
@@ -3196,7 +3218,7 @@ impl SqliteSpindleService {
         } else {
             let locations = self
                 .repository
-                .list_locations_by_project(&project.id)
+                .list_locations_by_project_and_branch(&project.id, &branch.id)
                 .await?;
             locations.first().map(|loc| loc.id.clone()).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -3205,9 +3227,106 @@ impl SqliteSpindleService {
             })?
         };
 
+        let pov_character_id = chapter_plan
+            .as_ref()
+            .and_then(|p| p.pov_character_id.clone())
+            .or_else(|| resolved_character_ids.first().cloned());
+
+        let content_rating = if prefer_branch_plan {
+            planned_scene
+                .and_then(|ps| ps.content_rating.clone())
+                .or_else(|| {
+                    target_scene.as_ref().and_then(|s| {
+                        serde_json::from_value::<ContentRating>(serde_json::Value::String(
+                            s.content_rating.trim().to_ascii_lowercase(),
+                        ))
+                        .ok()
+                    })
+                })
+                .unwrap_or(ContentRating::General)
+        } else {
+            target_scene
+                .as_ref()
+                .and_then(|s| {
+                    serde_json::from_value::<ContentRating>(serde_json::Value::String(
+                        s.content_rating.trim().to_ascii_lowercase(),
+                    ))
+                    .ok()
+                })
+                .or_else(|| planned_scene.and_then(|ps| ps.content_rating.clone()))
+                .unwrap_or(ContentRating::General)
+        };
+
+        let mut expected_beats = planned_scene
+            .map(|ps| ps.beat_structure.clone())
+            .unwrap_or_default();
+        if expected_beats.is_empty()
+            && let Some(chapter_id) = resolved_chapter_id.as_deref()
+            && let Some(outline) = self
+                .repository
+                .get_chapter_outline(chapter_id, &branch.id)
+                .await?
+        {
+            expected_beats = outline
+                .beats
+                .into_iter()
+                .filter(|beat| beat.order == scene_order)
+                .map(|beat| beat.summary)
+                .collect();
+        }
+
+        let chapter_synopsis = chapter_plan
+            .as_ref()
+            .map(|plan| plan.synopsis.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                chapter_record
+                    .as_ref()
+                    .and_then(|ch| ch.title.clone())
+                    .filter(|s| !s.trim().is_empty())
+            });
+
+        let scene_version = if let Some(scene) = target_scene.as_ref() {
+            let versions = self.repository.list_scene_versions(&scene.id).await?;
+            Some(versions.last().map(|v| v.version_number).unwrap_or(1))
+        } else {
+            None
+        };
+
+        let scene_summary = if prefer_branch_plan {
+            planned_scene
+                .map(|ps| ps.summary.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    target_scene
+                        .as_ref()
+                        .map(|s| s.summary.clone())
+                        .filter(|s| !s.trim().is_empty())
+                })
+        } else {
+            target_scene
+                .as_ref()
+                .map(|s| s.summary.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| planned_scene.map(|ps| ps.summary.clone()))
+        };
+
+        let mut scene_purpose = PrepareScenePurpose {
+            chapter_synopsis,
+            scene_title: chapter_record.as_ref().and_then(|ch| ch.title.clone()),
+            scene_summary,
+            pov_character_id,
+            location_id: resolved_location_id.clone(),
+            character_ids: resolved_character_ids.clone(),
+            content_rating,
+            expected_beats,
+            active_threads: Vec::new(),
+        };
+
         let effective_budget = input
             .budget_tokens
             .unwrap_or(DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS);
+        let purpose_cursor_tokens = purpose_and_cursor_tokens(&scene_purpose, &writer_cursor);
 
         let scene_context_with_cov = self
             .get_scene_context_for_branch(
@@ -3221,19 +3340,38 @@ impl SqliteSpindleService {
                     location_id: resolved_location_id.clone(),
                     sections: None,
                     format: Some(ContextFormat::Markdown),
-                    budget_tokens: Some(effective_budget),
+                    budget_tokens: Some(usize::MAX),
                     token_budget: None,
                     max_character_count: None,
                 },
                 Some(&branch.id),
-                true,
+                false,
             )
             .await?;
 
-        let mut unavailable_passes = scene_context_with_cov.unavailable_passes;
-        let scene_context = scene_context_with_cov.output;
+        let hard_constraint_tokens = scene_context_with_cov
+            .hard_constraint_tokens
+            .saturating_add(purpose_cursor_tokens);
+        if hard_constraint_tokens > effective_budget {
+            anyhow::bail!(
+                "budget_tokens ({effective_budget}) too small to fit hard constraints (minimum required: {hard_constraint_tokens} tokens). Increase budget_tokens or reduce world rules."
+            );
+        }
 
-        // Optional research recall pass.
+        let mut unavailable_passes = scene_context_with_cov.unavailable_passes;
+        let mut scene_context = scene_context_with_cov.output;
+        let untruncated_section_tokens = scene_context_section_token_map(&scene_context);
+
+        // Eliminate duplicated representations across top-level PrepareSceneOutput and novel.
+        let mut reader_contract = std::mem::replace(
+            &mut scene_context.novel.reader_contract,
+            crate::format::empty_reader_contract(),
+        );
+        let mut style_directive = scene_context.novel.style_directive.take();
+        scene_purpose.active_threads = std::mem::take(&mut scene_context.novel.active_threads);
+        let world_rules_for_evidence = std::mem::take(&mut scene_context.novel.world_rules);
+
+        // Optional research recall pass with bounded summaries.
         let mut research = Vec::new();
         if let Some(query) = input
             .research_query
@@ -3255,7 +3393,7 @@ impl SqliteSpindleService {
             {
                 Ok(found) => {
                     for item in found.results {
-                        let summary = if item.preview.trim().is_empty()
+                        let raw_summary = if item.preview.trim().is_empty()
                             || item.preview == item.title_or_summary
                         {
                             item.title_or_summary
@@ -3265,7 +3403,7 @@ impl SqliteSpindleService {
                         research.push(PrepareSceneResearchItem {
                             id: item.id,
                             kind: item.item_type,
-                            summary,
+                            summary: truncate_chars(&raw_summary, 240),
                             source_id: item.source_title,
                         });
                     }
@@ -3312,75 +3450,7 @@ impl SqliteSpindleService {
             )[..16]
         );
 
-        let pov_character_id = chapter_plan
-            .as_ref()
-            .and_then(|p| p.pov_character_id.clone())
-            .or_else(|| resolved_character_ids.first().cloned());
-
-        let content_rating = target_scene
-            .as_ref()
-            .and_then(|s| {
-                serde_json::from_value::<ContentRating>(serde_json::Value::String(
-                    s.content_rating.trim().to_ascii_lowercase(),
-                ))
-                .ok()
-            })
-            .or_else(|| planned_scene.and_then(|ps| ps.content_rating.clone()))
-            .unwrap_or(ContentRating::General);
-
-        let mut expected_beats = planned_scene
-            .map(|ps| ps.beat_structure.clone())
-            .unwrap_or_default();
-        if expected_beats.is_empty()
-            && let Some(chapter_id) = resolved_chapter_id.as_deref()
-            && let Some(outline) = self
-                .repository
-                .get_chapter_outline(chapter_id, &branch.id)
-                .await?
-        {
-            expected_beats = outline
-                .beats
-                .into_iter()
-                .filter(|beat| beat.order == scene_order)
-                .map(|beat| beat.summary)
-                .collect();
-        }
-
-        let chapter_synopsis = chapter_plan
-            .as_ref()
-            .map(|plan| plan.synopsis.clone())
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                chapter_record
-                    .as_ref()
-                    .and_then(|ch| ch.title.clone())
-                    .filter(|s| !s.trim().is_empty())
-            });
-
-        let scene_version = if let Some(scene) = target_scene.as_ref() {
-            let versions = self.repository.list_scene_versions(&scene.id).await?;
-            Some(versions.last().map(|v| v.version_number).unwrap_or(1))
-        } else {
-            None
-        };
-
-        let scene_purpose = PrepareScenePurpose {
-            chapter_synopsis,
-            scene_title: chapter_record.as_ref().and_then(|ch| ch.title.clone()),
-            scene_summary: target_scene
-                .as_ref()
-                .map(|s| s.summary.clone())
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| planned_scene.map(|ps| ps.summary.clone())),
-            pov_character_id,
-            location_id: resolved_location_id.clone(),
-            character_ids: resolved_character_ids.clone(),
-            content_rating,
-            expected_beats,
-            active_threads: scene_context.novel.active_threads.clone(),
-        };
-
-        let existing_prose = match intent {
+        let mut existing_prose = match intent {
             PrepareSceneIntent::Revise | PrepareSceneIntent::Continue => target_scene
                 .as_ref()
                 .map(|s| s.full_text.clone())
@@ -3388,7 +3458,7 @@ impl SqliteSpindleService {
             PrepareSceneIntent::Draft => None,
         };
 
-        let drafting_packet_v1 = match build_drafting_packet_v1_for_prepare_scene(
+        let mut drafting_packet_v1 = match build_drafting_packet_v1_for_prepare_scene(
             &preparation_id,
             &project.id,
             &branch.id,
@@ -3410,7 +3480,290 @@ impl SqliteSpindleService {
             }
         };
 
-        // Compute included vs truncated sections and compact evidence references.
+        let mut evidence_references = Vec::new();
+        if let Some(scene) = target_scene.as_ref() {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: scene.id.clone(),
+                kind: "scene".to_string(),
+                label: truncate_chars(&scene.summary, 80),
+            });
+        }
+        if let Some(plan) = chapter_plan.as_ref() {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: plan.id.clone(),
+                kind: "chapter_plan".to_string(),
+                label: format!("Book {} Chapter {}", plan.book_number, plan.chapter_number),
+            });
+        }
+        if !scene_context.scene.location.location_id.is_empty() {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: scene_context.scene.location.location_id.clone(),
+                kind: "location".to_string(),
+                label: truncate_chars(&scene_context.scene.location.name, 80),
+            });
+        }
+        for character in &scene_context.scene.characters {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: character.character_id.clone(),
+                kind: "character".to_string(),
+                label: truncate_chars(&character.name, 80),
+            });
+        }
+        for rule in &world_rules_for_evidence {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: rule.rule_name.clone(),
+                kind: "world_rule".to_string(),
+                label: truncate_chars(&rule.rule_type, 80),
+            });
+        }
+        for fact in &scene_context.canonical_facts {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: fact.canonical_fact_id.clone(),
+                kind: "canonical_fact".to_string(),
+                label: truncate_chars(&fact.predicate, 80),
+            });
+        }
+        for item in &research {
+            evidence_references.push(PrepareSceneEvidenceRef {
+                id: item.id.clone(),
+                kind: "research".to_string(),
+                label: truncate_chars(&item.kind, 80),
+            });
+        }
+
+        let mut compact_shelf_digest = scene_context.compact_shelf_digest;
+        let mut voice_samples = scene_context.voice_samples;
+        let mut scene_negatives = scene_context.scene_negatives;
+        let mut truncated_sections = scene_context_with_cov.truncated_section_ids;
+        let push_truncated = |list: &mut Vec<String>, id: &str| {
+            if !list.iter().any(|existing| existing == id) {
+                list.push(id.to_string());
+            }
+        };
+
+        let had_existing_prose = existing_prose.is_some();
+        let had_research = !research.is_empty();
+        let had_drafting_packet = drafting_packet_v1.is_some();
+        let had_shelf_digest = compact_shelf_digest.is_some();
+        let had_voice_samples = !voice_samples.is_empty();
+        let had_scene_negatives = !scene_negatives.is_empty();
+        let had_evidence_references = !evidence_references.is_empty();
+
+        let mut style_directive_tokens = style_directive
+            .as_ref()
+            .and_then(|d| d.render_markdown())
+            .map(|m| spindle_core::context_bundle::estimate_text_tokens(&m))
+            .unwrap_or(0);
+        let mut shelf_digest_tokens = compact_shelf_digest
+            .as_ref()
+            .map(estimate_value_tokens)
+            .unwrap_or(0);
+        let mut voice_samples_tokens = if voice_samples.is_empty() {
+            0
+        } else {
+            estimate_value_tokens(&voice_samples)
+        };
+        let mut scene_negatives_tokens = if scene_negatives.is_empty() {
+            0
+        } else {
+            estimate_value_tokens(&scene_negatives)
+        };
+        let mut evidence_tokens = if evidence_references.is_empty() {
+            0
+        } else {
+            estimate_value_tokens(&evidence_references)
+        };
+        let mut packet_tokens = drafting_packet_v1
+            .as_ref()
+            .map(estimate_value_tokens)
+            .unwrap_or(0);
+        let mut research_tokens = if research.is_empty() {
+            0
+        } else {
+            estimate_value_tokens(&research)
+        };
+        let mut existing_prose_tokens = existing_prose
+            .as_deref()
+            .map(spindle_core::context_bundle::estimate_text_tokens)
+            .unwrap_or(0);
+
+        let mut estimated_tokens = scene_context_with_cov
+            .bundle_estimated_tokens
+            .saturating_add(purpose_cursor_tokens)
+            .saturating_add(style_directive_tokens)
+            .saturating_add(shelf_digest_tokens)
+            .saturating_add(voice_samples_tokens)
+            .saturating_add(scene_negatives_tokens)
+            .saturating_add(evidence_tokens)
+            .saturating_add(packet_tokens)
+            .saturating_add(research_tokens)
+            .saturating_add(existing_prose_tokens);
+
+        if estimated_tokens > effective_budget && drafting_packet_v1.is_some() {
+            drafting_packet_v1 = None;
+            estimated_tokens = estimated_tokens.saturating_sub(packet_tokens);
+            packet_tokens = 0;
+            push_truncated(&mut truncated_sections, "drafting_packet_v1");
+        }
+        if estimated_tokens > effective_budget && !evidence_references.is_empty() {
+            evidence_references.clear();
+            estimated_tokens = estimated_tokens.saturating_sub(evidence_tokens);
+            evidence_tokens = 0;
+            push_truncated(&mut truncated_sections, "evidence_references");
+        }
+        if estimated_tokens > effective_budget && !voice_samples.is_empty() {
+            voice_samples.clear();
+            estimated_tokens = estimated_tokens.saturating_sub(voice_samples_tokens);
+            voice_samples_tokens = 0;
+            push_truncated(&mut truncated_sections, "voice_samples");
+        }
+        if estimated_tokens > effective_budget && !scene_negatives.is_empty() {
+            scene_negatives.clear();
+            estimated_tokens = estimated_tokens.saturating_sub(scene_negatives_tokens);
+            scene_negatives_tokens = 0;
+            push_truncated(&mut truncated_sections, "scene_negatives");
+        }
+        if estimated_tokens > effective_budget && compact_shelf_digest.is_some() {
+            compact_shelf_digest = None;
+            estimated_tokens = estimated_tokens.saturating_sub(shelf_digest_tokens);
+            shelf_digest_tokens = 0;
+            push_truncated(&mut truncated_sections, "compact_shelf_digest");
+        }
+        if estimated_tokens > effective_budget && !research.is_empty() {
+            while estimated_tokens > effective_budget && !research.is_empty() {
+                let removed = research.pop();
+                if let Some(removed_item) = removed {
+                    evidence_references
+                        .retain(|r| !(r.kind == "research" && r.id == removed_item.id));
+                }
+                let new_research_tokens = if research.is_empty() {
+                    0
+                } else {
+                    estimate_value_tokens(&research)
+                };
+                estimated_tokens = estimated_tokens
+                    .saturating_sub(research_tokens)
+                    .saturating_add(new_research_tokens);
+                research_tokens = new_research_tokens;
+            }
+            push_truncated(&mut truncated_sections, "research");
+        }
+
+        const LOWER_SCENE_CONTEXT_SECTIONS: &[&str] = &[
+            "semantic_references",
+            "knowledge_briefing",
+            "timeline_briefing",
+            "economy_briefing",
+            "future_knowledge_briefing",
+            "pacing_directives",
+            "narrative_promises_due",
+            "system_overlays",
+            "active_threads",
+            "previous_scene_tail",
+            "subjects",
+            "agency_check",
+            "relationships",
+        ];
+        for &sec_id in LOWER_SCENE_CONTEXT_SECTIONS {
+            if estimated_tokens <= effective_budget {
+                break;
+            }
+            if !truncated_sections.iter().any(|s| s == sec_id) {
+                let sec_cost = untruncated_section_tokens.get(sec_id).copied().unwrap_or(0);
+                if sec_id == "active_threads" {
+                    scene_purpose.active_threads.clear();
+                } else {
+                    crate::format::apply_scene_context_bundle_trims(
+                        &[sec_id.to_string()],
+                        &mut scene_context.novel,
+                        &mut scene_context.scene,
+                    );
+                }
+                estimated_tokens = estimated_tokens.saturating_sub(sec_cost);
+                push_truncated(&mut truncated_sections, sec_id);
+            }
+        }
+
+        if estimated_tokens > effective_budget && existing_prose.is_some() {
+            let other_tokens = estimated_tokens
+                .saturating_sub(existing_prose_tokens)
+                .max(hard_constraint_tokens);
+            if effective_budget > other_tokens && effective_budget - other_tokens >= 8 {
+                let allowed_tokens = effective_budget - other_tokens;
+                if let Some(prose) = existing_prose.as_mut() {
+                    *prose = truncate_chars(prose, allowed_tokens * 4);
+                }
+                let new_prose_tokens = existing_prose
+                    .as_deref()
+                    .map(spindle_core::context_bundle::estimate_text_tokens)
+                    .unwrap_or(0);
+                estimated_tokens = other_tokens.saturating_add(new_prose_tokens);
+                existing_prose_tokens = new_prose_tokens;
+                push_truncated(&mut truncated_sections, "existing_prose");
+            }
+        }
+
+        if estimated_tokens > effective_budget && style_directive.is_some() {
+            style_directive = None;
+            estimated_tokens = estimated_tokens.saturating_sub(style_directive_tokens);
+            style_directive_tokens = 0;
+            push_truncated(&mut truncated_sections, "style_directive");
+        }
+
+        const UPPER_SCENE_CONTEXT_SECTIONS: &[&str] =
+            &["characters", "world_state", "location", "reader_contract"];
+        for &sec_id in UPPER_SCENE_CONTEXT_SECTIONS {
+            if estimated_tokens <= effective_budget {
+                break;
+            }
+            if !truncated_sections.iter().any(|s| s == sec_id) {
+                let sec_cost = untruncated_section_tokens.get(sec_id).copied().unwrap_or(0);
+                if sec_id == "reader_contract" {
+                    reader_contract = crate::format::empty_reader_contract();
+                } else {
+                    crate::format::apply_scene_context_bundle_trims(
+                        &[sec_id.to_string()],
+                        &mut scene_context.novel,
+                        &mut scene_context.scene,
+                    );
+                }
+                estimated_tokens = estimated_tokens.saturating_sub(sec_cost);
+                push_truncated(&mut truncated_sections, sec_id);
+            }
+        }
+
+        if estimated_tokens > effective_budget && existing_prose.is_some() {
+            let other_tokens = estimated_tokens
+                .saturating_sub(existing_prose_tokens)
+                .max(hard_constraint_tokens);
+            if effective_budget > other_tokens && effective_budget - other_tokens >= 4 {
+                let allowed_tokens = effective_budget - other_tokens;
+                if let Some(prose) = existing_prose.as_mut() {
+                    *prose = truncate_chars(prose, allowed_tokens * 4);
+                }
+                let new_prose_tokens = existing_prose
+                    .as_deref()
+                    .map(spindle_core::context_bundle::estimate_text_tokens)
+                    .unwrap_or(0);
+                estimated_tokens = other_tokens.saturating_add(new_prose_tokens);
+                let _ = (
+                    packet_tokens,
+                    evidence_tokens,
+                    voice_samples_tokens,
+                    scene_negatives_tokens,
+                    shelf_digest_tokens,
+                    style_directive_tokens,
+                    new_prose_tokens,
+                );
+            } else {
+                existing_prose = None;
+                estimated_tokens = other_tokens;
+            }
+            push_truncated(&mut truncated_sections, "existing_prose");
+        }
+        estimated_tokens = estimated_tokens.max(hard_constraint_tokens);
+
+        // Compute included vs truncated sections.
         const PREPARE_SCENE_SECTIONS: &[&str] = &[
             "reader_contract",
             "style_directive",
@@ -3432,81 +3785,37 @@ impl SqliteSpindleService {
             "relationships",
             "agency_check",
         ];
-        let truncated_set: std::collections::HashSet<&str> = scene_context_with_cov
-            .truncated_section_ids
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let truncated_set: std::collections::HashSet<&str> =
+            truncated_sections.iter().map(String::as_str).collect();
         let mut included_sections = vec!["hard_constraints".to_string()];
         for section in PREPARE_SCENE_SECTIONS {
             if !truncated_set.contains(*section) {
                 included_sections.push((*section).to_string());
             }
         }
-
-        let mut evidence_references = Vec::new();
-        if let Some(scene) = target_scene.as_ref() {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: scene.id.clone(),
-                kind: "scene".to_string(),
-                label: scene.summary.clone(),
-            });
-        }
-        if let Some(plan) = chapter_plan.as_ref() {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: plan.id.clone(),
-                kind: "chapter_plan".to_string(),
-                label: format!("Book {} Chapter {}", plan.book_number, plan.chapter_number),
-            });
-        }
-        if !scene_context.scene.location.location_id.is_empty() {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: scene_context.scene.location.location_id.clone(),
-                kind: "location".to_string(),
-                label: scene_context.scene.location.name.clone(),
-            });
-        }
-        for character in &scene_context.scene.characters {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: character.character_id.clone(),
-                kind: "character".to_string(),
-                label: character.name.clone(),
-            });
-        }
-        for rule in &scene_context.novel.world_rules {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: rule.rule_name.clone(),
-                kind: "world_rule".to_string(),
-                label: rule.rule_type.clone(),
-            });
-        }
-        for fact in &scene_context.canonical_facts {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: fact.canonical_fact_id.clone(),
-                kind: "canonical_fact".to_string(),
-                label: fact.predicate.clone(),
-            });
-        }
-        for item in &research {
-            evidence_references.push(PrepareSceneEvidenceRef {
-                id: item.id.clone(),
-                kind: "research".to_string(),
-                label: item.kind.clone(),
-            });
+        for (section, was_present) in [
+            ("compact_shelf_digest", had_shelf_digest),
+            ("voice_samples", had_voice_samples),
+            ("scene_negatives", had_scene_negatives),
+            ("existing_prose", had_existing_prose),
+            ("research", had_research),
+            ("drafting_packet_v1", had_drafting_packet),
+            ("evidence_references", had_evidence_references),
+        ] {
+            if was_present && !truncated_set.contains(section) {
+                included_sections.push(section.to_string());
+            }
         }
 
         let coverage = PrepareSceneCoverage {
             budget_tokens: effective_budget,
-            estimated_tokens: scene_context_with_cov.bundle_estimated_tokens,
-            hard_constraint_tokens: scene_context_with_cov.hard_constraint_tokens,
+            estimated_tokens,
+            hard_constraint_tokens,
             included_sections,
-            truncated_sections: scene_context_with_cov.truncated_section_ids,
+            truncated_sections,
             evidence_references,
             unavailable_passes,
         };
-
-        let reader_contract = scene_context.novel.reader_contract.clone();
-        let style_directive = scene_context.novel.style_directive.clone();
 
         Ok(PrepareSceneOutput {
             preparation_id,
@@ -3525,9 +3834,9 @@ impl SqliteSpindleService {
             hard_constraints: scene_context.hard_constraints,
             reader_contract,
             style_directive,
-            compact_shelf_digest: scene_context.compact_shelf_digest,
-            voice_samples: scene_context.voice_samples,
-            scene_negatives: scene_context.scene_negatives,
+            compact_shelf_digest,
+            voice_samples,
+            scene_negatives,
             novel: scene_context.novel,
             scene: scene_context.scene,
             existing_prose,
@@ -3624,9 +3933,10 @@ impl SqliteSpindleService {
 
         let mut characters = self
             .repository
-            .list_characters_by_project(project_id)
+            .list_characters_by_project_and_branch(project_id, branch_id)
             .await?;
         characters.sort_by(|a, b| a.id.cmp(&b.id));
+        let character_ids: Vec<String> = characters.iter().map(|c| c.id.clone()).collect();
         let mut character_states = Vec::new();
         for character in &characters {
             let state = self
@@ -3654,16 +3964,38 @@ impl SqliteSpindleService {
             }));
         }
 
+        let mut relationships = if character_ids.is_empty() {
+            Vec::new()
+        } else {
+            self.repository
+                .list_relationships_for_characters(branch_id, &character_ids)
+                .await?
+        };
+        relationships.sort_by(|a, b| (&a.in_id, &a.out_id).cmp(&(&b.in_id, &b.out_id)));
+        let relationship_entries: Vec<_> = relationships
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "in_id": r.in_id,
+                    "out_id": r.out_id,
+                    "relationship_type": r.relationship_type,
+                    "trust": r.trust,
+                    "tension": r.tension,
+                    "dynamics": r.dynamics,
+                })
+            })
+            .collect();
+
         let mut locations = self
             .repository
-            .list_locations_by_project(project_id)
+            .list_locations_by_project_and_branch(project_id, branch_id)
             .await?;
         locations.sort_by(|a, b| a.id.cmp(&b.id));
         let mut location_entries = Vec::new();
         for loc in &locations {
             let ws = self
                 .repository
-                .get_world_state_by_location(&loc.id)
+                .get_world_state_for_location(branch_id, &loc.id)
                 .await
                 .ok()
                 .flatten();
@@ -3745,6 +4077,24 @@ impl SqliteSpindleService {
             })
             .collect();
 
+        let mut future_knowledge = self
+            .repository
+            .list_future_knowledge_by_project_and_branch(project_id, branch_id)
+            .await?;
+        future_knowledge.sort_by(|a, b| a.id.cmp(&b.id));
+        let future_knowledge_entries: Vec<_> = future_knowledge
+            .iter()
+            .map(|fk| {
+                (
+                    &fk.id,
+                    &fk.character_id,
+                    &fk.knowledge_summary,
+                    &fk.learned_at,
+                    &fk.expires_at,
+                )
+            })
+            .collect();
+
         let mut promises = self
             .repository
             .list_narrative_promises_by_project_and_branch(project_id, branch_id)
@@ -3765,14 +4115,133 @@ impl SqliteSpindleService {
             .map(|t| (&t.id, &t.title, &t.event_type, &t.summary, &t.placement))
             .collect();
 
+        let cursor_index = crate::format::story_index(
+            placement.book_number,
+            placement.chapter_number,
+            scene_order,
+        );
+        let project_calendar = self
+            .repository
+            .get_project_calendar(project_id)
+            .await?
+            .map(|c| c.calendar);
+        let current_clock = self
+            .repository
+            .latest_scene_clock_at_or_before(project_id, branch_id, cursor_index)
+            .await?;
+        let prior_clock = if cursor_index > 0 {
+            self.repository
+                .latest_scene_clock_at_or_before(project_id, branch_id, cursor_index - 1)
+                .await?
+        } else {
+            None
+        };
+        let mut scene_clocks = self
+            .repository
+            .list_scene_clocks_by_project_and_branch(project_id, branch_id)
+            .await?;
+        scene_clocks.sort_by(|a, b| a.scene_id.cmp(&b.scene_id));
+        let clock_entries: Vec<_> = scene_clocks
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "scene_id": c.scene_id,
+                    "day_index": c.clock.day_index,
+                    "time_of_day": c.clock.time_of_day,
+                    "duration_days": c.clock.duration_days,
+                    "precision": c.clock.precision,
+                    "temporal_mode": c.temporal_mode,
+                    "thread_key": c.thread_key,
+                })
+            })
+            .collect();
+
+        let quantity_schemes = self
+            .repository
+            .list_project_quantity_schemes(project_id, branch_id)
+            .await?;
+        let scheme_entries: Vec<_> = quantity_schemes.iter().map(|s| &s.scheme).collect();
+        let quantity_states = self
+            .repository
+            .list_quantity_states_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let quantity_state_entries: Vec<_> = quantity_states
+            .iter()
+            .filter(|q| {
+                crate::format::story_index(q.book_number, q.chapter_number, q.scene_order)
+                    <= cursor_index
+            })
+            .map(|q| {
+                serde_json::json!({
+                    "id": q.id,
+                    "subject_table": q.subject_table,
+                    "subject_id": q.subject_id,
+                    "measure": q.measure,
+                    "amount": q.state.amount,
+                    "unit": q.state.unit,
+                    "band": q.state.band,
+                    "book_number": q.book_number,
+                    "chapter_number": q.chapter_number,
+                    "scene_order": q.scene_order,
+                })
+            })
+            .collect();
+
+        let mut prior_scenes: Vec<_> = scenes
+            .iter()
+            .filter(|s| {
+                (s.book_number, s.chapter_number, s.scene_order)
+                    < (placement.book_number, placement.chapter_number, scene_order)
+            })
+            .collect();
+        prior_scenes.sort_by_key(|s| (s.book_number, s.chapter_number, s.scene_order));
+        let prior_scene_entries: Vec<_> = prior_scenes
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id,
+                    "book_number": s.book_number,
+                    "chapter_number": s.chapter_number,
+                    "scene_order": s.scene_order,
+                    "summary": s.summary,
+                    "full_text": s.full_text,
+                    "content_rating": s.content_rating,
+                    "location_id": s.location_id,
+                })
+            })
+            .collect();
+
+        let chapter_summaries = self
+            .repository
+            .list_chapter_summaries_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let prior_chapter_summaries: Vec<_> = chapter_summaries
+            .iter()
+            .filter(|s| {
+                (s.book_number, s.chapter_number)
+                    < (placement.book_number, placement.chapter_number)
+            })
+            .map(|s| (&s.id, s.book_number, s.chapter_number, &s.summary))
+            .collect();
+
         let canon_payload = serde_json::json!({
             "characters": character_states,
+            "relationships": relationship_entries,
             "locations": location_entries,
             "lore_rules": lore_rules,
             "canonical_facts": fact_entries,
             "knowledge_facts": knowledge_entries,
+            "future_knowledge": future_knowledge_entries,
             "promises": promise_entries,
             "timeline_events": timeline_entries,
+            "project_calendar": project_calendar,
+            "current_clock": current_clock.as_ref().map(|c| (&c.scene_id, c.clock.day_index, c.clock.time_of_day, c.clock.duration_days, &c.clock.precision)),
+            "prior_clock": prior_clock.as_ref().map(|c| (&c.scene_id, c.clock.day_index, c.clock.time_of_day, c.clock.duration_days, &c.clock.precision)),
+            "scene_clocks": clock_entries,
+            "quantity_schemes": scheme_entries,
+            "quantity_states": quantity_state_entries,
+            "prior_scenes": prior_scene_entries,
+            "prior_chapter_summaries": prior_chapter_summaries,
         });
         let canon_snapshot_hash = format!(
             "canon:{}",
@@ -3820,7 +4289,7 @@ impl SqliteSpindleService {
         };
         let chapter_plan = self
             .repository
-            .list_chapter_plans_by_project(project_id)
+            .list_chapter_plans_by_project_and_branch(project_id, branch_id)
             .await?
             .into_iter()
             .find(|plan| {
@@ -3877,6 +4346,80 @@ fn composite_context_revision_token(
     format!("ctxrev:{}", &generation_sha256_hex(&payload)[..16])
 }
 
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    if keep == 0 {
+        return text.chars().take(max_chars).collect();
+    }
+    let mut out: String = text.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
+fn estimate_value_tokens(value: &impl serde::Serialize) -> usize {
+    serde_json::to_value(value)
+        .map(|v| spindle_core::context_bundle::estimate_json_tokens(&v))
+        .unwrap_or(0)
+}
+
+fn purpose_and_cursor_tokens(
+    purpose: &spindle_core::models::PrepareScenePurpose,
+    cursor: &spindle_core::models::PrepareSceneCursor,
+) -> usize {
+    let mut text = String::new();
+    if let Some(s) = purpose.chapter_synopsis.as_deref() {
+        text.push_str(s);
+        text.push('\n');
+    }
+    if let Some(s) = purpose.scene_title.as_deref() {
+        text.push_str(s);
+        text.push('\n');
+    }
+    if let Some(s) = purpose.scene_summary.as_deref() {
+        text.push_str(s);
+        text.push('\n');
+    }
+    for beat in &purpose.expected_beats {
+        text.push_str(beat);
+        text.push('\n');
+    }
+    if let Some(s) = cursor.notes.as_deref() {
+        text.push_str(s);
+        text.push('\n');
+    }
+    spindle_core::context_bundle::estimate_text_tokens(&text)
+}
+
+fn scene_context_section_token_map(
+    scene_context: &spindle_core::models::SceneContextOutput,
+) -> std::collections::BTreeMap<String, usize> {
+    use spindle_core::models::ContextFormat;
+    let bundle = crate::format::build_scene_context_bundle(
+        ContextFormat::Markdown,
+        usize::MAX,
+        &scene_context.hard_constraints,
+        &scene_context.novel.subjects,
+        &scene_context.novel,
+        &scene_context.scene,
+    );
+    bundle
+        .sections()
+        .iter()
+        .map(|sec| {
+            (
+                sec.id().to_string(),
+                sec.token_estimate(ContextFormat::Markdown),
+            )
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_drafting_packet_v1_for_prepare_scene(
     preparation_id: &str,
@@ -3888,13 +4431,12 @@ fn build_drafting_packet_v1_for_prepare_scene(
     dependencies: &spindle_core::models::ScenePreparationDependencies,
     purpose: &spindle_core::models::PrepareScenePurpose,
     context: &spindle_core::models::SceneContextOutput,
-    research: &[spindle_core::models::PrepareSceneResearchItem],
+    _research: &[spindle_core::models::PrepareSceneResearchItem],
 ) -> std::result::Result<spindle_core::drafting::DraftingPacketV1, String> {
     use spindle_core::drafting::{
-        ConstraintKind, CraftRubric, DraftingPacketV1, EditorialMemory, EmotionShift,
-        NarrativePerson, NarrativeTense, PacketChapter, PacketConstraint, PacketContinuity,
-        PacketItem, PacketLocation, PacketParticipant, PacketPov, PacketSource, PacketVoice,
-        SceneCardV1, TargetWords, ValueShift,
+        CraftRubric, DraftingPacketV1, EditorialMemory, EmotionShift, NarrativePerson,
+        NarrativeTense, PacketChapter, PacketContinuity, PacketLocation, PacketParticipant,
+        PacketPov, PacketSource, PacketVoice, SceneCardV1, TargetWords, ValueShift,
     };
 
     let pov_character = if let Some(pov_id) = purpose.pov_character_id.as_deref() {
@@ -3932,104 +4474,25 @@ fn build_drafting_packet_v1_for_prepare_scene(
     };
 
     let mut source_versions = vec![plan_source.clone(), canon_source.clone()];
-
-    let mut hard_constraints = Vec::new();
-    let mut seen_constraint_ids = std::collections::BTreeSet::new();
-    for (idx, hc) in context.hard_constraints.iter().enumerate() {
-        let id = if seen_constraint_ids.insert(hc.id.clone()) {
-            hc.id.clone()
-        } else {
-            let dedup = format!("{}#{}", hc.id, idx + 1);
-            seen_constraint_ids.insert(dedup.clone());
-            dedup
-        };
-        hard_constraints.push(PacketConstraint {
-            id,
-            kind: ConstraintKind::Canon,
-            statement: hc.statement.clone(),
-            scope: "scene".to_string(),
-            source: canon_source.clone(),
-        });
-    }
-
-    let character_states = context
-        .scene
-        .characters
-        .iter()
-        .map(|c| PacketItem {
-            proposition_id: c.character_id.clone(),
-            text: format!(
-                "{} ({}): emotional_state={:?}, goals={:?}, status={:?}",
-                c.name, c.role, c.emotional_state, c.goals, c.status
-            ),
-            relevance: 100,
-            recency: 1,
-            source: canon_source.clone(),
-        })
-        .collect();
-
-    let open_threads = purpose
-        .active_threads
-        .iter()
-        .map(|t| PacketItem {
-            proposition_id: t.id.clone(),
-            text: format!("{} ({}): {}", t.name, t.kind, t.statement),
-            relevance: 80,
-            recency: 1,
-            source: plan_source.clone(),
-        })
-        .collect();
-
-    let prior_scene_tail = context
-        .novel
-        .previous_scene_tail
-        .as_ref()
-        .map(|tail| PacketItem {
-            proposition_id: tail.scene_id.clone(),
-            text: tail.excerpt.clone(),
-            relevance: 90,
-            recency: 1,
-            source: canon_source.clone(),
-        });
-
-    let research_evidence = research
-        .iter()
-        .map(|item| {
-            let src = PacketSource {
-                branch_id: branch_id.to_string(),
-                source_id: item.id.clone(),
-                revision_hash: dependencies.canon_snapshot_hash.clone(),
-            };
-            source_versions.push(src.clone());
-            PacketItem {
-                proposition_id: item.id.clone(),
-                text: item.summary.clone(),
-                relevance: 50,
-                recency: 1,
-                source: src,
-            }
-        })
-        .collect();
-
     source_versions.sort();
     source_versions.dedup();
 
-    let goal = purpose
+    let raw_goal = purpose
         .scene_summary
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| purpose.expected_beats.first().map(String::as_str))
         .or(purpose.chapter_synopsis.as_deref())
-        .unwrap_or("Advance the planned scene beat")
-        .to_string();
+        .unwrap_or("Advance the planned scene beat");
+    let goal = truncate_chars(raw_goal, 160);
 
-    let turn = purpose
+    let raw_turn = purpose
         .expected_beats
         .last()
         .map(String::as_str)
         .or(purpose.scene_summary.as_deref())
-        .unwrap_or("Deliver the scene's narrative turn")
-        .to_string();
+        .unwrap_or("Deliver the scene's narrative turn");
+    let turn = truncate_chars(raw_turn, 160);
 
     let participants = context
         .scene
@@ -4101,31 +4564,28 @@ fn build_drafting_packet_v1_for_prepare_scene(
             rating: purpose.content_rating.clone(),
             tone: None,
             participants,
-            required_beats: purpose.expected_beats.clone(),
+            required_beats: purpose
+                .expected_beats
+                .iter()
+                .map(|b| truncate_chars(b, 120))
+                .collect(),
             promises_due: context
                 .novel
                 .narrative_promises_due
                 .iter()
-                .map(|p| p.description.clone())
+                .map(|p| truncate_chars(&p.description, 120))
                 .collect(),
             prohibited_outcomes: Vec::new(),
         },
-        hard_constraints,
-        continuity: PacketContinuity {
-            story_so_far: Vec::new(),
-            prior_scene_tail,
-            character_states,
-            knowledge_boundaries: Vec::new(),
-            facts: Vec::new(),
-            open_threads,
-        },
+        hard_constraints: Vec::new(),
+        continuity: PacketContinuity::default(),
         voice: PacketVoice::default(),
         editorial_memory: EditorialMemory::default(),
         craft_rubric: CraftRubric {
             version: crate::drafting::RUBRIC_VERSION.to_string(),
-            text: crate::drafting::CRAFT_RUBRIC.to_string(),
+            text: String::new(),
         },
-        research_evidence,
+        research_evidence: Vec::new(),
         assembly: None,
     })
 }

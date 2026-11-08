@@ -272,6 +272,11 @@ async fn prepare_scene_single_call_assembles_ordinary_scene_without_mutating_cur
             .iter()
             .any(|r| r.kind == "research")
     );
+    // Top-level reader_contract, style_directive, and scene_purpose.active_threads are deduplicated from novel.
+    assert!(!prepared.reader_contract.promise.is_empty());
+    assert!(prepared.novel.reader_contract.promise.is_empty());
+    assert!(prepared.novel.style_directive.is_none());
+    assert!(prepared.novel.world_rules.is_empty());
 
     // Draft intent omits existing_prose so fresh drafting is not primed with old prose.
     let draft_val = invoke_json(
@@ -420,7 +425,43 @@ async fn prepare_scene_branch_and_secret_visibility() {
         "secret fact value must not leak when no knower is in the scene"
     );
 
-    // Create an alternate branch, switch to it, add a branch-specific world rule, then switch back to main.
+    // Create a main-branch-only character, location, and chapter plan on main.
+    let main_only_char = invoke_json(
+        &router,
+        "create_character",
+        json!({
+            "project_id": project_id,
+            "name": "Main Only Witness",
+            "role": "supporting",
+            "summary": "Only exists on the main branch."
+        }),
+    )
+    .await;
+    let main_only_char_id = main_only_char["character_id"].as_str().unwrap().to_string();
+
+    invoke_json(
+        &router,
+        "plan_chapter",
+        json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "pov_character_id": mara_id,
+            "synopsis": "Main branch synopsis at the Vault Antechamber.",
+            "scenes": [{
+                "scene_order": 1,
+                "summary": "Main branch scene summary.",
+                "beat_structure": ["Main beat 1"],
+                "character_ids": [mara_id, main_only_char_id],
+                "location_id": location_id,
+                "content_rating": "general",
+                "purpose": "Main branch purpose."
+            }]
+        }),
+    )
+    .await;
+
+    // Create an alternate branch, switch to it, add branch-specific entities, plan, and world rule, then switch back to main.
     let alt_branch = invoke_json(
         &router,
         "create_branch",
@@ -439,6 +480,54 @@ async fn prepare_scene_branch_and_secret_visibility() {
         json!({
             "project_id": project_id,
             "branch_id": alt_branch_id
+        }),
+    )
+    .await;
+
+    let alt_char = invoke_json(
+        &router,
+        "create_character",
+        json!({
+            "project_id": project_id,
+            "name": "Alt Timeline Envoy",
+            "role": "supporting",
+            "summary": "Only exists on the alternate branch."
+        }),
+    )
+    .await;
+    let alt_char_id = alt_char["character_id"].as_str().unwrap().to_string();
+
+    let alt_loc = invoke_json(
+        &router,
+        "create_location",
+        json!({
+            "project_id": project_id,
+            "name": "Submerged Cistern",
+            "kind": "interior",
+            "summary": "Flooded vault cistern on the alternate branch."
+        }),
+    )
+    .await;
+    let alt_loc_id = alt_loc["location_id"].as_str().unwrap().to_string();
+
+    invoke_json(
+        &router,
+        "plan_chapter",
+        json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "pov_character_id": mara_id,
+            "synopsis": "Alt branch synopsis in the Submerged Cistern.",
+            "scenes": [{
+                "scene_order": 1,
+                "summary": "Alt branch scene summary.",
+                "beat_structure": ["Alt beat 1", "Alt beat 2"],
+                "character_ids": [mara_id, alt_char_id],
+                "location_id": alt_loc_id,
+                "content_rating": "general",
+                "purpose": "Alt branch purpose."
+            }]
         }),
     )
     .await;
@@ -474,9 +563,7 @@ async fn prepare_scene_branch_and_secret_visibility() {
                 "branch_id": main_branch_id,
                 "book_number": 1,
                 "chapter_number": 1,
-                "scene_order": 1,
-                "character_ids": [mara_id],
-                "location_id": location_id
+                "scene_order": 1
             }),
         )
         .await,
@@ -489,7 +576,20 @@ async fn prepare_scene_branch_and_secret_visibility() {
             .any(|hc| hc.id == "Alt Branch Curfew"),
         "main branch must not see alt-branch world rule"
     );
+    assert_eq!(
+        main_prepared.scene_purpose.location_id, location_id,
+        "main branch must resolve main planned location"
+    );
+    assert!(
+        !main_prepared
+            .scene_purpose
+            .character_ids
+            .contains(&alt_char_id),
+        "main branch must not include alt-only character"
+    );
 
+    // Prepare the alternate branch while main_branch_id is active, omitting character_ids and location_id
+    // so they resolve from alt_branch_id's chapter plan and entities.
     let alt_prepared: PrepareSceneOutput = serde_json::from_value(
         invoke_json(
             &router,
@@ -499,21 +599,55 @@ async fn prepare_scene_branch_and_secret_visibility() {
                 "branch_id": alt_branch_id,
                 "book_number": 1,
                 "chapter_number": 1,
-                "scene_order": 1,
-                "character_ids": [mara_id],
-                "location_id": location_id
+                "scene_order": 1
             }),
         )
         .await,
     )
     .unwrap();
     assert_eq!(alt_prepared.branch_id, alt_branch_id);
+    assert_eq!(
+        alt_prepared.scene_purpose.location_id, alt_loc_id,
+        "alt branch must resolve alt planned location even when main branch is active"
+    );
+    assert_eq!(
+        alt_prepared.scene_purpose.chapter_synopsis.as_deref(),
+        Some("Alt branch synopsis in the Submerged Cistern.")
+    );
+    assert_eq!(
+        alt_prepared.scene_purpose.expected_beats,
+        vec!["Alt beat 1".to_string(), "Alt beat 2".to_string()]
+    );
+    assert!(
+        alt_prepared
+            .scene_purpose
+            .character_ids
+            .contains(&alt_char_id),
+        "alt branch must resolve alt planned character"
+    );
+    assert!(
+        !alt_prepared
+            .scene_purpose
+            .character_ids
+            .contains(&main_only_char_id),
+        "alt branch plan must override main branch planned character list"
+    );
     assert!(
         alt_prepared
             .hard_constraints
             .iter()
             .any(|hc| hc.id == "Alt Branch Curfew"),
         "alt branch must surface its branch-scoped world rule"
+    );
+    assert_ne!(
+        alt_prepared.dependency_tokens.plan_revision_hash,
+        main_prepared.dependency_tokens.plan_revision_hash,
+        "plan_revision_hash must be computed against target branch_id, not active branch"
+    );
+    assert_ne!(
+        alt_prepared.dependency_tokens.canon_snapshot_hash,
+        main_prepared.dependency_tokens.canon_snapshot_hash,
+        "canon_snapshot_hash must be computed against target branch_id, not active branch"
     );
 }
 
@@ -622,19 +756,82 @@ async fn prepare_scene_preserves_hard_constraints_and_reports_truncation_and_una
         "expected minimum required budget error, got: {err_text}"
     );
 
-    // 3. When budget_tokens fits hard constraints but is tighter than full supplementary context,
-    // hard constraints are preserved and truncated_sections lists the dropped sections.
-    let tight_budget = no_char_prepared.coverage.hard_constraint_tokens + 20;
-    let tight_val = invoke_json(
+    // 3. When budget_tokens fits hard constraints but is tighter than full supplementary context
+    // (including a large existing_prose, research claims, and drafting_packet_v1),
+    // hard constraints are preserved and all non-constraint sections are trimmed/dropped to fit.
+    let long_prose = "Soren measured the coarse sea salt into the bronze brazier while the gale hammered the shutters. ".repeat(48);
+    let saved_long = invoke_json(
         &router,
-        "prepare_scene",
+        "save_scene_draft",
         json!({
             "project_id": project_id,
             "book_number": 1,
             "chapter_number": 1,
             "scene_order": 1,
+            "full_text": long_prose,
+            "summary": "Soren prepares the salt brazier.",
+            "content_rating": "general",
+            "location_id": location_id,
+            "authorship": "assistant"
+        }),
+    )
+    .await;
+    let long_scene_id = saved_long["scene_id"].as_str().unwrap().to_string();
+
+    let src = invoke_json(
+        &router,
+        "research_add_source",
+        json!({
+            "project_id": project_id,
+            "title": "Treatise on Salt Binding",
+            "source_type": "reference",
+            "reliability": "high",
+            "tags": ["salt"],
+            "summary": "Detailed tables of salt weights and frost thresholds."
+        }),
+    )
+    .await;
+    invoke_json(
+        &router,
+        "research_add_claim",
+        json!({
+            "project_id": project_id,
+            "source_id": src["source_id"].as_str().unwrap(),
+            "claim": "Coarse crystalline salt binds wind currents twice as long as fine salt.",
+            "confidence": "high",
+            "tags": ["salt"]
+        }),
+    )
+    .await;
+
+    let full_prepared: PrepareSceneOutput = serde_json::from_value(
+        invoke_json(
+            &router,
+            "prepare_scene",
+            json!({
+                "project_id": project_id,
+                "scene_id": long_scene_id,
+                "character_ids": [soren_id],
+                "location_id": location_id,
+                "intent": "revise",
+                "research_query": "salt"
+            }),
+        )
+        .await,
+    )
+    .unwrap();
+
+    let tight_budget = full_prepared.coverage.hard_constraint_tokens + 60;
+    let tight_val = invoke_json(
+        &router,
+        "prepare_scene",
+        json!({
+            "project_id": project_id,
+            "scene_id": long_scene_id,
             "character_ids": [soren_id],
             "location_id": location_id,
+            "intent": "revise",
+            "research_query": "salt",
             "budget_tokens": tight_budget
         }),
     )
@@ -647,9 +844,33 @@ async fn prepare_scene_preserves_hard_constraints_and_reports_truncation_and_una
             .any(|hc| hc.id == "Iron Law of Salt")
     );
     assert!(tight_prepared.coverage.estimated_tokens <= tight_budget);
+    assert!(tight_prepared.drafting_packet_v1.is_none());
+    assert!(tight_prepared.research.is_empty());
     assert!(
-        !tight_prepared.coverage.truncated_sections.is_empty(),
-        "expected tight budget to truncate low-priority supplementary sections"
+        tight_prepared
+            .coverage
+            .truncated_sections
+            .contains(&"drafting_packet_v1".to_string())
+    );
+    assert!(
+        tight_prepared
+            .coverage
+            .truncated_sections
+            .contains(&"research".to_string())
+    );
+    assert!(
+        tight_prepared
+            .coverage
+            .truncated_sections
+            .contains(&"existing_prose".to_string())
+    );
+    let trimmed_prose_tokens = spindle_core::context_bundle::estimate_text_tokens(
+        tight_prepared.existing_prose.as_deref().unwrap_or_default(),
+    );
+    assert!(
+        trimmed_prose_tokens + tight_prepared.coverage.hard_constraint_tokens <= tight_budget,
+        "existing_prose ({trimmed_prose_tokens} tokens) + hard constraints ({}) must fit within tight_budget ({tight_budget})",
+        tight_prepared.coverage.hard_constraint_tokens
     );
 }
 
@@ -911,4 +1132,242 @@ async fn prepare_scene_dependency_tokens_detect_scene_canon_style_and_plan_stale
         .unwrap();
     assert!(!after_plan.fresh);
     assert_eq!(after_plan.stale_components, vec!["plan".to_string()]);
+
+    // 5. Save a second scene (scene_order: 2) and verify that relationships, scene clocks,
+    // and preceding-scene prose changes invalidate its canon_snapshot_hash.
+    let assistant_out = invoke_json(
+        &router,
+        "create_character",
+        json!({
+            "project_id": project_id,
+            "name": "Sergeant Finch",
+            "role": "supporting",
+            "summary": "Vale's junior sergeant."
+        }),
+    )
+    .await;
+    let finch_id = assistant_out["character_id"].as_str().unwrap().to_string();
+
+    let saved_scene2 = invoke_json(
+        &router,
+        "save_scene_draft",
+        json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 2,
+            "full_text": "Vale showed Finch the ciphered ledger in the hallway.",
+            "summary": "Vale briefs Finch.",
+            "content_rating": "general",
+            "location_id": location_id,
+            "authorship": "assistant"
+        }),
+    )
+    .await;
+    let scene2_id = saved_scene2["scene_id"].as_str().unwrap().to_string();
+    let placement2 = StoryPlacement {
+        book_number: 1,
+        chapter_number: 1,
+        scene_order: Some(2),
+        note: None,
+    };
+
+    let prep5: PrepareSceneOutput = serde_json::from_value(
+        invoke_json(
+            &router,
+            "prepare_scene",
+            json!({
+                "project_id": project_id,
+                "scene_id": scene2_id,
+                "character_ids": [vale_id, finch_id],
+                "location_id": location_id
+            }),
+        )
+        .await,
+    )
+    .unwrap();
+
+    // 5a. Mutate relationships -> "canon" is stale.
+    invoke_json(
+        &router,
+        "create_relationship",
+        json!({
+            "project_id": project_id,
+            "character_a_id": vale_id,
+            "character_b_id": finch_id,
+            "relationship_type": "mentor",
+            "initial_trust": 80,
+            "initial_tension": 15,
+            "dynamics": ["strict chain of command"]
+        }),
+    )
+    .await;
+    let after_rel = router
+        .service
+        .check_prepare_scene_freshness(
+            &project_id,
+            &prep5.branch_id,
+            &placement2,
+            Some(&scene2_id),
+            &prep5.dependency_tokens,
+        )
+        .await
+        .unwrap();
+    assert!(!after_rel.fresh);
+    assert_eq!(after_rel.stale_components, vec!["canon".to_string()]);
+
+    // 5b. Re-prepare Scene 2, then mutate scene clock -> "canon" is stale.
+    let prep6: PrepareSceneOutput = serde_json::from_value(
+        invoke_json(
+            &router,
+            "prepare_scene",
+            json!({
+                "project_id": project_id,
+                "scene_id": scene2_id,
+                "character_ids": [vale_id, finch_id],
+                "location_id": location_id
+            }),
+        )
+        .await,
+    )
+    .unwrap();
+    invoke_json(
+        &router,
+        "set_scene_clock",
+        json!({
+            "project_id": project_id,
+            "scene_id": scene_id,
+            "clock": {
+                "day_index": 1,
+                "time_of_day": 197
+            }
+        }),
+    )
+    .await;
+    let after_clock = router
+        .service
+        .check_prepare_scene_freshness(
+            &project_id,
+            &prep6.branch_id,
+            &placement2,
+            Some(&scene2_id),
+            &prep6.dependency_tokens,
+        )
+        .await
+        .unwrap();
+    assert!(!after_clock.fresh);
+    assert_eq!(after_clock.stale_components, vec!["canon".to_string()]);
+
+    // 5c. Re-prepare Scene 2, then mutate preceding Scene 1's prose -> Scene 2's "canon" is stale.
+    let prep7: PrepareSceneOutput = serde_json::from_value(
+        invoke_json(
+            &router,
+            "prepare_scene",
+            json!({
+                "project_id": project_id,
+                "scene_id": scene2_id,
+                "character_ids": [vale_id, finch_id],
+                "location_id": location_id
+            }),
+        )
+        .await,
+    )
+    .unwrap();
+    invoke_json(
+        &router,
+        "save_scene_draft",
+        json!({
+            "project_id": project_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "full_text": "Vale pried open the clockface and pulled out the brass-bound ledger.",
+            "summary": "Vale recovers the ledger from the clockface.",
+            "content_rating": "general",
+            "location_id": location_id,
+            "authorship": "assistant"
+        }),
+    )
+    .await;
+    let after_prior_scene = router
+        .service
+        .check_prepare_scene_freshness(
+            &project_id,
+            &prep7.branch_id,
+            &placement2,
+            Some(&scene2_id),
+            &prep7.dependency_tokens,
+        )
+        .await
+        .unwrap();
+    assert!(!after_prior_scene.fresh);
+    assert_eq!(
+        after_prior_scene.stale_components,
+        vec!["canon".to_string()]
+    );
+
+    // 5d. Re-prepare Scene 2, then mutate quantity scheme and ledger state -> Scene 2's "canon" is stale.
+    let prep8: PrepareSceneOutput = serde_json::from_value(
+        invoke_json(
+            &router,
+            "prepare_scene",
+            json!({
+                "project_id": project_id,
+                "scene_id": scene2_id,
+                "character_ids": [vale_id, finch_id],
+                "location_id": location_id
+            }),
+        )
+        .await,
+    )
+    .unwrap();
+    invoke_json(
+        &router,
+        "set_project_quantity_scheme",
+        json!({
+            "project_id": project_id,
+            "scheme": {
+                "measure": "ammunition",
+                "denominations": [{ "name": "rounds", "per_base": 1 }],
+                "bands": [
+                    { "name": "empty", "lower_bound": 0 },
+                    { "name": "stocked", "lower_bound": 6 }
+                ]
+            }
+        }),
+    )
+    .await;
+    invoke_json(
+        &router,
+        "commit_quantity_state",
+        json!({
+            "project_id": project_id,
+            "subject_table": "character",
+            "subject_id": vale_id,
+            "measure": "ammunition",
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "scene_id": scene_id,
+            "state": {
+                "amount": 6.0,
+                "unit": "rounds",
+                "band": "stocked"
+            }
+        }),
+    )
+    .await;
+    let after_quantity = router
+        .service
+        .check_prepare_scene_freshness(
+            &project_id,
+            &prep8.branch_id,
+            &placement2,
+            Some(&scene2_id),
+            &prep8.dependency_tokens,
+        )
+        .await
+        .unwrap();
+    assert!(!after_quantity.fresh);
+    assert_eq!(after_quantity.stale_components, vec!["canon".to_string()]);
 }

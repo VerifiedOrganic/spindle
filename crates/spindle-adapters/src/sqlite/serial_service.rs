@@ -578,10 +578,11 @@ impl SqliteSpindleService {
     ) -> Result<String> {
         let repo = self.repository();
         let mut books: BTreeMap<i32, Vec<(i32, String)>> = BTreeMap::new();
-        for summary in repo.list_chapter_summaries_by_project(project_id).await? {
-            if summary.branch_id == branch_id
-                && (summary.book_number, summary.chapter_number) < (book_number, chapter_number)
-            {
+        for summary in repo
+            .list_chapter_summaries_by_project_and_branch(project_id, branch_id)
+            .await?
+        {
+            if (summary.book_number, summary.chapter_number) < (book_number, chapter_number) {
                 books
                     .entry(summary.book_number)
                     .or_default()
