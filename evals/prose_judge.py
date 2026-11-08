@@ -1403,6 +1403,56 @@ def call_rust_bridge_for_brief(
     }
 
 
+def compute_generation_input_fingerprint(
+    brief: dict,
+    variant_cfg: dict,
+    generator_cfg: dict,
+    condition_label: str = "candidate",
+    generation_seed: int | None = None,
+) -> str:
+    """Compute a deterministic fingerprint of the effective brief, variant, and generator config."""
+    effective_seed = (
+        generation_seed
+        if generation_seed is not None
+        else (int(generator_cfg["seed"]) if generator_cfg.get("seed") is not None else None)
+    )
+    provider = str(generator_cfg.get("provider", "fake")).lower()
+    if provider != "fake" and generator_cfg.get("rust_config"):
+        provider = "rust-bridge"
+    rust_cfg_path = generator_cfg.get("rust_config")
+    rust_cfg_hash = None
+    if rust_cfg_path:
+        p = Path(rust_cfg_path)
+        if p.exists():
+            try:
+                rust_cfg_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+            except Exception:
+                rust_cfg_hash = str(rust_cfg_path)
+        else:
+            rust_cfg_hash = str(rust_cfg_path)
+    normalized_gen = {
+        "provider": provider,
+        "model": generator_cfg.get("model"),
+        "endpoint": generator_cfg.get("endpoint"),
+        "api_key_env": generator_cfg.get("api_key_env"),
+        "temperature": generator_cfg.get("temperature"),
+        "max_tokens": generator_cfg.get("max_tokens"),
+        "route": str(generator_cfg.get("route") or "draft") if provider == "rust-bridge" else generator_cfg.get("route"),
+        "rating": str(generator_cfg.get("rating") or "general") if provider == "rust-bridge" else generator_cfg.get("rating"),
+        "rust_config_hash": rust_cfg_hash,
+        "tokenizer_binary": str(generator_cfg.get("tokenizer_binary")) if generator_cfg.get("tokenizer_binary") else None,
+    }
+    return digest(
+        {
+            "brief": brief,
+            "variant": variant_cfg,
+            "condition": condition_label,
+            "generation_seed": effective_seed,
+            "generator_cfg": normalized_gen,
+        }
+    )
+
+
 def generate_candidate_for_brief(
     brief: dict,
     variant_cfg: dict,
@@ -1416,15 +1466,24 @@ def generate_candidate_for_brief(
         if generation_seed is not None
         else (int(generator_cfg["seed"]) if generator_cfg.get("seed") is not None else None)
     )
+    gen_input_fp = compute_generation_input_fingerprint(
+        brief,
+        variant_cfg,
+        generator_cfg,
+        condition_label=condition_label,
+        generation_seed=effective_seed,
+    )
     provider = str(generator_cfg.get("provider", "fake")).lower()
     if provider == "rust-bridge" or (provider != "fake" and generator_cfg.get("rust_config")):
-        return call_rust_bridge_for_brief(
+        out = call_rust_bridge_for_brief(
             brief,
             variant_cfg,
             generator_cfg,
             condition_label=condition_label,
             generation_seed=effective_seed,
         )
+        out["generation_input_fingerprint"] = gen_input_fp
+        return out
 
     sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
     variant_id = variant_cfg.get("id", "custom_variant")
@@ -1465,6 +1524,7 @@ def generate_candidate_for_brief(
             "condition": condition_label,
             "prompt_variant": variant_id,
             "generation_seed": effective_seed,
+            "generation_input_fingerprint": gen_input_fp,
             "model": generator_cfg.get("model", "spindle-fake-drafter-v1"),
             "model_version": "offline-v1",
             "text": clean_text,
@@ -1496,10 +1556,13 @@ def generate_candidate_for_brief(
         "condition": condition_label,
         "prompt_variant": variant_id,
         "generation_seed": effective_seed,
+        "generation_input_fingerprint": gen_input_fp,
         "model": resp.get("model", generator_cfg.get("model", "unknown")),
         "model_version": f"{provider}:{generator_cfg.get('model', 'unknown')}",
         "text": resp["text"],
+        "truncated": bool(resp.get("truncated", False)),
         "text_sha256": text_sha,
+        "accepted_text_sha256": text_sha if packet_obj is not None and not resp.get("truncated", False) else None,
         "packet_hash": packet_hash,
         "source_packet_sha256": source_packet_sha256,
         "prompt_hash": prompt_hash,
@@ -1513,6 +1576,62 @@ def generate_candidate_for_brief(
         "output_tokens": resp.get("output_tokens"),
         "elapsed_seconds": resp.get("elapsed_seconds"),
     }
+
+
+def generate_candidates_with_checkpoint(
+    briefs: list[dict],
+    variant_cfg: dict,
+    generator_cfg: dict,
+    out_path: Path | str,
+    condition_label: str = "candidate",
+    seeds: list[int | None] | None = None,
+) -> list[dict]:
+    """Generate candidates across briefs and seeds, reusing checkpoint entries only when their generation_input_fingerprint and completeness match."""
+    effective_seeds = seeds if seeds else [None]
+    out_file = Path(out_path)
+    existing_by_key: dict[tuple[str, int | None], dict] = {}
+    if out_file.exists():
+        try:
+            prev = read_json(out_file)
+            prev_list = prev.get("candidates", prev) if isinstance(prev, dict) else prev
+            if isinstance(prev_list, list):
+                for item in prev_list:
+                    if isinstance(item, dict) and item.get("text"):
+                        try:
+                            validate_candidate_completeness(item, arm_label=condition_label)
+                        except ValueError:
+                            continue
+                        bid = item.get("case_id") or item.get("brief_id")
+                        existing_by_key[(bid, item.get("generation_seed"))] = item
+        except Exception:
+            pass
+
+    outputs: list[dict] = []
+    for b in briefs:
+        for gseed in effective_seeds:
+            expected_fp = compute_generation_input_fingerprint(
+                b,
+                variant_cfg,
+                generator_cfg,
+                condition_label=condition_label,
+                generation_seed=gseed,
+            )
+            key = (b["id"], gseed)
+            cached_item = existing_by_key.get(key)
+            if cached_item and cached_item.get("generation_input_fingerprint") == expected_fp:
+                outputs.append(cached_item)
+                continue
+            cand = generate_candidate_for_brief(
+                b,
+                variant_cfg,
+                generator_cfg,
+                condition_label=condition_label,
+                generation_seed=gseed,
+            )
+            outputs.append(cand)
+            write_json(out_file, outputs)
+    write_json(out_file, outputs)
+    return outputs
 
 
 def validate_candidate_completeness(record: dict, arm_label: str = "candidate") -> None:
@@ -1731,6 +1850,56 @@ def evaluate_single_pass(
     }
 
 
+def compute_judge_config_fingerprint(judge_cfg: dict) -> str:
+    """Compute a deterministic fingerprint of a single judge's configuration."""
+    return digest(judge_cfg)
+
+
+def compute_pair_prompt_seed_fingerprint(brief: dict, pair: dict, seed: int) -> str:
+    """Compute a deterministic fingerprint of the judge prompt inputs, rubric, texts, and randomization seed."""
+    base_text = pair["baseline"]["text"]
+    cand_text = pair["candidate"]["text"]
+    sys_p, user_p = build_judge_prompts(brief, base_text, cand_text)
+    return digest(
+        {
+            "pair_id": str(pair["pair_id"]),
+            "brief_id": brief["id"],
+            "seed": seed,
+            "rubric_dimensions": list(RUBRIC_DIMENSIONS),
+            "baseline_text_hash": digest(base_text),
+            "candidate_text_hash": digest(cand_text),
+            "system_prompt": sys_p,
+            "user_prompt": user_p,
+        }
+    )
+
+
+def compute_judge_pair_input_fingerprint(judge_cfg: dict, brief: dict, pair: dict, seed: int) -> str:
+    """Compute a deterministic fingerprint of a judge's config and prompt/randomization inputs for a pair."""
+    return digest(
+        {
+            "judge_config_fingerprint": compute_judge_config_fingerprint(judge_cfg),
+            "pair_prompt_seed_fingerprint": compute_pair_prompt_seed_fingerprint(brief, pair, seed),
+        }
+    )
+
+
+def compute_pair_judgment_fingerprint(brief: dict, pair: dict, judges: list[dict], seed: int) -> str:
+    """Compute a deterministic fingerprint of the full judge panel and pair prompt/randomization inputs."""
+    return digest(
+        {
+            "pair_prompt_seed_fingerprint": compute_pair_prompt_seed_fingerprint(brief, pair, seed),
+            "panel": [
+                {
+                    "id": j["id"],
+                    "judge_config_fingerprint": compute_judge_config_fingerprint(j),
+                }
+                for j in judges
+            ],
+        }
+    )
+
+
 def judge_pair_double(
     judge_cfg: dict,
     brief: dict,
@@ -1828,6 +1997,8 @@ def judge_pair_double(
         "brief_id": brief["id"],
         "judge_id": judge_cfg["id"],
         "judge_family": judge_cfg.get("family", "unknown"),
+        "judge_config_fingerprint": compute_judge_config_fingerprint(judge_cfg),
+        "judgment_input_fingerprint": compute_judge_pair_input_fingerprint(judge_cfg, brief, pair, seed),
         "verdict": final_verdict,
         "order_consistent": order_consistent,
         "position_bias_kind": position_bias_kind,
@@ -2317,7 +2488,7 @@ def run_evaluation(
             raw_ckpt = read_json(ckpt_file)
             if isinstance(raw_ckpt, list):
                 for row in raw_ckpt:
-                    if isinstance(row, dict) and row.get("pair_id") and len(row.get("judge_evaluations", [])) == len(judges):
+                    if isinstance(row, dict) and row.get("pair_id") and isinstance(row.get("judge_evaluations"), list):
                         cached_pairs[str(row["pair_id"])] = row
         except Exception:
             pass
@@ -2332,19 +2503,52 @@ def run_evaluation(
         pid_str = str(pair["pair_id"])
         base_hash = digest(pair["baseline"]["text"])
         cand_hash = digest(pair["candidate"]["text"])
+        prompt_seed_fp = compute_pair_prompt_seed_fingerprint(brief, pair, seed)
+        pair_judgment_fp = compute_pair_judgment_fingerprint(brief, pair, judges, seed)
         cached_row = cached_pairs.get(pid_str)
+        reused_evals: list[dict] | None = None
         if (
             cached_row
             and cached_row.get("baseline_text_hash") == base_hash
             and cached_row.get("candidate_text_hash") == cand_hash
+            and cached_row.get("judgment_prompt_seed_fingerprint") == prompt_seed_fp
         ):
-            evals_for_pair = cached_row["judge_evaluations"]
-            for judge_cfg, dj in zip(judges, evals_for_pair):
+            cached_eval_by_id = {
+                dj.get("judge_id"): dj
+                for dj in cached_row.get("judge_evaluations", [])
+                if isinstance(dj, dict) and dj.get("judge_id")
+            }
+            if set(cached_eval_by_id.keys()) == {j["id"] for j in judges}:
+                matched_all = True
+                ordered_evals: list[dict] = []
+                for judge_cfg in judges:
+                    jid = judge_cfg["id"]
+                    dj = cached_eval_by_id.get(jid)
+                    expected_j_fp = compute_judge_pair_input_fingerprint(judge_cfg, brief, pair, seed)
+                    if not dj or dj.get("judgment_input_fingerprint") != expected_j_fp:
+                        matched_all = False
+                        break
+                    ordered_evals.append(dj)
+                if matched_all:
+                    reused_evals = ordered_evals
+
+        if reused_evals is not None and cached_row is not None:
+            evals_for_pair = reused_evals
+            for dj in evals_for_pair:
+                jid = dj["judge_id"]
                 all_double_judgments.append(dj)
-                by_judge_judgments[judge_cfg["id"]].append(dj)
-                by_judge_verdicts[judge_cfg["id"]].append(dj["verdict"])
-            consensus_verdicts.append(cached_row["panel_consensus"])
-            pair_reports.append(cached_row)
+                by_judge_judgments[jid].append(dj)
+                by_judge_verdicts[jid].append(dj["verdict"])
+            consensus = panel_consensus([e["verdict"] for e in evals_for_pair])
+            consensus_verdicts.append(consensus)
+            updated_row = {
+                **cached_row,
+                "judgment_prompt_seed_fingerprint": prompt_seed_fp,
+                "judgment_checkpoint_fingerprint": pair_judgment_fp,
+                "panel_consensus": consensus,
+                "judge_evaluations": evals_for_pair,
+            }
+            pair_reports.append(updated_row)
             continue
 
         if use_parallel_judges:
@@ -2359,10 +2563,11 @@ def run_evaluation(
                 judge_pair_double(judge_cfg, brief, pair, seed=seed)
                 for judge_cfg in judges
             ]
-        for judge_cfg, dj in zip(judges, evals_for_pair):
+        for dj in evals_for_pair:
+            jid = dj["judge_id"]
             all_double_judgments.append(dj)
-            by_judge_judgments[judge_cfg["id"]].append(dj)
-            by_judge_verdicts[judge_cfg["id"]].append(dj["verdict"])
+            by_judge_judgments[jid].append(dj)
+            by_judge_verdicts[jid].append(dj["verdict"])
 
         consensus = panel_consensus([e["verdict"] for e in evals_for_pair])
         consensus_verdicts.append(consensus)
@@ -2382,6 +2587,7 @@ def run_evaluation(
                 "model_version": arm.get("model_version"),
                 "prompt_variant": arm.get("prompt_variant"),
                 "generation_seed": arm.get("generation_seed", gseed),
+                "generation_input_fingerprint": arm.get("generation_input_fingerprint"),
                 "truncated": bool(arm.get("truncated", False)),
                 "text_sha256": arm.get("text_sha256"),
                 "accepted_text_sha256": arm.get("accepted_text_sha256"),
@@ -2410,6 +2616,8 @@ def run_evaluation(
             "pov": brief["pov"],
             "baseline_text_hash": base_hash,
             "candidate_text_hash": cand_hash,
+            "judgment_prompt_seed_fingerprint": prompt_seed_fp,
+            "judgment_checkpoint_fingerprint": pair_judgment_fp,
             "baseline_meta": _extract_meta(pair["baseline"]),
             "candidate_meta": _extract_meta(pair["candidate"]),
             "panel_consensus": consensus,
@@ -2981,6 +3189,145 @@ def self_test() -> None:
         except ValueError as exc:
             assert "accepted_text_sha256" in str(exc)
 
+        # Verify generation checkpoint fingerprint validation (PRRT_kwDOSmzJlM61D0Xy):
+        # changing variant, provider, or brief content while keeping brief_id and seed fixed must regenerate
+        gen_ckpt_file = root / "gen_ckpt.json"
+        fake_cfg = {"provider": "fake", "model": "spindle-fake-drafter-v1"}
+        out_compact = generate_candidates_with_checkpoint(
+            briefs[:1],
+            variants["compact_baseline"],
+            fake_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert out_compact[0]["prompt_variant"] == "compact_baseline"
+        # Poison the checkpoint text while keeping its fingerprint to prove matching inputs reuse the checkpoint
+        poisoned_compact = [{**out_compact[0], "text": "CACHED_COMPACT_SENTINEL"}]
+        write_json(gen_ckpt_file, poisoned_compact)
+        reused_compact = generate_candidates_with_checkpoint(
+            briefs[:1],
+            variants["compact_baseline"],
+            fake_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert reused_compact[0]["text"] == "CACHED_COMPACT_SENTINEL"
+
+        # Changing --variant with same --out, brief, and seed must NOT reuse the compact checkpoint
+        out_full = generate_candidates_with_checkpoint(
+            briefs[:1],
+            variants["spindle_full_context"],
+            fake_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert out_full[0]["prompt_variant"] == "spindle_full_context"
+        assert out_full[0]["text"] != "CACHED_COMPACT_SENTINEL"
+
+        # Changing provider (fake -> rust-bridge) with same --out, variant, brief, and seed must NOT reuse fake output
+        out_bridge = generate_candidates_with_checkpoint(
+            briefs[:1],
+            variants["spindle_full_context"],
+            bridge_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert out_bridge[0]["model_version"].startswith("rust-bridge:")
+        assert "Legacy prose len=" in out_bridge[0]["text"]
+
+        # Editing brief content with same --out, variant, provider, and seed must NOT reuse stale brief output
+        edited_brief = {**briefs[0], "scene_purpose": "Edited scene purpose for fingerprint invalidation test"}
+        out_edited_brief = generate_candidates_with_checkpoint(
+            [edited_brief],
+            variants["spindle_full_context"],
+            fake_cfg,
+            gen_ckpt_file,
+            condition_label="candidate",
+            seeds=[101],
+        )
+        assert "Edited scene purpose for fingerprint invalidation test" in out_edited_brief[0]["text"]
+
+        # Verify judgment checkpoint fingerprint & judge identity matching (PRRT_kwDOSmzJlM61D0X0):
+        judge_ckpt_file = root / "judge_ckpt.json"
+        ckpt_pairs = multi_seed_pairs[:2]
+        rep_initial = run_evaluation(
+            briefs[:2],
+            ckpt_pairs,
+            offline_judges,
+            seed=20261107,
+            checkpoint_path=judge_ckpt_file,
+        )
+        # Stamp distinct per-judge marker notes in checkpoint while preserving valid fingerprints
+        ckpt_rows = read_json(judge_ckpt_file)
+        for row in ckpt_rows:
+            for dj in row["judge_evaluations"]:
+                dj["pass_1"]["rationale"] = f"CACHED_FOR_{dj['judge_id']}"
+        write_json(judge_ckpt_file, ckpt_rows)
+
+        # Reordering the judge panel with same configs/brief/seed must reuse cached evaluations matched by judge_id
+        reordered_judges = list(reversed(offline_judges))
+        rep_reordered = run_evaluation(
+            briefs[:2],
+            ckpt_pairs,
+            reordered_judges,
+            seed=20261107,
+            checkpoint_path=judge_ckpt_file,
+        )
+        for j_cfg, dj in zip(reordered_judges, rep_reordered["pairs"][0]["judge_evaluations"]):
+            assert dj["judge_id"] == j_cfg["id"]
+            assert dj["pass_1"]["rationale"] == f"CACHED_FOR_{j_cfg['id']}"
+            assert rep_reordered["per_judge"][j_cfg["id"]]["win_rates"]["candidate_wins"] == rep_initial["per_judge"][j_cfg["id"]]["win_rates"]["candidate_wins"]
+
+        # Changing randomization seed must invalidate judgment checkpoint and re-evaluate
+        rep_new_seed = run_evaluation(
+            briefs[:2],
+            ckpt_pairs,
+            offline_judges,
+            seed=99999999,
+            checkpoint_path=judge_ckpt_file,
+        )
+        assert not rep_new_seed["pairs"][0]["judge_evaluations"][0]["pass_1"]["rationale"].startswith("CACHED_FOR_")
+
+        # Re-stamp marker notes then verify changing judge model/config or brief content invalidates checkpoint
+        ckpt_rows = read_json(judge_ckpt_file)
+        for row in ckpt_rows:
+            for dj in row["judge_evaluations"]:
+                dj["pass_1"]["rationale"] = f"CACHED_SEED2_{dj['judge_id']}"
+        write_json(judge_ckpt_file, ckpt_rows)
+
+        modified_judges = [
+            {**offline_judges[0], "model": "modified-judge-model-v2"},
+            *offline_judges[1:],
+        ]
+        rep_mod_judge = run_evaluation(
+            briefs[:2],
+            ckpt_pairs,
+            modified_judges,
+            seed=99999999,
+            checkpoint_path=judge_ckpt_file,
+        )
+        assert not rep_mod_judge["pairs"][0]["judge_evaluations"][0]["pass_1"]["rationale"].startswith("CACHED_SEED2_")
+
+        ckpt_rows = read_json(judge_ckpt_file)
+        for row in ckpt_rows:
+            for dj in row["judge_evaluations"]:
+                dj["pass_1"]["rationale"] = f"CACHED_BRIEF_{dj['judge_id']}"
+        write_json(judge_ckpt_file, ckpt_rows)
+
+        modified_briefs = [{**briefs[0], "contract": "Modified contract text"}, briefs[1]]
+        rep_mod_brief = run_evaluation(
+            modified_briefs,
+            ckpt_pairs,
+            modified_judges,
+            seed=99999999,
+            checkpoint_path=judge_ckpt_file,
+        )
+        assert not rep_mod_brief["pairs"][0]["judge_evaluations"][0]["pass_1"]["rationale"].startswith("CACHED_BRIEF_")
+
     # 5. Verify secret redaction & key check safety
     os.environ["SPINDLE_TEST_FAKE_SECRET_KEY"] = "super-secret-value-12345"
     try:
@@ -3118,42 +3465,14 @@ def main() -> None:
             gen_cfg["rating"] = args.rating
 
         seeds = parse_generation_seeds(args.generation_seed, args.generation_seeds)
-        # Incremental checkpoint support: if args.out already exists and is a JSON list, reuse completed (brief_id, generation_seed) items
-        existing_by_key: dict[tuple[str, int | None], dict] = {}
-        out_path = Path(args.out)
-        if out_path.exists():
-            try:
-                prev = read_json(out_path)
-                prev_list = prev.get("candidates", prev) if isinstance(prev, dict) else prev
-                if isinstance(prev_list, list):
-                    for item in prev_list:
-                        if isinstance(item, dict) and item.get("text"):
-                            try:
-                                validate_candidate_completeness(item, arm_label=args.condition)
-                            except ValueError:
-                                continue
-                            bid = item.get("case_id") or item.get("brief_id")
-                            existing_by_key[(bid, item.get("generation_seed"))] = item
-            except Exception:
-                pass
-
-        outputs = []
-        for b in briefs:
-            for gseed in seeds:
-                key = (b["id"], gseed)
-                if key in existing_by_key:
-                    outputs.append(existing_by_key[key])
-                    continue
-                cand = generate_candidate_for_brief(
-                    b,
-                    variants[args.variant],
-                    gen_cfg,
-                    condition_label=args.condition,
-                    generation_seed=gseed,
-                )
-                outputs.append(cand)
-                write_json(args.out, outputs)
-        write_json(args.out, outputs)
+        outputs = generate_candidates_with_checkpoint(
+            briefs,
+            variants[args.variant],
+            gen_cfg,
+            args.out,
+            condition_label=args.condition,
+            seeds=seeds,
+        )
         print(f"Wrote {len(outputs)} generated candidates ({args.variant}, seeds={seeds}) to {args.out}")
         return
 

@@ -1019,7 +1019,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "ba477d172917a98fe3c740017219137bc5f8d629be25de2f657367477dd61e26"
         },
         {
           "pair_id": "P001-S101",
@@ -1091,7 +1093,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "296a2077b30a100dcfb97d83628f32dcdddba655b13cb266d490292448895734"
         },
         {
           "pair_id": "P001-S101",
@@ -1163,9 +1167,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "14d05aae2689a5828e2d1625f69df13554d8a3e3e1ca8a62ffe30edd479e7aea"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "931868bd6180c0b2ae8cee4ce56f08f612f40228f5348ece238506a0da398690",
+      "judgment_checkpoint_fingerprint": "72d355842bd7246804afbe8a60352193888b20c687f6890978e9ec7961a06ec4"
     },
     {
       "pair_id": "P001-S202",
@@ -1323,7 +1331,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "5d4ef989fca36fa9cc42aeb94504896cd97f2c8bdbd9ead8c3291d527b9432b2"
         },
         {
           "pair_id": "P001-S202",
@@ -1395,7 +1405,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "84b62e2c303297a41f3ef33a7d9b348e2e59d031602054fa24855298204e7aba"
         },
         {
           "pair_id": "P001-S202",
@@ -1467,9 +1479,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "7e5afae88939a20697da46296dfeec8373471ebcb7df57ea813e392c4e578589"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "df4ec0ac410c238774df2bcb81f0709e6e2923499af41c7199a984cba1e39d6d",
+      "judgment_checkpoint_fingerprint": "7d1ed322661eb759a4ee4476d7727a4285d06e4d16d956ee3ef60ad9b94824ce"
     },
     {
       "pair_id": "P001-S303",
@@ -1627,7 +1643,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "70d9d95ce8c115ed6581bd60e784e417f8a460308cb86e67db9482299505fe1a"
         },
         {
           "pair_id": "P001-S303",
@@ -1699,7 +1717,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "0133d5d8de9db85f867a5a6d8c1174006e5460930ea5adee850d109633a09a92"
         },
         {
           "pair_id": "P001-S303",
@@ -1771,9 +1791,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "8ed3ad5033115313e6f9ecf83a027bc875431c7740d4d30d11dcf71c55281cef"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "ac18824e11877c94757ec7539dacbc2c1bd4a53d63a105bf0b9c0c8aef536ae8",
+      "judgment_checkpoint_fingerprint": "a032a592f646005a21861a3f4b79550f81272648c9829682fff5641dab82e305"
     },
     {
       "pair_id": "P002-S101",
@@ -1931,7 +1955,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "f668448515df05d1658992170db5317751d9068c391727c5611ca0934cbb666d"
         },
         {
           "pair_id": "P002-S101",
@@ -2003,7 +2029,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "9af7c3c0f9c4a86600a2357051d45ba34e7e37c5897b6d7251b6ec7e66dcb72b"
         },
         {
           "pair_id": "P002-S101",
@@ -2075,9 +2103,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "ba36d60b8c0c2c63a67f68d0c3453f47bebe93e6e6dd389b96fd8c1a1e4eef92"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "8f4019d5e6c933349a38b5138a396b4d09a291cc885d598be3753c77ffa963b8",
+      "judgment_checkpoint_fingerprint": "ac17eded9d487cfc8e882af4f27820924bf014d379777af5f54d92b3cc954134"
     },
     {
       "pair_id": "P002-S202",
@@ -2235,7 +2267,9 @@
               "candidate_score": 3.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "8a00171de9b712f69adc3e8cbe70a3457d2380b0ef4790a656ed4b21578ea4a5"
         },
         {
           "pair_id": "P002-S202",
@@ -2307,7 +2341,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "43e4987ab8c88f14cb395dc7529afda5dffbc8dfb9eb6d540c147ae10c33c4a5"
         },
         {
           "pair_id": "P002-S202",
@@ -2379,9 +2415,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "11a192358c800ab9a4610ff753caef9e202f68d3c88902d836fd6d78325b7d6e"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "7efb8d5e857e505e859b346b170b50cd57d037f5055c3bcccd751ffa4e1b6c31",
+      "judgment_checkpoint_fingerprint": "42ed764f397e23c2b5099d327ed4808fc3408010e6c00d740312494270b8462e"
     },
     {
       "pair_id": "P002-S303",
@@ -2539,7 +2579,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "83e14868bed3ed325451f289c1191b47e04f38b9d45cdde3201acd3c6680a731"
         },
         {
           "pair_id": "P002-S303",
@@ -2611,7 +2653,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "e10de936f1fc048f3968949f525d5cf8e910394ba1ba69207426ba6d70085639"
         },
         {
           "pair_id": "P002-S303",
@@ -2683,9 +2727,13 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "352f5fc089ecf413102adb95b4ef35a1417121ba5d94513041ba805176c525c7"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "a9042a48e656e9f59394a225f1bb0bbbeec414d26e63aaf776f174ce9038e18c",
+      "judgment_checkpoint_fingerprint": "948b320a69f536ee172b81d4c86f59bf847a348fb636d52a1bd060e022df9bf1"
     },
     {
       "pair_id": "P003-S101",
@@ -2843,7 +2891,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "f587012a138ba469931b501c2271d9ca9573d8e744bd8a9c73b586178cc7c2ff"
         },
         {
           "pair_id": "P003-S101",
@@ -2915,7 +2965,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "b5fd50ca328de4d160f8a55945505ab7cccb2cb654e36f5711fb6f95f00523d3"
         },
         {
           "pair_id": "P003-S101",
@@ -2987,9 +3039,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "d4e9686781d3462aae1417fca21b7151dab10ddf91689e932b9b5d75af87a868"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "f4d38c50bc38b9e5f5caed99fa6914e91551eb3390941513705762b241129b8f",
+      "judgment_checkpoint_fingerprint": "4a2c9cb7c6d12bd10fb01991b1bfc0517b74d5ec8026774354f2c95df046e659"
     },
     {
       "pair_id": "P003-S202",
@@ -3147,7 +3203,9 @@
               "candidate_score": 3.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "687123b1ebe087f178a380a5de9e9a9e7c27eb922875b65125efba958cc20a03"
         },
         {
           "pair_id": "P003-S202",
@@ -3219,7 +3277,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "eefd8d804c6244b996c9e750b63d6990cd0d88c137701880473cff7b8eea24b7"
         },
         {
           "pair_id": "P003-S202",
@@ -3291,9 +3351,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "ba3152deb8af8265511555d6b59f792f37123ae67bfa747106289ceb92ecdb97"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "3fcbe4c283e9b46290f2fa58afad1f34d1f780b9dd1e521afd66e1ea2bd2329b",
+      "judgment_checkpoint_fingerprint": "9536c2b29c7ecb4dbfe4a5ef03d24ee714ff5fcbe120802779c98e5d6703c5fb"
     },
     {
       "pair_id": "P003-S303",
@@ -3451,7 +3515,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "12d9a339b140d5849c77a8ba11cd9586703a2db28ccf498af01e850edf66be83"
         },
         {
           "pair_id": "P003-S303",
@@ -3523,7 +3589,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "34af86eb58891d97b49bae812cae9bbddaa4acbb29ecfa60cc7f66eff72aa42f"
         },
         {
           "pair_id": "P003-S303",
@@ -3595,9 +3663,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "e1fa6c061d0ba18b64c522ce2cc7c6eb0316dffb1b08e80c5aba66a563129652"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "0f8f887489b348c2d46f70b090e300d45504a2db3d274cce4747c009b582cf16",
+      "judgment_checkpoint_fingerprint": "4aa0db5d0a8d94402fc42786e3b6a0cde68aa0a1a8b3e0c9e182112a95057b43"
     },
     {
       "pair_id": "P004-S101",
@@ -3755,7 +3827,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "bdc79750dcbbf3ab161240ef9c3889a256e98d12119422f421fd3845ea5a2ec5"
         },
         {
           "pair_id": "P004-S101",
@@ -3827,7 +3901,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "451c1a64d29c4def83f4f9bccda7ab3918ad798be971e8222ca92aa186e2e3a8"
         },
         {
           "pair_id": "P004-S101",
@@ -3899,9 +3975,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "a5e73d831c3973750750ca5a8af899c80f6088a3b1d445b38b8f32b6af20639d"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "8eafdce0aca3379626568aa247496b06d3ec0050fa8d6b722c4a946f08d416d3",
+      "judgment_checkpoint_fingerprint": "5c87972385c1fba2133eaff7dc0eebe1db9279a989df629f507f03c797d768e9"
     },
     {
       "pair_id": "P004-S202",
@@ -4059,7 +4139,9 @@
               "candidate_score": 3.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "090ca46e001fbd61515b6cf3727e6e3159d78cd3c006c7d59d904c6ff5cff6ea"
         },
         {
           "pair_id": "P004-S202",
@@ -4131,7 +4213,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "09d37b77dc5dd7643e4ef1a39ef0933a095cc9fb33bbb6044352e3e3191864a9"
         },
         {
           "pair_id": "P004-S202",
@@ -4203,9 +4287,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "1b2b46cc4793e71802c6373f9da458857dc1dad168a346c1ac01b2cef7fc0c89"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "2ed3a995a30d82efa4b36324a3fa33fef7a509de24aea1a267234125322e3b7a",
+      "judgment_checkpoint_fingerprint": "a8ce6cebc9fafee83bc81c668bc4a74cb63ef5183eecab1c8854b6a2157a4a44"
     },
     {
       "pair_id": "P004-S303",
@@ -4363,7 +4451,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "5b2224351b79b68be91a052ef19845df7f0778b79277997698e287cc0d497d93"
         },
         {
           "pair_id": "P004-S303",
@@ -4435,7 +4525,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "020003f9bfa1148d7cbef3ac65d15434788ad7c91e3c82fcd560417c70adb791"
         },
         {
           "pair_id": "P004-S303",
@@ -4507,9 +4599,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "e07cc793a737ef01e156180fcd72c25c2b81a7e7a9dd7aca52b4bdace6a8e6aa"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "ce3998f9255a26341a84474550c93feccb443ce013649cbb6bd9b48b39b706c0",
+      "judgment_checkpoint_fingerprint": "a21b50baf1f9763d3069c9032f10acd7debba7db9e5cec059d508afc08f371f1"
     },
     {
       "pair_id": "P005-S101",
@@ -4667,7 +4763,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "109e8ac03bfbf5c714f9e4066d1ccbdf863548e9ac39b79635f96a1435bf35ba"
         },
         {
           "pair_id": "P005-S101",
@@ -4739,7 +4837,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "e342c8a402c647f656cea1872e083298a75c67e227718cf573ef7a77728afe5a"
         },
         {
           "pair_id": "P005-S101",
@@ -4811,9 +4911,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "c934bb8079cee6a93648a5edc43e813665c636f6c6bcd91d4292b39773ef0777"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "b182497662deae28d13ee05ee46517a65b0a413a12c17892e7d3dba0aad16f6c",
+      "judgment_checkpoint_fingerprint": "442b0117dfaa4894ac35bd34b3f8ba43cadc66c834c4ead1af1d05456d87a4ae"
     },
     {
       "pair_id": "P005-S202",
@@ -4971,7 +5075,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "2895a9af1789bebc23a6ccf7d301b6dad64cdde3cb846df1ec03efc37a825046"
         },
         {
           "pair_id": "P005-S202",
@@ -5043,7 +5149,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "6a3ce0acc4a2c797cdf1488a01228db869c4998a86b685644fba8242f8839f7c"
         },
         {
           "pair_id": "P005-S202",
@@ -5115,9 +5223,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "9fb4c6789a2c17e5028205c5c6d8b0db11989232eb2b9c4a2aada8460af501e9"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "69a5e7486366377dac4b2e0e1aed72ec29c26349f01f01471fe213521ff44859",
+      "judgment_checkpoint_fingerprint": "07665d64090d109ed1d82e2e1b48db809dd670c16e024b0bb5f8f371c11acb51"
     },
     {
       "pair_id": "P005-S303",
@@ -5275,7 +5387,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "0e405f0e393fbdf89780c5d5584cd3cf8cbb2518af80d035ef9d7c177d376b4c"
         },
         {
           "pair_id": "P005-S303",
@@ -5347,7 +5461,9 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "c94a822880bb63013d03cd9e08a7dfde18a918baa7d4f2fe9bdb30044cfbb324"
         },
         {
           "pair_id": "P005-S303",
@@ -5419,9 +5535,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "69cc450d50a299935536bd95656be9c2a0d6a0b4bb03999f206352c62ab911c7"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "9f4de351d7f67b24b2e7ba1ae1ee0f85246a788ca7469be503297b8f6cf195fd",
+      "judgment_checkpoint_fingerprint": "ec77a4de7cbed2d7894086d1a22b7fc966a3b802444b2aa0bb4548222b27c478"
     },
     {
       "pair_id": "P006-S101",
@@ -5579,7 +5699,9 @@
               "candidate_score": 2.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "b4c55903fae1b63fba1c460a0194998a59de85227f9fe233fd70c06bf88d85f1"
         },
         {
           "pair_id": "P006-S101",
@@ -5651,7 +5773,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "356164ae09d60cde4491707dcbff84c814731b420be28b1d3f90bf84f7bcbfed"
         },
         {
           "pair_id": "P006-S101",
@@ -5723,9 +5847,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "734a02ea9004178c389472fcc03c03350ad7c33b401dfe75f1f2dc894597f7df"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "7f97957a6309246a98cce13ee62769673e9144d6f19037fd01757a2ac1bf44fa",
+      "judgment_checkpoint_fingerprint": "3eae7ee6f3dab0650e9d4892cac1d69ef5c82eda2ed2ffcb5ea3acb0960c91c3"
     },
     {
       "pair_id": "P006-S202",
@@ -5883,7 +6011,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "d9d0187527a0c965f316bf58b855e08c6dd89d80e7cba01f3baa0d4e86e32e31"
         },
         {
           "pair_id": "P006-S202",
@@ -5955,7 +6085,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "29b1f48bcd2e8923b6e8301d9d48a6c93e0d3c1085aa5fa151382563bf336af2"
         },
         {
           "pair_id": "P006-S202",
@@ -6027,9 +6159,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "2355afddb2332cbce3841975ddd0c1ac66c98c51c2cb44f6b9ab7c4f183e950e"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "d63da8d40085c8f233c19bc607b0eb85f6c103b48546dac90acaffe86dd0d2dc",
+      "judgment_checkpoint_fingerprint": "37012384e30ae730e97e66b83d4e1c90c9b36f4f4255788d50b1cf1463dca7bb"
     },
     {
       "pair_id": "P006-S303",
@@ -6187,7 +6323,9 @@
               "candidate_score": 2.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "ede53eaece96e84c7fecd6afeccb2101fe6049f7710eb1137a5fd782702474d1"
         },
         {
           "pair_id": "P006-S303",
@@ -6259,7 +6397,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "e5ed57d6fbc40d2bc646dd5513dd65411968ec17d9456ad5611ae9b0b36b00a7"
         },
         {
           "pair_id": "P006-S303",
@@ -6331,9 +6471,13 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "7222fed78247b186a50484a1b12a08c4cc67d31f2269dd58a702b6e3e1ab62f8"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "215062339ae25a5676c581ba49cc20a5cd23df4006347ece8a653861586b36a5",
+      "judgment_checkpoint_fingerprint": "eebe7a43e340a4ccc3cb0512068356b900a6ea7d43253dc6e1945ba4b50545f5"
     },
     {
       "pair_id": "P007-S101",
@@ -6491,7 +6635,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "d364f3f6ba39e328f5a13c4030ecc81368b99d14ed518d9b44efe0df828f37b6"
         },
         {
           "pair_id": "P007-S101",
@@ -6563,7 +6709,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "4bfb89f8380a2b06653909839534739cb890e9e589cf0afbb639f666e673ac0f"
         },
         {
           "pair_id": "P007-S101",
@@ -6635,9 +6783,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "a7fabc5277e3a62ee4d30884582467f331425ef3483f103a8edbc0d6083ebafd"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "7f864d27ee3511103e136214cfa8091e6926171b3c3d3b9575376ebd766af3cd",
+      "judgment_checkpoint_fingerprint": "69754103f20409502a67b2c031b59ccf025726b88837f16b22c453f13fcc4228"
     },
     {
       "pair_id": "P007-S202",
@@ -6795,7 +6947,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "1d9bcb87956145121eabf4e0c375a99a3a19576dc6f62d9b60f93c34e15facfe"
         },
         {
           "pair_id": "P007-S202",
@@ -6867,7 +7021,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "63a24d0e83626a1139bb5a4fcde8ff57f00f3905fc8510dfb8c76f651d7187b0"
         },
         {
           "pair_id": "P007-S202",
@@ -6939,9 +7095,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "dd32d55ab3ddc15dfb9415fe2b02d84c4c5527eee1c3b864f79724a6f13c9f05"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "717717e5a7048a26f6c471d915f39c2e4d1122c71880e6ebbd5694a7cd5feaf9",
+      "judgment_checkpoint_fingerprint": "9a67a9e8087ab9463cd19557320f95572052c3520544181817a28d10d3613544"
     },
     {
       "pair_id": "P007-S303",
@@ -7099,7 +7259,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "51edb9d84e399c6c6fd9783926de76f1d6fe4433865d412309e7d660eff4dd26"
         },
         {
           "pair_id": "P007-S303",
@@ -7171,7 +7333,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "6c5a93850938c0fb2a25c2347a80c6d160944290b66a88e6de18c91271229390"
         },
         {
           "pair_id": "P007-S303",
@@ -7243,9 +7407,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "9932c10ca4256ea3612c78512828ca56feccc04b5c673d0889a15c63caead723"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "2b5b184e42cabe642bd0a68f70a55f9aea9393b15d5232e371b3de6ae10c2b5e",
+      "judgment_checkpoint_fingerprint": "e8468a2a52ceb3b91dd811f9f428c63caad888f2f4b408aa6e30d31802f8d842"
     },
     {
       "pair_id": "P008-S101",
@@ -7403,7 +7571,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "82529a76cc864a07bbb74f49bc798d4dafcc66bc36cd644d6a8567a4e6923d23"
         },
         {
           "pair_id": "P008-S101",
@@ -7475,7 +7645,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "b44fa6a9dbccf67c47d7925b79569e4bd1398dec4ce0629c3aa0b1706c99b079"
         },
         {
           "pair_id": "P008-S101",
@@ -7547,9 +7719,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "858334f6a8b2afe0009b7f503580957381c7b60c373f5c5fb5fe4d9b0336bae6"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "c16e53ce6bd15f4459237c66fbf4a052e5099e2b221c37a993c3fa192954bb1d",
+      "judgment_checkpoint_fingerprint": "e83844662561352fe9cb1e0c38e1161da666f922d156e57d1d4f690f63c217af"
     },
     {
       "pair_id": "P008-S202",
@@ -7707,7 +7883,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "d932e7fd41c988660558ce4089db72ba0dc3799c8f006fe1a3bf2921dd05624b"
         },
         {
           "pair_id": "P008-S202",
@@ -7779,7 +7957,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "1cdf1860f3a3b24838a002766d1887da6dfee48cb754d0dc2a171e3873e3c5ed"
         },
         {
           "pair_id": "P008-S202",
@@ -7851,9 +8031,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "60c5db808bace031307069743d4685f4637d846000cd239d45b921f394f22927"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "f1e62d7a29699735f3b1d00235588db469c1bbd24b0aa28fbaff2a624ded0a91",
+      "judgment_checkpoint_fingerprint": "6a15eef10c47978abb0e47853f58092865dff4a9a1f9f9912b3661662ba0f506"
     },
     {
       "pair_id": "P008-S303",
@@ -8011,7 +8195,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "056c3674232ed2ad09cae1ed9f8b0e5143b6fc18eb4e97813672cc8c5c270671"
         },
         {
           "pair_id": "P008-S303",
@@ -8083,7 +8269,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "72c61bcd0103bb6643711b9231b89c6cd780e7cd4a659dbb85c9ab6ba1ac9c1a"
         },
         {
           "pair_id": "P008-S303",
@@ -8155,9 +8343,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "c89218bbbde5d5e156d6c0a1311bb21ec86a76de165945a59af35e8c14937cef"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "520c817f6154b4ab245d6810cd39a45b71054439477e6a8db9210c435c0ce0c0",
+      "judgment_checkpoint_fingerprint": "1d907bc96185b0783609590f0493a995e1e69bde251caf20448b352c48f067c4"
     },
     {
       "pair_id": "P009-S101",
@@ -8315,7 +8507,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "3604cf7859aab93451b9f32055d3a48b55b4e1481c9572e89c199e56dd049a59"
         },
         {
           "pair_id": "P009-S101",
@@ -8387,7 +8581,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "348336250347dc9748d9c123042e972f3b0faff9e4f73e0f9a82152e7f5dc998"
         },
         {
           "pair_id": "P009-S101",
@@ -8459,9 +8655,13 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "52ec7aa7106a51bbd98807621a683d3e4f196ecf114b08ae0e76249114a9390d"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "72bc97be48b29eea6f9635acbbfb17b01bff0ef4cd492b15b98d0d7faea3a566",
+      "judgment_checkpoint_fingerprint": "70d9bc978050480505f82fd214b9869a75354be9c5a84991297e9392f21464b0"
     },
     {
       "pair_id": "P009-S202",
@@ -8619,7 +8819,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "e2c5904bf8aa75d51f6e64921714407839404bd65281e32e5b26c4db0a69d336"
         },
         {
           "pair_id": "P009-S202",
@@ -8691,7 +8893,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "4a90d13346c8deda9f117019b1b5b921d24aa8adcaf3dd25bee181b570729402"
         },
         {
           "pair_id": "P009-S202",
@@ -8763,9 +8967,13 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "6004d1b1e91bdcb24cfbee0c3e5c27f6d7b0bcab335385e371151caba2f860c0"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "8e1dcf4043f94146f50599da4652e9316f16b00fa18dab6afcc6f4282fc62c9d",
+      "judgment_checkpoint_fingerprint": "401f870fb048b616902bb18fe424f3e1bed355a4ebded0c80d8e27afceefa49c"
     },
     {
       "pair_id": "P009-S303",
@@ -8923,7 +9131,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "4f3b5f596567a3d21b6090fc9a9bd7ab9e1b45985e6a6d79c8a8ce21ecf6cdde"
         },
         {
           "pair_id": "P009-S303",
@@ -8995,7 +9205,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "3f9bbd644c5a0ca9324d0cae09b06e16de1017a6f07388d096d3026f615c52d3"
         },
         {
           "pair_id": "P009-S303",
@@ -9067,9 +9279,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "94f3aa8ad50a49aace5be1123705c40153b0c3bf5e72cbb8b966a97df0595c99"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "8f652fe0db1db2445c53557ab2e0e77e1f7f6fa285ce8b7ba896e9184d8cad21",
+      "judgment_checkpoint_fingerprint": "4c31c72b82422f7c96d0419582aeb907ebefd0b19a8d125d98a262ea1bbdf8a5"
     },
     {
       "pair_id": "P010-S101",
@@ -9227,7 +9443,9 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "9f2c11a4ee195012fd707234e9be8eba18b33b73dbf4f3fe4b627474a596c727"
         },
         {
           "pair_id": "P010-S101",
@@ -9299,7 +9517,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "31462bd3f30e67534c7e2704989d13ab302fcdcbfaacd5d532da8aca9d47427b"
         },
         {
           "pair_id": "P010-S101",
@@ -9371,9 +9591,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "67791e5ad44efa2c4639a23851c613cd84e4dd5e25098ee2d2b8ecf016f8c2f8"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "0b4f9ced51e471c8eab976063acbc74c4f3ffcbcaed077e698cfde1e594c99b5",
+      "judgment_checkpoint_fingerprint": "fe664399f741f35ac199da47a94759d8e04a9fc78981dc2efda7446eab7bd767"
     },
     {
       "pair_id": "P010-S202",
@@ -9531,7 +9755,9 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "67e481879a46c1ba75f52527b9c4cb479c02e0364b5da576fa8ce89410244087"
         },
         {
           "pair_id": "P010-S202",
@@ -9603,7 +9829,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "9a9b2ff4aede9fcf809b97b649bcba8b1467d72b6ee22994a1717c40d1a0d301"
         },
         {
           "pair_id": "P010-S202",
@@ -9675,9 +9903,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "79386fc5078f07287c812ce3e46934a129faf82ae6143769ed4ee8a6d8e65e12"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "56997cea63c5129d5b1694699dfcbfabeb99aa7782267e1e8f7b2ce13e36a3b7",
+      "judgment_checkpoint_fingerprint": "dfeb19253e1d7b921033061613e8742d4dc94ee3e46f6e1d679b2fa6b8546a42"
     },
     {
       "pair_id": "P010-S303",
@@ -9835,7 +10067,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "685212930dfdc5a193e62eee7294b646f0b6907ebf22399becfdb447d6bc1795"
         },
         {
           "pair_id": "P010-S303",
@@ -9907,7 +10141,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "31e9255aa483cfc850c857fdce3c45d3b18fea63b15aaadf93949b53b2aa5fb0"
         },
         {
           "pair_id": "P010-S303",
@@ -9979,9 +10215,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "f2083bc3d079f1dd1b48b294cda2e61ee3e3e805de1eee083a1e74a3ba77252a"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "1853c5a63875e2b7f59c43e7753439ad075f011b538cc1bc41638a8693fdfaf6",
+      "judgment_checkpoint_fingerprint": "8dad759eedfdac81efb58d60fad6d2b4382e90a353e13fd29feb354f8ac32a38"
     },
     {
       "pair_id": "P011-S101",
@@ -10139,7 +10379,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "982d07e7ea7af3c8cbfd3bdd1d77a67606c1aa0422f5e9b6c2d3456c7d018a9e"
         },
         {
           "pair_id": "P011-S101",
@@ -10211,7 +10453,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "18750027c8c00ed62148c05666a5a8d7805e93d7edc1bfe7a78d024d92877ea0"
         },
         {
           "pair_id": "P011-S101",
@@ -10283,9 +10527,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "013d008c44d522056abcb52ce2d8e4a56138ea67df476fb42832869302c23de5"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "85b50dc7068adf12ac63873f03fd974580f42b9b258cea3699cc418e337abb41",
+      "judgment_checkpoint_fingerprint": "0f4b64a64de91c022aa2cec9b4839266cb881a1eec15cea542ef446f82000d2e"
     },
     {
       "pair_id": "P011-S202",
@@ -10443,7 +10691,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "5e3a2e3066ede656d0019c71a93dd52c6191495759345d1e2dc10d9c851d7e18"
         },
         {
           "pair_id": "P011-S202",
@@ -10515,7 +10765,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "df243c81ecec939314f95a51bc90e67563fe6e01865b54359c84f34103d0881d"
         },
         {
           "pair_id": "P011-S202",
@@ -10587,9 +10839,13 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "6f314db753d32d0eb080ac83f485c8107f80d7fcc31bb337885ff5ee6181eb2c"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "6eca8928a188ae892a284033d9858f9f28af66e8c153afb56cc256f7838e25e1",
+      "judgment_checkpoint_fingerprint": "94e01b168f6896d323f110e79473d02807ec9f0f9d9ff00f659e6257053bf76b"
     },
     {
       "pair_id": "P011-S303",
@@ -10747,7 +11003,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "dde6fa34c69d5d084c9149684626805cb86f25fb6d431c1d24afbbfdf51be65d"
         },
         {
           "pair_id": "P011-S303",
@@ -10819,7 +11077,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "cbecf0d6314909ca3a688c621488ea1d6c898832569f51728fc3c451b7e29b5a"
         },
         {
           "pair_id": "P011-S303",
@@ -10891,9 +11151,13 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "43ca2c283cdea269f74c323636fb83e2fbda140862d4ef911bf3616e91622e37"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "091c91567108b1b204b6ec72b13a41cb59e7de310a0bb97fdf8ba8994f30b198",
+      "judgment_checkpoint_fingerprint": "0c24d386ae6e57d957069784ec7449cb339501d4ed5452360718d0b4b27a82e7"
     },
     {
       "pair_id": "P012-S101",
@@ -11051,7 +11315,9 @@
               "candidate_score": 3.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "12c842c8d357bf4ac4ef9a725a8a7f4b149ff48c89cafa13ec9f0f7bff5d77ad"
         },
         {
           "pair_id": "P012-S101",
@@ -11123,7 +11389,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "46cc014f54a8cfa5e3ead7c36596e2ce1045f8bec02c74e72b0e44b18f85ee6d"
         },
         {
           "pair_id": "P012-S101",
@@ -11195,9 +11463,13 @@
               "candidate_score": 3.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "84b37d08ae7e91b482c7071a3760140336a59c475eae0be271539666a99931a9"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "833872f60f95d69e3317ca12870b0bcb4c6e663c9c915649056f9e78b65eecff",
+      "judgment_checkpoint_fingerprint": "4538aea2ea38c02ce1ce448d20a542ca7cf88e09808c8a5e5a83fde57c241a90"
     },
     {
       "pair_id": "P012-S202",
@@ -11355,7 +11627,9 @@
               "candidate_score": 2.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "341443bf0f620a96fcf01820e44539c0fe282cd497b06e6e1b8dfe5d8ebed1dc"
         },
         {
           "pair_id": "P012-S202",
@@ -11427,7 +11701,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "77a793a16b6c4335abe638036c5348e32805ca8b60d0394c7cf82db115e47808"
         },
         {
           "pair_id": "P012-S202",
@@ -11499,9 +11775,13 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "7cb424184b3a26bf234d36a7b3b3d816e4ef235a486f1472180a217585fbbb11"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "af31a204bfbc97d30f2f329c7ff00717bab1195331b8cffdecad48ee11bd6847",
+      "judgment_checkpoint_fingerprint": "b435ce0cba03d801c8ca7c47f9d96079b4b04e00799fbcfe120446e92444154f"
     },
     {
       "pair_id": "P012-S303",
@@ -11659,7 +11939,9 @@
               "candidate_score": 3.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "963228109bb8d2ce6bcf44a596ebef9b67ae9972a7da36475c2dfc7e489b11a1"
         },
         {
           "pair_id": "P012-S303",
@@ -11731,7 +12013,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "b578bf69dfcce76c5399e88b7f4b500fcf8a76091c1c09c19ea068c20a15aceb"
         },
         {
           "pair_id": "P012-S303",
@@ -11803,9 +12087,13 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "c83a507a9f6d6e41586257c40c6595cc1e3f12a686c99445fa5a23ae3ca6ee75"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "2e00684b8de6e2b74205d05ee6700a5bccdc1b82b7849742947067c3008fd7d8",
+      "judgment_checkpoint_fingerprint": "b8092f4cb07a2f8f0298f6546a9be6794ed38ce01e4b7620b1a79d0e30d2326c"
     },
     {
       "pair_id": "P013-S101",
@@ -11963,7 +12251,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "bc804003a9254904075936b58ebf10ea0f1fcc57203c69a6d8b884e481f4d72f"
         },
         {
           "pair_id": "P013-S101",
@@ -12035,7 +12325,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "2dfff55f82120e93e1c080d11b74dc5866a3bc3ef1233f0099a9d828b14b905e"
         },
         {
           "pair_id": "P013-S101",
@@ -12107,9 +12399,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "85aff0ab773859e9647d3ca5c2a7b542c335332e2b1f150bfb5b7385491422d9"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "87ba07b76b4556cb98502dc7f51bd0437218700bbaf2ef6c2873224e17a5d99d",
+      "judgment_checkpoint_fingerprint": "8b307e0ce84b1a9a8a85afb801366100a49554b8b952da6821232948955d1775"
     },
     {
       "pair_id": "P013-S202",
@@ -12267,7 +12563,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "3c40857184f0a67b86077553df92c090ba03a6e4a9836ccd5e7f26e2b9c28a18"
         },
         {
           "pair_id": "P013-S202",
@@ -12339,7 +12637,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "8f9359b0c63b55711f5323a26be783d6bfe20fb5a0fc77b9688dfaa4f6b46435"
         },
         {
           "pair_id": "P013-S202",
@@ -12411,9 +12711,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "273e016bc21c61101293ff8ea1dbdbdd86cea4dcd22404a147fe3c78028178c5"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "9c2a8a6a0f3c250e1fc4415113d7a9480d9034990321f8e11f5aab4e5a6a2abe",
+      "judgment_checkpoint_fingerprint": "30de0f7ac7d6422d1907d9558e2c49133e2ceec0db9f6b3047f8265c9f8fcb00"
     },
     {
       "pair_id": "P013-S303",
@@ -12571,7 +12875,9 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "7b654b4363de6af94912f6a21a115c6e107dffb0000dfacaaef23cbe40d1f34b"
         },
         {
           "pair_id": "P013-S303",
@@ -12643,7 +12949,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "99e80762bf516354bbcedd62322b409e918379935d7b25fa39ed5c109622295d"
         },
         {
           "pair_id": "P013-S303",
@@ -12715,9 +13023,13 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "91b035c7a2bf26bb47d52aa28bcaa0cf051f205486e8daacf3f03a82b6453361"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "95c84e52392e74a1526090ac9fbf4550e794fda09e54dd61e9c51555abe3c2f2",
+      "judgment_checkpoint_fingerprint": "1541cce43884f36b8830c0cd842a85451309b7e2d796dd437b8f349e809edede"
     },
     {
       "pair_id": "P014-S101",
@@ -12875,7 +13187,9 @@
               "candidate_score": 3.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "c9781e2f485ed219fabc273711616779a4d0b71e217c5e848f2173ce28755667"
         },
         {
           "pair_id": "P014-S101",
@@ -12947,7 +13261,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "0c4654520ad3f311416ef62bccc5661719cf0f66e392b3af36fd6718181346d6"
         },
         {
           "pair_id": "P014-S101",
@@ -13019,9 +13335,13 @@
               "candidate_score": 3.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "775d13adc4b1e1c875d039c02acb4849ef4b72e61e91d26b0e6b5f80889ed2ef"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "dbe862bec3dec3f29d63cf6270ee0464d06f9bf52684153a2f48bc02ab61318c",
+      "judgment_checkpoint_fingerprint": "a79604ac6b1091abd2bfec5f860f164b2511dc32628690e82e91e51f21f797c6"
     },
     {
       "pair_id": "P014-S202",
@@ -13179,7 +13499,9 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "356605b699e49fe09b373593d45b6971ed8a808d79c717b222255214cfe67563"
         },
         {
           "pair_id": "P014-S202",
@@ -13251,7 +13573,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "8db1c5a3e30a0f735e90e3594d80a1c22eb4d2fffff88d3701bbb4738d221c54"
         },
         {
           "pair_id": "P014-S202",
@@ -13323,9 +13647,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "6d7a2ab274cd621282f7a99780bd5910cfb8251c19d16f21a4f3f26c80b619e5"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "b6acf30e41e9af205b7a552d5d7754962d9d579a118ff03a9e958310f36ee140",
+      "judgment_checkpoint_fingerprint": "01c30fa034a42eca8e6a1e794cbc3b80fbf20c44338dea40c0143be0afe51174"
     },
     {
       "pair_id": "P014-S303",
@@ -13483,7 +13811,9 @@
               "candidate_score": 3.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "7a86ac0f19fe122f08e11d97be789e5578ce783e3c3b460912f9f3ab092218f5"
         },
         {
           "pair_id": "P014-S303",
@@ -13555,7 +13885,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "9978a6547b57882bb8e91b4a099bc748729240e629491d430afe6b07e75412e5"
         },
         {
           "pair_id": "P014-S303",
@@ -13627,9 +13959,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "9441fbce46417edbc3d9d58c17550d5545f29a6e0ea86a5aef262456ba40648c"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "604526e520e6e1e1c4208bcd0a890d788506eb57af7b63c67496e3acc50f104b",
+      "judgment_checkpoint_fingerprint": "0487307bd4177d43005f4d2dea1ccc4546941fd153fdb46d21cc5f13fe232b1c"
     },
     {
       "pair_id": "P015-S101",
@@ -13787,7 +14123,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "392cc10cf0ba2113b6f360c0a6e5b44493f21d3783f8327ba92bb089de755aac"
         },
         {
           "pair_id": "P015-S101",
@@ -13859,7 +14197,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "b352f4faca5ada1db3b5ec72388c44df24454ff4e26e774c1bcbae7fcb83d27e"
         },
         {
           "pair_id": "P015-S101",
@@ -13931,9 +14271,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "a018599f4dba48461967db8fcf797bfa30538235800b7a6a83a2797024fe6a80"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "c14afaa2c3bdd066d13c738433f98c92f752f8ca7bfcf41ec9f1e749b68597b8",
+      "judgment_checkpoint_fingerprint": "ce0d55be84e1c1ce90d69b069e2a4a7d237a2a3fde7d788eaa7deeb78b9200b5"
     },
     {
       "pair_id": "P015-S202",
@@ -14091,7 +14435,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "7dd61149be06591d6f156f0a8159442c6aabf7935becf6cb181d049322fccfa8"
         },
         {
           "pair_id": "P015-S202",
@@ -14163,7 +14509,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "7ea1314e5e793c0289cafc24238ba20aa4e56c256a2c64fc917a793198dfd656"
         },
         {
           "pair_id": "P015-S202",
@@ -14235,9 +14583,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "18f039e4dee31e342eaa145e1e9115802a5d5e6267d5f3b5c4c13c323a70cc28"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "4e6cb9479c8b76bcda9fd334a920cfd18653966192cafc1c4eb74836e5268cd2",
+      "judgment_checkpoint_fingerprint": "f7a13086b45f43cad1e157fbe89a31e63820f62922f17465b31fa312c2db9dfd"
     },
     {
       "pair_id": "P015-S303",
@@ -14395,7 +14747,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "d7295c4e2ce77581716dc7bfa25bf311fc8a989fc3401ae3279c6636f6a1983c"
         },
         {
           "pair_id": "P015-S303",
@@ -14467,7 +14821,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "91e573227b87ad66381408c5d35a79089587a0f5d3e60e5504534e6b50eb22fe"
         },
         {
           "pair_id": "P015-S303",
@@ -14539,9 +14895,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "e84cff4019333f265fff29f1ae0b8003371c797e8bd41e3cd31f654f1b626618"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "7d93c8a2cd020ed5907da901983aa2d2d48c11d7643e2eac3bb6361dd6ec713c",
+      "judgment_checkpoint_fingerprint": "d50643c914d595a1e6ea2e36d472726795115e799bdbe45dbd7cdf111f879e11"
     },
     {
       "pair_id": "P016-S101",
@@ -14699,7 +15059,9 @@
               "candidate_score": 3.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "19f6b3c0f1b13d3ec04bc16e1b3dc260bbec69eddfbdfb2d600a01844a6e78d2"
         },
         {
           "pair_id": "P016-S101",
@@ -14771,7 +15133,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "a89c4b04afb4378272920fc71d8f1275fc1517cc4650235f8d6185831e57af71"
         },
         {
           "pair_id": "P016-S101",
@@ -14843,9 +15207,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "e59e11a405e2f15bf91d7f2042bcadd88f6720e6d9db0a79adaec86747bfb4ed"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "4b60f8d0627f7c321a4f53e4faffe774094653fe128f0e0c8f461cca5f9b7419",
+      "judgment_checkpoint_fingerprint": "d0e0c1082692c6125537049f8a396d694cf96c35f551ca8e194cf2da122af6d3"
     },
     {
       "pair_id": "P016-S202",
@@ -15003,7 +15371,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "438c7d208e27a11f1eee5429ec96b1f4a9e4439dbfc3a8a7502c1081f92971ed"
         },
         {
           "pair_id": "P016-S202",
@@ -15075,7 +15445,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "b5d761cafc7bcaf70bf21dff574895b369d6a2765f6f5593825eb5b590187512"
         },
         {
           "pair_id": "P016-S202",
@@ -15147,9 +15519,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "3b253f7c3837f5bd6c6f8a37c818830939b7d86b9b84768886aa9314fdb9276e"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "6bbcefdd2a405c7b42e308239cd54d3ad9caa6fd1d605a7dc6336b57c1130ebe",
+      "judgment_checkpoint_fingerprint": "ea60cedd0025b0bf47de5f0c6d8a3a350c849d0e5ee0541445868c1d0ee53b3f"
     },
     {
       "pair_id": "P016-S303",
@@ -15307,7 +15683,9 @@
               "candidate_score": 3.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "9db7a1a72c93a670c08a74270fe0ce56f747db0512f0185c411a4bd113a7c6ca"
         },
         {
           "pair_id": "P016-S303",
@@ -15379,7 +15757,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "e70f2b6f375b305e2dfb02387d89b46b4a78e6ba4f99245c7e177eb13dd00ae3"
         },
         {
           "pair_id": "P016-S303",
@@ -15451,9 +15831,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "c9d935a3a0bb8d8b40b31bb26fcf96ef581848f34554969aa1087b28f3088d4e"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "581bda53135934c4f3b5bb679700af483af722cba97df83a416c727c42925f08",
+      "judgment_checkpoint_fingerprint": "dbd2ee62d517b23f3c6626c7dca50599f23e12265dabbbad9acddb2d8eda9a72"
     },
     {
       "pair_id": "P017-S101",
@@ -15611,7 +15995,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "acdb7c6feef3e201a9a6d76a3e43be1f94d2597dc9d023a8d3febae814cf001d"
         },
         {
           "pair_id": "P017-S101",
@@ -15683,7 +16069,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "6f22b91a634ae40afb4da8f8bdf26bb9274f90a9b06af509097d6e803db7e32d"
         },
         {
           "pair_id": "P017-S101",
@@ -15755,9 +16143,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "81da22c208cb08763b2be33948e37f6fda02155a929c7b4111f095da445a29b0"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "8a01b86f497ec168305c739cd93bb535a31853fda55069822aeb0918c86e3e55",
+      "judgment_checkpoint_fingerprint": "8cccd33e4fd0dfbfeb497ff9f225a98ebf00ed3d1523af25c0f1c407759dcbb4"
     },
     {
       "pair_id": "P017-S202",
@@ -15915,7 +16307,9 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "8a030e1ea2fb350b49d32d95931a0751dcec1f1dce2cd28029e097158ca35c84"
         },
         {
           "pair_id": "P017-S202",
@@ -15987,7 +16381,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "33da1724ea3d9dede6174c8bca159f0a38caed33605b845983e7293f8377cce8"
         },
         {
           "pair_id": "P017-S202",
@@ -16059,9 +16455,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "6c6c78681985024a238e250a5deaf8739b85a497f79b0d4e3ff885609b7d4ea7"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "822cdf396b8caa0fc9ac33794648444941f4a39e8e71d4426f980fd4c8e4b2d2",
+      "judgment_checkpoint_fingerprint": "8766ef1a2bc18b07a70ba81d4392712b459d8c8d1107f3ad4071f6ffba237f2a"
     },
     {
       "pair_id": "P017-S303",
@@ -16219,7 +16619,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "c379445c71a22d4c248d76fa9da0cf6588afe442c6480892407c87bc166612c9"
         },
         {
           "pair_id": "P017-S303",
@@ -16291,7 +16693,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "ac383ea5b37f95ad342726526ab36c466e7125ee27dfd850b128773c7c3e8e93"
         },
         {
           "pair_id": "P017-S303",
@@ -16363,9 +16767,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "7bb105ac6347dbe2c12940317f330f887a9644e2b5c07866eb82c913b42b4678"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "9b07c060d8c1490024aa50f8b25eeaa034f1b837247003b0086bf534648046b5",
+      "judgment_checkpoint_fingerprint": "44c582f01d64ea414b940cde2b9fa353fd1c49f50cc05123943d1631ffdbfc00"
     },
     {
       "pair_id": "P018-S101",
@@ -16523,7 +16931,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "7fbb724d89b4ec53aadd3fe353d346704c22ae83bdac99ad800caba6b8d210f1"
         },
         {
           "pair_id": "P018-S101",
@@ -16595,7 +17005,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "f19bb89475b15702120252777034565996b8ee77b23483c5c550b55ef0257795"
         },
         {
           "pair_id": "P018-S101",
@@ -16667,9 +17079,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "f6da66a833c8ce86c33f650486cf0bd1efeb647859f3aa39ed9fafa3f30861e2"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "63f6236d262b71b404e9e7938d30843720bede9ee03d06b723f60c6fa9c57604",
+      "judgment_checkpoint_fingerprint": "8f776a83cb24a9a19dab4a9a2f2c5a9fd7800ec8c4f2d19fc1fc75ec7ebabf57"
     },
     {
       "pair_id": "P018-S202",
@@ -16827,7 +17243,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "6ff221359160f713f8b66e15e9f5d6c425d831b5abde05c8120dc7cef07c8442"
         },
         {
           "pair_id": "P018-S202",
@@ -16899,7 +17317,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "ab67f84830930c899c3fd38d0e47e2701360175210bdd05e3aba0dabaded1ff1"
         },
         {
           "pair_id": "P018-S202",
@@ -16971,9 +17391,13 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "1a5b4eb38b61982de4ac685c574e42d47940eef42a3b7690c13e846b804acda0"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "0f73a457516d5a9a8199e21a6c455d324e95ec4ce41a0a2c881583701fde554a",
+      "judgment_checkpoint_fingerprint": "38c021d4e42f1fde341f1d3844203617be88988494ab77b3992c62cbc762136e"
     },
     {
       "pair_id": "P018-S303",
@@ -17131,7 +17555,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "81a2492b3da63a5d0246665264fb4421001a7fdaa5c2baa541deed8be71074bd"
         },
         {
           "pair_id": "P018-S303",
@@ -17203,7 +17629,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "db207ddf6b1a806e9ba5568c1632a78b773e910c36e8040bd92a3cfa94b2e743"
         },
         {
           "pair_id": "P018-S303",
@@ -17275,9 +17703,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "6ecae564109a60540f85c84dcc66db18e782f172624566c34ec9b89595be577b"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "05d4e4d7d7ff068e61e42a3063ff848eb423c574325d988aa87c121e9a392fb2",
+      "judgment_checkpoint_fingerprint": "f5a848c1f245d10860691a9b1ead48e6976aa5e9c71fe5f1802cf158b301f0e1"
     },
     {
       "pair_id": "P019-S101",
@@ -17435,7 +17867,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "c81ae8d63126782e894fcfbb92c0ad82c2f9e1844277835bdfdcbfc5b8520f0b"
         },
         {
           "pair_id": "P019-S101",
@@ -17507,7 +17941,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "2f0373e84dd19c5567f090919993bfcacef56b301e417d005ba8e1d4b79f37c3"
         },
         {
           "pair_id": "P019-S101",
@@ -17579,9 +18015,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "caa44b6412acfcf41250c6dccff7956715aea4dc181edad61a6e99448992e9c8"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "e54af188eb3cab44f08207d6e10f41d56958434be41b359a90c8e82fb53cb50e",
+      "judgment_checkpoint_fingerprint": "ec5a3083f06696699d4649bfce5156826735e586b31af9ec3724f430a33aadf6"
     },
     {
       "pair_id": "P019-S202",
@@ -17739,7 +18179,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "287bf15b2a37d791a28f47690eb2cefc5dd02e1584b0219b85089c1c65e6954f"
         },
         {
           "pair_id": "P019-S202",
@@ -17811,7 +18253,9 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "e732c1f1136433269aca11e8cf3c3c2c830d1d72fb50495f6fd32db22837041f"
         },
         {
           "pair_id": "P019-S202",
@@ -17883,9 +18327,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "6eb53b99569e07394609ca3e7177ee993fc33bfb1a4a064ac51b9094c0d8ff62"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "5296d8db5ba75cd76d803bffdb7becad6f2bb75a293212ebf91f57e48f39c0f1",
+      "judgment_checkpoint_fingerprint": "fb5566c54bb000569bad531f90461fc73b136f16b0c182f4f5e06275982eacea"
     },
     {
       "pair_id": "P019-S303",
@@ -18043,7 +18491,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "623f9290731104ec355b765e4c63411741b588829707d3015b3d74b1a6f76879"
         },
         {
           "pair_id": "P019-S303",
@@ -18115,7 +18565,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "bf04f289cf0c21f8ac239ef02650fcf7433fc034cc1394d7e00f12dd02861d4b"
         },
         {
           "pair_id": "P019-S303",
@@ -18187,9 +18639,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "11d6ff64ce6516988e9eccf265009d7aa2e86e1bbf0efb4a024d4ea88b814d41"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "fd185ffc313195b9b85176fc21ace060aeec5c8c7494332efece173b007b5051",
+      "judgment_checkpoint_fingerprint": "a168311ac77d54b05312b10a5759f37802c551ba4c3db8804095becb92aa028a"
     },
     {
       "pair_id": "P020-S101",
@@ -18347,7 +18803,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "e7460498503fa2eab9f73e2b412bb1eb80a2d9fbd852251d844d610061d6215d"
         },
         {
           "pair_id": "P020-S101",
@@ -18419,7 +18877,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "f4b66961e7204e0a08c9f49d7c4cc8bc6032b7ece3e5122032e187c69f1b5c49"
         },
         {
           "pair_id": "P020-S101",
@@ -18491,9 +18951,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "1b02a80312dc24ceefa6f63667bf41632604ad122d36665e3416621deee00adf"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "8c907c0d39d026113109a26526535f24842bd130a86851745c1f447f4d232d91",
+      "judgment_checkpoint_fingerprint": "466584f822a59a50c2e6b6af354d3f41cd720589995d9ae7c16e11f8bf547e6b"
     },
     {
       "pair_id": "P020-S202",
@@ -18651,7 +19115,9 @@
               "candidate_score": 3.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "94510b6a26f033c7766f41f7d7d42291b3bee169efdb9867db1733d605a39825"
         },
         {
           "pair_id": "P020-S202",
@@ -18723,7 +19189,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "f6bab25df16d06bb1bc35458519a0ac5cd1fc49c8e09aacaea557537cf103803"
         },
         {
           "pair_id": "P020-S202",
@@ -18795,9 +19263,13 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "72cbca994d8997cf2f2291226f022fa4916550f4a5db540b3f00fd642f3867e0"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "4828149f476491e2e9196ad7eeb45b332d0359e0995185da3cf2d52f37142817",
+      "judgment_checkpoint_fingerprint": "59076651aa5b168db239bfc98fa067b3f0fe5286acd0eb6f20a4f5ac6d9182ae"
     },
     {
       "pair_id": "P020-S303",
@@ -18955,7 +19427,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "2edc102349fbd8fc83b6714cb8b8f88505a88b5a01d5b53c687ea422ef0a409c"
         },
         {
           "pair_id": "P020-S303",
@@ -19027,7 +19501,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "e469b243dfd4eac0a13dfc80fc5dac26778752ea6e53c788ca73ceeb542cc131"
         },
         {
           "pair_id": "P020-S303",
@@ -19099,9 +19575,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "966d6efb8d9c2e200b4b9f533456faf3f5ff4987d6438e193bb921eb130dd2ae"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "d6c9c36d29db27d671a4017ce748807b86ee81beb9fe6aae86f315d43d7d711a",
+      "judgment_checkpoint_fingerprint": "398d656c8b0e4520eb8e133a2d5a4e128cf5f6e603fcf38ff63e71e965bd13a6"
     },
     {
       "pair_id": "P021-S101",
@@ -19259,7 +19739,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "74df144cb9e8949916312fe736e41c57fd76aa6a68f4fe2dddc8489f0fee5908"
         },
         {
           "pair_id": "P021-S101",
@@ -19331,7 +19813,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "c103b93964a7c9d3978b410d1a6d88ed82d2bd984719afcfcdba0a232d1d1495"
         },
         {
           "pair_id": "P021-S101",
@@ -19403,9 +19887,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "809473dec8ee2bbf55ab7f62bb9a27a7a229e40d426db7baf3cf7fe241facd25"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "da9dba8e1b9dd5e6e3385356e0ae7e8b1484e9f2d3dbb4907a1a986ffb90baa0",
+      "judgment_checkpoint_fingerprint": "f06398cfb442801b1c545685f048f4f328bc6f72f858a8ea46a15f9f3ca6784c"
     },
     {
       "pair_id": "P021-S202",
@@ -19563,7 +20051,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "59c07671e4c361dc23d748f8c1953ca60d51d9065c98c1e3d5c9b2ea1d394b24"
         },
         {
           "pair_id": "P021-S202",
@@ -19635,7 +20125,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "455a9ff8001ef2d0b4138c080e4f51e689001e8411ebb967632206b562201f0e"
         },
         {
           "pair_id": "P021-S202",
@@ -19707,9 +20199,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "d875e36ddef4af7edaa0b93434e7afd20a938376e77efdd3f6c3c3d6d48a3ab5"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "53072468fb0cf94dd8c9772cf261c17b688c152c0d5be0910844369c6cb50d56",
+      "judgment_checkpoint_fingerprint": "203800f2e80524560954e03cb1779dd8e509bf74ecf65aa4044823c245cd8da2"
     },
     {
       "pair_id": "P021-S303",
@@ -19867,7 +20363,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "ba8b6c108ba556c5e55d861824fc42c5485407a3d8c4d556fb83eb84b2f1c0e0"
         },
         {
           "pair_id": "P021-S303",
@@ -19939,7 +20437,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "2470642cb846b5b6629df7aa3ccb5307c2fc5d324dec046a4864d68b6311356d"
         },
         {
           "pair_id": "P021-S303",
@@ -20011,9 +20511,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "bc7338976429024f52850b4f275f53c1df8d201a5f296596ff0c275562fdaa35"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "9d083173bfc6175115a394b0035ce77d80018d268df79a304f41f1e18a2d0adc",
+      "judgment_checkpoint_fingerprint": "9566b489fe13fca54ed3c4affad8da08f622694fca7e05f7c247503bea7d95b2"
     },
     {
       "pair_id": "P022-S101",
@@ -20171,7 +20675,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "47edf1a8e40a747aa85415eb0638966500a0192c64bffdd28ab52847417323ec"
         },
         {
           "pair_id": "P022-S101",
@@ -20243,7 +20749,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "2b96bc8ba334b4860507bb220fb787c85db854790d65c9412f3e5ce77285b53c"
         },
         {
           "pair_id": "P022-S101",
@@ -20315,9 +20823,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "1e3edf298c8a54d3e076120f13445e0afef7c02b7c1c197dcd8b795af49d68b4"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "22acb0d65a0113db4cd6269975eceded9bc9b3d5096881ab2c1e56eda3bae349",
+      "judgment_checkpoint_fingerprint": "a5ae5405bfdcbe38d68e730a514a0c1a98337637d6b7b06d1d1d1bcfacb093f2"
     },
     {
       "pair_id": "P022-S202",
@@ -20475,7 +20987,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "c6b7c835f666e400990f090c79edbd74bfeb8b0e76fbde11775ac7989b2613d2"
         },
         {
           "pair_id": "P022-S202",
@@ -20547,7 +21061,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "89c0c2ed3c679e0d025c0d76567934049580b7fac0be966d7f765d2798971d9c"
         },
         {
           "pair_id": "P022-S202",
@@ -20619,9 +21135,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "fe2f42f62c285f8649a0734c045343e1ec7a03f0c0abb9462b83b6febf1a5e71"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "ce3e4ff2a875868a8849aad8cdc9584adf2cc10ea6a364b620d8cdb9f5441faa",
+      "judgment_checkpoint_fingerprint": "1735bd357cf048c40ab6b7f2898df611f5a9313159e8fb2dfeeb5a12f8fa85a2"
     },
     {
       "pair_id": "P022-S303",
@@ -20779,7 +21299,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "5d5c07a4ff67003c05e741603016f94340fe0eec2d8d9fb270dddf731ce55e78"
         },
         {
           "pair_id": "P022-S303",
@@ -20851,7 +21373,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "a393fd227cf3060a04f6178819bb4469cb64aef0698a5b3f94138c15d0496eb8"
         },
         {
           "pair_id": "P022-S303",
@@ -20923,9 +21447,13 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "eb4b9d030122f14b2203a359d8d68fcafbe620dc00fb37fa8e7204c75b502c3d"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "b20bbe1054e988fd4ce6a9e92c04e66432f70844eed84c8794df4c5bebcedb25",
+      "judgment_checkpoint_fingerprint": "63126822a2bb6800d478f040ecd3fa6fec49a5eae799635133fc5f341c2f8e78"
     },
     {
       "pair_id": "P023-S101",
@@ -21083,7 +21611,9 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "11b4c559e7db87dcb5a400022c461b98df1cce52b5d345a05b0c4f7ef15107bb"
         },
         {
           "pair_id": "P023-S101",
@@ -21155,7 +21685,9 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "b32af59b9df9da0f6304099a884c8987b821c82b0b3c1fb8873a0a9d81a78c5d"
         },
         {
           "pair_id": "P023-S101",
@@ -21227,9 +21759,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "ffffa84d90ffe5c17786b8b1caa1983b0e5b26ce298c648f5567613a14ece334"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "d3297b26cb39320a66f9b13e7c8929d32d4a8f5c3d1a46a21cdd041dc4455f08",
+      "judgment_checkpoint_fingerprint": "b532edcd503a00925b4a7c5fe99a35c46f661aff4a2da30622e2cf6916c7984f"
     },
     {
       "pair_id": "P023-S202",
@@ -21387,7 +21923,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "137783d24a944fda5fd0b664c477433b79a7579c99d242192ac975d6c65b4ccd"
         },
         {
           "pair_id": "P023-S202",
@@ -21459,7 +21997,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "29616a6d7b32eff252ddf23fc8598d086ecf5fcaf0c9617faf6ef0bc93e36926"
         },
         {
           "pair_id": "P023-S202",
@@ -21531,9 +22071,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "b677e212622409189b8a88272804ec42c0c1bbe91ea543aaa1757faa2f07d44f"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "ee9c919194949b372b47b1894e35f6cb1fddba7d6b7719ec47ff7b14e9978d4e",
+      "judgment_checkpoint_fingerprint": "0acdb531fa4abdf01fa54a7f931c2d836d26d3155b45f9b36e99d3ee1a2ed86a"
     },
     {
       "pair_id": "P023-S303",
@@ -21691,7 +22235,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "7b38b8f37d182859d1ccb9c13769c65c02c838255c35d3229759c6ccf8099d34"
         },
         {
           "pair_id": "P023-S303",
@@ -21763,7 +22309,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "3d2dbd6aadf63275145973641d89ebf4178a814f2907d8a3caa5e577a3b9630b"
         },
         {
           "pair_id": "P023-S303",
@@ -21835,9 +22383,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "1a454fe51fa864ec09ccd59ef1d19679e936f873947bbfd79cd9d507df80ec95"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "0c82af04e4df18b96349b1bdb4477ed18d4ce0cd9b70ef5588a94329cd0f22d3",
+      "judgment_checkpoint_fingerprint": "d1147ef604589c51ee8f992aab958f133bf5f5c45169349d22efd652d94ebecf"
     },
     {
       "pair_id": "P024-S101",
@@ -21995,7 +22547,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "6d46924ef94cb8ec25cfaa6130f1efba8f5e6a2a038a1d8fc11b684d7fdbdf33"
         },
         {
           "pair_id": "P024-S101",
@@ -22067,7 +22621,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "717789eb928001f4cca5aebe962aff8f6341f47cbcec24b047a778981b204657"
         },
         {
           "pair_id": "P024-S101",
@@ -22139,9 +22695,13 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "f01ae3b606efec2f626ea527461371996b490880794279926b690675cd61093f"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "115f4103b333cdaa8bf00f10f2ce44d8c43c560aa92847d6eeb51acb3312e976",
+      "judgment_checkpoint_fingerprint": "b6d06b00da5ea6b34ec2dd5d4ebd5c3a793fc5b89f885b64acc8ba6019dd66db"
     },
     {
       "pair_id": "P024-S202",
@@ -22299,7 +22859,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "c96d839d022948e43e99632741117940b6601e14ab52adc1dba4f10842fe7357"
         },
         {
           "pair_id": "P024-S202",
@@ -22371,7 +22933,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "ef68ef3a0fe2f5933d069640217c1ae1ea3f3a799a1a1687f4ff3ca6bc5ad8c5"
         },
         {
           "pair_id": "P024-S202",
@@ -22443,9 +23007,13 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "1f4d922da45258dd1515fecc9fe5508fcf6c3a560fbaefdc0411591f203cf435"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "d5116925dfb423d037a62b0cfa4de49e4b0747faf7a3e3a10b6250c70febe83c",
+      "judgment_checkpoint_fingerprint": "4aea7be1a02c8971cc01d2fbff59548ec2cb3d92b996bf234fcda5178cd8392a"
     },
     {
       "pair_id": "P024-S303",
@@ -22603,7 +23171,9 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "ca26d73c586ba29c1d882bd2d082154adf5f6d0f3baf41ba772d3fa69751bdab"
         },
         {
           "pair_id": "P024-S303",
@@ -22675,7 +23245,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "8a5517cb0e2c9757c8bc3f557b659d2747695d9811d68eb03ad032b532c6377e"
         },
         {
           "pair_id": "P024-S303",
@@ -22747,9 +23319,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "905765db00b181ee5bee923b2b82ed4c23af4033b8d65df4b193e7e4a862e206"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "1690f4412f05c08736c0e0494dcaea788fea16a43725f006af7021df1f6b101e",
+      "judgment_checkpoint_fingerprint": "fa98fbf1afb052fafa4430a650cde60c00a369e94535aaa0c5f7bc3dc23466cd"
     },
     {
       "pair_id": "P025-S101",
@@ -22907,7 +23483,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "3772a2763a3d0079735c82fb7d48e24ccd8e39b50ac082ea7ed91d4f616485c6"
         },
         {
           "pair_id": "P025-S101",
@@ -22979,7 +23557,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "942fe8f96ae21fa1624ccf65c1d92500c3a00faaa161b41f889bd6b8b09d18ae"
         },
         {
           "pair_id": "P025-S101",
@@ -23051,9 +23631,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "2ce5de29cee0748b4c74dd45738b9dd1be70682ada0796c5770983ce9e9876f1"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "6a342b7ee0e901562ce3d82f0a9d0062e70ff89a59b698fda0f5eeaf2119c8cd",
+      "judgment_checkpoint_fingerprint": "fe43a3081a40d5dd7d542ac4e59e3dfbc40b5be30f9db49c96655938376940dc"
     },
     {
       "pair_id": "P025-S202",
@@ -23211,7 +23795,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "4c98ad7658c7e1ef1b5f60dbac098eaeed091b2105223b51423c980d8879e1e2"
         },
         {
           "pair_id": "P025-S202",
@@ -23283,7 +23869,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "f99a792c21ac399336ce724102dc149d9fcdd322f7890063afb65094c839666c"
         },
         {
           "pair_id": "P025-S202",
@@ -23355,9 +23943,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "91369aac6635299515c19eefd7b6adb288c86ede5033cf69a710ee57128980bd"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "62c3e4210b1c05b5468d9f5dc4719a0a51640251d62b9cceabf0e6772a146e6b",
+      "judgment_checkpoint_fingerprint": "6f20fbac121f7c064181cb8f9b81af123e95f7fb6ebd30939b41aed494ee3421"
     },
     {
       "pair_id": "P025-S303",
@@ -23515,7 +24107,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "a582cafee2ecdbdb2fb0f6710068672a47dde772367677f8a606a6962f5a922e"
         },
         {
           "pair_id": "P025-S303",
@@ -23587,7 +24181,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "f17cd828fef8dc8b346ffa093b6229f831a92849393f83aaa1f0a6590e6831cf"
         },
         {
           "pair_id": "P025-S303",
@@ -23659,9 +24255,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "5671a983708e3f1bf66cded0326b13ccd4f960a4be49794290898c823fde7582"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "94a66a60f469cb6bba589cbf5731c2f4727ddb32d4527c944ddcce65f42c780c",
+      "judgment_checkpoint_fingerprint": "5ae2a5660d5e7b5e3b85eda93dd95179a446523e4931d85b872e83a88ec56b6c"
     },
     {
       "pair_id": "P026-S101",
@@ -23819,7 +24419,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "f2002cad41333bb89fcedebaac99318a2f920c6c76854606a92984a7de4e453d"
         },
         {
           "pair_id": "P026-S101",
@@ -23891,7 +24493,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "c9865875bf78ba5faf915e6c8429c59f2c5e61c62e94832f1fbdea3f5f34a1ba"
         },
         {
           "pair_id": "P026-S101",
@@ -23963,9 +24567,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "79b8eadb11ad27d4b82ae28196b9060d888decec0203e2ea748c8ac75f14855b"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "9b29a7a6bed86856d94ac4e1abe1a1a6275d70b486b7b0375cca38490db8b386",
+      "judgment_checkpoint_fingerprint": "490079cb7f3231ec99060aadd3f9e82c7574307be9d49628d432df8a493dda4e"
     },
     {
       "pair_id": "P026-S202",
@@ -24123,7 +24731,9 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "82546a1044e5ea7b2087c67158493bacdd16575fa1008f98ab9c36424438a193"
         },
         {
           "pair_id": "P026-S202",
@@ -24195,7 +24805,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "33a457ca0b6db5524f7805e7491da4f515e8820da4400df3589f3d29ab63bb53"
         },
         {
           "pair_id": "P026-S202",
@@ -24267,9 +24879,13 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "49a0e4617e8afb4cc90e0ca398171f1908d31a1c9cf90b3deab13313139e8416"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "2125aa9a3e5ef0476100d2b71f063383c272bc972e5701b69631ebff6ff546ca",
+      "judgment_checkpoint_fingerprint": "b6f22ea451284956a2cbc25d490b61092fead04ce039ec3ddf581c7817db4970"
     },
     {
       "pair_id": "P026-S303",
@@ -24427,7 +25043,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "cd5f013fc803f67ca894b82e8f5fa01d292f78db9099f2af35c097ea713ae2f3"
         },
         {
           "pair_id": "P026-S303",
@@ -24499,7 +25117,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "1b36ce5ce0589e07957613f15f02f9d701255e89e3c55648b95d91a7ed6088b1"
         },
         {
           "pair_id": "P026-S303",
@@ -24571,9 +25191,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "b08c64024d2956fcc2a509c5dfed50c565dd5461e36e56f90878280b144dd85a"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "a3503bb809af37dc58c732d32b708ea9d5d3b700bba00fd966d560331c3f16cb",
+      "judgment_checkpoint_fingerprint": "534125c0aaa6389264e405eda3c48325276bab6975df7a690312d606ba4f5264"
     },
     {
       "pair_id": "P027-S101",
@@ -24731,7 +25355,9 @@
               "candidate_score": 4.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "5d234628048e75ad2dc61b5fa90369e8d08fd171f7154dd8b3d2a365c6bdd15f"
         },
         {
           "pair_id": "P027-S101",
@@ -24803,7 +25429,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "a6af9d494963470264a96893ccfe465c512218db4622a8d211b6fcd51df37cac"
         },
         {
           "pair_id": "P027-S101",
@@ -24875,9 +25503,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "0b1b475728b1054e205f2382915706b708e76e23522a236d5912cb431ea3262e"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "19da38e7f3e17edaa7be361373458941523fb5f2dd620d572b61b75e25ed9e8a",
+      "judgment_checkpoint_fingerprint": "3acf300c25483909de7fe6e8de9d0a54867c03744cdc27b403d70e9310b82ed9"
     },
     {
       "pair_id": "P027-S202",
@@ -25035,7 +25667,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "648c7b069313052a339c1c965b87a5e1e95951a3bed3d538fc37a8a6c10482d2"
         },
         {
           "pair_id": "P027-S202",
@@ -25107,7 +25741,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "78f9ecaec8f82704b5e329ac564e28c4801840e84eed240edc205744fa6c75f3"
         },
         {
           "pair_id": "P027-S202",
@@ -25179,9 +25815,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "843de06dc928a3cb299de7a59564610fd9a379e7eb3b84693f1a61bf7ee7f6a3"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "39dd38d7dcd3308eb79f4eadd049fe08853ac2046377ebb2ffb865f68507e82e",
+      "judgment_checkpoint_fingerprint": "bd0a5c2ef60cfb80ece0a99064a93b37c5f703b66f0086c5e60f2f7bcf0a66b9"
     },
     {
       "pair_id": "P027-S303",
@@ -25339,7 +25979,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "98f066a0b0f5d8c11a729619b51cc90553fa2b5027a6373b402f8e00340f3a2f"
         },
         {
           "pair_id": "P027-S303",
@@ -25411,7 +26053,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "6db4a3f289e84fd06686a71274f7529faf7d6b6a359db54bf128d6a05edd686e"
         },
         {
           "pair_id": "P027-S303",
@@ -25483,9 +26127,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "b742502d3b6f1a0e3d7a76057032a61508897470eabff6453a86d274583b9339"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "6a425a83ae46cc5e857cbfcd701dfe293803d77ae77150cd91d135aa6a1162c7",
+      "judgment_checkpoint_fingerprint": "659a8378633387c242bdfac922505c29ae5f0806e0100d1031a0f4df89213079"
     },
     {
       "pair_id": "P028-S101",
@@ -25643,7 +26291,9 @@
               "candidate_score": 2.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "43af35b34f46601a299afdc01f8c3826939265add42705d7bf358407f8a900fc"
         },
         {
           "pair_id": "P028-S101",
@@ -25715,7 +26365,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "20021cd14eb278389b8dc3f7b2999a38ad90d8d6aaff253d792428ead1c08026"
         },
         {
           "pair_id": "P028-S101",
@@ -25787,9 +26439,13 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "111a5f3748c290e87b64f12d49e7f4a8f59ebfe8bfee224c5d5aaf4082bb0b24"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "73201035d87f379e53a35992e522d000cf776a051534c3e51937a5fcd7c2e5ef",
+      "judgment_checkpoint_fingerprint": "52101426e7063bd85fc0bcfdd16e403717e15c6cf35ea048092e8999280a71c5"
     },
     {
       "pair_id": "P028-S202",
@@ -25947,7 +26603,9 @@
               "candidate_score": 3.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "c7bb30cfeddc1c59d53b617d85fc7bbf11d8561599011de7cc32ce60bdc1744e"
         },
         {
           "pair_id": "P028-S202",
@@ -26019,7 +26677,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "09ebd19374092c0b4a8d462dcc02e765c70a80b9f0a27d2b9c1cbf6095498b89"
         },
         {
           "pair_id": "P028-S202",
@@ -26091,9 +26751,13 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "35701f06213f46777ab10318f7b3b6ea4579dca3d1cef06d627ff9a85a3b9346"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "2a505c96d5817dc0ba65131b2789d25c767cb1db707b2a889235e6fd378b60d7",
+      "judgment_checkpoint_fingerprint": "030e18ef04edca2278f376464fbe61ca09afe13e9fbea75ea917aec5bd61a072"
     },
     {
       "pair_id": "P028-S303",
@@ -26251,7 +26915,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "db43267c8c967a2fd3d79dd3319d35b9a4ea5b3609796f84ad64b8b24bc551f7"
         },
         {
           "pair_id": "P028-S303",
@@ -26323,7 +26989,9 @@
               "candidate_score": 4.5,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "1990982e6f29129ce4cb70764b677d244ec1a06559af0ad6c6ab38ab0342eef2"
         },
         {
           "pair_id": "P028-S303",
@@ -26395,9 +27063,13 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "a9bacb416e46bd8c15051b37851a71afe9439ff8ecb329e5f31c462f9b178059"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "2ed75a38bf9cc63d41002166cdac7c3fb3aef713def4cf6fddc46b801c241588",
+      "judgment_checkpoint_fingerprint": "f5c0a1150a468239186cc636929a4f10c3642cdba8ab88df615f0ad7b8df5e23"
     },
     {
       "pair_id": "P029-S101",
@@ -26555,7 +27227,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "fb04877d03cbd7453fe77f1a64cc6154e2ed1bf616ed853341479b91263b4fe2"
         },
         {
           "pair_id": "P029-S101",
@@ -26627,7 +27301,9 @@
               "candidate_score": 4.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "9e0d88982320056517eecf7a3a1dee60d7f2ddea0f67451c50114ed353ff8866"
         },
         {
           "pair_id": "P029-S101",
@@ -26699,9 +27375,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "b15910d40a0085e4738d8b9aaf3b35b0bc42303279e79dd33569618a437616e1"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "c4175c6aaf23216b3ae368d32bacee9bc88dcbe26c38eda560f73f1747d881df",
+      "judgment_checkpoint_fingerprint": "c7b5a1b238bd255cea623f6932dd783da9cf0de3f10be8b6ceeafe805b2cb0ff"
     },
     {
       "pair_id": "P029-S202",
@@ -26859,7 +27539,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "bef0ea90742cbbd97d8ee0c63728df39f897e5f869ff778673083072d0e10fb2"
         },
         {
           "pair_id": "P029-S202",
@@ -26931,7 +27613,9 @@
               "candidate_score": 4.0,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "17e6ffae8963aff097a44c848ef290635a3baca3f151bc80d873c25b01b8e8e0"
         },
         {
           "pair_id": "P029-S202",
@@ -27003,9 +27687,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "b51e126f3a827fefb422527fd5e1c04796897c7efa98ad2c5644ce1d574c12e9"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "639e289fa725ada05e6d39755f6fac42af4f96b32fa2c2f9d0bd6eb17745f29f",
+      "judgment_checkpoint_fingerprint": "45aa83f7573a8f513ea345bc9fb7b86fe052e93a06a18e2ef309526971e482ce"
     },
     {
       "pair_id": "P029-S303",
@@ -27163,7 +27851,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "d2dae0378022a52cd1eb8ab27f4463c3a49b904efdf26420157a80adc2d92a7d"
         },
         {
           "pair_id": "P029-S303",
@@ -27235,7 +27925,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "6b2b884e2826afe995649591c64332a687d93f53268d10d70e4438a60b8189c6"
         },
         {
           "pair_id": "P029-S303",
@@ -27307,9 +27999,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "a337d2c32dd12b8c828fb3a6af21dcf3eb4e740d62af648f328d1089b916ce8b"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "d0b22fcb03e3c3ba69b8994fd365457270cb7dded99d3202281307bb66d5c501",
+      "judgment_checkpoint_fingerprint": "a991acf34f38498e66ba36846419d19569b188f0f91dee37d71842ef3b4b6d13"
     },
     {
       "pair_id": "P030-S101",
@@ -27467,7 +28163,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "60dea64ee12ed3704cc6c67dbfc583ae072980879da5fb0350d60cc5ed3a5575"
         },
         {
           "pair_id": "P030-S101",
@@ -27539,7 +28237,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "288bab73264f70aa3a2489b90d967e128421a906316e504da774b7af230237e3"
         },
         {
           "pair_id": "P030-S101",
@@ -27611,9 +28311,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "03af152215148bc3c283083c70817f243580827111e43534429b7e4a4f66bbc9"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "41630956dd42581a9ee785ce36ccc785a8c5a064c9be7e073a224fab098f8847",
+      "judgment_checkpoint_fingerprint": "fd8a8100f5c0ac6884302df9f4dea41c14fa4017af79ea25b736f2fb7f142bfc"
     },
     {
       "pair_id": "P030-S202",
@@ -27771,7 +28475,9 @@
               "candidate_score": 3.5,
               "winner": "baseline"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "1d0c2c3a00193e7b024ac1864e6c944819d1a0dfb2b2d64dfa1e0d5ecb8fdf7c"
         },
         {
           "pair_id": "P030-S202",
@@ -27843,7 +28549,9 @@
               "candidate_score": 5.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "fa1c96f59331e5cdbaa7c6893fb9c6bddd222c199c69dd8f34e3a62a50c0fdf2"
         },
         {
           "pair_id": "P030-S202",
@@ -27915,9 +28623,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "03649a2a2d58b4ab21c1ba0efb85b04b3982790f08f9af522d54622f335e88e0"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "66341b7f1bc15300b5cae27e1b480d483edf7f2bf2d89774bba41cdea486511c",
+      "judgment_checkpoint_fingerprint": "af6fc062a88e5a918a0d13d5338c010e879144f8868444e3c37c1a5550b1f9fa"
     },
     {
       "pair_id": "P030-S303",
@@ -28075,7 +28787,9 @@
               "candidate_score": 4.0,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "c5f3dbe7573a65df9762cabe7f696073653f13978bc62abec92efaa9f3858564",
+          "judgment_input_fingerprint": "7815add75271672aae6787dfc090ae38f228b3a4d7671389de948dabd5d2f627"
         },
         {
           "pair_id": "P030-S303",
@@ -28147,7 +28861,9 @@
               "candidate_score": 4.5,
               "winner": "candidate"
             }
-          }
+          },
+          "judge_config_fingerprint": "cf4f9e3dd94cb564d718f758ae0591198731206233016541aa80e38ec34a5012",
+          "judgment_input_fingerprint": "82905db7e6c49aea0e89fcb378675d8468b7528d1f4970178978962d392b9d81"
         },
         {
           "pair_id": "P030-S303",
@@ -28219,9 +28935,13 @@
               "candidate_score": 5.0,
               "winner": "tie"
             }
-          }
+          },
+          "judge_config_fingerprint": "bd9ff979810fb5853af36d9f4ea7cc10e08cda368ac1a948e3d3e300006224f9",
+          "judgment_input_fingerprint": "ee1028d310d327f35fa91355627b7b3135e153cdbe626d435acd146a9ca2fff1"
         }
-      ]
+      ],
+      "judgment_prompt_seed_fingerprint": "0946724aa05f93a9528065b2b82f80fb6e86dc305f1a9e9196318448e23cebdd",
+      "judgment_checkpoint_fingerprint": "d22ca66eab59feb0788e5422cc7fba7a0f982f68ae52b2216e33bd32d0b2fd5d"
     }
   ],
   "interpretation": "Pairwise LLM-judge evaluation with randomized initial order and swapped-order double judging. Order-inconsistent pairs are recorded as position-biased ties rather than awarded as wins. Confidence intervals are cluster-bootstrapped by brief_id across generation seeds. LLM-judge win rates are an automated proxy and do not establish human author preference without blinded human calibration (`prose_judge.py blind` / `calibrate`)."
