@@ -861,6 +861,7 @@ fn emit_backfill_events_and_source_map_in_tx(
     Ok(event_ids)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_already_mapped_in_tx(
     tx: &rusqlite::Connection,
     project_id: &str,
@@ -1417,12 +1418,7 @@ fn backfill_branch_in_tx(
                     &mut counts,
                     now_micros,
                 )?;
-                let non_mask_ev = ev_ids
-                    .iter()
-                    .rev()
-                    .skip(usize::from(is_non_root))
-                    .next()
-                    .cloned();
+                let non_mask_ev = ev_ids.iter().rev().nth(usize::from(is_non_root)).cloned();
                 if let Some(meta_id) = non_mask_ev {
                     prev_pos_meta_event.insert(pos_key, meta_id);
                 }
@@ -3483,9 +3479,9 @@ fn backfill_branch_in_tx(
             let scene_pos = scene_positions.get(&cd.scene_id).copied();
             let placement = match scene_pos {
                 Some(pos) => StoryPlacement {
-                    book_number: pos.book_number as i32,
-                    chapter_number: pos.chapter_number as i32,
-                    scene_order: Some(pos.scene_order as i32),
+                    book_number: pos.book_number,
+                    chapter_number: pos.chapter_number,
+                    scene_order: Some(pos.scene_order),
                     note: None,
                 },
                 None => StoryPlacement {
