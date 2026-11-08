@@ -372,3 +372,32 @@ fn hard_constraints_never_truncate_and_unknown_usage_fails() {
         Err(PacketError::BudgetUnknown(_))
     ));
 }
+
+#[test]
+fn proposition_ids_are_local_to_the_full_branch_aware_source() {
+    for same_text in [false, true] {
+        for changed_field in ["source_id", "branch_id", "revision_hash"] {
+            let mut p = fixture();
+            let a = item(&mut p, "character-a", "First character state.");
+            let mut b = a.clone();
+            b.text = if same_text {
+                a.text.clone()
+            } else {
+                "Second character state.".into()
+            };
+            match changed_field {
+                "source_id" => b.source.source_id = "character-b".into(),
+                "branch_id" => b.source.branch_id = "child".into(),
+                _ => b.source.revision_hash = "other-revision".into(),
+            }
+            p.source_versions.push(b.source.clone());
+            p.continuity.character_states = vec![a.clone(), b.clone()];
+            let prepared = assemble(p.clone());
+            assert!(prepared.packet.assembly.unwrap().omissions.is_empty());
+            assert!(prepared.messages.user.contains(&json(&a).unwrap()));
+            assert!(prepared.messages.user.contains(&json(&b).unwrap()));
+            p.continuity.character_states.reverse();
+            assert_eq!(prepared.messages, assemble(p).messages);
+        }
+    }
+}

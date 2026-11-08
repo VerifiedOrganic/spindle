@@ -227,7 +227,7 @@ pub fn assemble_packet(
             groups[5].push((label, item.clone()));
         }
     }
-    let mut seen_propositions: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen_propositions: BTreeMap<(PacketSource, String), String> = BTreeMap::new();
     let mut omissions = Vec::new();
     let mut counts = Vec::new();
     let mut carry = 0usize;
@@ -251,7 +251,8 @@ pub fn assemble_packet(
             nonempty(&item.text, "item.text")?;
             let rendered = format!("{label}: {}\n", json(item)?);
             let tokens = count(&rendered)?;
-            let duplicate = if let Some(previous) = seen_propositions.get(&item.proposition_id) {
+            let proposition_key = (item.source.clone(), item.proposition_id.clone());
+            let duplicate = if let Some(previous) = seen_propositions.get(&proposition_key) {
                 if previous != &item.text {
                     return Err(PacketError::Incomplete(format!(
                         "conflicting proposition: {}",
@@ -296,7 +297,7 @@ pub fn assemble_packet(
                 });
                 continue;
             }
-            seen_propositions.insert(item.proposition_id.clone(), item.text.clone());
+            seen_propositions.insert(proposition_key, item.text.clone());
             sections[priority] = proposed;
         }
         // Output contract and reminder are priority zero, despite final placement.

@@ -21,6 +21,7 @@ pub struct PacketSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PacketItem {
     pub source: PacketSource,
+    /// Source-local identity; deduplication also includes the full PacketSource.
     pub proposition_id: String,
     pub text: String,
     pub relevance: u32,

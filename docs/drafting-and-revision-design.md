@@ -422,7 +422,9 @@ source artifact and omission report; only `messages` are eligible for dispatch.
 The message hash covers an unambiguous JSON serialization of system and user
 text. Supplied assembly counts and rubric text are replaced during preparation.
 Inherited source branches must be explicitly present in `source_versions`;
-preparation validates membership, not database snapshot freshness. The future
+preparation validates membership, not database snapshot freshness. Duplicate and
+conflict checks use the full source (branch, ID, revision hash) plus its local
+proposition ID; independent sources may reuse proposition IDs. The future
 service integration must resolve branch visibility and perform snapshot CAS.
 
 This foundation is not connected to generation or exposed as an MCP tool.
