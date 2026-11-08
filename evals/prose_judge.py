@@ -1327,9 +1327,48 @@ def call_rust_bridge_for_brief(
         or generator_cfg.get("model", "unknown")
     )
     model_rev = settings.get("model_revision") or "unpinned"
+    truncated = bool(bridge_out.get("truncated", False))
+    if truncated:
+        raise RuntimeError(
+            f"Incomplete/truncated Rust bridge output for {brief['id']} ({variant_id}, seed={generation_seed}): "
+            "truncated=True; incomplete drafts cannot enter evaluation or release-gate statistics"
+        )
     text = bridge_out.get("text") or bridge_out.get("accepted_text") or ""
-    text_sha = bridge_out.get("accepted_text_sha256") or bridge_out.get("text_sha256") or digest(text)
-    raw_text_sha = bridge_out.get("text_sha256") or bridge_out.get("raw_text_sha256") or text_sha
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError(
+            f"Empty Rust bridge output for {brief['id']} ({variant_id}, seed={generation_seed})"
+        )
+    computed_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if context_mode == "drafting_packet_v1":
+        accepted_sha = bridge_out.get("accepted_text_sha256")
+        if not accepted_sha:
+            raise RuntimeError(
+                f"Packet draft artifact for {brief['id']} ({variant_id}, seed={generation_seed}) "
+                "was not accepted (missing accepted_text_sha256)"
+            )
+        raw_text_sha = bridge_out.get("text_sha256") or bridge_out.get("raw_text_sha256")
+        if raw_text_sha and accepted_sha != raw_text_sha:
+            raise RuntimeError(
+                f"Packet draft artifact acceptance hash mismatch for {brief['id']} ({variant_id}, seed={generation_seed}): "
+                f"accepted_text_sha256={accepted_sha} != text_sha256={raw_text_sha}"
+            )
+        if accepted_sha != computed_sha:
+            raise RuntimeError(
+                f"Packet draft artifact text SHA256 mismatch for {brief['id']} ({variant_id}, seed={generation_seed}): "
+                f"accepted_text_sha256={accepted_sha} != computed={computed_sha}"
+            )
+        text_sha = accepted_sha
+        raw_text_sha = raw_text_sha or accepted_sha
+    else:
+        accepted_sha = None
+        text_sha = bridge_out.get("text_sha256") or computed_sha
+        if text_sha != computed_sha:
+            raise RuntimeError(
+                f"Message draft text SHA256 mismatch for {brief['id']} ({variant_id}, seed={generation_seed}): "
+                f"text_sha256={text_sha} != computed={computed_sha}"
+            )
+        raw_text_sha = bridge_out.get("raw_text_sha256") or text_sha
+
     model_call_id = (
         bridge_out.get("model_call_id")
         or receipt.get("generation_id")
@@ -1345,9 +1384,10 @@ def call_rust_bridge_for_brief(
         "model": model_name,
         "model_version": f"rust-bridge:{model_name}@{model_rev}",
         "text": text,
+        "truncated": truncated,
         "text_sha256": text_sha,
         "raw_text_sha256": raw_text_sha,
-        "accepted_text_sha256": bridge_out.get("accepted_text_sha256"),
+        "accepted_text_sha256": accepted_sha,
         "packet_hash": bridge_out.get("packet_hash"),
         "source_packet_sha256": bridge_out.get("source_packet_sha256"),
         "prompt_hash": bridge_out.get("prompt_hash"),
@@ -1428,6 +1468,7 @@ def generate_candidate_for_brief(
             "model": generator_cfg.get("model", "spindle-fake-drafter-v1"),
             "model_version": "offline-v1",
             "text": clean_text,
+            "truncated": False,
             "text_sha256": text_sha,
             "accepted_text_sha256": text_sha if packet_obj is not None else None,
             "packet_hash": packet_hash,
@@ -1472,6 +1513,39 @@ def generate_candidate_for_brief(
         "output_tokens": resp.get("output_tokens"),
         "elapsed_seconds": resp.get("elapsed_seconds"),
     }
+
+
+def validate_candidate_completeness(record: dict, arm_label: str = "candidate") -> None:
+    """Reject truncated outputs or unaccepted packet-arm artifacts before checkpointing or judging."""
+    if not isinstance(record, dict):
+        raise ValueError(f"{arm_label} record must be a dict")
+    bid = record.get("brief_id") or record.get("case_id") or "<unknown>"
+    gseed = record.get("generation_seed")
+    if record.get("truncated") is True:
+        raise ValueError(
+            f"Incomplete/truncated {arm_label} output for {bid} (seed={gseed}): truncated=True"
+        )
+    text = record.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"Empty {arm_label} text for {bid} (seed={gseed})")
+    is_packet_arm = (
+        record.get("prompt_variant") == "drafting_packet_v1"
+        or record.get("context_mode") == "drafting_packet_v1"
+        or record.get("artifact_id") is not None
+        or record.get("source_packet_sha256") is not None
+    )
+    if is_packet_arm:
+        acc_sha = record.get("accepted_text_sha256")
+        if not acc_sha:
+            raise ValueError(
+                f"Unaccepted packet {arm_label} output for {bid} (seed={gseed}): missing accepted_text_sha256"
+            )
+        raw_sha = record.get("text_sha256") or record.get("raw_text_sha256")
+        if raw_sha and acc_sha != raw_sha:
+            raise ValueError(
+                f"Stale or mismatched acceptance hash on {arm_label} output for {bid} (seed={gseed}): "
+                f"accepted_text_sha256={acc_sha} != text_sha256={raw_sha}"
+            )
 
 
 def load_or_generate_pairs(
@@ -1559,6 +1633,10 @@ def load_or_generate_pairs(
             for gseed in brief_seeds:
                 if (bid, gseed) not in base_by_id_seed or (bid, gseed) not in cand_by_id_seed:
                     raise ValueError(f"Missing brief {bid} (seed={gseed}) in baseline or candidate file")
+                base_rec = base_by_id_seed[(bid, gseed)]
+                cand_rec = cand_by_id_seed[(bid, gseed)]
+                validate_candidate_completeness(base_rec, arm_label="baseline")
+                validate_candidate_completeness(cand_rec, arm_label="candidate")
                 pid = f"P{idx:03d}-S{gseed}" if use_seed_suffix else f"P{idx:03d}"
                 pairs.append({
                     "pair_id": pid,
@@ -1567,8 +1645,8 @@ def load_or_generate_pairs(
                     "generation_seed": gseed,
                     "scene_type": b["scene_type"],
                     "genre": b["genre"],
-                    "baseline": base_by_id_seed[(bid, gseed)],
-                    "candidate": cand_by_id_seed[(bid, gseed)],
+                    "baseline": base_rec,
+                    "candidate": cand_rec,
                 })
         return pairs
 
@@ -2247,6 +2325,8 @@ def run_evaluation(
     use_parallel_judges = any(str(j.get("provider", "fake")).lower() != "fake" for j in judges) and len(judges) > 1
 
     for pair in pairs:
+        validate_candidate_completeness(pair["baseline"], arm_label="baseline")
+        validate_candidate_completeness(pair["candidate"], arm_label="candidate")
         bid = pair.get("brief_id") or pair["case_id"]
         brief = brief_map[bid]
         pid_str = str(pair["pair_id"])
@@ -2302,6 +2382,9 @@ def run_evaluation(
                 "model_version": arm.get("model_version"),
                 "prompt_variant": arm.get("prompt_variant"),
                 "generation_seed": arm.get("generation_seed", gseed),
+                "truncated": bool(arm.get("truncated", False)),
+                "text_sha256": arm.get("text_sha256"),
+                "accepted_text_sha256": arm.get("accepted_text_sha256"),
                 "packet_hash": arm.get("packet_hash"),
                 "source_packet_sha256": arm.get("source_packet_sha256"),
                 "prompt_hash": arm.get("prompt_hash"),
@@ -2725,7 +2808,7 @@ def self_test() -> None:
         mock_bin = root / "mock-spindle-tokenizer"
         mock_bin.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, sys\n"
+            "import hashlib, json, sys\n"
             "args = sys.argv[1:]\n"
             "cmd = args[0]\n"
             "if cmd == 'draft-packet':\n"
@@ -2733,6 +2816,9 @@ def self_test() -> None:
             "    seed = int(args[5]) if len(args) > 5 else None\n"
             "    pkt = json.loads(open(pkt_path, encoding='utf-8').read())\n"
             "    text = f\"Packet prose for {pkt['scene_id']} seed={seed}\"\n"
+            "    sha_pkt = hashlib.sha256(text.encode('utf-8')).hexdigest()\n"
+            "    truncated = (seed == 999)\n"
+            "    accepted_sha = None if seed in (998, 999) else sha_pkt\n"
             "    print(json.dumps({\n"
             "        'mode': 'draft_packet',\n"
             "        'artifact_id': 'draft_artifact:test',\n"
@@ -2747,8 +2833,9 @@ def self_test() -> None:
             "        'tokenizer_version': 'gemma4',\n"
             "        'input_tokens': 512,\n"
             "        'output_tokens': 410,\n"
-            "        'text_sha256': 'sha_pkt',\n"
-            "        'accepted_text_sha256': 'sha_pkt',\n"
+            "        'truncated': truncated,\n"
+            "        'text_sha256': sha_pkt,\n"
+            "        'accepted_text_sha256': accepted_sha,\n"
             "        'text': text,\n"
             "        'settings': {'transport': 'ollama_native_chat', 'context_window': 32768, 'max_tokens': 1200, 'temperature': 0.4, 'seed': seed, 'model_revision': 'rev1'}\n"
             "    }))\n"
@@ -2757,6 +2844,8 @@ def self_test() -> None:
             "    seed = int(args[6]) if len(args) > 6 else None\n"
             "    msg = json.loads(open(msg_path, encoding='utf-8').read())\n"
             "    text = f\"Legacy prose len={len(msg['user'])} seed={seed}\"\n"
+            "    sha_msg = hashlib.sha256(text.encode('utf-8')).hexdigest()\n"
+            "    truncated = (seed == 999)\n"
             "    print(json.dumps({\n"
             "        'mode': 'draft_messages',\n"
             "        'prompt_hash': 'msg_hash_789',\n"
@@ -2767,7 +2856,8 @@ def self_test() -> None:
             "        'tokenizer_version': 'gemma4',\n"
             "        'input_tokens': 480,\n"
             "        'output_tokens': 395,\n"
-            "        'text_sha256': 'sha_msg',\n"
+            "        'truncated': truncated,\n"
+            "        'text_sha256': sha_msg,\n"
             "        'text': text,\n"
             "        'settings': {'transport': 'ollama_native_chat', 'context_window': 32768, 'max_tokens': 1200, 'temperature': 0.4, 'seed': seed, 'model_revision': 'rev1'}\n"
             "    }))\n",
@@ -2792,6 +2882,8 @@ def self_test() -> None:
         assert bridge_pkt_cand["packet_hash"] == "pkt_hash_123"
         assert bridge_pkt_cand["source_packet_sha256"] == "src_pkt_456"
         assert bridge_pkt_cand["generation_seed"] == 101
+        assert bridge_pkt_cand["truncated"] is False
+        assert bridge_pkt_cand["accepted_text_sha256"] == bridge_pkt_cand["text_sha256"]
         assert bridge_pkt_cand["settings"]["context_window"] == 32768
         assert "seed=101" in bridge_pkt_cand["text"]
 
@@ -2804,7 +2896,90 @@ def self_test() -> None:
         )
         assert bridge_msg_cand["prompt_hash"] == "msg_hash_789"
         assert bridge_msg_cand["generation_seed"] == 101
+        assert bridge_msg_cand["truncated"] is False
+        assert bridge_msg_cand["accepted_text_sha256"] is None
         assert bridge_msg_cand["settings"]["context_window"] == 32768
+
+        # Verify truncated=True and unaccepted packet outputs are rejected before checkpointing/judging
+        try:
+            generate_candidate_for_brief(
+                briefs[0],
+                variants["drafting_packet_v1"],
+                bridge_cfg,
+                condition_label="candidate",
+                generation_seed=999,
+            )
+            raise AssertionError("Expected RuntimeError for truncated=True packet bridge output")
+        except RuntimeError as exc:
+            assert "truncated=True" in str(exc)
+
+        try:
+            generate_candidate_for_brief(
+                briefs[0],
+                variants["spindle_full_context"],
+                bridge_cfg,
+                condition_label="baseline",
+                generation_seed=999,
+            )
+            raise AssertionError("Expected RuntimeError for truncated=True message bridge output")
+        except RuntimeError as exc:
+            assert "truncated=True" in str(exc)
+
+        try:
+            generate_candidate_for_brief(
+                briefs[0],
+                variants["drafting_packet_v1"],
+                bridge_cfg,
+                condition_label="candidate",
+                generation_seed=998,
+            )
+            raise AssertionError("Expected RuntimeError for unaccepted packet bridge output (accepted_text_sha256=None)")
+        except RuntimeError as exc:
+            assert "accepted_text_sha256" in str(exc)
+
+        # Verify saved candidate files with truncated=True or missing packet acceptance are rejected on load
+        bad_cand_file = root / "bad_cand.json"
+        write_json(
+            bad_cand_file,
+            [
+                {
+                    **bridge_pkt_cand,
+                    "truncated": True,
+                    "accepted_text_sha256": None,
+                }
+            ],
+        )
+        base_ok_file = root / "base_ok.json"
+        write_json(base_ok_file, [bridge_msg_cand])
+        try:
+            load_or_generate_pairs(
+                briefs[:1],
+                baseline_path=base_ok_file,
+                candidate_path=bad_cand_file,
+            )
+            raise AssertionError("Expected ValueError when loading truncated/unaccepted candidate")
+        except ValueError as exc:
+            assert "truncated=True" in str(exc)
+
+        write_json(
+            bad_cand_file,
+            [
+                {
+                    **bridge_pkt_cand,
+                    "truncated": False,
+                    "accepted_text_sha256": None,
+                }
+            ],
+        )
+        try:
+            load_or_generate_pairs(
+                briefs[:1],
+                baseline_path=base_ok_file,
+                candidate_path=bad_cand_file,
+            )
+            raise AssertionError("Expected ValueError when loading packet candidate without accepted_text_sha256")
+        except ValueError as exc:
+            assert "accepted_text_sha256" in str(exc)
 
     # 5. Verify secret redaction & key check safety
     os.environ["SPINDLE_TEST_FAKE_SECRET_KEY"] = "super-secret-value-12345"
@@ -2953,6 +3128,10 @@ def main() -> None:
                 if isinstance(prev_list, list):
                     for item in prev_list:
                         if isinstance(item, dict) and item.get("text"):
+                            try:
+                                validate_candidate_completeness(item, arm_label=args.condition)
+                            except ValueError:
+                                continue
                             bid = item.get("case_id") or item.get("brief_id")
                             existing_by_key[(bid, item.get("generation_seed"))] = item
             except Exception:
