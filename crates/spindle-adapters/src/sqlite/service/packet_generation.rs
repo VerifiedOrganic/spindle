@@ -2,10 +2,18 @@ use super::*;
 use crate::drafting::{
     DraftTokenizer, PacketBudget, artifact,
     critique::{self, CRITIC_RUBRIC_VERSION, CriticBudget},
+    revision::{
+        self, BoundaryCrashPoint, JudgeBudget, RevisionBudget, RevisionLoopOptions,
+        compare_candidate_checks, compute_edit_span_summary, evaluate_deterministic_checks,
+        resolve_double_order_judgment, select_initial_judge_order,
+    },
 };
 use spindle_core::drafting::{
-    CriticFindingInput, DraftingPacketV1, EditorialPolicy, SHADOW_CRITIQUE_ARTIFACT_SCHEMA_VERSION,
-    ShadowCritiqueArtifactV1,
+    CasVersionExpectation, CriticFindingInput, DeblindedArm, DraftingPacketV1, EditorialPolicy,
+    EditorialStage, HARD_MAX_REVISION_ROUNDS, HARD_MAX_SCENE_CALLS, HARD_MAX_SCENE_TOKENS,
+    REVISION_LOOP_ARTIFACT_SCHEMA_VERSION, RevisionLoopArtifactV1, RevisionRetentionReason,
+    RevisionRoundRecord, SHADOW_CRITIQUE_ARTIFACT_SCHEMA_VERSION, ShadowCritiqueArtifactV1,
+    ShadowCritiqueOutcome, StageTransitionKey, StageTransitionRecord,
     extraction::{DraftReceiptBinding, PlainTextDraftArtifactV1},
 };
 
@@ -201,6 +209,997 @@ impl SqliteSpindleService {
         Ok(shadow_artifact)
     }
 
+    /// Execute the bounded scene critique, prior-draft revision, deterministic
+    /// candidate check, and swapped-order blinded pairwise judge loop over a
+    /// persisted `PlainTextDraftArtifactV1`.
+    ///
+    /// Persists durable stage transitions and loop state to `loop_artifact_path`
+    /// at every stage boundary (`Drafted`, `DeterministicChecked`, `Critiqued`,
+    /// `CandidateReady`, `CandidateChecked`, `PairwiseJudged`, `AcceptedOriginal | AcceptedRevision`)
+    /// so a crash at any boundary preserves the incumbent artifact and resumes
+    /// idempotently without replaying completed paid calls. Before promoting any
+    /// accepted revision, verifies Compare-And-Swap (CAS) on the active branch,
+    /// canon snapshot, plan revision, source versions, and incumbent artifact hash.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn revise_artifact_loop(
+        &self,
+        policy: EditorialPolicy,
+        draft_artifact_path: &std::path::Path,
+        loop_artifact_path: &std::path::Path,
+        external_findings: Vec<CriticFindingInput>,
+        critic_budget: &CriticBudget,
+        revision_budget: &RevisionBudget,
+        judge_budget: &JudgeBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+        options: RevisionLoopOptions,
+    ) -> Result<RevisionLoopArtifactV1> {
+        anyhow::ensure!(
+            policy == EditorialPolicy::CritiqueV1,
+            "revision loop requires critique_v1 policy"
+        );
+        anyhow::ensure!(
+            (1..=HARD_MAX_REVISION_ROUNDS).contains(&options.max_rounds),
+            "max_rounds must be 1..={HARD_MAX_REVISION_ROUNDS}"
+        );
+        anyhow::ensure!(
+            options.max_scene_calls <= HARD_MAX_SCENE_CALLS
+                && options.max_scene_tokens <= HARD_MAX_SCENE_TOKENS,
+            "scene call/token limits exceed hard caps"
+        );
+
+        let draft = artifact::load_artifact(draft_artifact_path)?;
+        anyhow::ensure!(
+            !draft.truncated,
+            "incomplete/truncated draft artifact cannot enter revision loop"
+        );
+        let prepared = draft.prepared_packet.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("draft artifact missing prepared_packet; cannot run revision loop")
+        })?;
+        let packet = &prepared.packet;
+        let run_id = packet
+            .run_id
+            .clone()
+            .unwrap_or_else(|| format!("run:{}", draft.artifact_id));
+
+        let record_transition = |loop_art: &mut RevisionLoopArtifactV1,
+                                 base_hash: &str,
+                                 stage: EditorialStage,
+                                 attempt: u32,
+                                 output_hash: String,
+                                 call_ids: Vec<String>,
+                                 tokens_used: usize| {
+            let key = StageTransitionKey {
+                run_id: loop_art.run_id.clone(),
+                branch_id: loop_art.branch_id.clone(),
+                scene_id: loop_art.scene_id.clone(),
+                base_text_hash: base_hash.into(),
+                packet_hash: loop_art.packet_hash.clone(),
+                stage,
+                attempt,
+            };
+            let idempotency_key = key.idempotency_key();
+            if !loop_art
+                .transitions
+                .iter()
+                .any(|t| t.idempotency_key == idempotency_key)
+            {
+                loop_art.transitions.push(StageTransitionRecord {
+                    key,
+                    idempotency_key,
+                    output_hash,
+                    model_call_ids: call_ids,
+                    tokens_used,
+                });
+            }
+            loop_art.current_stage = stage;
+        };
+
+        let mut loop_artifact = if loop_artifact_path.exists() {
+            let existing = revision::load_revision_loop_artifact(loop_artifact_path)?;
+            anyhow::ensure!(
+                existing.initial_draft_artifact_id == draft.artifact_id
+                    && existing.packet_hash == draft.packet_hash
+                    && existing.project_id == draft.project_id
+                    && existing.branch_id == draft.branch_id,
+                "existing revision loop artifact belongs to a different draft or packet"
+            );
+            if existing.current_stage.is_terminal() {
+                return Ok(existing);
+            }
+            existing
+        } else {
+            let branch = self.repository.get_active_branch(&draft.project_id).await?;
+            anyhow::ensure!(
+                branch.id == draft.branch_id,
+                "draft artifact branch is no longer active"
+            );
+            let mut source_versions = packet.source_versions.clone();
+            source_versions.sort();
+            source_versions.dedup();
+            let mut fresh = RevisionLoopArtifactV1 {
+                schema_version: REVISION_LOOP_ARTIFACT_SCHEMA_VERSION.into(),
+                artifact_id: format!("revision_loop:{}", draft.artifact_id),
+                run_id,
+                project_id: draft.project_id.clone(),
+                branch_id: draft.branch_id.clone(),
+                scene_id: draft.scene_id.clone(),
+                packet_hash: draft.packet_hash.clone(),
+                source_packet_sha256: draft.source_packet_sha256.clone(),
+                rating: draft.rating.clone(),
+                max_rounds: options.max_rounds,
+                max_scene_calls: options.max_scene_calls,
+                max_scene_tokens: options.max_scene_tokens,
+                total_calls_used: 0,
+                total_tokens_used: 0,
+                cas_expectation: CasVersionExpectation {
+                    branch_id: draft.branch_id.clone(),
+                    canon_snapshot_hash: packet.canon_snapshot_hash.clone(),
+                    plan_revision: packet.plan_revision.clone(),
+                    source_versions,
+                    incumbent_text_sha256: draft.text_sha256.clone(),
+                },
+                initial_draft_artifact_id: draft.artifact_id.clone(),
+                initial_text: draft.text.clone(),
+                initial_text_sha256: draft.text_sha256.clone(),
+                initial_receipt: draft.receipt.clone(),
+                current_stage: EditorialStage::PacketReady,
+                seen_finding_fingerprints: Vec::new(),
+                transitions: Vec::new(),
+                rounds: Vec::new(),
+                accepted_text: draft.text.clone(),
+                accepted_text_sha256: draft.text_sha256.clone(),
+                accepted_receipt: draft.receipt.clone(),
+                revision_promoted: false,
+                retention_reason: None,
+                parked_for_review: false,
+                broad_edit_flagged_for_review: false,
+                requires_author_decision: Vec::new(),
+            };
+            record_transition(
+                &mut fresh,
+                &draft.text_sha256,
+                EditorialStage::PacketReady,
+                0,
+                draft.packet_hash.clone(),
+                Vec::new(),
+                0,
+            );
+            record_transition(
+                &mut fresh,
+                &draft.text_sha256,
+                EditorialStage::Drafted,
+                0,
+                draft.text_sha256.clone(),
+                vec![draft.receipt.generation_id.clone()],
+                0,
+            );
+            revision::save_revision_loop_artifact(loop_artifact_path, &fresh)?;
+            if options.crash_after == Some(BoundaryCrashPoint::Stage(EditorialStage::Drafted, 1)) {
+                anyhow::bail!("simulated_crash_at_boundary:drafted:1");
+            }
+            fresh
+        };
+
+        let mut working_text = loop_artifact.initial_text.clone();
+        let mut working_hash = loop_artifact.initial_text_sha256.clone();
+        let mut working_receipt = loop_artifact.initial_receipt.clone();
+        let mut any_round_accepted = false;
+
+        for round_num in 1..=loop_artifact.max_rounds {
+            // Ensure a RevisionRoundRecord exists for this round.
+            if loop_artifact.rounds.len() < round_num as usize {
+                loop_artifact.rounds.push(RevisionRoundRecord {
+                    round: round_num,
+                    incumbent_text_sha256: working_hash.clone(),
+                    incumbent_deterministic_report: None,
+                    critique_outcome: None,
+                    selected_directives: Vec::new(),
+                    strengths_to_preserve: Vec::new(),
+                    requires_author_decision: Vec::new(),
+                    candidate_text: None,
+                    candidate_text_sha256: None,
+                    candidate_truncated: None,
+                    candidate_receipt: None,
+                    edit_span_summary: None,
+                    candidate_check_comparison: None,
+                    judge_pass_1: None,
+                    judge_pass_2: None,
+                    double_order_judgment: None,
+                    round_accepted: false,
+                    round_stop_reason: None,
+                    prompt_hashes: Vec::new(),
+                    model_call_ids: Vec::new(),
+                    tokens_used: 0,
+                });
+            }
+
+            // If this round was already completed before a crash in a later round, replay its state transition in memory.
+            {
+                let r = &loop_artifact.rounds[(round_num - 1) as usize];
+                if r.round_accepted {
+                    if let (Some(ct), Some(ch), Some(cr)) = (
+                        r.candidate_text.clone(),
+                        r.candidate_text_sha256.clone(),
+                        r.candidate_receipt.clone(),
+                    ) {
+                        working_text = ct;
+                        working_hash = ch;
+                        working_receipt = cr;
+                        any_round_accepted = true;
+                        continue;
+                    }
+                } else if let Some(stop_reason) = r.round_stop_reason {
+                    loop_artifact.retention_reason = Some(stop_reason);
+                    break;
+                }
+            }
+
+            // Stage 1: DeterministicChecked
+            let inc_report = {
+                let r = &loop_artifact.rounds[(round_num - 1) as usize];
+                if let Some(existing_rep) = &r.incumbent_deterministic_report {
+                    existing_rep.clone()
+                } else {
+                    let projected_findings = project_external_findings_to_text(
+                        &working_text,
+                        &working_hash,
+                        &external_findings,
+                    );
+                    let rep = evaluate_deterministic_checks(
+                        packet,
+                        &working_text,
+                        false,
+                        projected_findings,
+                    )?;
+                    let fp = rep.normalized_finding_fingerprint.clone();
+                    loop_artifact.rounds[(round_num - 1) as usize].incumbent_deterministic_report =
+                        Some(rep.clone());
+                    record_transition(
+                        &mut loop_artifact,
+                        &working_hash,
+                        EditorialStage::DeterministicChecked,
+                        round_num,
+                        fp,
+                        Vec::new(),
+                        0,
+                    );
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    rep
+                }
+            };
+            if options.crash_after
+                == Some(BoundaryCrashPoint::Stage(
+                    EditorialStage::DeterministicChecked,
+                    round_num,
+                ))
+            {
+                anyhow::bail!("simulated_crash_at_boundary:deterministic_checked:{round_num}");
+            }
+
+            // Check repeated normalized finding fingerprint convergence stop (in Round 2+).
+            let inc_fp = inc_report.normalized_finding_fingerprint.clone();
+            if round_num > 1 && loop_artifact.seen_finding_fingerprints.contains(&inc_fp) {
+                loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                    Some(RevisionRetentionReason::RepeatedFindingFingerprint);
+                loop_artifact.retention_reason =
+                    Some(RevisionRetentionReason::RepeatedFindingFingerprint);
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                break;
+            }
+            if !loop_artifact.seen_finding_fingerprints.contains(&inc_fp) {
+                loop_artifact.seen_finding_fingerprints.push(inc_fp);
+            }
+
+            // Stage 2: Critiqued
+            if loop_artifact.rounds[(round_num - 1) as usize]
+                .critique_outcome
+                .is_none()
+            {
+                let remaining_calls = loop_artifact
+                    .max_scene_calls
+                    .saturating_sub(loop_artifact.total_calls_used);
+                if remaining_calls == 0
+                    || loop_artifact.total_tokens_used >= loop_artifact.max_scene_tokens
+                {
+                    loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                        Some(RevisionRetentionReason::BudgetExhausted);
+                    loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    break;
+                }
+                let critic_max_calls = options
+                    .max_critic_calls_per_round
+                    .min(remaining_calls)
+                    .max(1);
+                let combined_findings: Vec<CriticFindingInput> = inc_report
+                    .ingested_findings
+                    .iter()
+                    .map(|f| CriticFindingInput {
+                        finding_id: f.canonical_id.clone(),
+                        source: f
+                            .sources
+                            .first()
+                            .copied()
+                            .unwrap_or(spindle_core::drafting::FeedbackSourceKind::Continuity),
+                        check_type: f.check_type.clone(),
+                        dimension: f.dimension,
+                        severity: f.severity,
+                        message: f.message.clone(),
+                        anchor: f.anchor.clone(),
+                        suggested_fix: f.suggested_fix.clone(),
+                    })
+                    .collect();
+                let critic_res = self
+                    .repository
+                    .model_router()
+                    .critique_draft_shadow(
+                        policy,
+                        packet,
+                        &draft.packet_hash,
+                        &working_text,
+                        &working_hash,
+                        combined_findings,
+                        critic_budget,
+                        tokenizer,
+                        critic_max_calls,
+                    )
+                    .await?;
+                let calls_spent = u32::try_from(critic_res.prompt_hashes.len()).unwrap_or(1);
+                let critic_tokens = critic_res.tokens_used;
+                loop_artifact.total_calls_used =
+                    loop_artifact.total_calls_used.saturating_add(calls_spent);
+                loop_artifact.total_tokens_used = loop_artifact
+                    .total_tokens_used
+                    .saturating_add(critic_tokens);
+
+                let (directives, strengths, author_decisions, out_hash) = match &critic_res.outcome
+                {
+                    ShadowCritiqueOutcome::Critiqued { critique, .. } => {
+                        let bytes = serde_json::to_vec(critique)?;
+                        (
+                            critique.directives.clone(),
+                            critique.strengths_to_preserve.clone(),
+                            critique.requires_author_decision.clone(),
+                            generation_sha256_hex(&bytes),
+                        )
+                    }
+                    ShadowCritiqueOutcome::CriticInvalid { reason, .. } => (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        generation_sha256_hex(reason.as_bytes()),
+                    ),
+                };
+                {
+                    let r = &mut loop_artifact.rounds[(round_num - 1) as usize];
+                    r.critique_outcome = Some(critic_res.outcome);
+                    r.selected_directives = directives;
+                    r.strengths_to_preserve = strengths;
+                    r.requires_author_decision = author_decisions.clone();
+                    r.prompt_hashes.extend(critic_res.prompt_hashes);
+                    r.model_call_ids.extend(critic_res.model_call_ids.clone());
+                    r.tokens_used = r.tokens_used.saturating_add(critic_tokens);
+                }
+                for item in author_decisions {
+                    if !loop_artifact
+                        .requires_author_decision
+                        .iter()
+                        .any(|existing| existing.id == item.id)
+                    {
+                        loop_artifact.requires_author_decision.push(item);
+                    }
+                }
+                record_transition(
+                    &mut loop_artifact,
+                    &working_hash,
+                    EditorialStage::Critiqued,
+                    round_num,
+                    out_hash,
+                    critic_res.model_call_ids,
+                    critic_tokens,
+                );
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+            }
+            if options.crash_after
+                == Some(BoundaryCrashPoint::Stage(
+                    EditorialStage::Critiqued,
+                    round_num,
+                ))
+            {
+                anyhow::bail!("simulated_crash_at_boundary:critiqued:{round_num}");
+            }
+
+            // Evaluate critic outcome & actionable directive stop rules.
+            {
+                let r = &loop_artifact.rounds[(round_num - 1) as usize];
+                if matches!(
+                    r.critique_outcome,
+                    Some(ShadowCritiqueOutcome::CriticInvalid { .. })
+                ) {
+                    loop_artifact.parked_for_review = true;
+                    loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                        Some(RevisionRetentionReason::CriticInvalid);
+                    loop_artifact.retention_reason = Some(RevisionRetentionReason::CriticInvalid);
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    break;
+                }
+                if r.selected_directives.is_empty() {
+                    loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                        Some(RevisionRetentionReason::NoActionableDirectives);
+                    loop_artifact.retention_reason =
+                        Some(RevisionRetentionReason::NoActionableDirectives);
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    break;
+                }
+            }
+
+            // Stage 3: CandidateReady
+            if loop_artifact.rounds[(round_num - 1) as usize]
+                .candidate_text
+                .is_none()
+            {
+                if loop_artifact.total_calls_used >= loop_artifact.max_scene_calls
+                    || loop_artifact.total_tokens_used >= loop_artifact.max_scene_tokens
+                {
+                    loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                        Some(RevisionRetentionReason::BudgetExhausted);
+                    loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    break;
+                }
+                let directives = loop_artifact.rounds[(round_num - 1) as usize]
+                    .selected_directives
+                    .clone();
+                let strengths = loop_artifact.rounds[(round_num - 1) as usize]
+                    .strengths_to_preserve
+                    .clone();
+                let rev_res = self
+                    .repository
+                    .model_router()
+                    .revise_draft_candidate(
+                        policy,
+                        packet,
+                        &working_text,
+                        &working_hash,
+                        &directives,
+                        &strengths,
+                        revision_budget,
+                        tokenizer,
+                    )
+                    .await?;
+                let receipt = self
+                    .register_generation_receipt_with_calls(
+                        &rev_res.route_used,
+                        Some(packet.scene_card.rating.as_str()),
+                        &rev_res.response.model_name,
+                        &rev_res.response.output,
+                        rev_res.response.call_id.clone().into_iter().collect(),
+                    )
+                    .await?;
+                let cand_sha = generation_sha256_hex(rev_res.response.output.as_bytes());
+                let rev_tokens = rev_res.input_tokens.saturating_add(rev_res.output_tokens);
+                loop_artifact.total_calls_used = loop_artifact.total_calls_used.saturating_add(1);
+                loop_artifact.total_tokens_used =
+                    loop_artifact.total_tokens_used.saturating_add(rev_tokens);
+                let call_ids: Vec<String> = rev_res.response.call_id.into_iter().collect();
+                {
+                    let r = &mut loop_artifact.rounds[(round_num - 1) as usize];
+                    r.candidate_text = Some(rev_res.response.output);
+                    r.candidate_text_sha256 = Some(cand_sha.clone());
+                    r.candidate_truncated = Some(rev_res.response.truncated);
+                    r.candidate_receipt = Some(DraftReceiptBinding {
+                        generation_id: receipt.id,
+                        agent_id: receipt.agent_id,
+                        normalized_output_sha256: receipt.output_sha256,
+                    });
+                    r.prompt_hashes.push(rev_res.prompt_hash);
+                    r.model_call_ids.extend(call_ids.clone());
+                    r.tokens_used = r.tokens_used.saturating_add(rev_tokens);
+                }
+                record_transition(
+                    &mut loop_artifact,
+                    &working_hash,
+                    EditorialStage::CandidateReady,
+                    round_num,
+                    cand_sha,
+                    call_ids,
+                    rev_tokens,
+                );
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+            }
+            if options.crash_after
+                == Some(BoundaryCrashPoint::Stage(
+                    EditorialStage::CandidateReady,
+                    round_num,
+                ))
+            {
+                anyhow::bail!("simulated_crash_at_boundary:candidate_ready:{round_num}");
+            }
+
+            let cand_text = loop_artifact.rounds[(round_num - 1) as usize]
+                .candidate_text
+                .clone()
+                .expect("candidate_text set");
+            let cand_sha = loop_artifact.rounds[(round_num - 1) as usize]
+                .candidate_text_sha256
+                .clone()
+                .expect("candidate_text_sha256 set");
+            let cand_truncated = loop_artifact.rounds[(round_num - 1) as usize]
+                .candidate_truncated
+                .unwrap_or(false);
+
+            // Check identical candidate hash stop before deterministic check or judging.
+            if cand_sha == working_hash {
+                loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                    Some(RevisionRetentionReason::IdenticalCandidateHash);
+                loop_artifact.retention_reason =
+                    Some(RevisionRetentionReason::IdenticalCandidateHash);
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                break;
+            }
+            if cand_truncated {
+                loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                    Some(RevisionRetentionReason::CandidateTruncated);
+                loop_artifact.retention_reason = Some(RevisionRetentionReason::CandidateTruncated);
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                break;
+            }
+
+            // Stage 4: CandidateChecked
+            let comparison = {
+                let r = &loop_artifact.rounds[(round_num - 1) as usize];
+                if let Some(existing_cmp) = &r.candidate_check_comparison {
+                    existing_cmp.clone()
+                } else {
+                    let directives = r.selected_directives.clone();
+                    let edit_summary =
+                        compute_edit_span_summary(&working_text, &cand_text, &directives);
+                    if edit_summary.broad_change_flagged {
+                        loop_artifact.broad_edit_flagged_for_review = true;
+                    }
+                    let cand_findings = project_external_findings_to_text(
+                        &cand_text,
+                        &cand_sha,
+                        &external_findings,
+                    );
+                    let cand_rep = evaluate_deterministic_checks(
+                        packet,
+                        &cand_text,
+                        cand_truncated,
+                        cand_findings,
+                    )?;
+                    let cmp = compare_candidate_checks(
+                        packet,
+                        &working_text,
+                        &inc_report,
+                        &cand_text,
+                        cand_rep,
+                    );
+                    let cmp_hash = generation_sha256_hex(&serde_json::to_vec(&cmp)?);
+                    {
+                        let r_mut = &mut loop_artifact.rounds[(round_num - 1) as usize];
+                        r_mut.edit_span_summary = Some(edit_summary);
+                        r_mut.candidate_check_comparison = Some(cmp.clone());
+                    }
+                    record_transition(
+                        &mut loop_artifact,
+                        &working_hash,
+                        EditorialStage::CandidateChecked,
+                        round_num,
+                        cmp_hash,
+                        Vec::new(),
+                        0,
+                    );
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    cmp
+                }
+            };
+            if options.crash_after
+                == Some(BoundaryCrashPoint::Stage(
+                    EditorialStage::CandidateChecked,
+                    round_num,
+                ))
+            {
+                anyhow::bail!("simulated_crash_at_boundary:candidate_checked:{round_num}");
+            }
+
+            if comparison.disqualified {
+                loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                    Some(RevisionRetentionReason::CandidateDisqualifiedByDeterministicCheck);
+                loop_artifact.retention_reason =
+                    Some(RevisionRetentionReason::CandidateDisqualifiedByDeterministicCheck);
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                break;
+            }
+
+            // If external/deterministic findings existed on the incumbent and the candidate resolved 0 of them,
+            // stop when finding fingerprint is unchanged.
+            if !inc_report.ingested_findings.is_empty()
+                && comparison.resolved_finding_count == 0
+                && comparison.candidate_report.normalized_finding_fingerprint
+                    == inc_report.normalized_finding_fingerprint
+            {
+                loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                    Some(RevisionRetentionReason::NoDirectiveProgress);
+                loop_artifact.retention_reason = Some(RevisionRetentionReason::NoDirectiveProgress);
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                break;
+            }
+
+            // Stage 5: PairwiseJudged (Pass 1 + swapped Pass 2)
+            let (p1_arm, p2_arm) = select_initial_judge_order(
+                &draft.packet_hash,
+                &working_hash,
+                &cand_sha,
+                round_num,
+                judge_budget.generation_seed,
+            );
+
+            // Judge Pass 1
+            if loop_artifact.rounds[(round_num - 1) as usize]
+                .judge_pass_1
+                .is_none()
+            {
+                if loop_artifact.total_calls_used >= loop_artifact.max_scene_calls
+                    || loop_artifact.total_tokens_used >= loop_artifact.max_scene_tokens
+                {
+                    loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                        Some(RevisionRetentionReason::BudgetExhausted);
+                    loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    break;
+                }
+                let (p1_text, p2_text) = if p1_arm == DeblindedArm::Baseline {
+                    (working_text.as_str(), cand_text.as_str())
+                } else {
+                    (cand_text.as_str(), working_text.as_str())
+                };
+                match self
+                    .repository
+                    .model_router()
+                    .judge_candidate_single_pass(
+                        policy,
+                        packet,
+                        1,
+                        p1_arm,
+                        p1_text,
+                        p2_arm,
+                        p2_text,
+                        judge_budget,
+                        tokenizer,
+                    )
+                    .await
+                {
+                    Ok(pass1_res) => {
+                        let pass1_tokens = pass1_res
+                            .input_tokens
+                            .saturating_add(pass1_res.output_tokens);
+                        loop_artifact.total_calls_used =
+                            loop_artifact.total_calls_used.saturating_add(1);
+                        loop_artifact.total_tokens_used =
+                            loop_artifact.total_tokens_used.saturating_add(pass1_tokens);
+                        let r = &mut loop_artifact.rounds[(round_num - 1) as usize];
+                        if let Some(cid) = pass1_res.record.model_call_id.clone() {
+                            r.model_call_ids.push(cid);
+                        }
+                        r.prompt_hashes.push(pass1_res.prompt_hash);
+                        r.tokens_used = r.tokens_used.saturating_add(pass1_tokens);
+                        r.judge_pass_1 = Some(pass1_res.record);
+                        revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    }
+                    Err(err) => {
+                        let msg = err.to_string();
+                        let pre_dispatch = msg.contains("budget_unknown")
+                            || msg.contains("mandatory_overflow")
+                            || msg.contains("clearance")
+                            || msg.contains("requires critique_v1");
+                        if !pre_dispatch {
+                            loop_artifact.total_calls_used =
+                                loop_artifact.total_calls_used.saturating_add(1);
+                        }
+                        loop_artifact.parked_for_review = true;
+                        loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                            Some(RevisionRetentionReason::JudgeInvalidOrUnavailable);
+                        loop_artifact.retention_reason =
+                            Some(RevisionRetentionReason::JudgeInvalidOrUnavailable);
+                        revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                        break;
+                    }
+                }
+            }
+            if options.crash_after == Some(BoundaryCrashPoint::JudgePass1(round_num)) {
+                anyhow::bail!("simulated_crash_at_boundary:judge_pass_1:{round_num}");
+            }
+
+            // Judge Pass 2 (Swapped Order)
+            if loop_artifact.rounds[(round_num - 1) as usize]
+                .judge_pass_2
+                .is_none()
+            {
+                if loop_artifact.total_calls_used >= loop_artifact.max_scene_calls
+                    || loop_artifact.total_tokens_used >= loop_artifact.max_scene_tokens
+                {
+                    loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                        Some(RevisionRetentionReason::BudgetExhausted);
+                    loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    break;
+                }
+                let (swap_p1_arm, swap_p2_arm) = (p2_arm, p1_arm);
+                let (p1_text, p2_text) = if swap_p1_arm == DeblindedArm::Baseline {
+                    (working_text.as_str(), cand_text.as_str())
+                } else {
+                    (cand_text.as_str(), working_text.as_str())
+                };
+                match self
+                    .repository
+                    .model_router()
+                    .judge_candidate_single_pass(
+                        policy,
+                        packet,
+                        2,
+                        swap_p1_arm,
+                        p1_text,
+                        swap_p2_arm,
+                        p2_text,
+                        judge_budget,
+                        tokenizer,
+                    )
+                    .await
+                {
+                    Ok(pass2_res) => {
+                        let pass2_tokens = pass2_res
+                            .input_tokens
+                            .saturating_add(pass2_res.output_tokens);
+                        loop_artifact.total_calls_used =
+                            loop_artifact.total_calls_used.saturating_add(1);
+                        loop_artifact.total_tokens_used =
+                            loop_artifact.total_tokens_used.saturating_add(pass2_tokens);
+                        let r = &mut loop_artifact.rounds[(round_num - 1) as usize];
+                        if let Some(cid) = pass2_res.record.model_call_id.clone() {
+                            r.model_call_ids.push(cid);
+                        }
+                        r.prompt_hashes.push(pass2_res.prompt_hash);
+                        r.tokens_used = r.tokens_used.saturating_add(pass2_tokens);
+                        r.judge_pass_2 = Some(pass2_res.record);
+                        revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    }
+                    Err(err) => {
+                        let msg = err.to_string();
+                        let pre_dispatch = msg.contains("budget_unknown")
+                            || msg.contains("mandatory_overflow")
+                            || msg.contains("clearance")
+                            || msg.contains("requires critique_v1");
+                        if !pre_dispatch {
+                            loop_artifact.total_calls_used =
+                                loop_artifact.total_calls_used.saturating_add(1);
+                        }
+                        loop_artifact.parked_for_review = true;
+                        loop_artifact.rounds[(round_num - 1) as usize].round_stop_reason =
+                            Some(RevisionRetentionReason::JudgeInvalidOrUnavailable);
+                        loop_artifact.retention_reason =
+                            Some(RevisionRetentionReason::JudgeInvalidOrUnavailable);
+                        revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                        break;
+                    }
+                }
+            }
+
+            // Combine Pass 1 and Pass 2 into DoubleOrderJudgeEvaluation.
+            let (double_eval, judge_retention) = {
+                let r = &loop_artifact.rounds[(round_num - 1) as usize];
+                if let Some(existing_eval) = &r.double_order_judgment {
+                    (existing_eval.clone(), r.round_stop_reason)
+                } else {
+                    let pass_1 = r.judge_pass_1.clone().expect("judge_pass_1 present");
+                    let pass_2 = r.judge_pass_2.clone().expect("judge_pass_2 present");
+                    let mut judge_calls = Vec::new();
+                    if let Some(c1) = pass_1.model_call_id.clone() {
+                        judge_calls.push(c1);
+                    }
+                    if let Some(c2) = pass_2.model_call_id.clone() {
+                        judge_calls.push(c2);
+                    }
+                    let (eval, retention) = resolve_double_order_judgment(pass_1, pass_2);
+                    let eval_hash = generation_sha256_hex(&serde_json::to_vec(&eval)?);
+                    {
+                        let r_mut = &mut loop_artifact.rounds[(round_num - 1) as usize];
+                        r_mut.double_order_judgment = Some(eval.clone());
+                        r_mut.round_accepted = eval.accepted;
+                        r_mut.round_stop_reason = retention;
+                    }
+                    record_transition(
+                        &mut loop_artifact,
+                        &working_hash,
+                        EditorialStage::PairwiseJudged,
+                        round_num,
+                        eval_hash,
+                        judge_calls,
+                        0,
+                    );
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                    (eval, retention)
+                }
+            };
+            if options.crash_after
+                == Some(BoundaryCrashPoint::Stage(
+                    EditorialStage::PairwiseJudged,
+                    round_num,
+                ))
+            {
+                anyhow::bail!("simulated_crash_at_boundary:pairwise_judged:{round_num}");
+            }
+
+            if !double_eval.accepted {
+                loop_artifact.retention_reason =
+                    Some(judge_retention.unwrap_or(RevisionRetentionReason::JudgeTie));
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                break;
+            }
+
+            // Candidate won both orders! Update working incumbent.
+            let cand_receipt = loop_artifact.rounds[(round_num - 1) as usize]
+                .candidate_receipt
+                .clone()
+                .expect("candidate_receipt present");
+            working_text = cand_text;
+            working_hash = cand_sha;
+            working_receipt = cand_receipt;
+            any_round_accepted = true;
+            loop_artifact.retention_reason = None;
+
+            // Check whether a second round is warranted and permitted by budget.
+            if round_num < loop_artifact.max_rounds {
+                let remaining_issues = !comparison.candidate_report.ingested_findings.is_empty();
+                let new_fp = !loop_artifact
+                    .seen_finding_fingerprints
+                    .contains(&comparison.candidate_report.normalized_finding_fingerprint);
+                let budget_allows_round_2 = loop_artifact.total_calls_used.saturating_add(4)
+                    <= loop_artifact.max_scene_calls
+                    && loop_artifact.total_tokens_used < loop_artifact.max_scene_tokens;
+                if !remaining_issues {
+                    break;
+                }
+                if !new_fp {
+                    loop_artifact.retention_reason =
+                        Some(RevisionRetentionReason::RepeatedFindingFingerprint);
+                    break;
+                }
+                if !budget_allows_round_2 {
+                    loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
+                    break;
+                }
+            }
+        }
+
+        // Terminal Stage: CAS verification and atomic promotion or incumbent retention.
+        if any_round_accepted {
+            let active_branch = self
+                .repository
+                .get_active_branch(&loop_artifact.project_id)
+                .await?;
+            let _draft_lock = artifact::lock_artifact(draft_artifact_path)?;
+            let current_disk_draft = artifact::load_artifact(draft_artifact_path)?;
+            let disk_packet = current_disk_draft
+                .prepared_packet
+                .as_ref()
+                .map(|p| &p.packet);
+            let mut disk_sources = disk_packet
+                .map(|p| p.source_versions.clone())
+                .unwrap_or_default();
+            disk_sources.sort();
+            disk_sources.dedup();
+
+            let cas_ok = active_branch.id == loop_artifact.cas_expectation.branch_id
+                && current_disk_draft.text_sha256
+                    == loop_artifact.cas_expectation.incumbent_text_sha256
+                && disk_packet.is_some_and(|p| {
+                    p.canon_snapshot_hash == loop_artifact.cas_expectation.canon_snapshot_hash
+                        && p.plan_revision == loop_artifact.cas_expectation.plan_revision
+                })
+                && disk_sources == loop_artifact.cas_expectation.source_versions;
+
+            if !cas_ok {
+                // CAS conflict: fail closed, retain incumbent, never overwrite draft_artifact_path.
+                loop_artifact.accepted_text = loop_artifact.initial_text.clone();
+                loop_artifact.accepted_text_sha256 = loop_artifact.initial_text_sha256.clone();
+                loop_artifact.accepted_receipt = loop_artifact.initial_receipt.clone();
+                loop_artifact.revision_promoted = false;
+                loop_artifact.retention_reason = Some(RevisionRetentionReason::StaleCasConflict);
+                let init_hash = loop_artifact.initial_text_sha256.clone();
+                let terminal_attempt = loop_artifact.rounds.len() as u32;
+                record_transition(
+                    &mut loop_artifact,
+                    &init_hash,
+                    EditorialStage::AcceptedOriginal,
+                    terminal_attempt,
+                    init_hash.clone(),
+                    Vec::new(),
+                    0,
+                );
+                revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                return Ok(loop_artifact);
+            }
+
+            // CAS verified: atomically promote revised draft and mark accepted (unless unresolved hard blockers remain).
+            let final_findings =
+                project_external_findings_to_text(&working_text, &working_hash, &external_findings);
+            let final_det =
+                evaluate_deterministic_checks(packet, &working_text, false, final_findings)?;
+            let unresolved_hard_blockers = !final_det.hard_continuity_blockers.is_empty()
+                || !final_det.hard_rating_violations.is_empty()
+                || !final_det.hard_antislop_blockers.is_empty();
+            if unresolved_hard_blockers {
+                loop_artifact.parked_for_review = true;
+            }
+            let mut promoted_draft = current_disk_draft;
+            promoted_draft.text = working_text.clone();
+            promoted_draft.text_sha256 = working_hash.clone();
+            promoted_draft.truncated = false;
+            promoted_draft.receipt = working_receipt.clone();
+            promoted_draft.accepted_text_sha256 = Some(working_hash.clone());
+            artifact::save_artifact(draft_artifact_path, &promoted_draft)?;
+
+            loop_artifact.accepted_text = working_text;
+            loop_artifact.accepted_text_sha256 = working_hash.clone();
+            loop_artifact.accepted_receipt = working_receipt.clone();
+            loop_artifact.revision_promoted = true;
+            let base_hash = loop_artifact.initial_text_sha256.clone();
+            let terminal_attempt = loop_artifact.rounds.len() as u32;
+            record_transition(
+                &mut loop_artifact,
+                &base_hash,
+                EditorialStage::AcceptedRevision,
+                terminal_attempt,
+                working_hash,
+                vec![working_receipt.generation_id],
+                0,
+            );
+            revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+            Ok(loop_artifact)
+        } else {
+            // Retain original incumbent draft; if it has unresolved hard blockers, park for review.
+            let initial_det = evaluate_deterministic_checks(
+                packet,
+                &loop_artifact.initial_text,
+                false,
+                external_findings,
+            )?;
+            let unresolved_hard_blockers = !initial_det.hard_continuity_blockers.is_empty()
+                || !initial_det.hard_rating_violations.is_empty()
+                || !initial_det.hard_antislop_blockers.is_empty();
+            if unresolved_hard_blockers {
+                loop_artifact.parked_for_review = true;
+            }
+            let _draft_lock = artifact::lock_artifact(draft_artifact_path)?;
+            let mut current_disk_draft = artifact::load_artifact(draft_artifact_path)?;
+            if current_disk_draft.text_sha256 == loop_artifact.initial_text_sha256
+                && current_disk_draft.accepted_text_sha256.is_none()
+            {
+                let init_sha = loop_artifact.initial_text_sha256.clone();
+                let _ = artifact::accept_text(&mut current_disk_draft, &init_sha);
+                artifact::save_artifact(draft_artifact_path, &current_disk_draft)?;
+            }
+            loop_artifact.accepted_text = loop_artifact.initial_text.clone();
+            loop_artifact.accepted_text_sha256 = loop_artifact.initial_text_sha256.clone();
+            loop_artifact.accepted_receipt = loop_artifact.initial_receipt.clone();
+            loop_artifact.revision_promoted = false;
+            let init_hash = loop_artifact.initial_text_sha256.clone();
+            let terminal_attempt = loop_artifact.rounds.len() as u32;
+            record_transition(
+                &mut loop_artifact,
+                &init_hash,
+                EditorialStage::AcceptedOriginal,
+                terminal_attempt,
+                init_hash.clone(),
+                Vec::new(),
+                0,
+            );
+            revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+            Ok(loop_artifact)
+        }
+    }
+
     /// Ensure a deterministic `(project_id, branch_id)` pair exists as an active
     /// project/branch in SQLite for evaluation packet runs. Never mutates an
     /// existing project's active branch to a different branch ID.
@@ -238,4 +1237,42 @@ impl SqliteSpindleService {
         anyhow::ensure!(active.id == branch_id, "packet branch is no longer active");
         Ok(())
     }
+}
+
+/// Project external findings onto `target_text` (`target_hash`).
+///
+/// Unanchored findings and findings already anchored to `target_hash` are kept as-is.
+/// For findings anchored to a prior draft hash with a non-empty `exact_quote`:
+/// - if `target_text` still contains `exact_quote` untouched, the anchor is rebased onto
+///   `target_hash` at the new byte offsets so the unresolved finding remains active;
+/// - if `target_text` rewrote or removed `exact_quote`, the anchored span was resolved
+///   and the finding is omitted on `target_text`.
+fn project_external_findings_to_text(
+    target_text: &str,
+    target_hash: &str,
+    findings: &[CriticFindingInput],
+) -> Vec<CriticFindingInput> {
+    let mut projected = Vec::with_capacity(findings.len());
+    for finding in findings {
+        match &finding.anchor {
+            None => projected.push(finding.clone()),
+            Some(anchor) if anchor.base_text_hash == target_hash => {
+                projected.push(finding.clone());
+            }
+            Some(anchor) => {
+                if !anchor.exact_quote.is_empty()
+                    && let Some(new_start) = target_text.find(&anchor.exact_quote)
+                {
+                    let mut rebased = finding.clone();
+                    if let Some(ref mut a) = rebased.anchor {
+                        a.base_text_hash = target_hash.to_string();
+                        a.start_byte = new_start;
+                        a.end_byte = new_start + anchor.exact_quote.len();
+                    }
+                    projected.push(rebased);
+                }
+            }
+        }
+    }
+    projected
 }

@@ -737,3 +737,116 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
   - Exposed for offline/bridge evaluation via `spindle-tokenizer critique-artifact`
     and verified in `evals/prose_judge.py` (`verify_shadow_critique_parity` and
     `build_blinded_directive_usefulness_packet`).
+
+## Implementation status: prior-draft revision, deterministic candidate checks, and double-order judge acceptance (PR 6)
+
+PR 6 implements the bounded prior-draft revision loop (`RevisionLoopArtifactV1`),
+deterministic candidate-check gating (`evaluate_deterministic_checks` and
+`compare_candidate_checks`), paragraph-aligned edit-span diffing
+(`compute_edit_span_summary`), blinded randomized + swapped-order pairwise judge
+acceptance (`PairwiseJudgeOutcome`), shared Python/Rust verdict fixtures, and
+stage-boundary crash recovery with compare-and-swap (CAS) promotion.
+
+### Shared Python/Rust verdict fixtures (`evals/prose_judge/shared_verdict_fixtures.json`)
+
+- `evals/prose_judge/shared_verdict_fixtures.json` defines 14 canonical cases
+  covering single-pass preference normalization (`passage_1`, `passage_2`, `tie`,
+  `1`, `2`, `A`, `B`, `equal`, `neither`), rubric score clamping/validation,
+  missing rationale/rubric rejection, and swapped-order double-judging resolution
+  (consistent candidate win, consistent incumbent win, consistent tie,
+  first-position bias, second-position bias, and tie-flip).
+- Enforced by both `cargo test -p spindle-adapters --lib -- shared_python_rust_verdict_fixtures`
+  and `python3 evals/prose_judge.py self-test` (`verify_shared_verdict_fixtures`)
+  so the online Rust acceptance gate and the offline Python evaluation harness
+  share identical verdict semantics.
+
+### Prior-draft revision, deterministic candidate gating, and edit-span discipline
+
+- **Targeted revision prompt assembly (`assemble_revision_messages`)**:
+  - Budgets `RevisionBudget::scene_default` (`input_limit = 20_000`,
+    `output_reserve = 4_000`, `framing_reserve = 512`) and includes the full
+    incumbent draft text (`base_text` with `base_text_hash`), ordered actionable
+    directives (`directives`, capped at `MAX_ACTIONABLE_DIRECTIVES = 5`) with
+    their validated UTF-8 byte spans and exact quotes, `strengths_to_preserve`,
+    protected `author_locks` (`must_keep_line`, `locked_fact`, `protected_beat`,
+    `style_preference`), and mandatory packet context (`scene_card`,
+    `hard_constraints`, `continuity`, `voice`, `editorial_memory`).
+  - Instructs the drafter (`draft` route, cleared via
+    `resolve_cleared_route("draft", Some(rating))`) to make targeted surgical
+    edits addressing only the directives while preserving unflagged paragraphs
+    and locked lines verbatim, returning plain story prose extracted through
+    `AcceptedTextExtractor`.
+- **Paragraph-aligned LCS edit-span summary (`compute_edit_span_summary`)**:
+  - Splits incumbent and candidate prose on `\n\n+` paragraphs, computes a
+    longest common subsequence (LCS) over normalized paragraphs, and maps every
+    deleted/inserted/modified paragraph span back to exact UTF-8 byte ranges on
+    both the incumbent and candidate texts.
+  - Records `changed_paragraph_count`, `changed_paragraph_ratio_bps`,
+    `changed_byte_ratio_bps`, and `has_scene_scope_directive`, setting
+    `broad_change_flagged = true` (and `broad_edit_flagged_for_review = true` on
+    the loop artifact) whenever more than `40%` (`> 4000` bps) of incumbent
+    paragraphs change without a scene-scoped directive.
+- **Deterministic candidate check comparison (`evaluate_deterministic_checks` and
+  `compare_candidate_checks`)**:
+  - Evaluates hard continuity blockers (`prohibited_outcomes` substring matches
+    and violated `MustKeepLine` quotes), hard rating violations (explicit marker
+    terms when `packet.rating` is `General` or `Teen`), hard and soft anti-slop
+    blockers (`not X, but Y` contrast hinges, `a mix/cocktail/blend of X and Y`,
+    `didn't know what tomorrow would bring`, `hours passed`, said-bookism
+    clusters, physical-cliché clusters), and ingested findings (projecting
+    span-anchored external findings onto candidate prose so rewritten spans are
+    counted in `resolved_finding_count` while untouched spans remain active).
+  - Immediately disqualifies a candidate before any pairwise judge call
+    (`CandidateDisqualifiedByDeterministicCheck`) if the candidate is truncated,
+    introduces any new hard continuity/rating/anti-slop blocker, increases total
+    hard blockers, or fails to preserve every `MustKeepLine` quote.
+
+### Blinded double-order pairwise judge and stage-boundary crash recovery
+
+- **Blinded randomized + swapped-order pairwise judge
+  (`assemble_pairwise_judge_messages` and `judge_revision_pair_double_order`)**:
+  - Uses `JudgeBudget::scene_default` (`input_limit = 16_000`,
+    `output_reserve = 1_500`, `framing_reserve = 512`) on the rating-cleared
+    `review` route.
+  - Selects the Pass 1 presentation order (`IncumbentFirst` vs `CandidateFirst`)
+    deterministically from `SHA-256(packet_hash : incumbent_hash : candidate_hash : round : seed)`
+    and flips the order for Pass 2 (`passage_1` and `passage_2` swap).
+  - Prompts are strictly blinded (`Passage 1` vs `Passage 2` only — never
+    exposing `incumbent`, `candidate`, `original`, `revised`, or directive notes)
+    and include the scene contract, hard constraints, continuity/voice packet
+    context, and the exact `prose_judge.py` 7-dimension rubric JSON template.
+  - Promotes `DeblindedArm::Candidate` **only** when both Pass 1 and Pass 2
+    independently select the candidate (`AcceptedRevision`). Any order
+    disagreement (`JudgeOrderDisagreementTie`), explicit tie (`JudgeTie`),
+    incumbent win (`JudgePreferredIncumbent`), or invalid/unavailable judge
+    output (`JudgeInvalidOrUnavailable`, which also sets `parked_for_review = true`)
+    retains the incumbent (`AcceptedOriginal`).
+- **Stage-transition ledger, convergence stops, and CAS promotion
+  (`SqliteSpindleService::revise_artifact_loop`)**:
+  - Persists `RevisionLoopArtifactV1` (`schema_version = "revision_loop_artifact_v1"`)
+    atomically at every stage boundary (`Drafted` -> `DeterministicChecked` ->
+    `Critiqued` -> `CandidateReady` -> `CandidateChecked` -> `JudgePass1` ->
+    `PairwiseJudged` -> `AcceptedRevision` / `AcceptedOriginal`). Resuming after
+    a crash at any boundary reloads completed stage outputs from disk without
+    replaying prior paid model calls.
+  - Enforces per-scene call and token caps (`max_scene_calls = 8`,
+    `max_scene_tokens = 65_000`, `max_rounds = 2`) and convergence stops
+    (`NoActionableDirectives`, `CriticInvalid`, `IdenticalCandidateHash`,
+    `CandidateTruncated`, `CandidateDisqualifiedByDeterministicCheck`,
+    `NoDirectiveProgress`, `RepeatedFindingFingerprint`, `BudgetExhausted`).
+  - Before promoting a winning candidate into `PlainTextDraftArtifactV1`,
+    re-reads the draft artifact under `lock_artifact` and verifies its
+    compare-and-swap expectation (`packet_hash`, `initial_text_sha256`, and
+    `source_versions`). On any mismatch, fails closed with `StaleCasConflict`
+    and leaves the on-disk draft artifact untouched.
+- **Verification and live evaluation status**:
+  - Continuity recall gate **C** (`python3 evals/continuity_recall.py run --no-build`)
+    remains at `20 / 28 = 0.7143` overall recall (`5` control false positives,
+    `4 / 4 = 1.0000` accepted-prose violating probe recall, `0` clean blocker
+    issues across `90` live artifacts).
+  - Live `spindle-tokenizer revise-artifact` execution on `gemma4:31b` across a
+    6-scene stratified sample (`PJ01`, `PJ02`, `PJ07`, `PJ13`, `PJ19`, `PJ25`,
+    seed `101`) exercises end-to-end deterministic checking, critic anchor
+    repair, surgical revision (`5.88%` paragraph / `6.37%` byte change on
+    `PJ02`), and swapped-order judge retention (`mean = 2.5` calls/scene, `0`
+    broad-edit flags). `EditorialPolicy::Legacy` remains the default policy.
