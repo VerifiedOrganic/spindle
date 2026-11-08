@@ -1372,7 +1372,7 @@ impl SqliteSpindleService {
         &self,
         input: spindle_core::models::GetSceneContextInput,
         branch_id_override: Option<&str>,
-        enforce_hard_constraint_budget: bool,
+        for_prepare_scene: bool,
     ) -> Result<SceneContextWithCoverage> {
         use crate::format::{
             DEFAULT_SCENE_CONTEXT_BUDGET_TOKENS, SCENE_CONTEXT_HARD_CONSTRAINT_HEADROOM_TOKENS,
@@ -1873,7 +1873,7 @@ impl SqliteSpindleService {
                         .await;
                     match recall_result {
                         Ok(items) => items,
-                        Err(err) if enforce_hard_constraint_budget => {
+                        Err(err) if for_prepare_scene => {
                             unavailable_passes.push(
                                 spindle_core::models::PrepareSceneUnavailablePass {
                                     pass: "semantic_references".to_string(),
@@ -2528,7 +2528,7 @@ impl SqliteSpindleService {
         let non_truncatable_cost =
             non_truncatable_prefix_tokens_scene_context(format_fmt, &hard_constraints);
         if non_truncatable_cost > budget_tokens {
-            if enforce_hard_constraint_budget {
+            if for_prepare_scene {
                 anyhow::bail!(
                     "budget_tokens ({budget_tokens}) too small to fit hard constraints (minimum required: {non_truncatable_cost} tokens). Increase budget_tokens or reduce world rules."
                 );
@@ -3345,7 +3345,7 @@ impl SqliteSpindleService {
                     max_character_count: None,
                 },
                 Some(&branch.id),
-                false,
+                true,
             )
             .await?;
 

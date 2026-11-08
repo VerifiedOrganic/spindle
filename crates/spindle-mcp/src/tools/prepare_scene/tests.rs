@@ -872,6 +872,59 @@ async fn prepare_scene_preserves_hard_constraints_and_reports_truncation_and_una
         "existing_prose ({trimmed_prose_tokens} tokens) + hard constraints ({}) must fit within tight_budget ({tight_budget})",
         tight_prepared.coverage.hard_constraint_tokens
     );
+
+    // 4. When the semantic-recall embedding backend fails, prepare_scene degrades gracefully
+    // and records semantic_references in coverage.unavailable_passes rather than aborting.
+    let tmp_cfg =
+        std::env::temp_dir().join(format!("spindle-broken-embed-{}.toml", std::process::id()));
+    std::fs::write(
+        &tmp_cfg,
+        r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "broken-embed"
+name = "Broken Embed"
+provider = "openai-compatible"
+endpoint = "http://["
+model = "embed-v1"
+
+[[routing]]
+route = "embedding"
+agent = "broken-embed"
+"#,
+    )
+    .expect("write temp config");
+    router
+        .service
+        .repository()
+        .model_router()
+        .configure(Some(tmp_cfg.to_str().unwrap()))
+        .expect("configure broken embedding agent");
+    let _ = std::fs::remove_file(&tmp_cfg);
+
+    let degraded_val = invoke_json(
+        &router,
+        "prepare_scene",
+        json!({
+            "project_id": project_id,
+            "scene_id": long_scene_id,
+            "character_ids": [soren_id],
+            "location_id": location_id
+        }),
+    )
+    .await;
+    let degraded_prepared: PrepareSceneOutput = serde_json::from_value(degraded_val).unwrap();
+    assert!(
+        degraded_prepared
+            .coverage
+            .unavailable_passes
+            .iter()
+            .any(|p| p.pass == "semantic_references"),
+        "expected unavailable_passes to report semantic_references when embedding backend fails, got: {:?}",
+        degraded_prepared.coverage.unavailable_passes
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
