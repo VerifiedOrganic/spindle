@@ -829,3 +829,16 @@ before a draft dispatch; assembly itself performs no provider calls. Keep this
 verification enabled for mutable provider model aliases; a changed deployment
 requires a new revision/cache scope and recalibration. Disabling it opts into
 certificate-only offline counting for a pinned deployment.
+
+Configured packet prose uses the same native `/api/chat` deployment as its
+probe, with identical `options.num_ctx`, `truncate=false` and `shift=false`.
+It does not use `/v1/chat/completions`, whose context window cannot be set per
+request. A deployment with a smaller default therefore receives the explicit
+admitted window; an unsupported/rejected override fails closed. The actual
+prose response's prompt count must also match the calibrated encoder before the
+draft is returned. Native length stops remain truncated and cannot be accepted.
+A configured profile takes precedence over an injected counter, preserving this
+transport binding. Routes without profiles retain the existing caller-verified
+counter contract (including responsibility for deployment window verification).
+Public legacy completions retain their existing transport. See [Ollama request options](https://github.com/ollama/ollama/blob/main/api/types.go)
+and [OpenAI compatibility limits](https://github.com/ollama/ollama/blob/main/docs/api/openai-compatibility.mdx).

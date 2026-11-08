@@ -19,6 +19,20 @@ pub(super) struct CounterScope {
     client: reqwest::Client,
     identity: String,
 }
+impl CounterScope {
+    fn chat_body(&self, messages: &DraftMessages, output_limit: u32) -> serde_json::Value {
+        serde_json::json!({
+            "model": self.model,
+            "messages": [
+                {"role":"system", "content":messages.system},
+                {"role":"user", "content":messages.user}
+            ],
+            "stream": false, "truncate": false, "shift": false,
+            "options": {"num_ctx":self.max_context, "num_predict":output_limit}
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct CachedCount {
     identity: String,
@@ -123,6 +137,87 @@ impl ModelRouter {
         cache.insert(key, encoder.clone());
         Ok(encoder)
     }
+    /// Configured packet prose shares the probe's native transport, context
+    /// override and no-truncation/no-shift contract. OpenAI compatibility cannot
+    /// enforce num_ctx, so it is not used for configured packet prose.
+    pub(super) async fn run_ollama_packet(
+        &self,
+        scope: &CounterScope,
+        route: &ModelRoute,
+        messages: &DraftMessages,
+    ) -> anyhow::Result<ModelResponse> {
+        let limit = route
+            .max_tokens
+            .context("packet output reservation required")?;
+        ensure!(limit > 0, "packet output reservation must be positive");
+        let mut body = scope.chat_body(messages, limit);
+        if let Some(temperature) = route.temperature {
+            body["options"]["temperature"] = serde_json::json!(temperature);
+        }
+        if let Some(top_p) = route.top_p {
+            body["options"]["top_p"] = serde_json::json!(top_p);
+        }
+        if !route.stop.is_empty() {
+            body["options"]["stop"] = serde_json::json!(route.stop);
+        }
+        let response = with_provider_headers(
+            scope
+                .client
+                .post(&scope.endpoint)
+                .json(&body)
+                .timeout(Duration::from_secs(600)),
+            &scope.agent,
+        )
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("packet generation transport failure"))?;
+        ensure!(
+            response.status().is_success(),
+            "packet generation HTTP {}",
+            response.status().as_u16()
+        );
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .context("invalid native packet response")?;
+        ensure!(
+            value.get("done").and_then(serde_json::Value::as_bool) == Some(true),
+            "incomplete native packet response"
+        );
+        ensure!(
+            value.get("model").and_then(serde_json::Value::as_str) == Some(scope.model.as_str()),
+            "native packet model mismatch"
+        );
+        let reason = value.get("done_reason").and_then(serde_json::Value::as_str);
+        ensure!(
+            matches!(reason, Some("stop" | "length")),
+            "unknown native packet completion reason"
+        );
+        let output = value
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(serde_json::Value::as_str)
+            .context("native packet prose missing")?
+            .to_owned();
+        Ok(ModelResponse {
+            adapter_kind: route.adapter_kind.clone(),
+            // Keep the originating agent ID for generation-receipt clearance.
+            model_name: route.model_name.clone(),
+            output,
+            truncated: reason == Some("length"),
+            usage: Some(spindle_core::models::ModelUsage {
+                input_tokens: value
+                    .get("prompt_eval_count")
+                    .and_then(serde_json::Value::as_u64),
+                output_tokens: value.get("eval_count").and_then(serde_json::Value::as_u64),
+                cached_input_tokens: value
+                    .get("prompt_eval_cached_count")
+                    .and_then(serde_json::Value::as_u64),
+            }),
+            ..Default::default()
+        })
+    }
+
     /// Explicit operator setup. Synthetic prompts only; each miss is attributed
     /// to the existing model_call ledger and stored without generated text.
     pub async fn calibrate_tokenizer(
@@ -207,20 +302,8 @@ impl ModelRouter {
                 }
                 let mut lock = crate::drafting::artifact::lock_artifact(&path)?;
                 lock.retain_for_recovery(&message_hash)?;
-                let body = serde_json::json!({
-                    "model": scope.model,
-                    "messages": [
-                        {"role": "system", "content": messages.system},
-                        {"role": "user", "content": messages.user}
-                    ],
-                    "stream": false,
-                    "truncate": false,
-                    "options": {
-                        "num_predict": scope.config.probe_mode.output_limit(),
-                        "temperature": 0,
-                        "num_ctx": scope.max_context
-                    }
-                });
+                let mut body = scope.chat_body(messages, scope.config.probe_mode.output_limit());
+                body["options"]["temperature"] = serde_json::json!(0);
                 let mut call_context = context.cloned().unwrap_or_default();
                 call_context.prompt_template_id = Some("token_count.ollama_probe".into());
                 call_context.prompt_version = Some("v1".into());

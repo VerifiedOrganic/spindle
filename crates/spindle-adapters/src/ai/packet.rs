@@ -55,7 +55,7 @@ impl ModelRouter {
         if route.max_tokens.is_none() {
             route.max_tokens = Some(reserve);
         }
-        let scope = if tokenizer.is_none() {
+        let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
             Some(self.counter_scope(&runtime, &route)?)
         } else {
             None
@@ -70,11 +70,10 @@ impl ModelRouter {
             .as_ref()
             .map(|scope| self.configured_tokenizer(scope))
             .transpose()?;
-        let tokenizer = tokenizer.or_else(|| {
-            configured
-                .as_deref()
-                .map(|encoder| encoder as &dyn DraftTokenizer)
-        });
+        let tokenizer = configured
+            .as_deref()
+            .map(|encoder| encoder as &dyn DraftTokenizer)
+            .or(tokenizer);
         let system = system_prompt_for_request(&route, Some(rating));
         let prepared = assemble_packet_with_system(packet.clone(), budget, tokenizer, &system)?;
         route.system_prompt = prepared.messages.system.clone();
@@ -93,7 +92,7 @@ impl ModelRouter {
             }),
         };
         before_dispatch(&prepared)?;
-        if let (Some(scope), Some(encoder)) = (&scope, &configured)
+        let verified_provider_count = if let (Some(scope), Some(encoder)) = (&scope, &configured)
             && encoder.config().verify_each_prompt
         {
             let receipt = self
@@ -105,7 +104,10 @@ impl ModelRouter {
                 )
                 .await?;
             encoder.verify_count(&prepared.messages, receipt.input_tokens)?;
-        }
+            Some(receipt.input_tokens)
+        } else {
+            None
+        };
         #[cfg(any(test, feature = "test-support"))]
         self.record_dispatch(DispatchRecord::Dispatch {
             route: request.route.clone(),
@@ -114,15 +116,19 @@ impl ModelRouter {
             prompt: request.prompt.clone(),
         })?;
         let start = std::time::Instant::now();
-        let mut response = self
-            .run_http_inner(
+        let mut response = if let Some(scope) = &scope {
+            self.run_ollama_packet(scope, &route, &prepared.messages)
+                .await
+        } else {
+            self.run_http_inner(
                 &runtime,
                 &route,
                 request.rating.as_deref(),
                 &request.prompt,
                 false,
             )
-            .await;
+            .await
+        };
         self.record_usage(
             &request.route,
             request.rating.as_deref(),
@@ -134,7 +140,22 @@ impl ModelRouter {
             &mut response,
         )
         .await;
-        Ok((prepared, response?))
+        let response = response?;
+        if let Some(encoder) = &configured {
+            let count = response
+                .usage
+                .as_ref()
+                .and_then(|u| u.input_tokens)
+                .context("native packet missing prompt_eval_count; recovery required")?;
+            encoder.verify_count(&prepared.messages, count.try_into()?)?;
+            if let Some(verified) = verified_provider_count {
+                anyhow::ensure!(
+                    count == verified as u64,
+                    "native packet prompt count differs from verified probe; recovery required"
+                );
+            }
+        }
+        Ok((prepared, response))
     }
 }
 

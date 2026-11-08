@@ -225,7 +225,12 @@ async fn cancellation_after_dispatch_keeps_recovery_marker() {
 async fn configured_packet_counter_checks_final_messages_before_prose_dispatch() {
     use crate::drafting::{DraftTokenizer, assemble_packet_with_system};
     use spindle_core::drafting::EditorialPolicy;
-    for drift in [0, 1] {
+    for (drift, lost_context, injected) in [
+        (0, false, false),
+        (0, false, true),
+        (1, false, false),
+        (0, true, false),
+    ] {
         let (dir, mut config) = fixture();
         config.probe_mode = ProbeMode::CloudOneToken;
         let encoder = PinnedTokenizer::load("fixture", config.clone()).unwrap();
@@ -250,7 +255,7 @@ async fn configured_packet_counter_checks_final_messages_before_prose_dispatch()
         let mut responses = [9, 10, 8, 646].map(|n| response(n, 1)).to_vec();
         responses.push(response(count + drift, 1));
         if drift == 0 {
-            responses.push((200,serde_json::json!({"model":"fixture","choices":[{"message":{"content":"Exact draft.\r\n"},"finish_reason":"stop"}]}).to_string()));
+            responses.push((200,serde_json::json!({"model":"fixture","done":true,"done_reason":"stop","prompt_eval_count":count-usize::from(lost_context),"eval_count":4,"message":{"content":"Exact draft.\r\n"}}).to_string()));
         }
         let (endpoint, captured, server) = spawn_http_capture_server(responses);
         let router = router(&endpoint, &config, dir.path()).await;
@@ -258,10 +263,12 @@ async fn configured_packet_counter_checks_final_messages_before_prose_dispatch()
             .calibrate_tokenizer("draft", "general")
             .await
             .unwrap();
+        let injected = injected
+            .then_some(&crate::drafting::tests::VerifiedFixtureTokenizer as &dyn DraftTokenizer);
         let result = router
-            .draft_packet(EditorialPolicy::CritiqueV1, packet, &budget, None)
+            .draft_packet(EditorialPolicy::CritiqueV1, packet, &budget, injected)
             .await;
-        if drift == 0 {
+        if drift == 0 && !lost_context {
             let (actual, response) = result.unwrap();
             assert_eq!(actual.messages, prepared.messages);
             assert_eq!(response.output, "Exact draft.\r\n");
@@ -270,6 +277,18 @@ async fn configured_packet_counter_checks_final_messages_before_prose_dispatch()
             let probe: serde_json::Value = serde_json::from_str(&captured[4]).unwrap();
             let generation: serde_json::Value = serde_json::from_str(&captured[5]).unwrap();
             assert_eq!(probe["messages"], generation["messages"]);
+            // The deployment's OpenAI default could be only 4096. Native prose
+            // must override it with the admitted 32768 window, like the probe.
+            assert!(budget.context_window > 4096);
+            assert_eq!(generation["options"]["num_ctx"], 32768);
+            assert_eq!(
+                probe["options"]["num_ctx"],
+                generation["options"]["num_ctx"]
+            );
+            assert_eq!(generation["truncate"], false);
+            assert_eq!(generation["shift"], false);
+            assert_eq!(probe["shift"], false);
+            assert_eq!(response.model_name, "fixture-agent");
         } else {
             assert!(
                 result
@@ -277,7 +296,42 @@ async fn configured_packet_counter_checks_final_messages_before_prose_dispatch()
                     .to_string()
                     .contains("calibration mismatch")
             );
-            assert_eq!(server.join().unwrap(), 5);
+            assert_eq!(server.join().unwrap(), if lost_context { 6 } else { 5 });
         }
     }
+}
+
+#[tokio::test]
+async fn native_packet_fails_closed_when_deployment_rejects_larger_window() {
+    let (dir, config) = fixture();
+    let (endpoint, captured, server) = spawn_http_capture_server(vec![(
+        400,
+        serde_json::json!({"error":"configured num_ctx 32768 exceeds deployment limit 4096"})
+            .to_string(),
+    )]);
+    let router = router(&endpoint, &config, dir.path()).await;
+    let runtime = router.runtime.read().unwrap().clone();
+    let mut route = resolve_cleared_route(&runtime, "draft", Some("general"))
+        .unwrap()
+        .clone();
+    route.max_tokens = Some(200);
+    let scope = router.counter_scope(&runtime, &route).unwrap();
+    let error = router
+        .run_ollama_packet(
+            &scope,
+            &route,
+            &DraftMessages {
+                system: "hello".into(),
+                user: "snow".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("HTTP 400"));
+    assert_eq!(server.join().unwrap(), 1);
+    let requests = captured.lock().unwrap();
+    let body: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    assert_eq!(body["options"]["num_ctx"], 32768);
+    assert_eq!(body["truncate"], false);
+    assert_eq!(body["shift"], false);
 }
