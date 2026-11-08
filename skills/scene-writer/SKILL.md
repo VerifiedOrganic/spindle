@@ -1006,3 +1006,40 @@ For deeper craft knowledge, read these reference resources:
   distinct character voices.
 - `bible://references/anti-slop` — Fiction shelf catalog (12 shelves, hard vs
   soft) used by Step 5b. Not an AI detector; not a 100+ pattern list.
+
+<!-- tool: annotate_scene_beats -->
+<!-- tool: check_consistency -->
+<!-- tool: commit_character_state -->
+<!-- tool: commit_scene_changes -->
+<!-- tool: continue_generation -->
+<!-- tool: create_character -->
+<!-- tool: create_future_knowledge -->
+<!-- tool: create_world_rule -->
+<!-- tool: find_scenes_referencing -->
+<!-- tool: get_chapter_briefing -->
+<!-- tool: get_character_snapshot -->
+<!-- tool: get_entity -->
+<!-- tool: get_scene_context -->
+<!-- tool: get_writer_state -->
+<!-- tool: list_agents -->
+<!-- tool: list_book_chapters -->
+<!-- tool: list_chapter_scenes -->
+<!-- tool: plan_chapter -->
+<!-- tool: pull_chapter_from_file -->
+<!-- tool: push_chapter_to_file -->
+<!-- tool: record_knowledge -->
+<!-- tool: record_note -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: research_pack_for_scene -->
+<!-- tool: revise_generation -->
+<!-- tool: run_dual_persona_review -->
+<!-- tool: save_scene_draft -->
+<!-- tool: save_summary -->
+<!-- tool: search_bible -->
+<!-- tool: set_active_project -->
+<!-- tool: set_scene_clock -->
+<!-- tool: update_entity -->
+<!-- tool: update_promise_status -->
+<!-- tool: update_relationship -->
+<!-- tool: update_world_rule -->
+<!-- tool: update_writer_position -->

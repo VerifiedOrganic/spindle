@@ -1,0 +1,5 @@
+version = 1
+name = "plot-architect"
+profiles = ["default"]
+requires_skills = ["spindle"]
+tools = ["annotate_scene_beats", "authoring_prepare_run", "batch_create_motifs", "batch_create_narrative_promises", "batch_create_terms", "check_consistency", "create_book", "create_chapter", "create_conflict", "create_motif", "create_narrative_promise", "create_pacing_config", "create_pacing_curve", "create_plot_line", "create_theme", "get_chapter_briefing", "get_editorial_queue", "get_series_status", "get_writer_state", "list_book_chapters", "list_chapter_scenes", "move_scene", "plan_chapter", "set_active_project", "set_arc_pacing_constraints", "set_book_outline", "set_chapter_outline", "update_entity", "update_promise_status"]

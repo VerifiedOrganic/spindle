@@ -23,6 +23,14 @@ def measure(tools):
     return len(tools), len(compact(inputs)), len(compact(tools))
 
 
+def check_budget(tools, budget):
+    actual = measure(tools)
+    caps = (budget['tools'], budget['input_bytes'], budget['full_bytes'])
+    if any(size > cap for size, cap in zip(actual, caps)):
+        sizes = sorted(((len(compact(tool)), tool['name']) for tool in tools), reverse=True)
+        raise AssertionError(f'catalog sizes {actual} exceed caps {caps}; per-tool full bytes: {sizes}')
+
+
 def probe(binary, profile, request_timeout=30):
     with tempfile.TemporaryDirectory(prefix='spindle-profile-', dir='/tmp') as directory:
         config = Path(directory) / 'config.toml'
@@ -89,9 +97,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=ROOT / 'target/debug/spindle-mcp')
     args = parser.parse_args()
+    budgets = json.loads((ROOT / 'tools/profile-budgets.json').read_text())
+    assert budgets['version'] == 1
     for profile in ('default', 'minimal', 'write', 'import', 'authoring', 'unknown-profile'):
         expected = json.loads((SNAPSHOTS / f'{"default" if profile == "unknown-profile" else profile}.json').read_text())
         actual = probe(args.binary.resolve(), profile)
+        budget_profile = 'default' if profile == 'unknown-profile' else profile
+        check_budget(actual['tools'], budgets['compatibility'][budget_profile])
         count, inputs, full = measure(actual['tools'])
         print(f'{profile}: {count} tools; input {inputs} bytes ({(inputs + 3)//4} tokens); '
               f'full {full} bytes ({(full + 3)//4} tokens)')

@@ -261,3 +261,9 @@ mod session;
 mod skills;
 #[path = "style/tests.rs"]
 mod style;
+
+#[path = "alignment/tests.rs"]
+mod alignment;
+
+#[path = "quality/tests.rs"]
+mod quality;

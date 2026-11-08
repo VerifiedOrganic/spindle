@@ -88,3 +88,13 @@ Spindle handles explicit or adult-themed research strictly as factual context. I
 - **Summarize and paraphrase**: Write your own summaries in the `summary` and `note` fields.
 - **Keep quotes short**: Keep quotes in `quote` to under 150 words.
 - **Record citations**: Keep the author, publisher, publication date, and source URL updated to maintain a clean bibliography.
+
+<!-- tool: research_add_claim -->
+<!-- tool: research_add_note -->
+<!-- tool: research_add_source -->
+<!-- tool: research_ingest_report -->
+<!-- tool: research_pack_for_scene -->
+<!-- tool: research_plan_for_scene -->
+<!-- tool: research_query -->
+<!-- tool: research_search -->
+<!-- tool: research_usage_for_scene -->

@@ -164,7 +164,7 @@ route, and the rating, so an offload gap fails at prepare rather than at 2am.
 
 **Explicit-manual-fallback (offload-critical):** if a sampled scene's review is
 rejected at the offload chokepoint because the `review` agent is not cleared for
-that scene's rating (e.g. a mid-run `configure_agents` swap dropped explicit
+that scene's rating (e.g. a mid-run operator route-configuration change dropped explicit
 coverage), that scene is marked **pending-manual** and its prose is dispatched
 nowhere else. The checkpoint blocks listing exactly those scenes
 (`pending_manual_scene_ids` in `authoring_status`); the cleared scenes' reviews
@@ -474,3 +474,42 @@ The supervisor then merges every report, makes ratification decisions, applies
 autonomous local fixes (saving via `authoring_save_scene_draft`), and calls
 `authoring_review_checkpoint` to resume. If no subagent mechanism is available,
 walk the sampled scenes and the triage one at a time in the main context.
+
+<!-- tool: authoring_cancel_run -->
+<!-- tool: authoring_execute_next -->
+<!-- tool: authoring_prepare_run -->
+<!-- tool: authoring_record_checkpoint_audit -->
+<!-- tool: authoring_resolve_block -->
+<!-- tool: authoring_review_checkpoint -->
+<!-- tool: authoring_save_scene_draft -->
+<!-- tool: authoring_start_run -->
+<!-- tool: authoring_status -->
+<!-- tool: check_consistency -->
+<!-- tool: commit_scene_changes -->
+<!-- tool: create_narrative_promise -->
+<!-- tool: decide_canon_deltas -->
+<!-- tool: decide_editorial_item -->
+<!-- tool: decide_plan_amendments -->
+<!-- tool: get_chapter_briefing -->
+<!-- tool: get_editorial_queue -->
+<!-- tool: get_episode_release -->
+<!-- tool: get_model_usage -->
+<!-- tool: get_scene_context -->
+<!-- tool: get_series_status -->
+<!-- tool: list_canon_deltas -->
+<!-- tool: list_plan_amendments -->
+<!-- tool: mine_scene_canon -->
+<!-- tool: plan_chapter -->
+<!-- tool: prepare_episode_release -->
+<!-- tool: preview_refresh_style_profile -->
+<!-- tool: read_episode -->
+<!-- tool: record_knowledge -->
+<!-- tool: refresh_style_profile -->
+<!-- tool: release_episode -->
+<!-- tool: replan_chapter -->
+<!-- tool: run_dual_persona_review -->
+<!-- tool: save_scene_draft -->
+<!-- tool: search_bible -->
+<!-- tool: set_project_calendar -->
+<!-- tool: set_scene_clock -->
+<!-- tool: update_entity -->

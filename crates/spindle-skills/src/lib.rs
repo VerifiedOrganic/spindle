@@ -2,6 +2,34 @@
 pub struct EmbeddedSkill {
     pub name: &'static str,
     pub markdown: &'static str,
+    pub manifest: SkillManifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillManifest {
+    pub version: u32,
+    pub name: &'static str,
+    pub tools: &'static [&'static str],
+    pub profiles: &'static [&'static str],
+    pub requires_skills: &'static [&'static str],
+    pub references: &'static [EmbeddedReference],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedReference {
+    pub name: &'static str,
+    pub markdown: &'static str,
+    pub tools: &'static [&'static str],
+    pub profiles: &'static [&'static str],
+    pub trigger: &'static str,
+}
+
+pub fn get_reference(name: &str) -> Option<EmbeddedReference> {
+    EMBEDDED_SKILLS
+        .iter()
+        .flat_map(|skill| skill.manifest.references)
+        .copied()
+        .find(|reference| reference.name == name)
 }
 
 include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
@@ -42,3 +70,31 @@ mod tests {
         assert_eq!(skills.len(), 13);
     }
 }
+
+#[cfg(test)]
+mod manifest_contract_tests {
+    use super::*;
+
+    #[test]
+    fn every_skill_has_a_versioned_manifest() {
+        for skill in list_skills() {
+            assert_eq!(skill.manifest.version, 1, "{}", skill.name);
+            assert_eq!(skill.manifest.name, skill.name);
+            assert!(!skill.manifest.profiles.is_empty());
+        }
+    }
+
+    #[test]
+    fn nested_units_are_embedded_and_exactly_addressed() {
+        let reference = get_reference("spindle/setup").expect("setup reference");
+        assert!(reference.markdown.contains("create_project"));
+        assert!(get_reference("../spindle/setup").is_none());
+        assert!(get_reference("spindle/../setup").is_none());
+        assert!(get_reference("setup").is_none());
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../build.rs"]
+mod build_contract;

@@ -1,0 +1,5 @@
+version = 1
+name = "bible-librarian"
+profiles = ["default"]
+requires_skills = ["spindle"]
+tools = ["compile_manuscript", "create_branch", "create_character", "create_character_arc", "create_conflict", "create_economy", "create_faction", "create_future_knowledge", "create_location", "create_motif", "create_narrative_promise", "create_pacing_config", "create_plot_line", "create_relationship", "create_religion", "create_system_overlay", "create_temporal_intervention", "create_term", "create_theme", "create_timeline_event", "create_world_rule", "export_recap", "export_series_bible", "find_entity", "find_scenes_referencing", "get_chapter_briefing", "get_character_snapshot", "get_entity", "get_scene_context", "get_writer_state", "import_manuscript", "list_agents", "list_book_chapters", "list_chapter_scenes", "list_projects", "list_revision_markers", "record_knowledge", "register_canonical_fact", "research_add_claim", "research_add_note", "research_add_source", "research_pack_for_scene", "research_search", "save_summary", "search_bible", "set_active_project", "set_arc_pacing_constraints", "switch_branch", "update_promise_status"]

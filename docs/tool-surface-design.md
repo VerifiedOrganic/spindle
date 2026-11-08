@@ -626,3 +626,17 @@ write, and import. Existing-book selection is now listed and callable in every
 named profile. Default and authoring discovery, legacy DTOs, unknown-profile
 fallback, and branch/revision behavior remain unchanged. The snapshots include
 this addition; a profile-call regression test exercises valid selection.
+
+The manifest infrastructure adds versioned manifests to all 13 skills, static
+nested setup/style references, an exhaustive current-name disposition ledger,
+and registry/profile/dispatch alignment tests with negative fixtures. See
+[skill manifest contracts](skill-manifests.md). Runtime profile generation,
+profile-aware loading, schema lint and target-budget enforcement remain pending;
+no current discovery profile or schema changes in this checkpoint.
+
+The schema/budget infrastructure inspects finalized schemas, validates JSON
+Schema structure, inventories current descriptive debt, and enforces explicit
+compatibility byte ceilings in registry, HTTP, and isolated stdio checks. It adds
+strict no-exemption helpers and the target ceilings for upcoming canonical
+profiles, without claiming those profiles or reductions have shipped. See
+[guard contracts](tool-surface-guards.md). Current discovery bytes are unchanged.

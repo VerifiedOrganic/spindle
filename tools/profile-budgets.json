@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "compatibility": {
+    "default": {"tools": 170, "input_bytes": 137800, "full_bytes": 557658},
+    "minimal": {"tools": 20, "input_bytes": 16037, "full_bytes": 135764},
+    "write": {"tools": 122, "input_bytes": 105845, "full_bytes": 389782},
+    "import": {"tools": 40, "input_bytes": 19846, "full_bytes": 207434},
+    "authoring": {"tools": 76, "input_bytes": 81082, "full_bytes": 278295}
+  },
+  "canonical": {
+    "minimal": {"tools": 16, "input_bytes": 12000, "full_bytes": 16000},
+    "write": {"tools": 45, "input_bytes": 32000, "full_bytes": 40000},
+    "authoring": {"tools": 55, "input_bytes": 40000, "full_bytes": 48000},
+    "import": {"tools": 30, "input_bytes": 20000, "full_bytes": 24000},
+    "revision": {"tools": 30, "input_bytes": 20000, "full_bytes": 24000},
+    "worldbuilding": {"tools": 45, "input_bytes": 32000, "full_bytes": 40000},
+    "planning": {"tools": 45, "input_bytes": 32000, "full_bytes": 40000},
+    "style": {"tools": 25, "input_bytes": 16000, "full_bytes": 20000},
+    "research": {"tools": 25, "input_bytes": 16000, "full_bytes": 20000},
+    "release": {"tools": 25, "input_bytes": 16000, "full_bytes": 20000}
+  }
+}

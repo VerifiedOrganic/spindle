@@ -109,3 +109,44 @@ async fn get_reference_returns_markdown_and_unknown_reference_errors() {
         .expect("tool call should return result");
     assert_eq!(result.is_error, Some(true));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn nested_skill_references_load_through_tools_and_resources() {
+    let router = router().await;
+    for name in ["spindle/setup", "editor/style"] {
+        let args = serde_json::json!({"name": name});
+        let result = structured_json(
+            router
+                .call_tool("get_reference", args.as_object())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(result["name"], name);
+        let reference = spindle_adapters::get_reference(name).unwrap();
+        assert_eq!(result["markdown"], reference.markdown);
+        let resources = crate::resources::ResourceRouter::new(router.service().clone());
+        let resource = resources
+            .read_resource(&format!("bible://references/{name}"))
+            .await
+            .unwrap();
+        let rmcp::model::ResourceContents::TextResourceContents { text, .. } =
+            &resource.contents[0]
+        else {
+            panic!("expected Markdown text")
+        };
+        assert_eq!(text, reference.markdown);
+        assert!(
+            spindle_adapters::list_references()
+                .iter()
+                .any(|r| r.name == name)
+        );
+    }
+    for name in ["../spindle/setup", "spindle/../setup", "setup"] {
+        let args = serde_json::json!({"name": name});
+        let result = router
+            .call_tool("get_reference", args.as_object())
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+}

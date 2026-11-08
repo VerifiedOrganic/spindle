@@ -26,8 +26,8 @@ bridge tools as the canonical sync path:
 2. Run import passes and review decisions.
 3. Call `push_chapter_to_file` after accepted updates to write branch scenes
    back to disk and refresh `scene_source_link` offsets.
-4. If offsets drift after external edits, call
-   `backfill_scene_source_offsets` for the project branch.
+4. If offsets drift after external edits, request operator repair before further
+   synchronization; do not silently rewrite source offsets.
 
 Treat direct file edits outside these tools as exceptional. Always reconcile
 with pull/push before final continuity checks.
@@ -316,3 +316,18 @@ Total: ~770K input tokens (~$3-5 at typical API pricing)
 - `docs/spindle-implementation-brief.md` — Current 5-crate architecture and
   crate ownership boundaries
 - `README.md` — Current public MCP tool and resource surface
+
+<!-- tool: import_analyze_character -->
+<!-- tool: import_analyze_narrative -->
+<!-- tool: import_apply_review_decisions -->
+<!-- tool: import_compute_final_state -->
+<!-- tool: import_consolidate_entities -->
+<!-- tool: import_extract_entities -->
+<!-- tool: import_extract_world -->
+<!-- tool: import_hydrate_bible -->
+<!-- tool: import_manuscript -->
+<!-- tool: import_status -->
+<!-- tool: pull_chapter_from_file -->
+<!-- tool: push_chapter_to_file -->
+<!-- tool: record_knowledge -->
+<!-- tool: register_canonical_fact -->

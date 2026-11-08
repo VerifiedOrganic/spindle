@@ -213,3 +213,19 @@ outline keeps recoverable history. See `docs/adr/0003-plan-amendment-classes.md`
 
 - `docs/adr/0001-canon-delta-classes.md` — the fourteen delta classes, their payload shapes,
   the class→write-tool mapping, and the staging/decision lifecycle. The source of truth.
+
+<!-- tool: commit_character_state -->
+<!-- tool: decide_canon_deltas -->
+<!-- tool: decide_plan_amendments -->
+<!-- tool: find_scenes_referencing -->
+<!-- tool: get_entity -->
+<!-- tool: get_scene_context -->
+<!-- tool: list_canon_deltas -->
+<!-- tool: list_plan_amendments -->
+<!-- tool: mine_scene_canon -->
+<!-- tool: record_note -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: replan_chapter -->
+<!-- tool: search_bible -->
+<!-- tool: set_active_project -->
+<!-- tool: update_relationship -->
