@@ -94,6 +94,8 @@ Current audit findings:
   contracts. Input and output tool schemas are scrubbed of schemars'
   non-standard numeric `format` annotations (`uint`, `int32`, `float`, …) at
   the generation seam so strict JSON-Schema clients do not warn per field.
+  Finalized schema lint, structural validation and transport discovery-byte
+  guards are described in `docs/tool-surface-guards.md`.
 
 The service layer currently lives under:
 
