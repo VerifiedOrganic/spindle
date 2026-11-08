@@ -16,6 +16,12 @@ pub(super) fn parse_usage(body: &serde_json::Value) -> Option<ModelUsage> {
     (result.input_tokens.is_some() || result.output_tokens.is_some()).then_some(result)
 }
 
+#[derive(Default)]
+pub(super) struct UsageBinding {
+    pub id: Option<String>,
+    pub pending: bool,
+}
+
 impl ModelRouter {
     pub(crate) fn with_usage_pool(mut self, pool: crate::sqlite::SqlitePool) -> Self {
         self.usage_pool = Some(pool);
@@ -33,6 +39,33 @@ impl ModelRouter {
         resolved_route: Option<&super::ModelRoute>,
         start: std::time::Instant,
         result: &mut anyhow::Result<ModelResponse>,
+    ) {
+        self.record_bound_usage(
+            route,
+            rating,
+            context,
+            prompt,
+            is_continuation,
+            resolved_route,
+            start,
+            result,
+            UsageBinding::default(),
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn record_bound_usage(
+        &self,
+        route: &str,
+        rating: Option<&str>,
+        context: Option<&RequestContext>,
+        prompt: &str,
+        is_continuation: bool,
+        resolved_route: Option<&super::ModelRoute>,
+        start: std::time::Instant,
+        result: &mut anyhow::Result<ModelResponse>,
+        binding: UsageBinding,
     ) {
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Ok(response) = result {
@@ -59,7 +92,9 @@ impl ModelRouter {
             .and_then(|c| c.context_packet_hash.clone())
             .or_else(|| Some(super::compute_context_packet_hash(prompt)));
         let mut record = ModelCallRecord {
-            id: format!("model_call:{}", ulid::Ulid::new()),
+            id: binding
+                .id
+                .unwrap_or_else(|| format!("model_call:{}", ulid::Ulid::new())),
             project_id: context.and_then(|c| c.project_id.clone()),
             scene_id: context.and_then(|c| c.scene_id.clone()),
             run_id: context.and_then(|c| c.run_id.clone()),
@@ -80,7 +115,9 @@ impl ModelRouter {
             temperature: resolved_route.and_then(|r| r.temperature),
             top_p: resolved_route.and_then(|r| r.top_p),
             max_tokens: resolved_route.and_then(|r| r.max_tokens),
-            outcome: if result.is_ok() {
+            outcome: if binding.pending {
+                "pending"
+            } else if result.is_ok() {
                 "succeeded"
             } else {
                 "failed"
@@ -111,7 +148,16 @@ impl ModelRouter {
                         id, project_id, scene_id, run_id, route,
                         prompt_template_id, prompt_version, context_packet_hash,
                         temperature, top_p, max_tokens, recorded_at, payload
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                     ON CONFLICT(id) DO UPDATE SET
+                        project_id=excluded.project_id, scene_id=excluded.scene_id,
+                        run_id=excluded.run_id, route=excluded.route,
+                        prompt_template_id=excluded.prompt_template_id,
+                        prompt_version=excluded.prompt_version,
+                        context_packet_hash=excluded.context_packet_hash,
+                        temperature=excluded.temperature, top_p=excluded.top_p,
+                        max_tokens=excluded.max_tokens, recorded_at=excluded.recorded_at,
+                        payload=excluded.payload",
                     rusqlite::params![
                         record.id,
                         record.project_id,

@@ -221,7 +221,42 @@ impl ModelRouter {
                         "num_ctx": scope.max_context
                     }
                 });
+                let mut call_context = context.cloned().unwrap_or_default();
+                call_context.prompt_template_id = Some("token_count.ollama_probe".into());
+                call_context.prompt_version = Some("v1".into());
+                call_context.context_packet_hash = Some(message_hash.clone());
+                let mut count_route = scope.route.clone();
+                count_route.model_name = scope.model.clone();
+                count_route.max_tokens = Some(scope.config.probe_mode.output_limit());
+                count_route.temperature = Some(0.0);
+                count_route.top_p = None;
                 let start = std::time::Instant::now();
+                // Persist intent before the first external side effect. Cancellation
+                // leaves one pending row with unknown usage, never invisible cost.
+                let mut pending = Ok(ModelResponse {
+                    adapter_kind: "http".into(),
+                    model_name: scope.model.clone(),
+                    ..Default::default()
+                });
+                self.record_bound_usage(
+                    &scope.route.route_name,
+                    rating,
+                    Some(&call_context),
+                    "",
+                    false,
+                    Some(&count_route),
+                    start,
+                    &mut pending,
+                    super::usage::UsageBinding {
+                        id: None,
+                        pending: true,
+                    },
+                )
+                .await;
+                let probe_id = pending?
+                    .call_id
+                    .context("count probe intent could not be persisted")?;
+
                 let sent = with_provider_headers(
                     scope
                         .client
@@ -266,16 +301,7 @@ impl ModelRouter {
                     )),
                     Err(_) => Err(anyhow::anyhow!("count probe transport failure")),
                 };
-                let mut call_context = context.cloned().unwrap_or_default();
-                call_context.prompt_template_id = Some("token_count.ollama_probe".into());
-                call_context.prompt_version = Some("v1".into());
-                call_context.context_packet_hash = Some(message_hash.clone());
-                let mut count_route = scope.route.clone();
-                count_route.model_name = scope.model.clone();
-                count_route.max_tokens = Some(scope.config.probe_mode.output_limit());
-                count_route.temperature = Some(0.0);
-                count_route.top_p = None;
-                self.record_usage(
+                self.record_bound_usage(
                     &scope.route.route_name,
                     rating,
                     Some(&call_context),
@@ -284,6 +310,10 @@ impl ModelRouter {
                     Some(&count_route),
                     start,
                     &mut result,
+                    super::usage::UsageBinding {
+                        id: Some(probe_id),
+                        pending: false,
+                    },
                 )
                 .await;
                 let response = result?;

@@ -809,7 +809,9 @@ Use zero unless measured evidence justifies another bound.
 Provider probes use native Ollama `/api/chat`, `stream=false`, `truncate=false`
 and the configured context window. Cloud uses bounded `num_predict=1`; only
 `prompt_eval_count` supplies the count, and the generated token is discarded.
-Each actual probe is recorded in the existing `model_call` ledger with
+Each probe gets a durable pending row before dispatch, updated in place on
+completion (interruption keeps unknown usage visible without double counting).
+Probes are recorded in the existing `model_call` ledger with
 `prompt_template_id=token_count.ollama_probe`, route, exact model and reported
 input/output usage. Local `probe_mode="local_zero_output"` uses `num_predict=0`
 only if the response proves positive `prompt_eval_count`, `eval_count=0`, and

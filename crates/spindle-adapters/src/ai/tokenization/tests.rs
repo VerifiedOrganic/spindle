@@ -206,6 +206,10 @@ async fn cancellation_after_dispatch_keeps_recovery_marker() {
     received_rx.await.unwrap();
     task.abort();
     let _ = task.await;
+    let pending: i64 = router.usage_pool.as_ref().unwrap().read(|conn|
+        conn.query_row("SELECT count(*) FROM model_call WHERE prompt_template_id='token_count.ollama_probe' AND json_extract(payload,'$.outcome')='pending' AND json_extract(payload,'$.usage') IS NULL", [], |row| row.get(0))
+    ).await.unwrap();
+    assert_eq!(pending, 1);
     assert!(
         router
             .probe_count(&scope, &messages, Some("general"), None)
