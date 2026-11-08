@@ -109,7 +109,7 @@ pub enum CritiqueError {
     MalformedJson(String),
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -639,6 +639,75 @@ fn fits_critic_context(input_tokens: usize, budget: &CriticBudget) -> bool {
             .is_some_and(|n| n <= budget.context_window)
 }
 
+/// Generate the canonical JSON Schema for `CritiqueV1` directly from the Rust DTO.
+pub fn critique_v1_json_schema() -> serde_json::Value {
+    CritiqueV1::json_schema()
+}
+
+/// Build a complete `CritiqueV1` JSON template populated with the required hashes,
+/// rubric version, all 10 `CriticDimension` entries, and exemplar `CritiqueDirective`
+/// and `AuthorDecisionItem` shapes so the model has the exact required structure.
+pub fn critique_v1_output_template(
+    expected_packet_hash: &str,
+    expected_base_text_hash: &str,
+    scene_id: Option<&str>,
+) -> serde_json::Value {
+    let dimensions: Vec<serde_json::Value> = CriticDimension::ALL
+        .iter()
+        .map(|dim| {
+            serde_json::json!({
+                "dimension": dim.as_str(),
+                "score_1_to_5": 4,
+                "evidence_spans": [],
+                "rationale": format!("Assessment of {}.", dim.as_str()),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schema_version": CRITIQUE_SCHEMA_VERSION,
+        "base_text_hash": expected_base_text_hash,
+        "packet_hash": expected_packet_hash,
+        "rubric_version": CRITIC_RUBRIC_VERSION,
+        "dimensions": dimensions,
+        "directives": [
+            {
+                "id": "dir-1",
+                "dimension": "tension_turn",
+                "severity": "major",
+                "priority": 1,
+                "anchor": {
+                    "scene_id": scene_id,
+                    "base_text_hash": expected_base_text_hash,
+                    "start_byte": 0,
+                    "end_byte": 1,
+                    "exact_quote": "<exact UTF-8 slice base_text[start_byte..end_byte]>",
+                    "context_before": null,
+                    "context_after": null
+                },
+                "diagnosis": "Concrete diagnosis of the anchored span.",
+                "requested_change": "Specific revision instruction for the anchored span.",
+                "preserve": ["Element to keep intact"],
+                "success_test": "Observable check that the revision solved the diagnosis.",
+                "source_finding_ids": [],
+                "scope": "span"
+            }
+        ],
+        "strengths_to_preserve": [
+            "Specific strength in the base draft to preserve."
+        ],
+        "requires_author_decision": [
+            {
+                "id": "decision-1",
+                "reason": "Why this item requires author judgment (e.g. author_lock or canon conflict).",
+                "blocking_constraint_id": "lock-id-if-applicable",
+                "proposed_change": "Optional description of the quarantined suggestion.",
+                "source_finding_ids": []
+            }
+        ],
+        "no_edit_reason": null
+    })
+}
+
 /// Assemble and token-verify the initial scene-critic `DraftMessages` for the `review` route.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_critic_messages(
@@ -671,6 +740,14 @@ pub fn assemble_critic_messages(
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
     let findings_json = serde_json::to_string(ingested_findings)
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let output_template_json = serde_json::to_string(&critique_v1_output_template(
+        expected_packet_hash,
+        expected_base_text_hash,
+        packet.scene_id.as_deref(),
+    ))
+    .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let schema_json = serde_json::to_string(&critique_v1_json_schema())
+        .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
 
     let user = format!(
         "CRITIC CONTRACT\n\
@@ -680,6 +757,16 @@ pub fn assemble_critic_messages(
          base_text_hash: {expected_base_text_hash}\n\
          scene_id: {:?}\n\
          base_text_utf8_byte_len: {}\n\n\
+         CRITIQUE_V1 FIELD & ENUM REQUIREMENTS\n\
+         - Top-level required fields: schema_version (\"critique_v1\"), base_text_hash, packet_hash, rubric_version (\"scene-critic-v1\"), dimensions (array of all 10 CriticDimensionScore objects), directives (0..=5 CritiqueDirective objects), strengths_to_preserve (array of strings), requires_author_decision (array of AuthorDecisionItem objects), no_edit_reason (string or null; required when directives is empty).\n\
+         - dimensions[] required fields: dimension (one of: scene_purpose | tension_turn | pov | voice | dialogue | freshness | continuity | length | entry_exit_emotion | chapter_role), score_1_to_5 (integer 1..=5), evidence_spans (array of CritiqueAnchor), rationale (non-empty string).\n\
+         - directives[] required fields: id (non-empty string), dimension (CriticDimension enum), severity (one of: blocker | major | minor | polish), priority (integer 1..=5), anchor (CritiqueAnchor object), diagnosis (non-empty string), requested_change (non-empty string), preserve (array of strings), success_test (non-empty string), source_finding_ids (array of strings), scope (one of: span | scene | chapter).\n\
+         - CritiqueAnchor required fields: scene_id (matching scene_id above), base_text_hash (matching base_text_hash above), start_byte (usize), end_byte (usize), exact_quote (verbatim UTF-8 substring base_text[start_byte..end_byte]; empty string only when start_byte == end_byte), context_before (optional string; required if start_byte == end_byte and context_after is null), context_after (optional string; required if start_byte == end_byte and context_before is null).\n\
+         - requires_author_decision[] fields: id, reason, blocking_constraint_id (string or null), proposed_change, source_finding_ids (array of strings).\n\n\
+         CRITIQUE_V1 OUTPUT TEMPLATE\n\
+         {output_template_json}\n\n\
+         CRITIQUE_V1 JSON SCHEMA\n\
+         {schema_json}\n\n\
          CRITIC RUBRIC {CRITIC_RUBRIC_VERSION}\n\
          {CRITIC_RUBRIC}\n\n\
          SCENE CARD\n\
@@ -733,9 +820,13 @@ pub fn assemble_critic_repair_messages(
          {validation_error}\n\n\
          Previous invalid output:\n\
          {invalid_raw_output}\n\n\
-         Return a corrected CritiqueV1 JSON object where every anchor [start_byte, end_byte) \
-         is an exact UTF-8 byte slice of the base draft matching exact_quote, all 10 dimensions \
-         are present with scores 1..=5, and base_text_hash/packet_hash/rubric_version match exactly.",
+         Return a corrected CritiqueV1 JSON object conforming to CRITIQUE_V1 FIELD & ENUM \
+         REQUIREMENTS, CRITIQUE_V1 OUTPUT TEMPLATE, and CRITIQUE_V1 JSON SCHEMA above, where \
+         every anchor [start_byte, end_byte) is an exact UTF-8 byte slice of the base draft \
+         matching exact_quote, all 10 dimensions are present with score_1_to_5 in 1..=5 and \
+         non-empty rationale, every directive includes id/dimension/severity/priority/anchor/\
+         diagnosis/requested_change/preserve/success_test/source_finding_ids/scope, and \
+         base_text_hash/packet_hash/rubric_version match the contract values above.",
         initial_messages.user
     );
     let messages = DraftMessages {

@@ -1354,10 +1354,19 @@ max_tokens = 500
             other => panic!("expected Critiqued outcome after repair, got {other:?}"),
         }
 
-        // Verify the repair prompt included the validation error from attempt 1
+        // Verify both initial and repair prompts included the full CritiqueV1 contract/schema/template
+        let first_req_body: serde_json::Value =
+            serde_json::from_str(&captured_reqs.lock().unwrap()[0]).unwrap();
+        let first_user_msg = first_req_body["messages"][1]["content"].as_str().unwrap();
+        assert!(first_user_msg.contains("CRITIQUE_V1 FIELD & ENUM REQUIREMENTS"));
+        assert!(first_user_msg.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
+        assert!(first_user_msg.contains("CRITIQUE_V1 JSON SCHEMA"));
+
         let second_req_body: serde_json::Value =
             serde_json::from_str(&captured_reqs.lock().unwrap()[1]).unwrap();
         let second_user_msg = second_req_body["messages"][1]["content"].as_str().unwrap();
+        assert!(second_user_msg.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
+        assert!(second_user_msg.contains("CRITIQUE_V1 JSON SCHEMA"));
         assert!(second_user_msg.contains("SCHEMA / ANCHOR REPAIR REQUIRED"));
 
         // Verify shadow mode did NOT mutate the draft artifact on disk

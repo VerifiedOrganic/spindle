@@ -998,3 +998,135 @@ fn critique_quarantines_author_lock_prohibited_outcome_and_canon_conflicts_and_c
         CriticDimension::ScenePurpose
     );
 }
+
+#[test]
+fn critic_prompt_embeds_complete_json_schema_and_template_that_validates_without_rust_fixture() {
+    use critique::*;
+    let base_text = "Maë braced against the floodwater as the bridge timber cracked.\nShe reached for the rope.";
+    let base_hash = sha256_hex(base_text.as_bytes());
+    let mut pkt = fixture();
+    pkt.scene_id = Some("scene-contract-1".into());
+    let critic_budget = CriticBudget::scene_default("fixture".into(), 20_000);
+
+    let (initial_msgs, _, _) = assemble_critic_messages(
+        &pkt,
+        "pkt-hash-contract",
+        base_text,
+        &base_hash,
+        &[],
+        &critic_budget,
+        Some(&VerifiedFixtureTokenizer),
+        "Route system framing.",
+    )
+    .unwrap();
+
+    // Verify all required field names and enum values are present in the initial prompt
+    for required_token in [
+        "CRITIQUE_V1 FIELD & ENUM REQUIREMENTS",
+        "CRITIQUE_V1 OUTPUT TEMPLATE",
+        "CRITIQUE_V1 JSON SCHEMA",
+        "score_1_to_5",
+        "evidence_spans",
+        "rationale",
+        "start_byte",
+        "end_byte",
+        "exact_quote",
+        "context_before",
+        "context_after",
+        "priority",
+        "diagnosis",
+        "requested_change",
+        "preserve",
+        "success_test",
+        "source_finding_ids",
+        "scope",
+        "strengths_to_preserve",
+        "requires_author_decision",
+        "blocking_constraint_id",
+        "proposed_change",
+        "no_edit_reason",
+        "blocker",
+        "major",
+        "minor",
+        "polish",
+        "span",
+        "scene",
+        "chapter",
+    ] {
+        assert!(
+            initial_msgs.user.contains(required_token),
+            "initial critic prompt missing contract token {required_token:?}"
+        );
+    }
+    for dim in CriticDimension::ALL {
+        assert!(
+            initial_msgs.user.contains(dim.as_str()),
+            "initial critic prompt missing dimension {:?}",
+            dim.as_str()
+        );
+    }
+
+    // Extract the embedded JSON Schema from the prompt and verify it parses as a valid JSON Schema
+    let schema_section = initial_msgs
+        .user
+        .split("CRITIQUE_V1 JSON SCHEMA\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    let parsed_schema: serde_json::Value = serde_json::from_str(schema_section).unwrap();
+    assert_eq!(parsed_schema, critique_v1_json_schema());
+
+    // Simulate a model that only sees the prompt: extract the CRITIQUE_V1 OUTPUT TEMPLATE and
+    // EXACT BASE DRAFT UTF-8 directly from the prompt text, populate the anchor span from the
+    // prompt's draft text, and verify that parse_and_validate_critique_output accepts it.
+    let template_line = initial_msgs
+        .user
+        .split("CRITIQUE_V1 OUTPUT TEMPLATE\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    let prompt_draft = initial_msgs
+        .user
+        .split("EXACT BASE DRAFT UTF-8\n")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches('\n');
+    assert_eq!(prompt_draft, base_text);
+
+    let mut model_output: serde_json::Value = serde_json::from_str(template_line).unwrap();
+    let first_sentence = prompt_draft.lines().next().unwrap();
+    model_output["directives"][0]["anchor"]["start_byte"] = serde_json::json!(0);
+    model_output["directives"][0]["anchor"]["end_byte"] = serde_json::json!(first_sentence.len());
+    model_output["directives"][0]["anchor"]["exact_quote"] = serde_json::json!(first_sentence);
+    model_output["requires_author_decision"] = serde_json::json!([]);
+
+    let synthesized_json = serde_json::to_string(&model_output).unwrap();
+    let validated = parse_and_validate_critique_output(
+        &synthesized_json,
+        &pkt,
+        "pkt-hash-contract",
+        base_text,
+        &base_hash,
+    )
+    .expect("response synthesized purely from prompt template must validate");
+    assert_eq!(validated.dimensions.len(), 10);
+    assert_eq!(validated.directives.len(), 1);
+    assert_eq!(validated.directives[0].anchor.exact_quote, first_sentence);
+
+    // Verify the repair prompt retains the full schema and template as well
+    let (repair_msgs, _, _) = assemble_critic_repair_messages(
+        &initial_msgs,
+        "{\"broken\":true}",
+        &CritiqueError::MalformedJson("missing fields".into()),
+        &critic_budget,
+        Some(&VerifiedFixtureTokenizer),
+    )
+    .unwrap();
+    assert!(repair_msgs.user.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
+    assert!(repair_msgs.user.contains("CRITIQUE_V1 JSON SCHEMA"));
+    assert!(repair_msgs.user.contains("SCHEMA / ANCHOR REPAIR REQUIRED"));
+}

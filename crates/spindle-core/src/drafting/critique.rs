@@ -200,6 +200,13 @@ pub struct CritiqueV1 {
     pub no_edit_reason: Option<String>,
 }
 
+impl CritiqueV1 {
+    /// Return the generated JSON Schema for `CritiqueV1`.
+    pub fn json_schema() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(Self)).expect("CritiqueV1 JSON schema")
+    }
+}
+
 /// Source family of an ingested finding passed into the critic.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
