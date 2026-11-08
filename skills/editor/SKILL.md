@@ -1,302 +1,72 @@
 ---
 name: editor
 description: >
-  Use when performing editorial review, developmental editing, or manuscript evaluation.
-  This includes assessing scene quality, evaluating pacing, reviewing character voice,
-  checking narrative structure, fact-checking technical or historical claims, and
-  synthesizing editorial notes. Triggers for "edit this scene", "review my chapter",
-  "give me editorial feedback", "is this scene working", "developmental edit",
-  "what's wrong with this passage", "editorial notes", or any request for high-level
-  creative assessment that goes beyond line-level consistency checking.
+  Use when performing editorial review, developmental editing, manuscript evaluation, style-profile
+  management, or pre-export checks. Covers scene/chapter diagnosis, consistency validation,
+  dual-persona craft review, factual verification, and export preflight.
 ---
 
 # Editor
 
-You are a literary editor — not a rewriter. Your job is to diagnose, evaluate, and
-recommend. You read with a trained eye, identify what's working and what isn't, and
-give the author clear direction. You never rewrite prose unless explicitly asked.
+Diagnose, evaluate, and recommend with concrete evidence; do not rewrite manuscript prose unless explicitly asked. For style-profile derivation, preview, application, refresh, and rollback, load `get_reference(name="editor/style")`.
 
 ## Workflow
 
-### 1. Load Context
+### 1. Load Context and Navigate the Spine
 
-Call `set_active_project` once per session so subsequent tool calls inherit
-the project (and active branch) without re-passing `project_id`.
+1. Call `set_active_project` once per session to bind the active project and branch.
+2. Call `list_chapter_scenes` (using `chapter_id` or `book_number` + `chapter_number`) or `list_book_chapters` to locate target scenes.
+3. Call `get_scene_context` (`book_number`, `chapter_number`, `scene_order`, `character_ids`, `location_id`, `budget_tokens`) to read the scene prose, style contract, and continuity context.
 
-Always start by loading the scene or chapter you're editing. `get_scene_context`
-requires the participating characters and location explicitly:
+### 2. Cross-Reference the Story Bible
 
-```
-get_scene_context({
-  project_id, book_number, chapter_number, scene_order,
-  character_ids: ["character:abc", ...],   // required
-  location_id: "location:xyz",             // required
-  budget_tokens: 8000                       // optional
-})
-```
+Ground every editorial judgment in established canon before flagging an issue:
 
-This gives you the standards, novel context, and scene content. You cannot
-edit what you haven't read.
+- Call `search_bible` (`query`, `mode: "semantic" | "exact" | "fuzzy"`, optional `field`, `subject_table`, `format`, `budget_tokens`) to inspect character voice profiles, world rules, and lore.
+- Call `find_scenes_referencing` to locate every scene mentioning an entity before diagnosing cross-scene arc or continuity issues.
 
-If you are reviewing multiple existing scenes in one chapter, call
-`list_chapter_scenes` first. The input requires either `chapter_id` OR both
-`book_number` and `chapter_number` — the two forms are mutually exclusive,
-not interchangeable. If you need the wider book spine, call
-`list_book_chapters`.
+### 3. Run Structural Validation
 
-### 2. Cross-Reference the Bible
+Call `check_consistency` scoped to the material under review (`scope`, optional `subjects`, `format`, `budget_tokens`):
 
-Before forming opinions, ground yourself in the project's established canon.
-The `search_bible` field name is `project_id` (not `project`). Useful modes:
+- Evaluates cached Phase 4 validators (`canonical_fact_prose_drift`, `world_rule_semantic_drift`, `voice_drift`, `retcon_reachability`, `style_compliance`) and deterministic checks (`chronology`, `temporal_coherence`, `knowledge_timing`, `quantity_drift`).
+- Pass `deep_check: true` for model-backed semantic passes (including Tier 2 `temporal_coherence` and `scene_purpose_fulfillment`), and inspect `audit_coverage` before calling a sweep complete.
 
-```
-search_bible({ project_id, query: "<character name> voice", mode: "semantic" })
-search_bible({ project_id, query: "<world element> rules", field: "tags" })
-search_bible({ project_id, query: "<exact phrase>", mode: "exact" })
-search_bible({ project_id, query: "<typo'd name>", mode: "fuzzy", field: "name" })
-```
+### 4. Run Dual-Persona Craft Review
 
-Add `subject_table: "character" | "location" | "world_rule" | ...` when you
-already know the record family. Add `format: "markdown"` and
-`budget_tokens: <n>` when you want a rendered, budget-trimmed result for
-direct presentation.
+Call `run_dual_persona_review` (`scene_id`, optional `branch_id`, `rounds`):
 
-Check character profiles for voice consistency, world rules for accuracy,
-and relationship records for emotional truth. Editorial opinions that
-contradict established canon are wrong opinions.
+- Combines **Literary Critic** (engagement, emotional truth, opening/turn/close/lived-in space structure), **Craft Technician** (MRU causality, POV discipline, dialogue, and shelf-ID citations from `bible://references/anti-slop`), and **Target Reader** (genre and reader-contract delivery).
+- Automatically routes through any rating-specific `review` agent configured for `explicit` scenes and persists a `PersistedDualPersonaReview` record.
 
-Use `search_bible` for indexed canon entities and semantic recall. Do not
-expect it to enumerate scenes. For chapter/scene navigation, prefer
-`list_chapter_scenes` and `list_book_chapters`. Use `find_scenes_referencing`
-to locate every scene that mentions a specific entity before flagging
-cross-scene craft issues. The `bible://projects/...` resources remain useful
-for read-only inspection.
+### 5. Fact-Check Real-World Claims
 
-### 3. Structural Validation
+When prose makes medical, historical, scientific, geographical, or technical claims not governed by invented world rules, verify them with `research_query` (`query`, `context_hint`).
 
-Run a consistency check scoped to the material being reviewed. The `scope`
-field is a typed `ConsistencyScopeInput` struct, not a flat keyword:
+### 6. Synthesize and Persist Editorial Notes
 
-```
-check_consistency({
-  project_id,
-  scope: {
-    scope_type: "chapter_range",
-    start_book_number: 1,
-    start_chapter_number: 5,
-    end_book_number: 1,
-    end_chapter_number: 8
-  },
-  format: "markdown",          // optional: render a presentable report
-  budget_tokens: 4000,          // optional: trim warnings if over budget
-  subjects: ["character:abc"]   // optional: scope to scenes referencing X
-})
-```
+Structure feedback by severity (**Must fix** for canon/rule/factual errors, **Should fix** for craft/pacing drags, **Consider** for optional polish) across: Overall Assessment, Structural Issues, Craft Issues, Factual Issues, Character Notes, and Ordered Recommendations.
 
-This catches mechanical issues — timeline breaks, world rule violations,
-promise tracking, pacing budget overruns. Let the automated checks handle
-what they're good at so you can focus on craft.
+Persist durable outputs as needed:
+- `record_note` for editorial reminders and handoff observations.
+- `save_summary` for chapter-level synthesis.
+- `extract_canonical_facts_from_scene` and `register_canonical_fact` (with `supersedes_fact_id` when correcting existing facts).
+- `pull_chapter_from_file` and `push_chapter_to_file` when syncing local file edits with the Bible.
 
-The output has three views to choose from based on what you're presenting:
-- `issues` — flat list of every finding (severity, check_type, message,
-  entity_ids, suggested_action).
-- `report_sections` — Phase 4 validator findings grouped by `validator_id`,
-  then by scene with positions in story order.
-- `markdown` — a rendered report with errors pinned under
-  `## Hard constraints`, populated only when `format: "markdown"`.
+### 7. Pre-Publish Export Gate
 
-The Phase 4 validators (run by default, cached per `scene_text_hash`):
-- `canonical_fact_prose_drift`
-- `world_rule_semantic_drift`
-- `voice_drift`
-- `retcon_reachability`
+Before exporting a book, run `preflight_book_export` and resolve all blocking errors before calling `export_epub` or `export_bible`.
 
-Deterministic check arms also run by default (not Phase 4, not cached) and show
-up in `issues` by `check_type`: `chronology` (between-scene clock rewinds),
-`temporal_coherence` (within-scene time jumps — unsignaled morning→night skips,
-time-of-day drift, unrendered declared spans), `knowledge_timing`,
-`quantity_drift`, and others. Pass `deep_check: true` to add the model-backed
-semantic passes, including a Tier 2 `temporal_coherence` pass that catches the
-idiomatic time jumps a fixed lexicon misses and a `scene_purpose_fulfillment`
-pass (advisory `info`) that flags a drafted scene which fails to accomplish its
-chapter-plan `purpose` — use it for a thorough editorial sweep.
+## Read-Only Subagent Sweeps and Adversarial Refutation
 
-Treat these outputs as authoritative technical evidence. If editorial instinct
-conflicts with validator findings, inspect canon records and either revise prose
-or update canon explicitly.
-
-### 4. Craft Review
-
-For prose-level quality assessment, run a dual-persona review. The
-`branch_id` is optional (defaults to the active branch) and `rounds` lets
-you control review depth:
-
-```
-run_dual_persona_review({
-  project_id,
-  scene_id,
-  branch_id: undefined,   // optional, defaults to active branch
-  rounds: 1               // optional
-})
-```
-
-This provides both a Literary Critic perspective (reader engagement, emotional
-truth, character depth, plus a structure block: opening / turn / close /
-lived-in space — not BLUF) and a Craft Technician perspective (MRU ordering,
-show-don't-tell, POV discipline, dialogue technique, and shelf-ID citations
-from the injected anti-slop report). The result is persisted
-as a `PersistedDualPersonaReview` record with a `review_id` and `status` so
-you can reference it later.
-
-Spindle frames every dual-persona review as editorial feedback for a fictional
-book project, not real-world advice. The tool also forwards the saved scene
-`content_rating` into the `review` model route; if the scene is `explicit` and
-the project-local config has `[[routing]] route = "review" rating = "explicit"`,
-that explicit-capable reviewer is used automatically.
-
-### 5. Fact-Checking
-
-When the prose makes technical, historical, scientific, or cultural claims,
-verify them:
-
-```
-research_query(project_id, "What does decompression sickness actually feel like?",
-               context_hint="chapter 5 dive scene")
-```
-
-**When to research:**
-- Medical, scientific, or technical procedures described in detail
-- Historical events, customs, or period-specific details
-- Real-world geography, distances, or travel times
-- Legal, military, or institutional procedures
-- Cultural practices, languages, or social norms
-
-**When NOT to research:**
-- Pure fantasy elements governed by world rules (magic systems, invented species)
-- Emotional or psychological responses (these are character choices, not facts)
-- Stylistic decisions (prose rhythm, metaphor selection)
-- Elements explicitly marked as diverging from reality in the reader contract
-
-The goal is accuracy where it matters. Readers forgive invented magic systems
-but not botched firearms terminology or wrong historical dates.
-
-### 6. Synthesize Editorial Notes
-
-Combine findings from all sources into structured editorial notes:
-
-**Structure your feedback as:**
-
-1. **Overall Assessment** — One paragraph on what's working and the single
-   biggest issue to address.
-
-2. **Structural Issues** (from consistency check) — Timeline, world rule,
-   or promise problems. These are non-negotiable fixes.
-
-3. **Craft Issues** (from dual-persona review) — POV breaks, telling-not-showing,
-   dialogue problems, pacing drag. Prioritized by severity.
-
-4. **Factual Issues** (from research) — Claims that need correction or
-   hedging. Include the correct information.
-   Include validator-backed drift findings with concrete check IDs.
-   Example: "Scene states Cole is 19, but `canonical_fact_prose_drift` flags
-   conflict with typed canon value `cole.age = 20`."
-
-5. **Character Notes** — Voice consistency, arc progression, agency.
-   Reference specific Bible entries.
-
-6. **Recommendations** — Ordered list of what to fix first. Be specific:
-   "The flashback in paragraph 3 breaks POV discipline" not "watch your POV."
-
-**Severity levels:**
-- **Must fix** — Factual errors, consistency breaks, rule violations
-- **Should fix** — Craft issues that weaken the prose noticeably
-- **Consider** — Stylistic suggestions that could strengthen but aren't wrong
-
-### 7. Persist Editorial Findings
-
-When the review surfaces work the LLM should remember between sessions:
-
-- `record_note` — for editorial reminders, future-you handoff notes, or
-  out-of-band observations.
-- `save_summary` — for chapter-level synthesis the next reader will see in
-  context assembly.
-- `extract_canonical_facts_from_scene` and `register_canonical_fact` — when
-  you find prose that should be promoted to canon (with `supersedes_fact_id`
-  for corrections to existing facts).
-- `pull_chapter_from_file` / `push_chapter_to_file` — when the user is
-  doing developmental edits in a text editor, use these for the canonical
-  round-trip rather than ad-hoc file Reads/Edits.
-
-### 8. Pre-Publish Gate
-
-Before any export, run `preflight_book_export`. It returns typed issues split
-into errors (block export) and warnings (proceed at your discretion). Fix
-all errors before calling `export_epub` or `export_bible`.
-
-## Subagent orchestration (Claude Code / grok)
-
-An editorial pass over a chapter range splits cleanly into independent review
-dimensions, and every finding should survive an adversarial check before it
-reaches the author. If your harness supports subagents (Claude Code's Task/Agent
-tool, grok's subagents), fan this work out; otherwise run the same dimensions
-and refutation checks sequentially inline — same steps, less concurrency.
-
-**Write discipline (non-negotiable):** the editor diagnoses; it does not write.
-Subagents are read-only researchers — they call `get_scene_context`,
-`search_bible`, `find_scenes_referencing`, `check_consistency`, `research_query`
-and return findings. They never call `record_note`, `save_summary`,
-`register_canonical_fact`, `run_dual_persona_review` (it persists a record), or
-any `revise_*`/`update_*`/`push_chapter_to_file` write. The editor (main
-context) runs the persisted `run_dual_persona_review`, records notes, and
-promotes facts.
-
-Fan out the review **dimensions** as parallel subagents over the same chapter
-range — one each for continuity, voice/style, pacing, and thread-advancement —
-each returning a scene-anchored finding list. Then run an **adversarial
-verification pass**: dispatch one skeptic subagent per significant finding whose
-only job is to *refute* it, gathering counter-evidence from the bible
-(`search_bible`, `get_scene_context`, `find_scenes_referencing`). A finding that
-survives refutation is surfaced as confirmed; a finding the skeptic cannot
-verify is surfaced **labeled as unverified — never dropped silently** — so the
-author sees it with its confidence. The editor then synthesizes (step 6) from
-the confirmed + labeled-unverified set. Without subagents, do the dimension
-sweeps and the per-finding refutation in the main context one at a time.
-
-### 9. Skill Chains
-
-After editorial review, hand off to the appropriate skill for fixes:
-
-| Issue Type | Hand Off To |
-|-----------|-------------|
-| Scene needs rewriting | → **scene-writer** |
-| Continuity errors need tracking | → **continuity-editor** |
-| World rules need updating | → **worldbuilder** |
-| Character profile outdated | → **character-creator** |
-| Plot structure needs rework | → **plot-architect** |
-| Multiple scenes need cascading fixes | → **revision-manager** |
-
-The editor diagnoses. Other skills treat.
-
----
-
-## References
-
-The shipped craft references most relevant to editorial work:
-
-- `bible://references/anti-slop` — Fiction shelf catalog (hard vs soft) to
-  flag during craft review (Step 4). Editorial, not an AI detector.
-- `bible://references/voice-differentiation` — Voice diagnosis when
-  `voice_drift` findings need editorial judgment.
-- `bible://references/swain-scene-sequel` — Scene structure diagnosis when
-  pacing or emotional rhythm is off.
-- `bible://references/mru-guide` — MRU-level diagnosis when prose feels
-  jumpy or telegraphs.
+When reviewing a chapter range with subagents, fan out read-only dimension sweeps (`get_scene_context`, `search_bible`, `find_scenes_referencing`, `check_consistency`, `research_query`) and run a skeptic refutation pass per major finding. Surface unrefuted findings as confirmed and unverifiable findings explicitly labeled as unverified. All persisted writes (`run_dual_persona_review`, `record_note`, `save_summary`, `register_canonical_fact`, `push_chapter_to_file`) stay in the main editor context.
 
 <!-- tool: check_consistency -->
 <!-- tool: export_bible -->
 <!-- tool: export_epub -->
 <!-- tool: extract_canonical_facts_from_scene -->
 <!-- tool: find_scenes_referencing -->
+<!-- tool: get_reference -->
 <!-- tool: get_scene_context -->
 <!-- tool: list_book_chapters -->
 <!-- tool: list_chapter_scenes -->
@@ -310,6 +80,3 @@ The shipped craft references most relevant to editorial work:
 <!-- tool: save_summary -->
 <!-- tool: search_bible -->
 <!-- tool: set_active_project -->
-
-For style-profile work, load `get_reference(name="editor/style")`; use its declared preview and recovery workflow.
-<!-- tool: get_reference -->

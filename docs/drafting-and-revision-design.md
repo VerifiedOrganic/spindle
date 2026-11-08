@@ -389,10 +389,12 @@ integration fixture before enabling the controller.
 | --- | --- | --- |
 | 1 | Typed packet/card DTO, branch/source provenance, tokenizer interface, rubric. Snapshot required-field failures, UTF-8 boundaries, dedup, deterministic ordering, mandatory overflow and final-message counts. Legacy output untouched. | Parity gate + C; packet-only experiment recorded under G, feature remains off until G clears. |
 | 2 | Plain-text generation artifact and separate compatibility extraction. Test truncation, exact bytes/hash, receipt binding, extraction failure/restart, accepted-only extraction. Coordinate P2 schema without implementing its event store. | G on packet/plain-text vs baseline and packet-only; C. |
-| 3 | Critic DTO, anchor validation and feedback ingestion. Test invalid offsets/quotes, stale hashes, duplicate findings, malformed repair, author-lock conflicts and rating denial. Shadow mode cannot mutate text. | Shadow parity + C; blinded directive usefulness sample; eventual activated loop must pass G. |
-| 4 | Prior-draft revision, deterministic candidate checks and double-order acceptance. Shared Python/Rust verdict fixtures; test tie/error retains incumbent, new blocker rejects, attempt/fingerprint stops, CAS conflict, crash at every boundary. | G for loop vs baseline and packet-only + C; report rejection and edit-span distributions. |
-| 5 | Hybrid host task and agent parity; CLI resume/status, durable budget ledger and attribution. Test no-route, unknown usage, concurrency reservations, restart caps, explicit receipt preservation and legacy state. | Output parity + C; run G separately per execution mode before enabling either. |
-| 6 | Optional line-edit route and bounded chapter pass, repetition memory, checkpoint feedback adapters and book advisory queue. Test loser excluded from memory, chapter coverage, invalidation/re-extraction and chapter-level rejection. | G vs baseline and scene-loop-only, chapter-coherence blinded comparison CI lower bound >0.50; C. Keep each optional pass off if inconclusive. |
+| 3 | Verified-tokenizer prerequisite: pinned `tokenizer.json` encoders, provider calibration certificates, Ollama count probes and cache, final-message verification before dispatch. | Token-count parity + C; legacy remains default. |
+| 4 | Eval-to-Rust generation bridge (`spindle-tokenizer draft-packet` / `draft-messages`), generation seed plumbing, cluster-bootstrap CIs by brief across seeds, generated-accepted-prose continuity fixture, and full live 90-pair G experiment (`30 briefs × 3 seeds`). | Honest G report (`0.4444 [0.3667, 0.5167]`) + C (`20/28 = 71.43%`, `5` FPs, `90` verified artifacts); lower bound `<= 0.50` keeps `EditorialPolicy::Legacy` default. |
+| 5 | Critic DTO, anchor validation and feedback ingestion. Test invalid offsets/quotes, stale hashes, duplicate findings, malformed repair, author-lock conflicts and rating denial. Shadow mode cannot mutate text. | Shadow parity + C; blinded directive usefulness sample; eventual activated loop must pass G. |
+| 6 | Prior-draft revision, deterministic candidate checks and double-order acceptance. Shared Python/Rust verdict fixtures; test tie/error retains incumbent, new blocker rejects, attempt/fingerprint stops, CAS conflict, crash at every boundary. | G for loop vs baseline and packet-only + C; report rejection and edit-span distributions. |
+| 7 | Hybrid host task and agent parity; CLI resume/status, durable budget ledger and attribution. Test no-route, unknown usage, concurrency reservations, restart caps, explicit receipt preservation and legacy state. | Output parity + C; run G separately per execution mode before enabling either. |
+| 8 | Optional line-edit route and bounded chapter pass, repetition memory, checkpoint feedback adapters and book advisory queue. Test loser excluded from memory, chapter coverage, invalidation/re-extraction and chapter-level rejection. | G vs baseline and scene-loop-only, chapter-coherence blinded comparison CI lower bound >0.50; C. Keep each optional pass off if inconclusive. |
 
 Required local tests follow touched crates; include architecture-boundary tests
 when moving DTOs or responsibilities. Offline judge self-tests validate machinery,
@@ -513,3 +515,225 @@ counts before prose dispatch by default. See `spindle-agent-config.md` for the
 verified Gemma profile, operator CLI, recovery behavior and billing details.
 Legacy remains default; calibration is evidence of token counting, not prose
 quality or completion of release gate G.
+
+## Implementation status: prose-judge generation bridge and full G experiment (PR 4)
+
+PR 4 connects `evals/prose_judge.py` to the internal Rust packet generation and
+calibrated native Ollama transport, adds the generated-accepted-prose continuity
+integration fixture to `evals/continuity_recall.py`, and records the full 90-pair
+(`30 briefs × 3 seeds`) live release-gate **G** experiment.
+
+### Generation bridge and seed / hash provenance
+
+- **Generation seed plumbing**: `PacketAssembly` (`spindle-core`), `PacketBudget`
+  (`spindle-adapters`), `RoutingRule`, and `ModelRoute` now carry an optional
+  `generation_seed: Option<i64>`. Native Ollama `/api/chat` requests pass
+  `options.seed` when present, while one-token count probes explicitly clear
+  `seed` so probe cache keys remain seed-independent. Cached
+  `PlainTextDraftArtifactV1` reloads verify that the recorded
+  `prepared_packet.packet.assembly.generation_seed` matches the requested
+  `PacketBudget::generation_seed`.
+- **Same effective transport and context policy across arms**: Both the packet
+  candidate arm (`drafting_packet_v1`, dispatched through
+  `SqliteSpindleService::draft_packet_to_artifact` and accepted via
+  `accept_artifact`) and the frozen legacy baseline arm (`spindle_full_context`,
+  dispatched through `ModelRouter::draft_eval_messages`) use the same configured
+  `draft` route (`gemma4:31b`, revision
+  `842da3794eaa0b77d5f08bae87a17459d91ff475`), the same calibrated Hugging Face
+  `tokenizer.json` (`cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f`,
+  `tolerance_tokens = 0`, `verify_each_prompt = true`), and the same native
+  Ollama `/api/chat` window and sampling policy (`options.num_ctx = 32768`,
+  `options.num_predict = 1200`, `options.temperature = 0.4`, `truncate = false`,
+  `shift = false`).
+- **Multi-seed cluster-bootstrap CIs**: `evals/prose_judge.py` supports
+  `--generation-seed` and `--generation-seeds 101,202,303`, pairs saved outputs
+  by `(brief_id, generation_seed)` (`P001-S101` .. `P030-S303`), records
+  `packet_hash`, `source_packet_sha256`, `prompt_hash`, `tokenizer_id`,
+  `tokenizer_version`, and `settings` per pair, and computes 95% bootstrap
+  confidence intervals clustered by `brief_id` (`n_clusters = 30`,
+  `n_resamples = 2000`) when multiple seeds per brief are evaluated.
+
+### Continuity gate C and generated-accepted-prose integration fixture
+
+`evals/continuity_recall.py` now includes `evaluate_generated_accepted_prose`
+(reported under `generated_accepted_prose_fixture` and runnable standalone via
+`verify-accepted-prose` / `--accepted-artifacts-dir`):
+
+- **Planted 2-manuscript benchmark (`C`)**: `20 / 28` (`71.43%`) overall recall,
+  `5` control false positives (`world_rule_compliance: 2`,
+  `world_rule_semantic_drift: 3`), and unchanged per-type recall across all 7
+  categories (`dead_character_acting: 4/4 = 1.0`,
+  `timeline_chronology_rewind: 4/4 = 1.0`, `quantity_affordability: 4/4 = 1.0`,
+  `character_attribute: 2/4 = 0.5`, `knowledge_leak_before_learned: 2/4 = 0.5`,
+  `world_rule_cost_violation: 2/4 = 0.5`, `secret_leak: 2/4 = 0.5`).
+- **Generated-accepted-prose continuity fixture**: Verifies
+  `PlainTextDraftArtifactV1` schema/receipt/SHA-256/non-truncation invariants
+  (rejecting truncated or tampered artifacts), ingests accepted prose through
+  MCP `save_scene_draft` -> `check_consistency` with `0` clean-prose blocker
+  issues and `4 / 4` (`1.0`) recall across planted accepted-prose contradictions
+  (`character_attribute`, `dead_character_acting`, `world_rule_cost_violation`,
+  `timeline_chronology_rewind`), and verified all `90 / 90` live
+  `PlainTextDraftArtifactV1` artifacts produced during G.
+
+### Full live G experiment results (30 briefs × 3 seeds = 90 pairs)
+
+Checked-in summary artifact: `evals/results/prose_judge_packet_v1_g_live.json`.
+
+- **Generation summary (`gemma4:31b`, seeds `101, 202, 303`)**:
+  - `drafting_packet_v1` (candidate): `90` accepted artifacts, `0` omissions on
+    all `30` briefs, mean `3279.1` input tokens, mean `441.0` words.
+  - `spindle_full_context` (frozen legacy baseline): `90` completions, mean
+    `935.1` input tokens, mean `418.0` words.
+- **Judge panel (swapped-order double judging, `540` live judge calls across 3
+  independent model families)**:
+  - `ollama-glm-5.2` (`zhipu-glm` family)
+  - `ollama-deepseek-v4.1-flash` (`deepseek` family)
+  - `ollama-gemma4-31b` (`google-gemma` family)
+- **Overall panel consensus (`n = 90` pairs, `n_clusters = 30` briefs)**:
+  - Candidate (`drafting_packet_v1`) outright wins: `14 / 90` (`0.1556`, 95%
+    cluster-bootstrap CI `[0.0778, 0.2444]`)
+  - Baseline (`spindle_full_context`) outright wins: `24 / 90` (`0.2667`, 95%
+    cluster-bootstrap CI `[0.1667, 0.3667]`)
+  - Ties: `52 / 90` (`0.5778`)
+  - **Candidate tie-half win rate**: **`0.4444` (`44.44%`), 95% cluster-bootstrap
+    CI `[0.3667, 0.5167]`**
+- **Per-scene-type tie-half win rates (`18` pairs / `6` briefs per type)**:
+  - `chapter-closer`: `0.5556` (`[0.4167, 0.7222]`, `4` candidate wins, `2`
+    baseline wins, `12` ties)
+  - `dialogue-heavy`: `0.4444` (`[0.3889, 0.5000]`, `2` candidate wins, `4`
+    baseline wins, `12` ties)
+  - `quiet-interior`: `0.4444` (`[0.2778, 0.6111]`, `2` candidate wins, `4`
+    baseline wins, `12` ties)
+  - `reveal`: `0.4167` (`[0.2222, 0.5833]`, `3` candidate wins, `6` baseline
+    wins, `9` ties)
+  - `action`: `0.3611` (`[0.2222, 0.5556]`, `3` candidate wins, `8` baseline
+    wins, `7` ties)
+- **Per-seed tie-half win rates (`30` pairs per seed)**:
+  - Seed `101`: `0.4833` (`[0.3833, 0.6000]`, `5` candidate, `6` baseline, `19` ties)
+  - Seed `202`: `0.3833` (`[0.2667, 0.4833]`, `3` candidate, `10` baseline, `17` ties)
+  - Seed `303`: `0.4667` (`[0.3500, 0.5833]`, `6` candidate, `8` baseline, `16` ties)
+- **Per-judge tie-half win rates and position bias (`90` double-judged pairs each)**:
+  - `ollama-glm-5.2`: tie-half `0.4500` (`[0.3722, 0.5278]`, `22` candidate, `31`
+    baseline, `37` ties), order consistency `0.5889`, position-bias rate `0.4111`.
+  - `ollama-deepseek-v4.1-flash`: tie-half `0.5000` (`[0.4333, 0.5667]`, `16`
+    candidate, `16` baseline, `58` ties), order consistency `0.3556`,
+    position-bias rate `0.6444`.
+  - `ollama-gemma4-31b`: tie-half `0.3611` (`[0.2833, 0.4389]`, `11` candidate,
+    `36` baseline, `43` ties), order consistency `0.5222`, position-bias rate
+    `0.4778`.
+  - Overall position-bias rate across `270` double judgments: `0.5111` (`126`
+    first-position, `9` second-position, `3` tie-flip), all resolved to ties by
+    swapped-order double judging.
+  - Inter-judge agreement: Fleiss' $\kappa = 0.2912$, unanimous rate `0.3778`,
+    pairwise non-tie directional agreement `0.7917`–`0.9091` (Cohen's $\kappa$:
+    `0.2421`, `0.3361`, `0.3325`).
+- **Rubric dimension diagnosis (`270` double-judged pairs)**:
+  - `continuity_with_brief`: candidate `4.5000` vs baseline `4.4296` (`+0.0704`,
+    tie-half `0.5259`, `78` candidate wins vs `64` baseline wins) — structured
+    `DraftingPacketV1` improves canon/brief adherence and `chapter-closer`
+    payoff.
+  - `dialogue` (`-0.0092`, tie-half `0.4815`), `pov_discipline` (`-0.0223`,
+    tie-half `0.4759`), and `scene_purpose_fulfilled` (`-0.0500`, tie-half
+    `0.4537`) are near parity.
+  - One-shot `drafting_packet_v1` (without the critic/revision loop) trails the
+    hand-tuned legacy markdown prompt on `tension_turn` (`4.0593` vs `4.2574`,
+    `-0.1981`, tie-half `0.3963`), `voice_distinctiveness` (`4.0370` vs `4.1870`,
+    `-0.1500`, tie-half `0.4111`), and `prose_freshness` (`3.4333` vs `3.5778`,
+    `-0.1445`, tie-half `0.4222`).
+- **Release gate decision**: Because the 95% cluster-bootstrap CI lower bound is
+  `0.3667 <= 0.50`, one-shot packet generation does **not** clear gate **G** for
+  default activation. `EditorialPolicy::Legacy` remains the default, and
+  `DraftingPacketV1` / `PlainTextDraftArtifactV1` stays opt-in while the stream
+  proceeds to PR 5 (`CritiqueV1` DTO + span/hash/quote anchors) and PR 6
+  (prior-draft revision + double-order acceptance).
+
+## Implementation status: critic DTO, anchor validation, feedback ingestion, and shadow mode (PR 5)
+
+PR 5 implements the structured scene critic contract (`CritiqueV1`), UTF-8
+byte-span/hash/quote anchor validation, multi-source feedback ingestion and
+deduplication, author-lock conflict quarantine, bounded 1-shot schema/anchor
+repair, and shadow-only execution (`ShadowCritiqueArtifactV1`).
+
+### G-informed scene-critic rubric (`scene-critic-v1`)
+
+The critic rubric (`CRITIC_RUBRIC`, `rubric_version = "scene-critic-v1"`) incorporates
+the empirical failure modes measured in the 90-pair live **G** experiment:
+
+- **Action scenes (`0.3611` tie-half in G — weakest scene type)** and **reveal
+  scenes (`0.4167` tie-half in G — second weakest)**: The rubric explicitly checks
+  whether structured packet constraints caused the draft to front-load or flatten
+  its dramatic turn (`tension_turn`, `-0.1981` in G), over-explain the reveal instead
+  of letting concrete action/subtext carry the discovery, or lose choreographic
+  escalation across physical beats.
+- **Chapter-closer payoff (`0.5556` tie-half in G — strongest scene type)** and
+  **brief continuity (`+0.0704` in G)**: The critic preserves the packet's
+  structural advantages on `continuity`, `chapter_role`, and `entry_exit_emotion`
+  while targeting `tension_turn`, `voice` (`-0.1500` in G), and `freshness`
+  (`-0.1445` in G) with span-anchored directives rather than generic rewrite
+  advice.
+
+### `CritiqueV1` DTO, anchor validation, and feedback ingestion
+
+- **Typed critic contract (`spindle_core::drafting::critique`)**:
+  - `CritiqueV1` (`schema_version = "critique_v1"`) binds `base_text_hash`
+    (SHA-256 of the exact UTF-8 draft bytes), `packet_hash`, `rubric_version`,
+    all 10 `CriticDimension` scores (`scene_purpose`, `tension_turn`, `pov`,
+    `voice`, `dialogue`, `freshness`, `continuity`, `length`,
+    `entry_exit_emotion`, `chapter_role`, with serde aliases for the
+    `prose_judge.py` rubric keys), up to 5 ordered `CritiqueDirective` items,
+    `strengths_to_preserve`, `requires_author_decision: Vec<AuthorDecisionItem>`,
+    and optional `no_edit_reason`.
+- **UTF-8 byte-span, quote, and zero-width insertion validation
+  (`validate_anchor`)**:
+  - Every `CritiqueAnchor` is validated against `base_text` as a half-open UTF-8
+    byte interval `[start_byte, end_byte)` on valid char boundaries with
+    `start_byte <= end_byte <= base_text.len()` and matching `base_text_hash` /
+    `scene_id`.
+  - Non-empty spans (`start_byte < end_byte`) must have a non-empty
+    `exact_quote` matching `&base_text[start_byte..end_byte]` byte-for-byte.
+  - Zero-width insertion spans (`start_byte == end_byte`) must have
+    `exact_quote == ""` and at least one non-empty surrounding context
+    (`context_before` matching the bytes immediately preceding `start_byte`, or
+    `context_after` matching the bytes immediately following `end_byte`).
+- **Deterministic and reader-persona feedback ingestion
+  (`ingest_and_dedup_findings`)**:
+  - Normalizes `CriticFindingInput` items from `continuity`, `anti_slop`,
+    `reader_persona`, and `dual_persona` sources, validates any attached
+    `CritiqueAnchor` against `base_text`, and deduplicates equivalent or
+    overlapping findings (merging `merged_finding_ids` and `sources` while
+    retaining the highest `DirectiveSeverity`: `blocker > major > minor > polish`).
+- **Author-lock quarantine and priority ordering
+  (`validate_and_normalize_critique`)**:
+  - Directives that overlap a `MustKeepLine` quote, contradict a `LockedFact`,
+    `ProtectedBeat`, or `StylePreference` in `packet.author_locks`, request an
+    outcome forbidden by `scene_card.prohibited_outcomes`, or use
+    `DirectiveScope::Chapter` / canon-creation phrasing are automatically
+    quarantined into `requires_author_decision` and excluded from actionable
+    `directives`.
+  - Remaining directives are deduplicated by overlapping span/quote, sorted by
+    priority tier (`continuity` > `scene_purpose`/`tension_turn`/`pov`/`entry_exit_emotion`/`chapter_role` >
+    `voice`/`dialogue`/`freshness`/`length`) and severity, and truncated to
+    `MAX_ACTIONABLE_DIRECTIVES = 5`.
+
+### Shadow execution, rating clearance, and bounded 1-shot repair
+
+- **`ModelRouter::critique_draft_shadow` and
+  `SqliteSpindleService::critique_artifact_shadow`**:
+  - Rejects `EditorialPolicy::Legacy` (`shadow critique requires critique_v1 policy`).
+  - Resolves the `review` route through `resolve_cleared_route("review", Some(rating))`
+    so unrated or under-cleared agents fail closed with `RouteClearanceError`
+    before any prompt is sent.
+  - Budgets the critic prompt (`CriticBudget::scene_default`: `input_limit = 16_000`,
+    `output_reserve = 1_500`, `framing_reserve = 512`) and verifies token counts
+    via the configured calibrated tokenizer when present.
+  - Executes at most 1 initial critic call plus at most 1 bounded repair call
+    (`max_calls` in `1..=2`) that includes the exact schema/anchor validation error.
+    If the repair output is still invalid or truncated, returns
+    `ShadowCritiqueOutcome::CriticInvalid` and retains the original draft unchanged.
+  - Persists `ShadowCritiqueArtifactV1` (`schema_version = "shadow_critique_artifact_v1"`)
+    via atomic tempfile rename and verifies that the underlying
+    `PlainTextDraftArtifactV1` bytes and `text_sha256` on disk remain byte-for-byte
+    identical before and after shadow critique.
+  - Exposed for offline/bridge evaluation via `spindle-tokenizer critique-artifact`
+    and verified in `evals/prose_judge.py` (`verify_shadow_critique_parity` and
+    `build_blinded_directive_usefulness_packet`).

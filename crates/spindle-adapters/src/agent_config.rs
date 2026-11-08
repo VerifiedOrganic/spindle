@@ -129,6 +129,8 @@ pub struct RoutingRule {
     #[serde(default)]
     pub top_p: Option<f32>,
     #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
     pub stop: Vec<String>,
     /// Optional content rating this rule serves. When set, this rule only
     /// applies to requests whose content rating matches. When omitted, the
@@ -586,6 +588,7 @@ mod tests {
                 max_tokens: None,
                 temperature: None,
                 top_p: None,
+                seed: None,
                 stop: Vec::new(),
                 rating: None,
             }],
@@ -631,6 +634,7 @@ mod tests {
                 max_tokens: None,
                 temperature: Some(3.0),
                 top_p: None,
+                seed: None,
                 stop: Vec::new(),
                 rating: None,
             }],
@@ -685,6 +689,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             top_p: None,
+            seed: None,
             stop: Vec::new(),
             rating: rating.map(|r| r.to_string()),
         }

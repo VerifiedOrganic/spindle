@@ -1,331 +1,54 @@
 ---
 name: revision-manager
 description: >
-  Use when the user wants to explore alternate story paths, revise earlier chapters, compare
-  different versions, manage branches, merge changes, or handle any structural revision that
-  affects downstream content. Also triggers for "what if Marcus betrayed Elena instead",
-  "try an alternate version", "go back and change chapter 8", "compare these two approaches",
-  "which version is better", "undo the last few scenes", "create a save point", or any request
-  about versioning, branching, revision, rollback, or alternate timelines of the STORY BIBLE
-  (not the in-world timelines — those are the worldbuilder's domain).
+  Use when exploring alternate story paths, revising earlier chapters with downstream ripple
+  isolation, generating and comparing scene alternatives, managing Story Bible branches and save
+  points, or refreshing style profiles from operator edits.
 ---
 
 # Revision Manager
 
-Writing is rewriting. This skill manages the structural complexity of revision — exploring
-alternate paths without destroying existing work, comparing approaches, and merging the
-best version back into the main line.
+Manage structural revisions, "what-if" exploration branches, multi-candidate scene generation, save-point recovery, and branch merges without corrupting main-line continuity.
 
-## Revision activity workflow
+## Core Revision Activity Loop
 
-Track revision intent and outcomes in session activity so later writers can
-re-anchor quickly:
+1. Call `set_active_project` once per session to bind the active project and branch.
+2. Call `record_note` before risky branch or revision work to log intent and scope.
+3. Use `create_save_point` and `restore_save_point` for branch-level snapshot recovery, or `list_scene_versions` and `restore_scene_version` for single-scene version rollback.
+4. Execute the branch, alternative, or ripple-revision workflow below.
+5. Inspect downstream flags with `list_revision_markers` and clear each addressed item with `resolve_revision_marker`.
+6. Verify branch health with `check_consistency` and `run_dual_persona_review`, record outcome rationale with `record_note`, confirm visibility in `get_writer_state`, and park the cursor with `update_writer_position`.
 
-1. Call `set_active_project` once per session so subsequent tool calls inherit
-   the project (and active branch).
-2. Call `record_note` before risky branch work to capture intent and scope.
-3. Run the branch/revision flow (`create_branch`, `switch_branch`,
-   `revise_scene`, `diff_branches`, `merge_branch`) as needed.
-4. Call `list_revision_markers` to see outstanding revision flags raised by
-   `revise_scene` (downstream scenes that may need attention). Resolve each
-   with `resolve_revision_marker` once you've addressed it.
-5. Call `list_scene_versions` and `restore_scene_version` for per-scene
-   version history rollback (independent of branch save points).
-6. Optionally call `run_dual_persona_review` as a quality gate before
-   merging back to main — it persists a `PersistedDualPersonaReview` record
-   you can reference later.
-7. Call `record_note` after major decisions (accepted variant, rejected path,
-   unresolved risk) to preserve rationale.
-8. Use `get_writer_state.recent_session_activity` to confirm notes are visible
-   and provide handoff context.
-9. Call `update_writer_position` when you need to park the cursor explicitly
-   between sessions.
+## Branching and Revision Workflows
 
-## When to Use Branching
+### 1. Creative Exploration ("What If...")
+1. Call `create_save_point`, then `create_branch` (`branch_type: "exploration"`) and `switch_branch`.
+2. Draft or update scenes on the exploration branch (`commit_scene_changes`, `save_summary`, `update_entity` affect only the active branch).
+3. Compare against main with `diff_branches` (scene, character-state, relationship, pacing, and narrative-impact diffs).
+4. Call `merge_branch` (`fast_forward`, `cherry_pick`, `full_merge`, or `squash`) to adopt the exploration, or `switch_branch` back to main to leave it archived.
 
-### Scenario 1: Creative Exploration ("What If...")
-The user wants to try a different direction. "What if Marcus betrays Elena instead of saving her?"
+### 2. Generate and Select Alternatives (Loom Pattern)
+1. Call `generate_alternatives` (`book_number`, `chapter_number`, `scene_order`, `character_ids`, `location_id`, `variation_strategy: "temperature" | "approach" | "agent"`, optional `alternatives`).
+2. Call `compare_alternatives` to evaluate side-by-side summaries, quality scores, pacing fit, voice strength, and ending hooks.
+3. Call `select_alternative` (`project_id`, `branch_id`) to merge the winning variation into main and archive the rest.
 
-1. Call `create_save_point` on the current branch (insurance).
-2. Call `create_branch` with type "exploration" and a descriptive name.
-3. Call `switch_branch` to the new branch.
-4. Use **scene-writer** to draft the alternate scene on this branch.
-   All state changes (character states, relationships, pacing) go to this branch only.
-5. When done, call `diff_branches` to compare the exploration vs main.
-6. Present the diff to the user: what changed in characters, relationships, pacing?
-7. If the user prefers the exploration: call `merge_branch` into main.
-8. If the user prefers the original: call `switch_branch` back to main.
-   The exploration branch stays archived for reference.
+### 3. Earlier-Chapter Revision with Ripple Isolation
+1. Call `create_branch` (`branch_type: "revision"`) and `switch_branch`.
+2. Inspect `get_scene_context` (and `bible://projects/{project_id}/chapters/{book_number}/{chapter_number}/scenes` when locating `scene_id` — do not call `export_bible` merely to look up scene IDs; reserve `export_bible` for full Bible snapshots).
+3. Call `revise_scene` on the revision branch. Inspect `states_invalidated`, `downstream_scenes_flagged`, `pacing_impact`, text diff metrics, and inline validator findings (`world_rule_hits`, `voice_drift`, `retcon_findings`, `temporal_findings`).
+4. For each flagged downstream scene in `list_revision_markers`, inspect `get_scene_context`, revise if invalidated, and call `resolve_revision_marker`.
+5. If local manuscript files are also edited, keep file edits sequential and separate from Bible writes (`commit_scene_changes`, `save_summary`, `update_entity`).
+6. Run `check_consistency` (and inspect `bible://projects/{project_id}/continuity/health` and `bible://projects/{project_id}/timeline-graph/mermaid`). When clean, call `merge_branch`. If `MergeBranchOutput.conflicts` is non-empty, resolve conflicting records on either branch (using `run_dual_persona_review` or `restore_scene_version` as needed) and retry `merge_branch`.
 
-### Scenario 2: Generate Alternatives (Loom Pattern)
-Generate N variations of the same scene and pick the best one.
+## Style Learning from Operator Edits
 
-1. Call `generate_alternatives` with the typed input. Required fields:
-   - `project_id`
-   - `book_number`, `chapter_number`, `scene_order`
-   - `character_ids: Vec<String>`
-   - `location_id: String`
-   - `variation_strategy` (REQUIRED): "temperature" (same prompt, different
-     randomness), "approach" (different scene structures), or "agent"
-     (different models)
-   - `alternatives` (`Option<usize>`): Number of alternatives, defaults to 3.
-2. The system automatically:
-   - Creates N temporary branches
-   - Assembles context once (shared across all branches)
-   - Routes each branch to an agent (same or different per strategy)
-   - Generates N scene variations
-   - Runs quality gate on each (anti-slop, voice, POV)
-3. Call `compare_alternatives` to get a structured comparison:
-   - Side-by-side summaries
-   - Quality scores per variation
-   - Which one best serves the current pacing needs
-   - Which one has the strongest character voice
-   - Which one creates the best hook ending
-4. Pick the winner: call `select_alternative` with both `project_id` and
-   the chosen `branch_id`. The selected branch merges into main; others are
-   archived.
+When a project enables `style_learning` via `update_entity` (`changes: { "style_learning": 1 }`), operator re-saves over agent-drafted scenes are captured as style-edit candidates:
+- Call `preview_refresh_style_profile` to inspect pending candidates (`included_count`, `withheld_count`, and prose-free diff summaries).
+- Call `refresh_style_profile` (with optional `dismiss_candidate_ids`) to fold approved edits into a new style profile version.
 
-This is the fastest way to find the best version of a scene. Instead of writing,
-evaluating, then deciding whether to revise, you generate multiple options up front
-and select from strength.
+## Read-Only Subagent Candidate Evaluation
 
-### Scenario 3: Agent Comparison
-Route the same scene to two different agents and compare quality.
-
-1. Call `create_branch` (required fields: `project_id`, `name`; optional
-   `branch_type` like "agent_comparison") — twice, one per agent.
-2. On each branch, use **scene-writer** to draft with a different agent.
-3. Call `diff_branches` between the two.
-4. Cherry-pick the better output into main.
-
-### Scenario 4: Revision with Ripple Isolation
-Going back to revise chapter 8 might invalidate character states in chapters 9-20.
-
-1. Call `create_branch` type "revision" from the point of chapter 8.
-2. Call `switch_branch` to the revision branch.
-3. If you only know the chapter and need the existing `scene_id`, read
-   `bible://projects/{project_id}/chapters/{book_number}/{chapter_number}/scenes`
-   first. This returns the active-branch scene ids and `scene_order` values for
-   that chapter. Do not use `export_bible` just to recover scene ids.
-4. Use `revise_scene` to rewrite the scene on this branch.
-   - This tool automatically: invalidates downstream character states,
-     marks affected embeddings as stale, flags later scenes that may have
-     continuity issues.
-5. Re-draft affected downstream scenes on the revision branch.
-6. For branch-heavy or timeline-heavy work, read
-   `bible://projects/{project_id}/timeline-graph/mermaid` to verify the active
-   branch lineage, save points, timeline event order, and temporal
-   interventions before merge decisions.
-7. Call `check_consistency` on the revision branch to verify continuity.
-8. When clean, call `merge_branch` into main.
-
-### Scenario 5: Quick Save Before Risky Operation
-Before doing anything irreversible, save state.
-
-1. Call `create_save_point` with a descriptive name.
-2. Proceed with the risky operation on main.
-3. If it goes badly on the active branch: call `restore_save_point`.
-   If you want to preserve the failed state first, create another save point
-   before restoring or do the risky work on a branch instead.
-
----
-
-## The Revision Workflow
-
-### Step 1: Assess Impact
-
-Before revising anything, understand what downstream state depends on the scene
-being revised. Call `get_scene_context` for the scene to see:
-- What character_states were committed because of this scene?
-- What relationship changes were made?
-- What knowledge was gained?
-- What pacing progress was recorded?
-- What narrative promises were advanced?
-
-All of these must be reconsidered if the scene changes.
-If you need to revise multiple existing scenes in a chapter, enumerate them with
-`bible://projects/{project_id}/chapters/{book_number}/{chapter_number}/scenes`
-before you start calling `revise_scene`.
-
-### Step 2: Branch and Revise
-
-Always branch before revising. Call `create_branch`, locate the target scene id
-through the chapter scenes resource when needed, then call `revise_scene`:
-
-If the revision also touches local manuscript files outside the Bible tools,
-sequence that work explicitly:
-- Read the current file contents first. Do not rely on remembered strings or
-  stale replace anchors.
-- Edit one file at a time when the change depends on exact surrounding prose.
-- Do not batch local file edits and Bible-writing MCP calls in the same
-  parallel step. If a prose edit fails, stop and fix that edit before issuing
-  `update_entity`, `save_summary`, `commit_scene_changes`, or similar state writes.
-- After the prose edit succeeds, then apply the matching Bible updates.
-
-The `revise_scene` tool returns a rich envelope:
-- **states_invalidated**: Character/world states based on the original scene
-  that now need recomputation. These aren't deleted — they're flagged on the
-  branch.
-- **downstream_scenes_flagged**: Scenes written after this one that may
-  reference invalidated state. Each one becomes a `revision_marker`
-  retrievable via `list_revision_markers`.
-- **pacing_impact**: How the revision affects arc pacing budgets.
-- **diff** (`Vec<TextDiffChunk>`): Structured text diff between the previous
-  prose and the revised prose.
-- **byte_offsets_changed** (`Vec<TextByteRange>`): Byte ranges that changed,
-  useful for surgical re-validation.
-- **chars_added** / **chars_deleted**: Coarse diff metrics.
-- **world_rule_hits**, **voice_drift**, **retcon_findings**,
-  **temporal_findings**: Validator findings on the revised scene, returned
-  inline so you can decide whether to commit or revise again before saving
-  state. `temporal_findings` are advisory intra-scene time-jump warnings
-  (unsignaled morning→night skips, time-of-day drift, unrendered declared
-  spans), recomputed on the revised prose.
-
-### Step 3: Cascade Resolution
-
-For each flagged downstream scene:
-1. Call `get_scene_context` to see its state WITH the revised data
-2. Determine if the scene still makes sense
-3. If yes: no action needed (the scene's character state was inherited from pre-revision)
-4. If no: revise it too, then check ITS downstream scenes
-
-This cascade is the most expensive operation in the system. It's why we branch first —
-if the cascade is too destructive, we can abandon the branch.
-
-### Step 4: Verify and Merge
-
-Call `check_consistency` on the revision branch to verify:
-- No knowledge contradictions introduced
-- Character states are coherent
-- World rules are still respected
-- Pacing budgets are still valid
-
-For large or long-running revisions, also read
-`bible://projects/{project_id}/continuity/health` before merging. Treat open
-validator findings, orphaned temporal interventions, and duplicate active
-canonical-fact keys as merge blockers unless the user explicitly accepts them.
-
-If clean, call `merge_branch` (required: `project_id`, `source_branch_id`,
-`target_branch_id`, `merge_type`). The merge does not take a `resolutions`
-parameter — when conflicts are detected, they are surfaced in
-`MergeBranchOutput.conflicts` and must be resolved out-of-band: edit the
-conflicting records on either branch and retry the merge, or use
-`run_dual_persona_review` and `restore_scene_version` to choose a winning
-version per scene before retrying.
-
----
-
-## Branch Comparison
-
-Call `diff_branches` to get a structured comparison:
-
-The diff shows:
-- **Scene diffs**: Side-by-side summaries of scenes that differ
-- **Character state diffs**: How characters ended up differently on each branch
-- **Relationship diffs**: Trust/tension differences
-- **Pacing diffs**: Arc progress differences
-- **Knowledge diffs**: What characters know differently
-- **Narrative impact summary**: AI-generated description of how the two paths
-  diverge narratively
-
-Present this to the user in a clear format. Help them decide by analyzing:
-- Which version creates more tension?
-- Which version advances the theme more effectively?
-- Which version has better pacing?
-- Which version gives the protagonist more agency?
-
----
-
-## Merge Types
-
-| Type | When to Use |
-|------|-------------|
-| **fast_forward** | Main hasn't changed since the branch was created. Just adopt the branch's changes. |
-| **cherry_pick** | Take specific scenes or commits from the branch, not everything. |
-| **full_merge** | Merge all changes, resolving conflicts where both branches modified the same data. |
-| **squash** | Collapse all branch changes into a single commit on main. Loses branch history. |
-
----
-
-## Subagent orchestration (Claude Code / grok)
-
-Comparing alternatives or branches (Scenario 2, Scenario 3, `diff_branches`) is
-independent read-only assessment work per candidate — a natural fan-out. If your
-harness supports subagents (Claude Code's Task/Agent tool, grok's subagents),
-assess the candidates in parallel; otherwise assess them sequentially inline —
-same evaluation, only the concurrency changes.
-
-**Write discipline (non-negotiable):** subagents research and report only. Every
-state-mutating call stays in the main context — the revision-manager decides and
-writes. Subagents read (`get_scene_context`, `diff_branches`, `search_bible`,
-`compare_alternatives`, `check_consistency`) and return an assessment. They never
-call `select_alternative`, `merge_branch`, `switch_branch`, `revise_scene`,
-`create_branch`, `restore_scene_version`, `resolve_revision_marker`, or any other
-branch/scene write, and they never run the persisted `run_dual_persona_review`.
-
-Fan-out for a comparison: dispatch **one subagent per alternative or branch**,
-each reading only its own candidate and returning an independent structured
-assessment against the same rubric — tension, theme advancement, pacing fit,
-protagonist agency, hook strength, continuity risk — with scene-anchored
-evidence and *no* peeking at the other candidates (independence prevents
-anchoring bias). The revision-manager (main context) then collates the
-independent assessments into the comparison **verdict**, presents it, and
-executes the winning `select_alternative` / `merge_branch` itself. Without
-subagents, assess each candidate one at a time before forming the verdict.
-
----
-
-## Skill Chains
-
-- **← scene-writer**: When a scene needs revision, the scene-writer handles the actual rewrite.
-- **← continuity-editor**: When the consistency check finds errors, the revision-manager
-  handles the structural changes needed to fix them.
-- **→ scene-writer**: After branching, use scene-writer to draft on the new branch.
-- **→ continuity-editor**: After merging, run a consistency check to verify the merge is clean.
-- **→ plot-architect**: If revision reveals pacing problems, the plot-architect rebalances.
-
----
-
-## Style learning from edits
-
-Hand-revising an agent-drafted scene is signal for the project's style profile.
-When a project opts in (`style_learning`), Spindle captures each operator edit
-over an agent draft as a *style-edit candidate* that feeds the existing
-style-refresh flow — no new tools.
-
-- **Enable**: set `style_learning` to `1` via `update_entity` on the project
-  (`changes: { "style_learning": 1 }`); `0` or unset disables it.
-- **What's captured**: an operator re-save of an agent-drafted scene with
-  changed prose (trim-compared). A second edit of the same scene replaces the
-  pending candidate (one per scene, latest wins). Agent-over-agent revise-loop
-  saves and operator-over-operator edits are not captured; scenes over 60k chars
-  are skipped.
-- **Review gate**: `preview_refresh_style_profile` lists pending candidates by
-  scene ref with a prose-free diff summary; `refresh_style_profile` feeds the
-  included edits as positive examples and marks them `consumed`. Pass
-  `dismiss_candidate_ids` to drop candidates instead. Nothing enters a profile
-  without you running refresh — the preview→refresh pair is the review gate.
-- **Explicit withholding**: explicit-rated candidates are withheld from refresh
-  unless the `style_analyze` route's agent declares `explicit`; the preview notes
-  the withholding and the candidates stay pending.
-
-See `docs/local-markdown-style-profiles.md` → "Style Learning from Edits" for
-the full rules.
-
----
-
-## References
-
-The shipped craft references most relevant when revising:
-
-- `bible://references/swain-scene-sequel` — Useful when revising a scene that
-  was structurally weak (missing sequel beat, missing reaction).
-- `bible://references/mru-guide` — Useful when revising MRU order issues.
-- `bible://references/voice-differentiation` — Useful when a `voice_drift`
-  finding is the trigger for revision.
-- `bible://references/anti-slop` — Fiction shelf catalog for the final prose
-  pass before merging back to main.
+When comparing branches or alternatives with subagents, dispatch one read-only subagent per candidate (`get_scene_context`, `diff_branches`, `search_bible`, `compare_alternatives`, `check_consistency`) to score tension, theme, pacing, agency, and continuity independently. Keep all branch/scene writes (`select_alternative`, `merge_branch`, `switch_branch`, `revise_scene`, `create_branch`, `restore_scene_version`, `resolve_revision_marker`, `run_dual_persona_review`) in the main context.
 
 <!-- tool: check_consistency -->
 <!-- tool: commit_scene_changes -->

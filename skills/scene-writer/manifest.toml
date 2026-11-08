@@ -2,7 +2,21 @@ version = 1
 name = "scene-writer"
 profiles = ["default"]
 requires_skills = ["spindle"]
-tools = ["annotate_scene_beats", "check_consistency", "commit_character_state", "commit_scene_changes", "continue_generation", "create_character", "create_future_knowledge", "create_world_rule", "find_scenes_referencing", "get_chapter_briefing", "get_character_snapshot", "get_entity", "get_scene_context", "get_writer_state", "list_agents", "list_book_chapters", "list_chapter_scenes", "plan_chapter", "pull_chapter_from_file", "push_chapter_to_file", "record_knowledge", "record_note", "register_canonical_fact", "research_pack_for_scene", "revise_generation", "run_dual_persona_review", "save_scene_draft", "save_summary", "search_bible", "set_active_project", "set_scene_clock", "update_entity", "update_promise_status", "update_relationship", "update_world_rule", "update_writer_position"]
+tools = ["annotate_scene_beats", "check_consistency", "commit_character_state", "commit_scene_changes", "create_character", "create_future_knowledge", "create_world_rule", "find_scenes_referencing", "get_chapter_briefing", "get_character_snapshot", "get_entity", "get_reference", "get_scene_context", "get_writer_state", "list_book_chapters", "list_chapter_scenes", "plan_chapter", "record_knowledge", "record_note", "register_canonical_fact", "run_dual_persona_review", "save_scene_draft", "save_summary", "set_active_project", "set_scene_clock", "update_entity", "update_promise_status", "update_relationship", "update_world_rule", "update_writer_position"]
+
+[[references]]
+name = "authoring-runs"
+path = "references/authoring-runs.md"
+trigger = "Load when drafting inside a supervised authoring run or handing off post-commit canon mining."
+profiles = ["default"]
+tools = ["authoring_execute_next", "authoring_save_scene_draft", "authoring_status", "decide_canon_deltas", "list_canon_deltas", "mine_scene_canon"]
+
+[[references]]
+name = "craft-and-voice"
+path = "references/craft-and-voice.md"
+trigger = "Load when structuring complex scene/sequel turns, calibrating MRU and voice craft, or diagnosing failure modes."
+profiles = ["default"]
+tools = ["annotate_scene_beats", "check_consistency", "get_character_snapshot", "get_entity", "list_chapter_scenes", "plan_chapter", "set_scene_clock"]
 
 [[references]]
 name = "drafting-packets"
@@ -10,3 +24,17 @@ path = "references/drafting-packets.md"
 trigger = "Load for the typed drafting-packet rollout boundary."
 profiles = ["default"]
 tools = []
+
+[[references]]
+name = "offloaded-generation"
+path = "references/offloaded-generation.md"
+trigger = "Load when drafting explicit sexual prose, checking model-route brief vs packed prompt strategy, or offloading generation."
+profiles = ["default"]
+tools = ["continue_generation", "list_agents", "revise_generation", "save_scene_draft"]
+
+[[references]]
+name = "research-and-sources"
+path = "references/research-and-sources.md"
+trigger = "Load when pulling scene research packages, delegating read-only canon recon, or syncing local manuscript files."
+profiles = ["default"]
+tools = ["commit_scene_changes", "find_scenes_referencing", "get_character_snapshot", "get_scene_context", "get_writer_state", "pull_chapter_from_file", "push_chapter_to_file", "research_pack_for_scene", "save_scene_draft", "save_summary", "search_bible", "update_entity"]

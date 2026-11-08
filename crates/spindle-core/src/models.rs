@@ -5621,8 +5621,22 @@ pub struct GetSkillInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetSkillOutput {
+    /// Skill name as returned by `list_skills`.
     pub name: String,
+    /// Actionable workflow instructions when covered, or a profile-selection message when uncovered.
     pub markdown: String,
+    /// Whether the active tool profile covers all tools required by this skill.
+    #[serde(default = "default_true")]
+    pub covered: bool,
+    /// Smallest tool profile that covers this skill.
+    #[serde(default)]
+    pub required_profile: Option<String>,
+    /// Skill and reference units covered by the active session profile.
+    #[serde(default)]
+    pub available_units: Vec<String>,
+    /// Required tool capabilities missing from the active session profile.
+    #[serde(default)]
+    pub missing_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -5633,8 +5647,22 @@ pub struct GetReferenceInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetReferenceOutput {
+    /// Craft reference or response contract name.
     pub name: String,
+    /// Reference markdown when covered, or a profile-selection message when uncovered.
     pub markdown: String,
+    /// Whether the active tool profile covers all tools required by this reference.
+    #[serde(default = "default_true")]
+    pub covered: bool,
+    /// Smallest tool profile that covers this reference.
+    #[serde(default)]
+    pub required_profile: Option<String>,
+    /// Skill and reference units covered by the active session profile.
+    #[serde(default)]
+    pub available_units: Vec<String>,
+    /// Required tool capabilities missing from the active session profile.
+    #[serde(default)]
+    pub missing_capabilities: Vec<String>,
 }
 
 /// Optional index of full response schemas, independent of profile access.

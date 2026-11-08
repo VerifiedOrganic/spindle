@@ -1,5 +1,8 @@
 //! Versioned prose-task data. No retrieval, tokenizer implementation or transport.
+pub mod critique;
 pub mod extraction;
+
+pub use critique::*;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -187,6 +190,8 @@ pub struct PacketAssembly {
     pub output_reserve: usize,
     pub framing_reserve: usize,
     pub context_window: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_seed: Option<i64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftingPacketV1 {

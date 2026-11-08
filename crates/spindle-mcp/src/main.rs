@@ -297,7 +297,9 @@ fn init_codex_skill(target: Option<&Path>) -> anyhow::Result<PathBuf> {
 
 fn print_codex_skill(path: &Path) {
     println!("Spindle skill ready for Codex: {}", path.display());
-    println!("Connect the spindle MCP server in Codex, select GPT-6 Astra, and use $spindle.");
+    println!(
+        "Connect the spindle MCP server in Codex, select your writing model in the host client, and use $spindle (loads specialist skills on demand via get_skill)."
+    );
 }
 
 const DEFAULT_LOCAL_CONFIG: &str = r#"# Spindle local agent configuration

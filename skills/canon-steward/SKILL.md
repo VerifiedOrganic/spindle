@@ -1,230 +1,60 @@
 ---
 name: canon-steward
 description: >
-  Use when reviewing, ratifying, or applying the canon deltas mined from committed scenes —
-  the reviewed-diff path that replaces hand-authored canon tool calls. This includes mining a
-  scene into proposed deltas, reading the ratify queue, judging each proposal against its
-  verbatim evidence, editing a payload before applying it, and applying or rejecting deltas.
-  Triggers for "mine this scene for canon", "review the canon deltas", "what's in the ratify
-  queue", "apply the staged facts", "ratify the mined changes", "accept the canon proposals",
-  or any request about turning a committed scene's prose into ratified Bible canon. Also the
-  post-scene bookkeeping step an authoring run hands off to.
+  Use when reviewing, ratifying, or applying canon deltas mined from committed scenes or plan
+  amendments proposed for future chapters. Covers mining scenes into staged proposals, inspecting
+  the ratify queue, judging verbatim evidence, editing payloads, and applying or rejecting deltas.
 ---
 
 # Canon Steward
 
-Every committed scene can be mined into *proposed* canon deltas — typed, per-class change
-proposals, each grounded in a verbatim quote from the prose — that you, the operator, ratify
-before they touch the Bible. This inverts Spindle's bookkeeping: instead of hand-authoring
-`register_canonical_fact` / `update_relationship` / `commit_character_state` calls after every
-scene, you review a diff. The steward's job is judgment, not typing: read the evidence, decide,
-correct if needed, apply or reject.
+Committed scenes can be mined into *proposed* canon deltas — typed, per-class change proposals grounded in verbatim prose quotes — that the operator ratifies before they touch the Story Bible. Instead of hand-authoring `register_canonical_fact`, `update_relationship`, or `commit_character_state` calls after every scene, you review a diff. Each delta class maps to an existing write tool (`docs/adr/0001-canon-delta-classes.md`).
 
-The class set, payload shapes, and lifecycle are fixed by `docs/adr/0001-canon-delta-classes.md`.
-Applying a delta never opens a new write path — each class maps to exactly one existing,
-already-tested write tool. A delta cannot express anything the tool surface can't; that ceiling
-is intentional.
+Canon commits through an inherited scene validate and write against the active descendant branch's facts and overrides. Relationship shifts replace that scene's prior contribution; save points preserve relationship totals with the per-scene delta ledger. Inherited fact replacements leave parent canon unchanged until merge, and voice-profile writes require a character owned by the active branch.
 
-Canon commits through an inherited scene validate and write against the active descendant
-branch's facts and overrides. Relationship shifts replace that scene's prior contribution;
-recommitting a continuity package without a previously included pair reverses that contribution.
-Save points preserve relationship totals together with the per-scene delta ledger. Older save
-points without a ledger restore totals with an empty ledger; prior contributions cannot be
-reconstructed from those snapshots.
-Inherited fact replacements leave parent canon unchanged until merge; their replacement links
-survive save-point restore. Voice-profile writes require a character owned by the active branch;
-inherited profiles remain read-only.
+## Independent Extraction Coverage
 
-## Independent extraction coverage
-
-When an independent extraction audit is provided, treat its claims as shadow
-proposals. Inspect each
-family's inspected-none, claims-present or unknown status and the evidence bound
-to the exact accepted-text hash. Unknown coverage and extraction failure remain
-pending work. Legacy package projection does not supply an independent audit.
-Drafter notes alone do not establish coverage; package agreement
-and raw model confidence do not ratify a claim. Review both sources for missing
-or incompatible assertions. Existing staging and author-decision workflows remain
-the path for canon changes, including deaths, disclosures and promise payoffs.
+When an independent extraction audit is provided, treat its claims as shadow proposals. Inspect each family's `inspected_none`, `claims_present`, or `unknown` status and the evidence bound to the exact accepted-text hash. Unknown coverage and extraction failure remain pending work; legacy package projection does not supply an independent audit, and drafter notes or raw model confidence alone never ratify a claim.
 
 ## Workflow
 
-### 1. Mine a committed scene
+### 1. Mine a Committed Scene
 
-Call `set_active_project` once per session so follow-up calls inherit the project and active
-branch. Then mine one committed scene:
+Call `set_active_project` once per session, then mine a committed scene with `mine_scene_canon` (`project_id`, `scene_id`). One rating-gated model call stages proposed deltas (`status`: `staged`, `skipped` with `skip_reason`, or `model_output_rejected`). Re-mining a scene supersedes prior `staged` deltas while preserving already `applied` or `rejected` rows.
 
-```
-mine_scene_canon({ project_id, scene_id })
-```
+### 2. Read the Ratify Queue
 
-One rating-gated model call reads the scene's prose and stages proposed deltas. The result
-`status` is one of:
+List staged proposals with `list_canon_deltas` (`status: "staged"`, optionally filtered by `scene_id` or `chapter_range` — mutually exclusive). Each delta includes `delta_class`, typed `payload`, verbatim `evidence` quote (<=300 chars), `confidence` (`high | medium | low`), `target_id`, and `status`.
 
-- `staged` — deltas persisted (see `staged`, `discarded_count`, `superseded_count`).
-- `skipped` — no cleared model route for the scene's content rating, or the scene is empty
-  (`skip_reason` names why). A skip is honest: it never reads as a clean mine.
-- `model_output_rejected` — the model's JSON was malformed; nothing was staged.
+### 3. Judge Each Proposal Against Verbatim Evidence
 
-Re-mining a scene **supersedes its prior `staged` deltas** and stages fresh ones. Already
-`applied` or `rejected` rows are never superseded — decisions are history.
+Never bulk-apply without reading the evidence:
 
-### 2. Read the ratify queue
+- Verify the `evidence` quote genuinely establishes the proposed fact, relationship shift, or promise payoff.
+- Cross-check `target_id` against existing Bible records with `get_entity`, `search_bible`, `get_scene_context`, or `find_scenes_referencing`.
+- **Secret-link scrutiny**: Any `knowledge_learned` delta carrying `secret_of_fact_id` expands a secret's circle of trust. Circle expansion is always a human decision and never auto-accepted. Verify the referenced fact is a genuine secret and that the scene intentionally reveals it at this story position before applying.
 
-Never decide from the mine output alone; list the queue and read each proposal in full:
+### 4. Decide (Apply or Reject, with Optional Edit)
 
-```
-list_canon_deltas({ project_id, status: "staged" })                       // whole branch
-list_canon_deltas({ project_id, status: "staged", scene_id })              // one scene
-list_canon_deltas({ project_id, chapter_range: { book_number, start, end } }) // a span
-```
+Submit decisions via `decide_canon_deltas` (`decisions: [{ delta_id, action: "apply" | "reject", edit, note }]`):
 
-`scene_id` and `chapter_range` are mutually exclusive. Each delta carries its `delta_class`,
-typed `payload`, verbatim `evidence` quote (≤300 chars, sanitized from the prose), `confidence`
-(high | medium | low), `target_id` (the entity it modifies, or absent for a new one), and
-`status`. Results are in deterministic order.
+- **All-or-nothing pre-flight**: Every decision is validated before any write (delta exists, is `staged`, and payload deserializes with valid entity references). A pre-flight error aborts the entire call with zero writes.
+- **Finality**: Decided rows (`applied`, `rejected`, `superseded`) cannot be re-decided. Correct an applied fact forward using `register_canonical_fact` with `supersedes_fact_id`.
+- **Edit-before-apply**: Supplying `edit` replaces the staged payload and records the corrected payload on the row.
+- **Durable notes**: Decision `note` strings are echoed in output; use `record_note` when rationale must persist in the Bible.
+- **Mid-apply honesty**: If a write error occurs after pre-flight, earlier applies remain committed, the failing row reports `failed` (staying `staged`), and subsequent rows report `not_reached` (staying `staged`).
 
-### 3. Judge each proposal against its evidence
+## Plan Amendments (Living Outline)
 
-**Evidence discipline is the whole game.** The `evidence` field is a verbatim substring of the
-scene's prose — the mine pass discards any proposal whose quote is not literally present. Read
-it. Ask: does this quote actually establish this fact? A `relationship_shift` with trust −2 must
-be earned by the quoted line, not inferred from vibes. A `promise_payoff_candidate` must show
-the promise genuinely paying off, not merely being mentioned. If the evidence doesn't support the
-payload, reject or edit — do not rubber-stamp.
+When a run uses `replan_policy: "propose_all"`, `replan_chapter` stages proposed outline edits for future undrafted chapters. Inspect them with `list_plan_amendments` and ratify or reject them with `decide_plan_amendments`:
 
-Weigh `confidence`: a `low`-confidence proposal is still stageable but deserves more scrutiny
-than a `high` one. Cross-check the payload's `target_id` against the Bible (`get_entity`,
-`search_bible`) when a proposal modifies an existing entity.
+- Judge each amendment's `rationale` against summarized chapter reality.
+- **Immutability guard**: Amendments targeting chapters that already have drafted scenes are rejected.
+- Applying an amendment snapshots `prior_state` and increments `plan_revision` (`docs/adr/0003-plan-amendment-classes.md`).
 
-**Never bulk-apply without reading evidence.** Applying the whole queue sight-unseen defeats the
-ratification economy — you become a passthrough for the model, which is exactly what the staged
-queue exists to prevent. Read every quote you apply.
+## Read-Only Subagent Review
 
-### 4. Decide (apply / reject, with optional correction)
-
-Ratify a batch in one call. Each decision is `apply` or `reject`, with an optional `edit`
-(a corrected payload) and an optional `note`:
-
-```
-decide_canon_deltas({
-  project_id,
-  decided_by: "operator",            // optional; defaults to "operator"
-  decisions: [
-    { delta_id, action: "apply" },
-    { delta_id, action: "apply",  edit: { /* corrected payload */ } },
-    { delta_id, action: "reject", note: "narrator is unreliable here" }
-  ]
-})
-```
-
-Semantics you must internalize:
-
-- **Pre-flight is all-or-nothing.** Every decision is validated *before any write*: the delta
-  exists, belongs to the project, and is currently `staged`; apply payloads deserialize to the
-  target tool's shape and their referenced entities exist. A single pre-flight failure aborts the
-  whole call with **zero writes** — every row stays staged. Fix the offender and resubmit.
-- **Finality.** Deciding a row that is already `applied`, `rejected`, or `superseded` is an input
-  error that fails the whole call. Decisions are permanent history; there is no un-decide. If a
-  ratified fact was wrong, correct it forward with a new canonical fact (`supersedes_fact_id`),
-  not by re-deciding.
-- **Edit-before-apply.** An `edit` replaces the staged payload — the edited payload is what gets
-  applied *and* what is recorded on the row. Use it to fix a value the model got slightly wrong
-  rather than rejecting and re-mining.
-- **Notes are advisory.** A `note` is echoed back in the output but not persisted on the row (the
-  `canon_delta` table has no note column). Capture durable rationale with `record_note` if it must
-  survive.
-
-The output reports one result per decision (`applied` | `rejected` | `failed` | `not_reached`)
-plus counts. On `applied` for a class that creates a row (`canonical_fact`, `promise_planted`,
-`entity_candidate`, and others), `applied_record_id` carries the new id.
-
-**Mid-apply honesty.** If an apply fails *after* pre-flight (a real write error — rare, e.g. a
-referenced row was concurrently changed), the dispatcher stops: earlier applies in the batch stay
-applied (they are real, recorded canon — nothing is silently rolled back), the failing row is
-reported `failed` with its error and stays staged, and later rows read `not_reached` and stay
-staged. Re-list, understand the failure, and resubmit the remainder.
-
-### 5. Secret-link deltas get extra scrutiny
-
-A `knowledge_learned` delta carrying `secret_of_fact_id`, or any delta whose payload carries a
-secret link, is a **circle-of-trust expansion** — you are deciding that a character now legitimately
-knows a secret. Per the ADR, circle expansion is *always* a human decision; it is excluded from
-any auto-accept policy unconditionally. Before applying:
-
-- Confirm the referenced fact is genuinely secret and the reveal is intended canon (the character
-  was told on-page or off-page), not a leak the prose committed by accident.
-- Read the evidence quote carefully: does the scene actually reveal the secret to this character,
-  at this placement? A premature circle expansion leaks the secret backward in time.
-
-If unsure whether a reveal is canon, that is a plot/canon choice — ask the operator; do not apply
-on a guess.
-
-## Subagent orchestration (Claude Code / grok)
-
-Reviewing a chapter's worth of mined deltas splits cleanly by scene, and each scene's evidence
-judgment is independent read-only reasoning. If your harness supports subagents (Claude Code's
-Task/Agent tool, grok's subagents), fan the *review* out; otherwise run the same review inline —
-same steps, less concurrency.
-
-**Write discipline (non-negotiable):** subagents review and report only. Every `decide_canon_deltas`
-call — the only tool that writes canon — stays in the main context. The steward decides and
-applies; subagents never call `decide_canon_deltas`, `mine_scene_canon` (it stages rows), or any
-`register_*`/`update_*`/`commit_*`/`record_*`/`create_*`/`annotate_*` write. They call
-`list_canon_deltas`, `get_entity`, `search_bible`, `get_scene_context`, and
-`find_scenes_referencing`, and return per-delta recommendations.
-
-Fan-out for a mined chapter range:
-
-- **One subagent per scene with staged deltas** — dispatch each with the scene id; the subagent
-  calls `list_canon_deltas({ scene_id })`, reads every delta's evidence quote against the scene's
-  prose and the Bible, and returns a recommendation per delta: apply / apply-with-edit (with the
-  corrected payload) / reject (with a reason) / escalate-to-operator (secret-link or plot/canon
-  choice), each anchored to the evidence quote.
-- The steward (main context) merges the recommendations, exercises final judgment on the escalated
-  and secret-link deltas, and issues the `decide_canon_deltas` batch itself.
-
-Without a subagent mechanism, walk the scenes one at a time in the main context — read each queue,
-judge the evidence, decide.
-
-## Plan amendments are outline-canon
-
-The same ratification discipline extends to the **living outline**. When a run
-opts into `replan_policy: "propose_all"`, a `replan_chapter` pass after each
-chapter summary stages **plan amendments** — proposed edits to the not-yet-drafted
-future chapters' plans (synopsis rewrites, scene add/drop/replace/reorder, thread
-promote/retire, promise followups) — into a parallel queue you ratify with
-`list_plan_amendments` / `decide_plan_amendments`, structurally identical to the
-canon-delta flow (pre-flight-all, apply-or-reject, edit-with-correction, finality).
-
-Same evidence discipline, one difference in kind: a plan amendment is grounded in
-its `rationale` (the differ's stated reasoning, citing realized ids/events — no
-prose quote, because the differ never reads prose) rather than a verbatim evidence
-quote. Judge the rationale against the summarized reality exactly as you judge a
-delta's evidence against the scene. The same rules hold: **decisions stay in the
-main context** (never delegate the `decide_plan_amendments` call to a subagent),
-**never bulk-apply** an outline sight-unseen, and every apply is a human decision
-(there is no auto-accept). Two guards are outline-specific: the **immutability
-guard** rejects any amendment whose target chapter already has drafted scenes
-(drafted reality is never rewritten — the outline chases the story), and applying
-snapshots the prior plan into `prior_state` and bumps `plan_revision`, so the
-outline keeps recoverable history. See `docs/adr/0003-plan-amendment-classes.md`.
-
-## Skill chains
-
-- **authoring-supervisor** hands off here for post-scene mining after a drafting run's scenes are
-  committed.
-- After ratifying, hand off to **continuity-editor** to run a consistency sweep over the newly
-  applied canon, or to **bible-librarian** to inspect what landed.
-- For a correction to an already-ratified fact, use **editor** / **worldbuilder** with
-  `register_canonical_fact` + `supersedes_fact_id` — never by re-deciding a decided row.
-
----
-
-## References
-
-- `docs/adr/0001-canon-delta-classes.md` — the fourteen delta classes, their payload shapes,
-  the class→write-tool mapping, and the staging/decision lifecycle. The source of truth.
+When reviewing deltas across multiple scenes, subagents may run read-only evidence checks (`list_canon_deltas`, `get_entity`, `search_bible`, `get_scene_context`, `find_scenes_referencing`) and return per-delta recommendations. Subagents never call `decide_canon_deltas`, `decide_plan_amendments`, `mine_scene_canon`, `replan_chapter`, or any state-mutating tool.
 
 <!-- tool: commit_character_state -->
 <!-- tool: decide_canon_deltas -->

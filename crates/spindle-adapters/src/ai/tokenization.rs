@@ -157,6 +157,9 @@ impl ModelRouter {
         if let Some(top_p) = route.top_p {
             body["options"]["top_p"] = serde_json::json!(top_p);
         }
+        if let Some(seed) = route.seed {
+            body["options"]["seed"] = serde_json::json!(seed);
+        }
         if !route.stop.is_empty() {
             body["options"]["stop"] = serde_json::json!(route.stop);
         }
@@ -203,6 +206,7 @@ impl ModelRouter {
             adapter_kind: route.adapter_kind.clone(),
             // Keep the originating agent ID for generation-receipt clearance.
             model_name: route.model_name.clone(),
+            provider_model: Some(scope.model.clone()),
             output,
             truncated: reason == Some("length"),
             usage: Some(spindle_core::models::ModelUsage {
@@ -313,6 +317,7 @@ impl ModelRouter {
                 count_route.max_tokens = Some(scope.config.probe_mode.output_limit());
                 count_route.temperature = Some(0.0);
                 count_route.top_p = None;
+                count_route.seed = None;
                 let start = std::time::Instant::now();
                 // Persist intent before the first external side effect. Cancellation
                 // leaves one pending row with unknown usage, never invisible cost.

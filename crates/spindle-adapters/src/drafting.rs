@@ -1,5 +1,6 @@
 //! Pure packet preparation and the local accepted-text artifact lifecycle.
 pub mod artifact;
+pub mod critique;
 
 use sha2::{Digest, Sha256};
 use spindle_core::drafting::*;
@@ -30,6 +31,7 @@ pub struct PacketBudget {
     pub framing_reserve: usize,
     pub context_window: usize,
     pub section_limits: [usize; 6],
+    pub generation_seed: Option<i64>,
 }
 impl PacketBudget {
     pub fn scene_default(model_id: String, context_window: usize) -> Self {
@@ -40,6 +42,7 @@ impl PacketBudget {
             framing_reserve: 512,
             context_window,
             section_limits: [1500, 2500, 2500, 1500, 1500, 2500],
+            generation_seed: None,
         }
     }
 }
@@ -349,6 +352,7 @@ pub(crate) fn assemble_packet_with_system(
         output_reserve: budget.output_reserve,
         framing_reserve: budget.framing_reserve,
         context_window: budget.context_window,
+        generation_seed: budget.generation_seed,
     });
     let messages_hash = format!("{:x}", Sha256::digest(json(&messages)?.as_bytes()));
     Ok(PreparedDraftingPacket {
