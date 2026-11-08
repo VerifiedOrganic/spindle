@@ -1,0 +1,5 @@
+version = 1
+name = "researcher"
+profiles = ["default"]
+requires_skills = ["spindle"]
+tools = ["research_add_claim", "research_add_note", "research_add_source", "research_ingest_report", "research_pack_for_scene", "research_plan_for_scene", "research_query", "research_search", "research_usage_for_scene"]

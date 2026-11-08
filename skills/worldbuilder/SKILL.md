@@ -535,3 +535,33 @@ exposed as `bible://references/<name>` resources:
 - `bible://references/swain-scene-sequel` and `bible://references/mru-guide`
   — Craft references the scene-writer skill draws from when realizing
   worldbuilding on the page.
+
+<!-- tool: batch_create_motifs -->
+<!-- tool: batch_create_terms -->
+<!-- tool: check_consistency -->
+<!-- tool: commit_quantity_state -->
+<!-- tool: create_economy -->
+<!-- tool: create_faction -->
+<!-- tool: create_location -->
+<!-- tool: create_pacing_config -->
+<!-- tool: create_relationship -->
+<!-- tool: create_religion -->
+<!-- tool: create_system_overlay -->
+<!-- tool: create_term -->
+<!-- tool: create_world_rule -->
+<!-- tool: derive_quantity_scheme_from_system_overlay -->
+<!-- tool: find_entity -->
+<!-- tool: find_scenes_referencing -->
+<!-- tool: get_entity -->
+<!-- tool: record_knowledge -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: scan_scene_prices -->
+<!-- tool: set_active_project -->
+<!-- tool: set_arc_pacing_constraints -->
+<!-- tool: set_character_birth -->
+<!-- tool: set_project_calendar -->
+<!-- tool: set_project_quantity_scheme -->
+<!-- tool: set_scene_clock -->
+<!-- tool: set_timeline_event_clock -->
+<!-- tool: update_entity -->
+<!-- tool: update_world_rule -->

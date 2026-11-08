@@ -500,3 +500,19 @@ For deeper craft knowledge, read the embedded craft references via
   characters reveal under pressure.
 - `bible://references/mru-guide` — Motivation-Reaction Unit construction for
   showing character interiority moment-to-moment.
+
+<!-- tool: batch_set_character_voice_profiles -->
+<!-- tool: check_consistency -->
+<!-- tool: commit_character_state -->
+<!-- tool: create_character -->
+<!-- tool: create_character_arc -->
+<!-- tool: create_relationship -->
+<!-- tool: create_theme -->
+<!-- tool: find_entity -->
+<!-- tool: get_character_snapshot -->
+<!-- tool: get_entity -->
+<!-- tool: get_scene_context -->
+<!-- tool: register_canonical_fact -->
+<!-- tool: set_active_project -->
+<!-- tool: set_character_voice_profile -->
+<!-- tool: update_relationship -->

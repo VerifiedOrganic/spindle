@@ -326,3 +326,32 @@ The shipped craft references most relevant when revising:
   finding is the trigger for revision.
 - `bible://references/anti-slop` — Fiction shelf catalog for the final prose
   pass before merging back to main.
+
+<!-- tool: check_consistency -->
+<!-- tool: commit_scene_changes -->
+<!-- tool: compare_alternatives -->
+<!-- tool: create_branch -->
+<!-- tool: create_save_point -->
+<!-- tool: diff_branches -->
+<!-- tool: export_bible -->
+<!-- tool: generate_alternatives -->
+<!-- tool: get_scene_context -->
+<!-- tool: get_writer_state -->
+<!-- tool: list_revision_markers -->
+<!-- tool: list_scene_versions -->
+<!-- tool: merge_branch -->
+<!-- tool: preview_refresh_style_profile -->
+<!-- tool: record_note -->
+<!-- tool: refresh_style_profile -->
+<!-- tool: resolve_revision_marker -->
+<!-- tool: restore_save_point -->
+<!-- tool: restore_scene_version -->
+<!-- tool: revise_scene -->
+<!-- tool: run_dual_persona_review -->
+<!-- tool: save_summary -->
+<!-- tool: search_bible -->
+<!-- tool: select_alternative -->
+<!-- tool: set_active_project -->
+<!-- tool: switch_branch -->
+<!-- tool: update_entity -->
+<!-- tool: update_writer_position -->
