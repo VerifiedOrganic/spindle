@@ -637,7 +637,9 @@ creation receipt's commit; root aliases preserve the initial book/chapter IDs.
 Interrupted retries reuse immutable receipts. Failed batches report their
 committed prefix, failed operation and not-reached suffix. Rejection and
 supersession cannot hide partially applied history. Snapshots protect reader
-contract, refs, target hashes and revisions; acceptance rechecks active branch,
+contract, refs, target hashes and revisions. Verified approved writes advance
+later snapshots only when they match the transaction-local pre-write state;
+unrelated external edits remain stale. Acceptance rechecks active branch,
 visible IDs and persisted-prose guards. An active authoring run freezes roots
 and requires amendments for existing plans (including inherited or cached run plans), while missing future chapters may
 still be filled. Project-wide contract/allocation guards also respect runs on

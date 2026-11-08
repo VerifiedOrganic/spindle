@@ -1476,3 +1476,112 @@ async fn active_run_inherited_plan_requires_an_amendment_instead_of_initial_over
             .contains("plan amendments")
     );
 }
+
+#[tokio::test]
+async fn composed_outline_and_plan_advance_only_verified_approved_snapshots() {
+    use serde_json::json;
+    for separate_proposals in [false, true] {
+        let (_tmp, svc) = fresh_service_local().await;
+        let (s, root) = accepted_root(&svc).await;
+        let outline = planned(
+            "outline:composed",
+            "set_chapter_outline",
+            json!({
+                "book_number":1,"chapter_number":1,"content":"Approved outline"
+            }),
+        );
+        let plan = planned(
+            "plan:composed",
+            "plan_chapter",
+            json!({
+                "book_number":1,"chapter_number":1,"synopsis":"Approved plan","scenes":[]
+            }),
+        );
+        let first = bundle(
+            &svc,
+            &s,
+            PlanningLevel::Chapter,
+            &[&root],
+            if separate_proposals {
+                vec![outline]
+            } else {
+                vec![outline, plan.clone()]
+            },
+        )
+        .await;
+        let last = if separate_proposals {
+            bundle(&svc, &s, PlanningLevel::Chapter, &[&first], vec![plan]).await
+        } else {
+            first.clone()
+        };
+        let mut d = decision(&s, &last);
+        d.decision = PlanningDecision::Accept;
+        d.expected_hashes
+            .insert(first.id.clone(), first.payload_hash.clone());
+        let report = svc.apply_planning(d.clone()).await.unwrap();
+        assert!(report.complete, "{:?}", report.error);
+        assert_eq!(report.operations.len(), 2);
+        assert!(svc.apply_planning(d).await.unwrap().complete);
+    }
+}
+
+#[tokio::test]
+async fn approved_outline_does_not_refresh_an_unrelated_externally_changed_plan() {
+    use serde_json::json;
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, root) = accepted_root(&svc).await;
+    let p = bundle(
+        &svc,
+        &s,
+        PlanningLevel::Chapter,
+        &[&root],
+        vec![
+            planned(
+                "outline:unrelated",
+                "set_chapter_outline",
+                json!({
+                    "book_number":1,"chapter_number":1,"content":"Approved outline"
+                }),
+            ),
+            planned(
+                "plan:external",
+                "plan_chapter",
+                json!({
+                    "book_number":1,"chapter_number":2,"synopsis":"Stale proposed plan","scenes":[]
+                }),
+            ),
+        ],
+    )
+    .await;
+    let newer: PlanChapterInput = serde_json::from_value(json!({
+        "project_id":s.scope.as_ref().unwrap().project_id,"book_number":1,"chapter_number":2,
+        "synopsis":"External author edit","scenes":[]
+    }))
+    .unwrap();
+    let newer = svc.plan_chapter(newer).await.unwrap();
+    let mut d = decision(&s, &p);
+    d.decision = PlanningDecision::Accept;
+    assert!(
+        svc.apply_planning(d)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("stale planning base")
+    );
+    assert!(
+        svc.repository
+            .planning_receipts(&s.id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.proposal_id != p.id)
+    );
+    assert_eq!(
+        svc.repository
+            .get_chapter_plan(&newer.chapter_plan_id)
+            .await
+            .unwrap()
+            .synopsis,
+        "External author edit"
+    );
+}

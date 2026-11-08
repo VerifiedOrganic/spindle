@@ -54,9 +54,11 @@ branch; branch-local roots respect the selected branch.
 Base snapshots include reader contract, referenced records and mutation targets.
 Unknown refs acquire snapshots when approved parent IDs become available. Known
 snapshots are never silently refreshed from arbitrary bible changes. Verified
-book allocations can advance later allocations in the same approved proposal or
-an exact-hash dependent proposal; an accepted contract change can advance its
-dependent context snapshot. Other external changes require a new proposal.
+writes can advance later operation snapshots in the same approved proposal or
+an exact-hash dependent proposal. The application transaction captures those
+snapshots immediately before dispatch and compares them after the write; only
+keys matching the verified pre-write hash may advance. This supports composed
+outline/plan writes without masking external edits, which require a new proposal.
 
 Decisions require exact proposal hashes and session scope. Batch preflight and
 updates share a serialized writer transaction. Rejection or supersession

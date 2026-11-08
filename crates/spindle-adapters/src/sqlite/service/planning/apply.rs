@@ -254,7 +254,7 @@ impl SqliteSpindleService {
                     report = pool
                         .application_transaction(true, || async {
                             self.repository
-                                .store_planning_receipt(receipt, None)
+                                .store_planning_receipt(receipt, None, BTreeMap::new())
                                 .await?;
                             let mut report = self
                                 .planning_report_for(&input.session_id, &selected, &attempt_id)
@@ -388,6 +388,10 @@ impl SqliteSpindleService {
                 "stale planning base state at {key}; stage a fresh synchronization proposal"
             );
         }
+        let before_followups = self
+            .repository
+            .planning_followup_states(p.id.clone())
+            .await?;
         let (output, ids, root) = self
             .dispatch_planning_operation(item, &s.scope, descriptor.1)
             .await?;
@@ -405,7 +409,7 @@ impl SqliteSpindleService {
             recorded_at: chrono::Utc::now().timestamp_micros(),
         };
         self.repository
-            .store_planning_receipt(receipt.clone(), root)
+            .store_planning_receipt(receipt.clone(), root, before_followups)
             .await?;
         Ok(receipt)
     }

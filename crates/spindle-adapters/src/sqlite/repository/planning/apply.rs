@@ -2,6 +2,8 @@ use super::*;
 use spindle_core::models::CreateProjectOutput;
 use std::collections::BTreeMap;
 
+pub(crate) type PlanningFollowupStates = BTreeMap<String, BTreeMap<String, String>>;
+
 pub(crate) fn resolve_operation(
     item: &PlanningOperationItem,
     scope: &Option<PlanningScope>,
@@ -339,10 +341,49 @@ impl Repository {
             stmt.query_map([id],read_receipt)?.collect::<rusqlite::Result<Vec<_>>>()
         }).await
     }
+    // Capture eligible dependants before dispatch, under the application writer
+    // gate. Comparing the same keys after dispatch proves which snapshots this
+    // approved write changed, without mistaking external edits for own progress.
+    pub(crate) async fn planning_followup_states(
+        &self,
+        proposal_id: String,
+    ) -> Result<PlanningFollowupStates> {
+        anyhow::ensure!(
+            self.pool().in_application_transaction(),
+            "planning snapshots require the application transaction boundary"
+        );
+        self.pool()
+            .read(move |conn| {
+                Ok((|| -> Result<_> {
+                    let session_id: String = conn.query_row(
+                        "SELECT session_id FROM planning_proposal WHERE id=?1",
+                        [&proposal_id],
+                        |r| r.get(0),
+                    )?;
+                    let s = session(conn, &session_id)?;
+                    let all = proposals(conn, &session_id)?;
+                    let source = all
+                        .iter()
+                        .find(|p| p.id == proposal_id)
+                        .context("missing source proposal")?;
+                    all.iter()
+                        .filter(|p| {
+                            p.status == PlanningProposalStatus::Staged
+                                && (p.id == source.id
+                                    || p.artifact.parents.get(&source.id)
+                                        == Some(&source.payload_hash))
+                        })
+                        .map(|p| Ok((p.id.clone(), base_state(conn, &s.scope, &p.artifact)?)))
+                        .collect::<Result<PlanningFollowupStates>>()
+                })())
+            })
+            .await?
+    }
     pub(crate) async fn store_planning_receipt(
         &self,
         receipt: PlanningOperationReceipt,
         root: Option<CreateProjectOutput>,
+        before_followups: PlanningFollowupStates,
     ) -> Result<()> {
         anyhow::ensure!(
             self.pool().in_application_transaction(),
@@ -363,7 +404,7 @@ impl Repository {
             }
             let outcome=if receipt.outcome==PlanningOperationOutcome::Applied {"applied"}else{"failed"};
             conn.execute("INSERT INTO planning_operation_receipt(proposal_id,operation_index,input_hash,returned_ids,prior_state,outcome,error,recorded_at,actor,result,decision_note) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(proposal_id,operation_index) DO UPDATE SET input_hash=excluded.input_hash,returned_ids=excluded.returned_ids,prior_state=excluded.prior_state,outcome=excluded.outcome,error=excluded.error,recorded_at=excluded.recorded_at,actor=excluded.actor,result=excluded.result,decision_note=excluded.decision_note",rusqlite::params![receipt.proposal_id,receipt.operation_index as i64,receipt.input_hash,serde_json::to_string(&receipt.returned_ids)?,serde_json::to_string(&receipt.prior_state)?,outcome,receipt.error,receipt.recorded_at,receipt.actor,serde_json::to_string(&receipt.result)?,receipt.decision_note])?;
-            if receipt.outcome==PlanningOperationOutcome::Applied {backfill_children(conn,&receipt)?;}
+            if receipt.outcome==PlanningOperationOutcome::Applied {backfill_children(conn,&receipt,&before_followups)?;}
             Ok(())
         })())).await??;
         Ok(())
@@ -449,6 +490,7 @@ fn refs_in_conn(conn: &rusqlite::Connection, id: &str) -> Result<BTreeMap<String
 fn backfill_children(
     conn: &rusqlite::Connection,
     receipt: &PlanningOperationReceipt,
+    before_followups: &PlanningFollowupStates,
 ) -> Result<()> {
     let session_id: String = conn.query_row(
         "SELECT session_id FROM planning_proposal WHERE id=?1",
@@ -457,36 +499,10 @@ fn backfill_children(
     )?;
     let s = session(conn, &session_id)?;
     let all = proposals(conn, &session_id)?;
-    let source_hash = all
-        .iter()
-        .find(|p| p.id == receipt.proposal_id)
-        .context("missing receipt proposal")?
-        .payload_hash
-        .clone();
-    let before_books = receipt
-        .prior_state
-        .get(format!(
-            "{}:target:book_allocation",
-            receipt.operation_index
-        ))
-        .map(hash)
-        .transpose()?;
-    let allocated_book = matches!(receipt.result, Some(PlanningAppliedOutput::CreateBook(_)));
-    let changed_contract = matches!(
-        receipt.result,
-        Some(PlanningAppliedOutput::UpdateReaderContract(_))
-    );
-    let before_contract = receipt
-        .prior_state
-        .get("context:reader_contract")
-        .map(hash)
-        .transpose()?;
     for mut p in all {
         if p.status != PlanningProposalStatus::Staged {
             continue;
         }
-        let owns_allocation = p.id == receipt.proposal_id
-            || p.artifact.parents.get(&receipt.proposal_id) == Some(&source_hash);
         for (key, value) in base_state(conn, &s.scope, &p.artifact)? {
             let later = p.id != receipt.proposal_id
                 || key
@@ -494,21 +510,14 @@ fn backfill_children(
                     .next()
                     .and_then(|s| s.parse::<usize>().ok())
                     .is_some_and(|i| i > receipt.operation_index);
-            let refresh_contract = changed_contract
-                && p.id != receipt.proposal_id
-                && owns_allocation
-                && key == "context:reader_contract"
-                && before_contract
-                    .as_ref()
-                    .is_some_and(|before| p.base_state.get(&key) == Some(before));
-            let advance_book_allocation = allocated_book
-                && owns_allocation
-                && later
-                && key.ends_with(":target:book_allocation")
-                && before_books
-                    .as_ref()
-                    .is_some_and(|before| p.base_state.get(&key) == Some(before));
-            if refresh_contract || advance_book_allocation {
+            let verified_progress = later
+                && before_followups
+                    .get(&p.id)
+                    .and_then(|state| state.get(&key))
+                    .is_some_and(|before| {
+                        p.base_state.get(&key) == Some(before) && before != &value
+                    });
+            if verified_progress {
                 p.base_state.insert(key, value);
             } else {
                 p.base_state.entry(key).or_insert(value);
