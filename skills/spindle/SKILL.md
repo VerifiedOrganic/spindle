@@ -88,3 +88,5 @@ coverage; never fabricate a review or bypass a checkpoint to keep moving.
 
 When finished, identify the saved chapter/scene and any unresolved issue. Do
 not claim a save, review, or canon update succeeded without its tool result.
+
+Project selection (`set_active_project`) is available in every named tool profile, including minimal, write, and import. Select an existing project before resuming it.
