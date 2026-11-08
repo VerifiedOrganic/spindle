@@ -8585,11 +8585,12 @@ async fn replan_amendment_invalidates_pending_scene_artifact_before_next_draft()
         .unwrap();
     assert_eq!(decide_out.applied_count, 1);
 
-    // The pre-amendment artifact on disk must be removed and the run scene row
-    // must point to the revision-stamped artifact path (-r2.json).
+    // The run scene row points to the revision-stamped artifact path (-r1.json),
+    // so even when an unrecorded legacy file exists at scene-001.json it is left
+    // untouched and never reused by the next draft.
     assert!(
-        !stale_full_path.exists(),
-        "stale pre-amendment artifact must be deleted on reseed"
+        stale_full_path.exists(),
+        "unrecorded legacy artifact file must not be deleted indiscriminately"
     );
     let (_, _, run_scenes, _) = fx
         .svc

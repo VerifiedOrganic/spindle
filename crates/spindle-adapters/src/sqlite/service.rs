@@ -58225,16 +58225,40 @@ agent = "review-dead"
             let run_id = "authoring_run:test-reseed".to_string();
             let now = chrono::Utc::now();
             let pre_amendment_rel = "scenes/chapter-0002/scene-001.json".to_string();
+            let unowned_scene2_rel = "scenes/chapter-0002/scene-002.json".to_string();
             let pre_amendment_file = crate::workspace::runtime_dir(svc.repository().data_dir())
                 .join("../artifacts")
                 .join(&pre_amendment_rel);
+            let unowned_scene2_file = crate::workspace::runtime_dir(svc.repository().data_dir())
+                .join("../artifacts")
+                .join(&unowned_scene2_rel);
+            // Alternate root outside runtime_dir(data_dir) (e.g., data_dir/../artifacts)
+            // that could belong to another workspace or CLI run.
+            let alternate_root_file = svc
+                .repository()
+                .data_dir()
+                .join("../artifacts")
+                .join(&pre_amendment_rel);
             std::fs::create_dir_all(pre_amendment_file.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(alternate_root_file.parent().unwrap()).unwrap();
             std::fs::write(
                 &pre_amendment_file,
                 r#"{"chapter_number":2,"scene_order":1,"prompt":"stale pre-amendment prompt"}"#,
             )
             .unwrap();
+            std::fs::write(
+                &unowned_scene2_file,
+                r#"{"chapter_number":2,"scene_order":2,"prompt":"unrecorded artifact"}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &alternate_root_file,
+                r#"{"chapter_number":2,"scene_order":1,"prompt":"other workspace artifact"}"#,
+            )
+            .unwrap();
             assert!(pre_amendment_file.exists());
+            assert!(unowned_scene2_file.exists());
+            assert!(alternate_root_file.exists());
 
             svc.repository()
                 .save_authoring_run(
@@ -58343,7 +58367,15 @@ agent = "review-dead"
             assert_eq!(chs[0].synopsis, "the updated future");
             assert!(
                 !pre_amendment_file.exists(),
-                "pre-amendment scene artifact on disk must be removed when reseeding"
+                "run-owned pre-amendment scene artifact in resolved runtime root must be removed when reseeding"
+            );
+            assert!(
+                alternate_root_file.exists(),
+                "same-named artifact in alternate root (data_dir/../artifacts) must survive"
+            );
+            assert!(
+                unowned_scene2_file.exists(),
+                "unrecorded legacy filename for scene with scene_artifact_path=None must survive"
             );
             assert_eq!(
                 scs[0].scene_artifact_path.as_deref(),

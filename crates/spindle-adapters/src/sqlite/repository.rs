@@ -15713,13 +15713,6 @@ impl Repository {
                         if let Some(rel) = sc.scene_artifact_path.as_ref() {
                             stale_artifacts_to_remove.push((artifacts_dir.clone(), rel.clone()));
                         }
-                        stale_artifacts_to_remove.push((
-                            artifacts_dir.clone(),
-                            format!(
-                                "scenes/chapter-{chapter_number:04}/scene-{:03}.json",
-                                sc.scene_order
-                            ),
-                        ));
                     }
 
                     tx.execute(
@@ -15737,13 +15730,6 @@ impl Repository {
                     )?;
 
                     for (orig_order, plan_scene) in &scenes {
-                        stale_artifacts_to_remove.push((
-                            artifacts_dir.clone(),
-                            format!(
-                                "scenes/chapter-{chapter_number:04}/scene-{:03}.json",
-                                plan_scene.scene_order
-                            ),
-                        ));
                         let prior = orig_order
                             .and_then(|ord| existing_scenes.iter().find(|s| s.scene_order == ord));
                         let fallback = prior.or_else(|| existing_scenes.first());
@@ -15816,13 +15802,8 @@ impl Repository {
 
                 let runtime_root = crate::workspace::runtime_dir(&data_dir);
                 for (artifacts_dir, rel) in stale_artifacts_to_remove {
-                    for root in [
-                        std::path::PathBuf::from(&artifacts_dir),
-                        data_dir.join(&artifacts_dir),
-                        runtime_root.join(&artifacts_dir),
-                    ] {
-                        let _ = std::fs::remove_file(root.join(&rel));
-                    }
+                    let root = runtime_root.join(&artifacts_dir);
+                    let _ = std::fs::remove_file(root.join(&rel));
                 }
 
                 Ok(reseeded_runs)
