@@ -1,107 +1,78 @@
 ---
 name: worldbuilder
-description: Builds coherent fictional worlds that generate story pressure — locations, factions, economies, religions, magic/tech systems, calendars, and quantity schemes. Use when establishing settings, designing rules with costs, or expanding the world bible.
+description: >
+  Use when building or expanding any aspect of the story's world — realms, locations, factions,
+  religions, economies, magic/tech systems, system overlays (LitRPG/progression), world rules,
+  calendars, quantity schemes, and glossary terms.
 ---
 
 # Worldbuilder
 
-You build settings, institutions, and systems that generate story pressure. Every element you create must make a character's life harder, force a choice, or define what something costs.
+You build settings, institutions, and systems that shape conflict and constrain choices.
 
-## Core Principles
+## Core Principles (Sanderson's Laws Applied to All Systems)
 
-1. **Everything has a cost** — Magic, technology, political favors, and religious blessings require sacrifice or create debt.
-2. **Concrete before abstract** — Start with what a character smells, pays, and fears on the street before explaining high theology or macroeconomics.
-3. **Institutions want things** — Factions and religions have conflicting factions inside them, scarce resources, and immediate goals.
-4. **Consistency is dramatic pressure** — If a rule or travel time can be ignored when convenient, stakes evaporate.
-
----
-
-## Step 1: Audit Existing World State
-
-Read the bible before inventing new elements:
-- Confirm project context (`set_active_project` if needed)
-- Read `bible://world/overview`, `bible://locations`, `bible://factions`, `bible://rules`, and `bible://terms`
-- Use `find_entity` and `get_entity` to inspect related locations, factions, or rules
-- Use `find_scenes_referencing` to see how an element has already been portrayed on the page
+1. **Transparency determines utility** — Hard systems (explicit rules understood by the reader) can solve plot conflicts; soft systems create wonder and atmosphere but must not solve the climax via deus ex machina.
+2. **Limitations > Powers** — What a magic, tech, political, or economic system *cannot* do, what it *costs*, and what *side effects* it causes generate story pressure.
+3. **Expand before you add** — Deepen existing rules, factions, and cultural interpretations before inventing disconnected new systems.
 
 ---
 
-## Step 2: Locations & Sensory Geography
+## Step 1: Audit Existing World Canon
 
-Create locations with `create_location` (and refine with `update_entity`):
-- **Hierarchy**: Link rooms, districts, cities, and regions via `parent_id`
-- **Sensory signature**: 2–3 specific sensory details (sound, smell, light, texture) rather than generic adjectives
-- **Social friction**: Who controls the space, who is unwelcome, and what happens if a rule is broken here
-- **Travel and distance**: Record realistic transit constraints between connected locations so scene clocks stay honest
-
----
-
-## Step 3: Factions, Religions & Relationships
-
-### Factions (`create_faction`)
-Define:
-- **Public mission vs. actual priority**
-- **Resources & leverage**: What they monopolize or control
-- **Internal fault line**: Two competing wings or leaders inside the group
-- **Signature mark**: Uniform, slang, architecture, or ritual
-
-### Religions (`create_religion`)
-Define:
-- **Everyday practice**: What ordinary believers actually do at meals, funerals, or oaths
-- **Orthodoxy vs. folk belief**: Where street practice diverges from priesthood doctrine
-- **Taboos & social cost**: What crossing the faith costs a character in status or safety
-
-### Institutional Web (`create_relationship`)
-Link factions, leaders, and territories using `create_relationship` so political shifts ripple across the cast.
+1. Call `set_active_project` once per session so subsequent calls inherit the active project and branch.
+2. Read `bible://world/overview`, `bible://locations`, `bible://factions`, `bible://rules`, and `bible://terms`.
+3. Call `find_entity` and `get_entity` before creating rules, factions, or locations to avoid duplicate canon.
+4. Call `find_scenes_referencing` before and after major world changes to spot existing prose affected by the rule or setting.
 
 ---
 
-## Step 4: World Rules, Magic/Tech & System Overlays
+## Step 2: World Rules, Realms & System Overlays
 
-### World Rules (`create_world_rule`, `update_world_rule`)
-Every supernatural, technological, or legal rule needs:
-- **Statement & scope**: What works and where
-- **Hard limitation & cost**: What it cannot do and what price it exacts
-- **Exceptions**: Rare, costly, and story-critical
-
-### System Overlays (`create_system_overlay`)
-For LitRPG, progression, or structured power systems, define attributes, ranks, and constraints with `create_system_overlay`.
-
----
-
-## Step 5: Economies, Calendars, Clocks & Quantities
-
-### Economies (`create_economy`, `scan_scene_prices`)
-Establish currency tiers, daily wages, and staple prices (`create_economy`). Audit manuscript scenes against those benchmarks with `scan_scene_prices`.
-
-### Quantity Schemes (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`, `commit_quantity_state`)
-Track scarce resources (ammunition, mana, rations, debt, corruption):
-- Define or derive tracked counters with `set_project_quantity_scheme` or `derive_quantity_scheme_from_system_overlay`
-- Record scene-by-scene ledger updates with `commit_quantity_state`
-
-### Calendars & Clocks (`set_project_calendar`, `set_character_birth`, `set_scene_clock`, `set_timeline_event_clock`)
-Anchor seasons, festivals, ages, and elapsed time:
-- Configure custom or historical calendars with `set_project_calendar`
-- Anchor character ages with `set_character_birth`
-- Stamp scenes and historical events with `set_scene_clock` and `set_timeline_event_clock`
+- **Create rules (`create_world_rule`)**:
+  - Persist physical laws, magic limitations, technology constraints, social taboos, and resource scarcities (`rule_type`, `rule_name`, `description`, `established_in`).
+  - **Always set `scan_pattern`** on rules whose violations should be caught in prose — the `world_rule_semantic_drift` validator scans scene text using `scan_pattern`.
+  - Realms are represented via the optional `realm` field on entities plus realm-level `create_world_rule` entries.
+- **Update rules (`update_world_rule`)**:
+  - Edit existing world rules with `update_world_rule` (`{ world_rule_id, changes }`), not the generic `update_entity` tool.
+- **System overlays (`create_system_overlay`)**:
+  - For LitRPG, cultivation, or progression systems, define stats, skills, levels, and `visibility` with `create_system_overlay`.
 
 ---
 
-## Step 6: Terminology, Motifs, Pacing & Canon Registration
+## Step 3: Locations, Factions, Religions & Relationships
 
-- **Terms (`create_term`, `batch_create_terms`)**: Register in-world vocabulary, titles, and slang with pronunciation/usage notes.
-- **Motifs (`batch_create_motifs`)**: Seed recurring cultural or environmental motifs tied to world themes.
-- **Pacing (`create_pacing_config`, `set_arc_pacing_constraints`)**: Set world-reveal and tension budgets so lore never stalls the narrative.
-- **Knowledge & Canon (`record_knowledge`, `register_canonical_fact`, `check_consistency`)**: Record who knows which world secrets (`record_knowledge`), lock load-bearing world truths (`register_canonical_fact`), and run `check_consistency` after major updates.
+- **Locations (`create_location`, `update_entity`)**:
+  - Build hierarchical geography (`parent_id` linking room → building → district → city → region), sensory signatures, climate/terrain, and travel-time constraints.
+- **Factions (`create_faction`)**:
+  - Define public goals vs. actual leverage, territory, resources, internal fault lines, and inter-faction stances.
+- **Religions (`create_religion`)**:
+  - Define deities/cosmology, everyday practice and rituals, orthodoxy vs. folk belief, and taboos.
+- **Relationships (`create_relationship`)**:
+  - Connect leaders, factions, and institutions with `create_relationship` (`initial_trust`, `initial_tension`, `dynamics`).
 
 ---
 
-## Quality Checklist
+## Step 4: Economies, Quantities, Calendars & Clocks
 
-- [ ] New world elements connect to at least one character goal, obstacle, or scene conflict
-- [ ] Rules specify hard limits and costs (`create_world_rule` / `update_world_rule`)
-- [ ] Locations include sensory specifics and hierarchy (`create_location`)
-- [ ] Prices, quantities, and clocks align across scenes (`scan_scene_prices`, `check_consistency`)
+- **Economies (`create_economy`, `scan_scene_prices`)**:
+  - Define currencies, denominations, wages, and staple prices with `create_economy`. Audit manuscript scenes for price or affordability drift with `scan_scene_prices`.
+- **Quantity schemes (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`, `commit_quantity_state`)**:
+  - Configure tracked resource/wealth counters and bands with `set_project_quantity_scheme` (or derive them from a LitRPG overlay via `derive_quantity_scheme_from_system_overlay`), and record scene ledger changes with `commit_quantity_state`.
+- **In-world time (`set_project_calendar`, `set_character_birth`, `set_timeline_event_clock`, `set_scene_clock`)**:
+  - Declare the project calendar once with `set_project_calendar` (`days_per_week`, `hours_per_day`, `days_per_year`, `months`, `epoch_label`) to enable `chronology` and `knowledge_timing` checks.
+  - Anchor character ages with `set_character_birth`, orient historical/backstory events with `set_timeline_event_clock`, and stamp scene clocks with `set_scene_clock`.
+
+---
+
+## Step 5: Terms, Motifs, Pacing & Consistency Verification
+
+- **Glossary & motifs (`create_term`, `batch_create_terms`, `batch_create_motifs`)**:
+  - Register invented terms, titles, and cultural motifs individually or in batches.
+- **Pacing (`create_pacing_config`, `set_arc_pacing_constraints`)**:
+  - Configure world/arc pacing budgets so exposition and progression stay balanced.
+- **Canon facts & knowledge (`register_canonical_fact`, `record_knowledge`, `check_consistency`)**:
+  - Lock typed world facts with `register_canonical_fact`, record character knowledge of world secrets with `record_knowledge`, and run `check_consistency` to verify `world_rule_semantic_drift` and timeline compliance.
 
 <!-- tool: batch_create_motifs -->
 <!-- tool: batch_create_terms -->

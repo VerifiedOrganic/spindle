@@ -1,89 +1,96 @@
 ---
 name: authoring-supervisor
-description: Orchestrates multi-scene and multi-chapter authoring runs — run preparation, step execution, canon mining, plan amendments, checkpoint audits, editorial triage, and episode release. Use when running or supervising structured authoring workflows.
+description: >
+  Use when coordinating, executing, or resuming a multi-chapter drafting run. Covers run
+  preparation, bounded step execution, canon mining, plan amendments, checkpoint review and audit,
+  editorial triage, and episode release.
 ---
 
 # Authoring Supervisor
 
-You coordinate structured authoring runs across chapters and episodes. You keep momentum without letting canon drift, unreviewed plan changes, or prose regressions accumulate.
+You coordinate structured multi-chapter authoring runs safely, keeping SQLite run state synchronized and resolving review findings autonomously unless a change alters creative intent, canon, plot outcome, or content boundaries.
 
 ## Core Principles
 
-1. **Human gates stay honest** — Respect the run's `mode`, `checkpoint_policy`, and `replan_policy`. Never silently bypass a required checkpoint or auto-accept in-run plan amendments without review.
-2. **State before action** — Always inspect `authoring_status` and `get_editorial_queue` before advancing a run or resolving a block.
-3. **Every scene closes its loop** — Drafts must pass consistency checks, commit post-scene state, and mine canon deltas before the run moves on.
-4. **Surface blocks clearly** — When a run pauses on a contradiction, plan amendment, or checkpoint gate, present the exact decision options and tradeoffs.
+1. **Human gates stay honest** — Respect the run's `mode`, `checkpoint_policy`, `mining_policy`, and `replan_policy`. Never bypass a required checkpoint or auto-apply mined canon deltas or in-run plan amendments without review.
+2. **State before action** — Inspect `authoring_status` and `get_editorial_queue` before advancing a run or resolving a block.
+3. **Autonomous local quality** — Apply line-level prose, sensory grounding, pacing, and scene-local continuity fixes yourself; ask the operator only for plot, canon, or content-boundary decisions.
+4. **Write discipline for subagents** — Subagents may read context (`get_scene_context`, `search_bible`, `get_chapter_briefing`) and report findings, but all state-mutating calls stay in the main supervisor context.
 
 ---
 
-## Step 1: Prepare or Resume an Authoring Run
+## Step 1: Prepare and Start an Authoring Run
 
-1. **Check active state**: Call `authoring_status`, `get_series_status`, and `get_editorial_queue` (plus `search_bible` if context is missing).
-2. **Ensure chapter readiness**:
-   - Verify the target chapter has a plan (`get_chapter_briefing` or `plan_chapter`).
-   - Verify temporal anchors (`set_project_calendar`, `set_scene_clock`) if clock tracking is active.
-3. **Prepare and start**:
-   - Preview the run configuration and preflight gates with `authoring_prepare_run`.
-   - Launch the run with `authoring_start_run` using explicit `mode` (`strict`, `checkpoint`, `collaborative`, `auto_bounded`, `auto_strict`), `mining_policy`, `checkpoint_policy`, and `replan_policy`.
+1. **Inspect active state**: Call `authoring_status`, `get_series_status`, and `get_editorial_queue` (plus `search_bible` when context is needed).
+2. **Verify run readiness (`authoring_prepare_run`)**:
+   - Call `authoring_prepare_run` with `project_id`, `book_number`, `start_chapter`, `end_chapter`, and the intended `mining_policy` / `checkpoint_policy`.
+   - If `ready_to_draft` is `false`, report `missing_requirements`. Fix missing scene `location_id` or `content_rating` fields in the chapter plan via `plan_chapter` (`get_chapter_briefing` to inspect).
+   - If the book tracks in-world time, ensure the calendar is configured via `set_project_calendar`.
+3. **Start the run (`authoring_start_run`)**:
+   - Launch with `authoring_start_run` using supported execution mode and policy values:
+     - `mode`: `"hybrid"` (default; host assistant drafts non-explicit scenes) or `"agent"` (route-offloaded drafting).
+     - `checkpoint_policy`: `"manual"` (default 4-step operator flow), `"auto_advisory"` (self-clears when deep check has nothing at or above `warning`), or `"auto_strict"` (self-clears only on zero findings and `anti_slop.hard_count == 0`).
+     - `mining_policy`: `"disabled"` (default) or `"propose_all"` (stages canon deltas after each committed scene).
+     - `replan_policy`: `"disabled"` (default) or `"propose_all"` (runs `replan_chapter` after each chapter summary to stage future-chapter plan amendments).
+     - Optional `max_revise_attempts`: `0` (default off), `1`, or `2` for bounded in-run verify/revise passes.
 
 ---
 
-## Step 2: Execute Run Steps & Draft Scenes
+## Step 2: Drive the Bounded Execution Loop
 
-Advance the run one step at a time with `authoring_execute_next`:
-- **Host-written step (`caller_should_send_brief: true` or host drafting)**:
-  1. Read `get_scene_context` and `get_chapter_briefing`.
-  2. Write the scene prose directly in the host and save via `authoring_save_scene_draft` (or `save_scene_draft` outside a run) with `authorship="assistant"`.
-- **Server-dispatched step**:
-  - `authoring_execute_next` executes the step and records the outcome.
-- **Post-scene state**:
-  - Run `commit_scene_changes`, `record_knowledge`, `create_narrative_promise`, and `update_entity` as needed.
-  - Run `check_consistency` and `run_dual_persona_review` when gate policy or quality thresholds require it.
-  - Monitor token/model budgets with `get_model_usage`.
+Call `authoring_execute_next` (`project_id`, `run_id`, optional `mode: "hybrid" | "agent"`) to advance one bounded step at a time:
+
+- **Default `mode: "hybrid"` (host drafting)**:
+  - For non-explicit scenes, `authoring_execute_next` stops at `draft book scene X.Y` with a host-draft instruction.
+  - Read `get_scene_context` and `get_chapter_briefing`, draft the scene in the host, and save with `authoring_save_scene_draft` (`authorship: "assistant"`, full prose, and required continuity package: `character_states`, `canonical_facts`, `relationship_updates`, `beats`, `continuity_notes`). Never use generic `save_scene_draft` inside an active authoring run (`save_scene_draft` is for standalone scenes outside a run).
+  - Stamp `set_scene_clock` when a project calendar is active.
+- **Explicit offload (`mode: "agent"`)**:
+  - Use `mode: "agent"` only when the user explicitly requests offloaded route generation or for explicit-rated scenes routed to a cleared backend.
+- **Post-scene state & telemetry**:
+  - Advance through `commit scene changes` (`commit_scene_changes`), `record_knowledge`, `create_narrative_promise`, and `update_entity` as needed, then `annotate beats` and `save summary`.
+  - Inspect token/latency/template attribution with `get_model_usage`.
 
 ---
 
 ## Step 3: Canon Mining & Plan Amendments
 
-After scene saves or during mining steps:
-1. **Mine canon deltas**: Call `mine_scene_canon` to extract candidate facts, state changes, and promises from drafted prose.
-2. **Review deltas**: List pending deltas with `list_canon_deltas` and adjudicate them with `decide_canon_deltas` (`accept`, `reject`, or `defer`).
-3. **Handle plan amendments**:
-   - Inspect proposed beat or chapter changes via `list_plan_amendments`.
-   - Adjudicate with `decide_plan_amendments`, or update the chapter outline directly via `replan_chapter`.
+1. **Canon deltas (`mine_scene_canon`, `list_canon_deltas`, `decide_canon_deltas`)**:
+   - When `mining_policy: "propose_all"` is active (or via manual `mine_scene_canon`), inspect staged proposals with `list_canon_deltas` (`status: "staged"`).
+   - Adjudicate decided proposals with `decide_canon_deltas` using `action: "apply"` or `"reject"` (optional `edit` payload and `note`). To defer a proposal, leave it `staged` without submitting a decision. Never auto-apply `secret_of_fact_id` circle expansions.
+2. **Plan amendments (`replan_chapter`, `list_plan_amendments`, `decide_plan_amendments`)**:
+   - Inspect proposed outline updates for undrafted future chapters with `list_plan_amendments`.
+   - Adjudicate with `decide_plan_amendments` (`action: "apply"` or `"reject"`, leaving deferred proposals `staged`).
 
 ---
 
-## Step 4: Checkpoints, Blocks & Editorial Triage
+## Step 4: Review Checkpoints and Resume
 
-When `authoring_status` reports a checkpoint, block, or queued editorial item:
-1. **Checkpoints**:
-   - Inspect the checkpoint packet with `authoring_review_checkpoint`.
-   - Record the audit outcome (`approve`, `request_revision`, `pause`) via `authoring_record_checkpoint_audit`.
-2. **Blocked runs**:
-   - Diagnose the block reason in `authoring_status`.
-   - Resolve the underlying issue and call `authoring_resolve_block`, or stop cleanly with `authoring_cancel_run`.
-3. **Editorial queue**:
-   - Review pending items via `get_editorial_queue` and resolve them with `decide_editorial_item`.
+When `authoring_status` reports `next_action: "await_checkpoint_review"` (or when an auto-checkpoint blocks with `pending_manual_scene_ids`), execute the mandatory 4-step sequence in order:
 
----
-
-## Step 5: Style Refresh & Episode Release
-
-When a chapter or episode completes its run:
-1. **Style profile maintenance**:
-   - Preview updates from accepted prose with `preview_refresh_style_profile`, then apply with `refresh_style_profile` when approved.
-2. **Episode packaging**:
-   - Stage the episode with `prepare_episode_release`, inspect via `get_episode_release` and `read_episode`, and publish with `release_episode`.
+1. **Read the checkpoint report**: Locate and inspect the checkpoint report artifact listed in `authoring_status.checkpoint_reports` (`start_chapter`, `end_chapter`, `sampled_scene_ids`, `pending_manual_scene_ids`).
+2. **Run and record the scoped deep audit**:
+   - If deep consistency is pending, call `check_consistency` for the checkpoint chapter range (`start_chapter`..`end_chapter`) with `deep_check: true`.
+   - Pass the returned structured output (`deep_consistency`) to `authoring_record_checkpoint_audit` (`project_id`, `run_id`, `start_chapter`, `end_chapter`, `deep_consistency`).
+   - Fix local continuity findings before proceeding. For `secret_leak` findings, either record an intended reveal with `record_knowledge` (`secret_of_fact_id` + `learned_at`) or revise the leaked dialogue.
+3. **Run sampled two-round dual-persona reviews**:
+   - For each sampled scene requiring review, call `run_dual_persona_review` with `rounds: 2`.
+   - If a review surfaces autonomous local fixes, revise the scene and save via `authoring_save_scene_draft`, recommit with `commit_scene_changes`, and rerun `run_dual_persona_review` (`rounds: 2`) so the current scene text has a completed review.
+4. **Mark the checkpoint reviewed (`authoring_review_checkpoint`)**:
+   - Only after the deep audit is recorded and all sampled scene reviews are complete, call `authoring_review_checkpoint` (`project_id`, `run_id`, `start_chapter`, `end_chapter`, `directives`) to record carried-forward editorial directives and resume the run.
 
 ---
 
-## Quality Checklist
+## Step 5: Blocked Runs, Editorial Queue, Style Refresh & Episode Release
 
-- [ ] `authoring_status` checked before and after each step
-- [ ] Drafts saved with honest `authorship` provenance (`authoring_save_scene_draft` / `save_scene_draft`)
-- [ ] Mined canon deltas (`list_canon_deltas` / `decide_canon_deltas`) and plan amendments (`list_plan_amendments` / `decide_plan_amendments`) resolved before chapter close
-- [ ] Checkpoints audited (`authoring_review_checkpoint` / `authoring_record_checkpoint_audit`) per run policy
+- **Blocked runs (`authoring_resolve_block`, `authoring_cancel_run`)**:
+  - After fixing a blocked scene or run-level reconcile issue, advance or reset the scene with `authoring_resolve_block` (`target_phase`: `"draft_saved"`, `"changes_committed"`, `"beats_annotated"`, or `"redraft"`). Never use `authoring_resolve_block` to skip checkpoint review.
+  - Call `authoring_cancel_run` to pause a run cleanly.
+- **Reader simulation & editorial queue (`read_episode`, `get_editorial_queue`, `decide_editorial_item`)**:
+  - Run `read_episode` at chapter review to stage reader concerns into `get_editorial_queue`, and adjudicate items with `decide_editorial_item` using the current source hash and item revision.
+- **Style profile learning (`preview_refresh_style_profile`, `refresh_style_profile`)**:
+  - Preview captured operator style-edit candidates with `preview_refresh_style_profile` and fold approved updates into the profile with `refresh_style_profile`.
+- **Episode release (`prepare_episode_release`, `release_episode`, `get_episode_release`)**:
+  - Stage an episode snapshot with `prepare_episode_release`, verify zero blockers, publish locally with `release_episode` (passing source hash and previous release ID), and read snapshots via `get_episode_release`.
 
 <!-- tool: authoring_cancel_run -->
 <!-- tool: authoring_execute_next -->

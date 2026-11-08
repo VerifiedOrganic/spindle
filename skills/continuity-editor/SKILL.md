@@ -1,79 +1,60 @@
 ---
 name: continuity-editor
-description: Audits manuscript continuity across timeline clocks, character state snapshots, knowledge asymmetry, quantities/economy, canonical facts, and arc promises. Use when checking consistency, diagnosing contradictions, or repairing state drift.
+description: >
+  Use when checking, verifying, or enforcing consistency across the story — running consistency
+  checks, tracking narrative promises, verifying world-rule and timeline compliance, auditing
+  quantities/prices, managing canonical facts, and repairing continuity drift.
 ---
 
 # Continuity Editor
 
-You guard narrative logic across scenes, chapters, and books. A reader will forgive an bold premise, but not a locked door that opens without a key, a wound that switches arms, or a character acting on a secret they never learned.
+You guard narrative logic across scenes, chapters, and books. You diagnose contradictions with exact scene evidence and apply the smallest surgical canon or prose repair.
 
-## Core Principles
+## Step 1: Triage & Automated Consistency Checks
 
-1. **Distinguish bug from mystery** — Verify whether an apparent contradiction is an intentional unreliable narrator / hidden reveal before "fixing" it.
-2. **Trace the chain of custody** — Track objects, wounds, money, and secrets from scene to scene rather than judging a paragraph in isolation.
-3. **Smallest surgical repair** — Prefer fixing a timestamp, tag, or single line in a downstream scene over ripping up an earned dramatic climax.
-4. **Lock load-bearing truths** — When a detail becomes plot-critical, register it as a canonical fact so future drafts cannot silently break it.
-
----
-
-## Step 1: Run Automated Continuity Checks
-
-1. Confirm active project (`set_active_project` / `get_writer_state`).
-2. Run `check_consistency` at the scene, chapter, or book level to surface:
-   - Knowledge leaks (character references a fact before learning it)
-   - Location/presence impossibilities (character in two places at once)
-   - Dead or incapacitated characters acting after their exit
-   - Timeline and scene-clock inversions
-   - Unresolved or overdue narrative promises
-3. Audit prices and scarce counters with `scan_scene_prices`.
+1. Call `set_active_project` once per session and inspect `get_writer_state` for active branch context and drift warnings.
+2. Read `bible://projects/{project_id}/continuity/health` for open validator findings and cache state, and `bible://projects/{project_id}/timeline-graph/mermaid` for branching or timeline-order questions.
+3. Locate entities and backreferences with `find_entity`, `get_entity`, and `find_scenes_referencing`.
+4. Call `check_consistency` with `scope: { scope_type: "full" | "book" | "chapter_range", ... }`, optional `subjects: ["character:..."]`, `checks`, `format: "markdown"`, and `deep_check: true` when model-backed semantic passes are needed:
+   - **Cached Phase 4 validators** (run by default): `canonical_fact_prose_drift`, `world_rule_semantic_drift`, `voice_drift`, `retcon_reachability`, `style_compliance`.
+   - **Deterministic story-time & state checks**: `chronology`, `temporal_coherence`, `knowledge_timing`, `pacing_drift`, `secret_leak`, `affordability`, `quantity_drift`.
+5. Run `scan_scene_prices` to audit in-prose prices against tracked character wealth and economy benchmarks.
 
 ---
 
 ## Step 2: Inspect Context & State Snapshots
 
-For every flagged issue, inspect the primary sources:
-- Read scene context and outline expectations with `get_scene_context` and `get_chapter_briefing`
-- Query character state at that exact point in the story with `get_character_snapshot`
-- Inspect bible entities via `find_entity` and `get_entity`
-- Locate every upstream and downstream scene touching the entity via `find_scenes_referencing`
+For every flagged contradiction, verify whether it is an error or deliberate dramatic irony:
+- Read scene prose, beats, and outline context with `get_scene_context`, `get_chapter_briefing`, and `annotate_scene_beats`.
+- Reconstruct a character's exact state and knowledge at that story point with `get_character_snapshot`.
 
 ---
 
-## Step 3: Canonical Facts & Beat Annotations
+## Step 3: Canonical Facts Lifecycle
 
-Keep the canonical fact ledger accurate:
-- **Extract (`extract_canonical_facts_from_scene`)**: Pull candidate facts from existing prose.
-- **Register & bind (`register_canonical_fact`, `bind_canonical_fact_to_scene`)**: Lock established truths and bind them to the scenes where they are introduced or relied upon.
-- **Migrate (`migrate_canonical_fact`)**: When an intentional retcon or reveal changes canon, migrate the fact cleanly instead of leaving orphan contradictions.
-- **Beat annotations (`annotate_scene_beats`)**: Tag scene beats so structural and causal dependencies remain queryable.
+Keep the typed canonical fact ledger accurate:
+- **Extract & register (`extract_canonical_facts_from_scene`, `register_canonical_fact`)**: Propose typed facts from scene prose and persist load-bearing truths (`predicate`, `value_kind`, `value_*`, `confidence`, `volatility`).
+- **Bind planned facts (`bind_canonical_fact_to_scene`)**: When a fact was registered during planning without a `scene_id`, attach it once the dramatizing scene is drafted.
+- **Supersede or migrate (`register_canonical_fact`, `migrate_canonical_fact`)**: Never mutate an existing canonical fact in place to retcon it — register a new fact with `supersedes_fact_id` set to the old fact ID. Convert legacy untyped facts with `migrate_canonical_fact`.
 
 ---
 
 ## Step 4: Repair State Ledgers (Clocks, Knowledge, Snapshots, Quantities, Arcs)
 
-When continuity drift comes from missing or stale metadata rather than bad prose, repair the ledger:
-- **Clocks & calendars**: Configure the calendar with `set_project_calendar` and stamp or repair scene timestamps with `set_scene_clock`.
-- **Character & knowledge state**: Record missing post-scene shifts via `commit_scene_changes`, `commit_character_state`, `record_knowledge`, and `update_entity`.
-- **Quantities**: Initialize or derive counters (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`) and record deltas (`commit_quantity_state`).
-- **Arcs, promises & plans**: Update promise resolution (`update_promise_status`), arc progress (`update_arc_milestone`, `set_arc_pacing_constraints`), or chapter outlines (`plan_chapter`).
+When continuity drift stems from missing or stale state records rather than bad prose, repair the ledger:
+- **Calendars & scene clocks (`set_project_calendar`, `set_scene_clock`)**: Declare the project calendar and stamp scene clocks (`day_index`, `time_of_day`, `duration_days`, and `temporal_mode` / `thread_key` for flashbacks or parallel threads).
+- **Character state & knowledge (`commit_scene_changes`, `commit_character_state`, `record_knowledge`, `update_entity`)**: Record missing post-scene state transitions or character knowledge acquisition (`learned_at`, optional `secret_of_fact_id` when expanding a secret's circle of trust).
+- **Quantities (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`, `commit_quantity_state`)**: Configure or derive tracked counters and record scene-by-scene deltas (`change_reason` required on multi-band jumps).
+- **Promises, arcs & chapter plans (`update_promise_status`, `update_arc_milestone`, `set_arc_pacing_constraints`, `plan_chapter`)**: Update promise lifecycles (`planted`, `reinforced`, `fulfilled`, `abandoned`), arc milestones, pacing constraints, or future chapter plans.
 
 ---
 
-## Step 5: Surgical Prose Repair
+## Step 5: Surgical Prose Repair & Subagent Sweeps
 
-When the prose itself contains the contradiction:
-1. Present the exact conflict (Scene A establishes X; Scene B claims Y) and propose the minimum repair options.
-2. Apply targeted edits with `revise_scene` or `save_scene_draft` (using honest `authorship`).
-3. Re-run `check_consistency` and `scan_scene_prices` to confirm zero remaining hard errors.
-
----
-
-## Quality Checklist
-
-- [ ] `check_consistency` and `scan_scene_prices` run across the target scope
-- [ ] Every knowledge leak verified against `record_knowledge` and `get_character_snapshot`
-- [ ] Load-bearing truths registered and bound (`register_canonical_fact`, `bind_canonical_fact_to_scene`)
-- [ ] Post-repair `check_consistency` confirms the contradiction is resolved without introducing new drift
+- **Prose repair (`revise_scene`, `save_scene_draft`)**:
+  - When prose contradicts canon, apply the minimum surgical edit with `revise_scene` (which reports `states_invalidated`, `downstream_scenes_flagged`, and inline validator hits) or `save_scene_draft`, then re-run `check_consistency` and `scan_scene_prices`.
+- **Read-only subagent sweeps**:
+  - When auditing across many chapters or entities, subagents may run read-only checks (`check_consistency`, `find_scenes_referencing`, `find_entity`, `get_entity`, `get_scene_context`) and return deduplicated findings. All state-mutating calls stay in the main context.
 
 <!-- tool: annotate_scene_beats -->
 <!-- tool: bind_canonical_fact_to_scene -->
