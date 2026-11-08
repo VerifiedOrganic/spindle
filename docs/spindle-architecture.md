@@ -100,7 +100,14 @@ The service layer currently lives under:
 - `crates/spindle-adapters/src/sqlite/source_bridge.rs`
 - `crates/spindle-adapters/src/format.rs`
 
-`service.rs` remains the main application-service entry point. Supporting
+`service.rs` retains the service type, shared state, and helpers. Cohesive
+`impl SqliteSpindleService` blocks live under `sqlite/service/`: `context.rs`,
+`consistency.rs`, `validators.rs`, `generation.rs`, `branches.rs`, `branch_snapshots.rs`,
+`canon_mining.rs`, `canon_ratification.rs`, `plan_amendments.rs`, `replan.rs`,
+`export.rs`, `reader_sim.rs`, `imports.rs`, and `import_hydration.rs`, alongside
+entity, scene, research, and resource modules. Family tests live in each
+family's `tests.rs` (audit tests are grouped under `consistency/`);
+`service/tests.rs` holds shared fixtures. Supporting
 modules keep cohesive adapter concerns out of that file: `project_resources.rs`
 owns `read_project_resource` pagination envelopes and record-to-JSON resource
 projection helpers; `source_bridge.rs` owns external source lookups; and
@@ -523,6 +530,10 @@ Use this map when you need to patch behavior quickly.
 - Change repository persistence/query behavior:
   `crates/spindle-adapters/src/sqlite/repository.rs`.
 - Change business logic or tool orchestration:
+  `crates/spindle-adapters/src/sqlite/service/` (choose the corresponding
+  family module; for example `context.rs`, `consistency.rs`,
+  `canon_ratification.rs`, `plan_amendments.rs`, `export.rs`, or
+  `import_hydration.rs`). Shared service state and helpers remain in
   `crates/spindle-adapters/src/sqlite/service.rs`.
 - Change MCP tool/resource exposure:
   `crates/spindle-mcp/src/tools.rs` and

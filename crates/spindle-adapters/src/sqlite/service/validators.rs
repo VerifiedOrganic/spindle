@@ -1,0 +1,1817 @@
+use super::*;
+
+impl SqliteSpindleService {
+    /// Narrow a scene list to only those that reference any of the
+    /// supplied subjects. A scene matches if its id is a direct hit for
+    /// the subject (e.g., character_state.scene_id,
+    /// scene_beat_annotation.{motif,theme,conflict}_ids) OR its full_text
+    /// contains any of the subject's display terms (case-insensitive
+    /// for ASCII). Mirrors `services/mod.rs:6193` in 705b835^.
+    pub(super) async fn narrow_scenes_by_subjects(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        scenes: Vec<crate::sqlite::records::Scene>,
+        subjects: &[String],
+    ) -> Result<Vec<crate::sqlite::records::Scene>> {
+        use std::collections::BTreeSet;
+        if subjects.is_empty() {
+            return Ok(scenes);
+        }
+        let mut direct_scene_ids: BTreeSet<String> = BTreeSet::new();
+        let mut term_set: BTreeSet<String> = BTreeSet::new();
+        for raw in subjects {
+            let spec = self
+                .scene_reference_subject_spec(project_id, branch_id, raw)
+                .await?;
+            direct_scene_ids.extend(spec.direct_scene_ids);
+            for term in spec.terms {
+                let trimmed = term.trim();
+                if !trimmed.is_empty() {
+                    term_set.insert(trimmed.to_string());
+                }
+            }
+        }
+        let terms: Vec<String> = term_set.into_iter().collect();
+        Ok(scenes
+            .into_iter()
+            .filter(|scene| {
+                if direct_scene_ids.contains(&scene.id) {
+                    return true;
+                }
+                find_scene_reference_term_match(&scene.full_text, &terms).is_some()
+            })
+            .collect())
+    }
+
+    /// Derive `(display terms, direct-hit scene ids)` for one subject id.
+    /// Used by `narrow_scenes_by_subjects` and `find_scenes_referencing`.
+    /// Mirrors `services/mod.rs:6826` in 705b835^.
+    pub(super) async fn scene_reference_subject_spec(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        subject_id: &str,
+    ) -> Result<SubjectSceneReferenceSpec> {
+        use std::collections::BTreeSet;
+        let (table, _key) = subject_id
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("expected `table:id` format, got `{subject_id}`"))?;
+
+        let mut spec = match table {
+            "character" => {
+                let character = self.repository.get_character(subject_id).await?;
+                ensure_reference_subject_project(&character.project_id, project_id, "character")?;
+                let mut direct_scene_ids = BTreeSet::new();
+                for state in self
+                    .repository
+                    .list_character_states_by_project_and_branch(project_id, branch_id)
+                    .await?
+                {
+                    if state.character_id == subject_id
+                        && let Some(scene_id) = state.scene_id
+                    {
+                        direct_scene_ids.insert(scene_id);
+                    }
+                }
+                for relationship in self
+                    .repository
+                    .list_relationships_by_branch(branch_id)
+                    .await?
+                {
+                    if (relationship.in_id == subject_id || relationship.out_id == subject_id)
+                        && let Some(scene_id) = relationship.last_scene_id
+                    {
+                        direct_scene_ids.insert(scene_id);
+                    }
+                }
+                SubjectSceneReferenceSpec {
+                    terms: vec![character.name],
+                    direct_scene_ids,
+                }
+            }
+            "location" => {
+                let location = self.repository.get_location(subject_id).await?;
+                ensure_reference_subject_project(&location.project_id, project_id, "location")?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![location.name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "faction" => {
+                let faction = self.repository.get_faction(subject_id).await?;
+                ensure_reference_subject_project(&faction.project_id, project_id, "faction")?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![faction.name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "religion" => {
+                let religion = self.repository.get_religion(subject_id).await?;
+                ensure_reference_subject_project(&religion.project_id, project_id, "religion")?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![religion.name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "economy" => {
+                let economy = self.repository.get_economy(subject_id).await?;
+                ensure_reference_subject_project(&economy.project_id, project_id, "economy")?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![economy.name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "term" => {
+                let term = self.repository.get_term(subject_id).await?;
+                ensure_reference_subject_project(&term.project_id, project_id, "term")?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![term.term_text],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "plot_line" => {
+                let plot_line = self
+                    .repository
+                    .list_plot_lines_by_project(project_id)
+                    .await?
+                    .into_iter()
+                    .find(|pl| pl.id == subject_id)
+                    .ok_or_else(|| anyhow::anyhow!("plot line not found"))?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![plot_line.name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "conflict" => {
+                let conflict = self.repository.get_conflict(subject_id).await?;
+                ensure_reference_subject_project(&conflict.project_id, project_id, "conflict")?;
+                let mut direct_scene_ids = BTreeSet::new();
+                for annotation in self
+                    .repository
+                    .list_scene_beat_annotations_by_project(project_id)
+                    .await?
+                {
+                    if annotation.conflict_ids.iter().any(|id| id == subject_id) {
+                        direct_scene_ids.insert(annotation.scene_id);
+                    }
+                }
+                SubjectSceneReferenceSpec {
+                    terms: vec![conflict.name],
+                    direct_scene_ids,
+                }
+            }
+            "theme" => {
+                let theme = self.repository.get_theme(subject_id).await?;
+                ensure_reference_subject_project(&theme.project_id, project_id, "theme")?;
+                let mut direct_scene_ids = BTreeSet::new();
+                for annotation in self
+                    .repository
+                    .list_scene_beat_annotations_by_project(project_id)
+                    .await?
+                {
+                    if annotation.theme_ids.iter().any(|id| id == subject_id) {
+                        direct_scene_ids.insert(annotation.scene_id);
+                    }
+                }
+                SubjectSceneReferenceSpec {
+                    terms: vec![theme.theme_statement],
+                    direct_scene_ids,
+                }
+            }
+            "motif" => {
+                let motif = self.repository.get_motif(subject_id).await?;
+                ensure_reference_subject_project(&motif.project_id, project_id, "motif")?;
+                let mut direct_scene_ids = BTreeSet::new();
+                for annotation in self
+                    .repository
+                    .list_scene_beat_annotations_by_project(project_id)
+                    .await?
+                {
+                    if annotation.motif_ids.iter().any(|id| id == subject_id) {
+                        direct_scene_ids.insert(annotation.scene_id);
+                    }
+                }
+                SubjectSceneReferenceSpec {
+                    terms: vec![motif.name],
+                    direct_scene_ids,
+                }
+            }
+            "world_rule" => {
+                let world_rule = self
+                    .repository
+                    .list_world_rules_by_project(project_id)
+                    .await?
+                    .into_iter()
+                    .find(|wr| wr.id == subject_id)
+                    .ok_or_else(|| anyhow::anyhow!("world rule not found"))?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![world_rule.rule_name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "narrative_promise" => {
+                let promise = self.repository.get_narrative_promise(subject_id).await?;
+                ensure_reference_subject_project(
+                    &promise.project_id,
+                    project_id,
+                    "narrative_promise",
+                )?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![promise.description],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            "system_overlay" => {
+                let overlay = self.repository.get_system_overlay(subject_id).await?;
+                ensure_reference_subject_project(
+                    &overlay.project_id,
+                    project_id,
+                    "system_overlay",
+                )?;
+                SubjectSceneReferenceSpec {
+                    terms: vec![overlay.system_name],
+                    direct_scene_ids: BTreeSet::new(),
+                }
+            }
+            other => {
+                anyhow::bail!("find_scenes_referencing does not support subject table `{other}`");
+            }
+        };
+        spec.terms.retain(|term| !term.trim().is_empty());
+        if spec.terms.is_empty() && spec.direct_scene_ids.is_empty() {
+            anyhow::bail!(
+                "find_scenes_referencing could not derive any search terms for `{subject_id}`"
+            );
+        }
+        Ok(spec)
+    }
+
+    /// Scan a scene's prose for hits against branch-scoped world rules.
+    /// Mirrors `services/mod.rs:5737` in 705b835^.
+    pub(super) async fn scan_world_rules(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        prose: &str,
+    ) -> Result<Vec<spindle_core::models::WorldRuleHit>> {
+        let rules = self
+            .repository
+            .list_world_rules_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let scan_rules: Vec<spindle_core::world_rules::ScanRule> = rules
+            .iter()
+            .map(|r| spindle_core::world_rules::ScanRule {
+                rule_id: r.id.clone(),
+                scan_pattern: r.scan_pattern.clone(),
+                rule_name: r.rule_name.clone(),
+                description: r.description.clone(),
+                rule_type: r.rule_type.clone(),
+            })
+            .collect();
+        Ok(spindle_core::world_rules::scan_prose_for_world_rules(
+            prose,
+            &scan_rules,
+        ))
+    }
+
+    /// Scan a scene's prose for forbidden-phrase voice drift against every
+    /// character on the active branch (with per-project main fallback). Only
+    /// characters whose name/aliases appear in the prose are checked. Mirrors
+    /// `services/mod.rs:5758` in 705b835^.
+    pub(super) async fn scan_voice_drift(
+        &self,
+        project_id: &str,
+        prose: &str,
+    ) -> Result<Vec<spindle_core::models::VoiceDriftFinding>> {
+        use spindle_core::models::CharacterVoiceProfileData;
+        use spindle_core::voice::{
+            VoiceDriftCharacter, character_present_in_scene, check_voice_drift,
+        };
+
+        let active_branch = self.repository.get_active_branch(project_id).await?;
+        let mut characters = self
+            .repository
+            .list_characters_by_project_and_branch(project_id, &active_branch.id)
+            .await?;
+        characters.retain(|character| {
+            character_present_in_scene(
+                prose,
+                &VoiceDriftCharacter {
+                    id: character.id.clone(),
+                    name: character.name.clone(),
+                },
+            )
+        });
+        if characters.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut findings = Vec::new();
+        for character in characters {
+            let voice_profile = self
+                .repository
+                .get_character_voice_profile(&character.id)
+                .await?;
+            let profile_data = CharacterVoiceProfileData {
+                tone: voice_profile.tone.clone(),
+                vocabulary: voice_profile.vocabulary.clone(),
+                sentence_structure: voice_profile.sentence_structure.clone(),
+                tics: voice_profile.tics.clone(),
+                forbidden_words: voice_profile.forbidden_words.clone(),
+                example_lines: voice_profile.example_lines.clone(),
+                established_in_scene_id: voice_profile.established_in_scene_id.clone(),
+                updated_at: voice_profile.updated_at.as_ref().map(ToString::to_string),
+            };
+            let drift_character = VoiceDriftCharacter {
+                id: character.id.clone(),
+                name: character.name.clone(),
+            };
+            findings.extend(check_voice_drift(prose, &drift_character, &profile_data));
+        }
+        Ok(findings)
+    }
+
+    /// Scan a scene's prose for retcon-reachability problems on the active
+    /// branch (with per-project main fallback). Mirrors `check_reachability`
+    /// (`services/mod.rs:5800` area) in 705b835^.
+    pub(super) async fn scan_retcon_findings(
+        &self,
+        project_id: &str,
+        scene: &crate::sqlite::records::Scene,
+    ) -> Result<Vec<spindle_core::models::RetconFinding>> {
+        use spindle_core::models::RetconFinding;
+        use std::collections::BTreeMap;
+
+        let branch_id = &scene.branch_id;
+        let future_knowledge = self
+            .repository
+            .list_future_knowledge_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let timeline_events = self
+            .repository
+            .list_timeline_events_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let temporal_interventions = self
+            .repository
+            .list_temporal_interventions_by_project_and_branch(project_id, branch_id)
+            .await?;
+
+        let scene_position = (scene.book_number, scene.chapter_number, scene.scene_order);
+        let mut findings = Vec::new();
+        for knowledge in &future_knowledge {
+            let learned_at = (
+                knowledge.learned_at.book_number,
+                knowledge.learned_at.chapter_number,
+                knowledge.learned_at.scene_order.unwrap_or(0),
+            );
+            if !position_gt(learned_at, scene_position) {
+                continue;
+            }
+            if !contains_case_insensitive_phrase(&scene.full_text, &knowledge.knowledge_summary)
+                && !contains_case_insensitive_phrase(&scene.summary, &knowledge.knowledge_summary)
+            {
+                continue;
+            }
+            findings.push(RetconFinding::OutOfBandsKnowledge {
+                character_id: knowledge.character_id.clone(),
+                knowledge_summary: knowledge.knowledge_summary.clone(),
+                learned_at: knowledge.learned_at.clone().into_core(),
+                message: format!(
+                    "scene references future knowledge '{}' before learned_at {}.{}.{}",
+                    knowledge.knowledge_summary, learned_at.0, learned_at.1, learned_at.2
+                ),
+            });
+        }
+
+        let events_by_id = timeline_events
+            .iter()
+            .map(|event| (event.id.clone(), event))
+            .collect::<BTreeMap<_, _>>();
+        for intervention in &temporal_interventions {
+            let anchor_position = intervention
+                .target_event_id
+                .as_ref()
+                .and_then(|id| events_by_id.get(id))
+                .or_else(|| {
+                    intervention
+                        .source_event_id
+                        .as_ref()
+                        .and_then(|id| events_by_id.get(id))
+                })
+                .map(|event| {
+                    (
+                        event.placement.book_number,
+                        event.placement.chapter_number,
+                        event.placement.scene_order.unwrap_or(0),
+                    )
+                });
+            let Some(anchor_position) = anchor_position else {
+                continue;
+            };
+            if !position_gt(anchor_position, scene_position) {
+                continue;
+            }
+
+            let mut anchor_terms: Vec<String> = Vec::new();
+            if !intervention.title.trim().is_empty() {
+                anchor_terms.push(intervention.title.clone());
+            }
+            if let Some(source) = intervention
+                .source_event_id
+                .as_ref()
+                .and_then(|id| events_by_id.get(id))
+                && !source.title.trim().is_empty()
+            {
+                anchor_terms.push(source.title.clone());
+            }
+            if let Some(target) = intervention
+                .target_event_id
+                .as_ref()
+                .and_then(|id| events_by_id.get(id))
+                && !target.title.trim().is_empty()
+            {
+                anchor_terms.push(target.title.clone());
+            }
+            if anchor_terms.is_empty() {
+                continue;
+            }
+
+            let mentions_intervention = anchor_terms.iter().any(|term| {
+                contains_case_insensitive_phrase(&scene.full_text, term)
+                    || contains_case_insensitive_phrase(&scene.summary, term)
+            });
+            if !mentions_intervention {
+                continue;
+            }
+
+            let has_future_knowledge_anchor = future_knowledge.iter().any(|knowledge| {
+                let learned_at = (
+                    knowledge.learned_at.book_number,
+                    knowledge.learned_at.chapter_number,
+                    knowledge.learned_at.scene_order.unwrap_or(0),
+                );
+                if position_gt(learned_at, scene_position) {
+                    return false;
+                }
+                if let Some(expires_at) = knowledge.expires_at.as_ref() {
+                    let expires_position = (
+                        expires_at.book_number,
+                        expires_at.chapter_number,
+                        expires_at.scene_order.unwrap_or(0),
+                    );
+                    if position_lt(expires_position, scene_position) {
+                        return false;
+                    }
+                }
+                anchor_terms.iter().any(|term| {
+                    contains_case_insensitive_phrase(&knowledge.knowledge_summary, term)
+                        || contains_case_insensitive_phrase(&knowledge.source, term)
+                })
+            });
+            if !has_future_knowledge_anchor {
+                findings.push(RetconFinding::MissingFutureKnowledgeAnchor {
+                    intervention_id: intervention.id.clone(),
+                    intervention_title: intervention.title.clone(),
+                    message: format!(
+                        "scene references intervention '{}' before timeline anchor {}.{}.{} without a future_knowledge anchor",
+                        intervention.title, anchor_position.0, anchor_position.1, anchor_position.2
+                    ),
+                });
+            }
+        }
+
+        let characters = self
+            .repository
+            .list_characters_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let states = self
+            .repository
+            .list_character_states_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let characters_by_id = characters
+            .into_iter()
+            .map(|character| (character.id.clone(), character))
+            .collect::<BTreeMap<_, _>>();
+
+        for (character_id, character) in &characters_by_id {
+            if !contains_case_insensitive_word_boundary(&scene.full_text, &character.name) {
+                continue;
+            }
+            let latest_state = states
+                .iter()
+                .filter(|state| state.character_id == *character_id)
+                .filter(|state| {
+                    let state_position =
+                        (state.book_number, state.chapter_number, state.scene_order);
+                    position_lte(state_position, scene_position)
+                })
+                .max_by_key(|state| (state.book_number, state.chapter_number, state.scene_order));
+            let Some(latest_state) = latest_state else {
+                continue;
+            };
+            let Some(dead_status) = latest_state
+                .status
+                .iter()
+                .find(|status| is_dead_status(status))
+                .cloned()
+            else {
+                continue;
+            };
+            findings.push(RetconFinding::DeadCharacterAct {
+                character_id: character_id.clone(),
+                character_name: character.name.clone(),
+                status: dead_status.clone(),
+                message: format!(
+                    "scene includes '{}' acting after status '{}'",
+                    character.name, dead_status
+                ),
+            });
+        }
+
+        // Premature knowledge: a present character references, in prose, a
+        // knowledge_fact they do not learn until a later story position. The
+        // normalized_fact match is whole-phrase, so this is a high-precision,
+        // low-recall advisory tripwire (mapped to a warning, not a hard block).
+        let knowledge_facts = self
+            .repository
+            .list_knowledge_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        for fact in &knowledge_facts {
+            let Some(learned_at) = fact.learned_at.as_ref() else {
+                continue;
+            };
+            let learned_position = (
+                learned_at.book_number,
+                learned_at.chapter_number,
+                learned_at.scene_order.unwrap_or(0),
+            );
+            if !position_gt(learned_position, scene_position) {
+                continue;
+            }
+            let Some(character) = characters_by_id.get(&fact.character_id) else {
+                continue;
+            };
+            if !contains_case_insensitive_word_boundary(&scene.full_text, &character.name) {
+                continue;
+            }
+            if !contains_case_insensitive_phrase(&scene.full_text, &fact.normalized_fact) {
+                continue;
+            }
+            findings.push(RetconFinding::PrematureKnowledge {
+                character_id: fact.character_id.clone(),
+                fact: fact.fact.clone(),
+                learned_at: learned_at.clone().into_core(),
+                message: format!(
+                    "scene has '{}' reference knowledge they do not learn until book {} chapter {}",
+                    character.name, learned_at.book_number, learned_at.chapter_number
+                ),
+            });
+        }
+
+        Ok(findings)
+    }
+
+    /// Assemble a `ValidatorContext` that the Phase-4 validator registry can
+    /// evaluate scenes against. Pulls active canonical facts, world rules,
+    /// character voice profiles, timeline events, and temporal interventions
+    /// for the project. Mirrors `services/mod.rs:6089` in 705b835^.
+    pub(crate) async fn build_phase_four_validator_context(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        scenes: &[crate::sqlite::records::Scene],
+    ) -> Result<spindle_core::validators::ValidatorContext> {
+        use spindle_core::validators::{
+            CanonicalFactSnapshot, CharacterVoiceProfileSnapshot, SceneSnapshot,
+            TemporalInterventionSnapshot, TimelineEventSnapshot, ValidatorContext,
+            WorldRuleSnapshot,
+        };
+
+        let canonical_facts_raw = self
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let world_rules_raw = self
+            .repository
+            .list_world_rules_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let characters = self
+            .repository
+            .list_characters_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let timeline_events_raw = self
+            .repository
+            .list_timeline_events_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let temporal_interventions_raw = self
+            .repository
+            .list_temporal_interventions_by_project_and_branch(project_id, branch_id)
+            .await?;
+
+        let canonical_facts = canonical_facts_raw
+            .into_iter()
+            .map(|fact| {
+                let value = canonical_fact_value_for_check(&fact);
+                CanonicalFactSnapshot {
+                    scene_id: fact.scene_id.clone(),
+                    book_number: fact.book_number,
+                    chapter_number: fact.chapter_number,
+                    fact_type: fact.value_kind.clone(),
+                    key: fact.predicate.clone(),
+                    value,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let world_rules = world_rules_raw
+            .into_iter()
+            .map(|rule| WorldRuleSnapshot {
+                rule_id: rule.id.clone(),
+                rule_name: rule.rule_name.clone(),
+                scan_pattern: rule.scan_pattern.clone(),
+                established_in: rule
+                    .established_in
+                    .as_ref()
+                    .map(|placement| (placement.book_number, placement.chapter_number)),
+                rule_type: rule.rule_type.clone(),
+                description: rule.description.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut voice_profiles = Vec::new();
+        for character in characters {
+            let profile = self
+                .repository
+                .get_character_voice_profile(&character.id)
+                .await?;
+            voice_profiles.push(CharacterVoiceProfileSnapshot {
+                character_id: character.id.clone(),
+                character_name: character.name.clone(),
+                forbidden_words: profile.forbidden_words.clone(),
+            });
+        }
+
+        let timeline_events = timeline_events_raw
+            .into_iter()
+            .map(|event| TimelineEventSnapshot {
+                event_id: event.id.clone(),
+                title: event.title.clone(),
+                book_number: event.placement.book_number,
+                chapter_number: event.placement.chapter_number,
+                scene_order: event.placement.scene_order.unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+
+        let temporal_interventions = temporal_interventions_raw
+            .into_iter()
+            .map(|intervention| TemporalInterventionSnapshot {
+                intervention_id: intervention.id.clone(),
+                title: intervention.title.clone(),
+                source_event_id: intervention.source_event_id.clone(),
+                target_event_id: intervention.target_event_id.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let scene_snapshots = scenes
+            .iter()
+            .map(|scene| SceneSnapshot {
+                scene_id: scene.id.clone(),
+                book_number: scene.book_number,
+                chapter_number: scene.chapter_number,
+                scene_order: scene.scene_order,
+                full_text: scene.full_text.clone(),
+                summary: scene.summary.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let style_directive = self
+            .style_directive_for(project_id, branch_id)
+            .await
+            .ok()
+            .filter(|directive| !directive.is_empty());
+
+        Ok(ValidatorContext {
+            project_id: project_id.to_string(),
+            branch_id: branch_id.to_string(),
+            scenes: scene_snapshots,
+            canonical_facts,
+            world_rules,
+            voice_profiles,
+            timeline_events,
+            temporal_interventions,
+            style_directive,
+        })
+    }
+
+    /// Run the Phase-4 validator registry against `scenes` and persist
+    /// per-scene cache rows into `validator_finding`. Returns the
+    /// `ConsistencyIssue` list filtered to `phase_four_checks`. Mirrors
+    /// `services/mod.rs:6233` in 705b835^.
+    pub(super) async fn run_phase_four_validator_checks_for_scenes(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        scenes: &[crate::sqlite::records::Scene],
+        phase_four_checks: &std::collections::BTreeSet<PhaseFourCacheId>,
+        use_cache: bool,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use spindle_core::models::ConsistencyIssue;
+
+        if phase_four_checks.is_empty() || scenes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let context = self
+            .build_phase_four_validator_context(project_id, branch_id, scenes)
+            .await?;
+        let registry = crate::sqlite::validators::phase_four_validator_registry();
+        let validator_ids = phase_four_validator_ids(phase_four_checks);
+        let context_hashes = phase_four_context_hashes(&context, phase_four_checks)?;
+        let mut issues = Vec::new();
+
+        for scene in &context.scenes {
+            let scene_text_hash = generation_sha256_hex(scene.full_text.as_bytes());
+            if use_cache {
+                let cached_rows = self
+                    .repository
+                    .list_active_validator_findings_by_scene_hash(
+                        branch_id,
+                        &scene.scene_id,
+                        &scene_text_hash,
+                        &validator_ids,
+                    )
+                    .await?;
+                let cached_rows = cached_rows
+                    .into_iter()
+                    .filter(|row| {
+                        row.context_hash
+                            .as_ref()
+                            .and_then(|hash| {
+                                context_hashes
+                                    .get(row.validator_id.as_str())
+                                    .map(|expected| expected == hash)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .collect::<Vec<_>>();
+                if has_cache_for_all_validators(&cached_rows, &validator_ids) {
+                    issues.extend(cached_validator_issues(&cached_rows, &scene.scene_id));
+                    continue;
+                }
+            }
+
+            let findings = registry
+                .validate_scene(scene, &context)
+                .map_err(|error| anyhow::anyhow!(error))?;
+
+            for validator_id in &validator_ids {
+                let validator_findings = findings
+                    .iter()
+                    .filter(|finding| finding.check_type == validator_id)
+                    .collect::<Vec<_>>();
+
+                let serialized_issues = validator_findings
+                    .iter()
+                    .map(|finding| {
+                        serde_json::json!({
+                            "severity": finding.severity.as_str(),
+                            "check_type": finding.check_type,
+                            "message": finding.message,
+                            "byte_range": finding.byte_range,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                let summary_severity = validator_findings
+                    .iter()
+                    .map(|finding| finding.severity.as_str())
+                    .min()
+                    .unwrap_or("info")
+                    .to_string();
+                let summary_message = if validator_findings.is_empty() {
+                    "no findings".to_string()
+                } else {
+                    format!("{} finding(s)", validator_findings.len())
+                };
+
+                self.repository
+                    .upsert_validator_finding(
+                        crate::sqlite::repository::UpsertValidatorFindingParams {
+                            project_id: project_id.to_string(),
+                            branch_id: branch_id.to_string(),
+                            scene_id: scene.scene_id.clone(),
+                            scene_text_hash: scene_text_hash.clone(),
+                            context_hash: context_hashes.get(validator_id.as_str()).cloned(),
+                            validator_id: validator_id.clone(),
+                            finding_id: "__cache__".to_string(),
+                            severity: summary_severity,
+                            message: summary_message,
+                            byte_range: None,
+                            details_json: Some(serde_json::json!({ "issues": serialized_issues })),
+                        },
+                    )
+                    .await?;
+            }
+
+            for finding in findings {
+                if !phase_four_checks
+                    .iter()
+                    .any(|check| check.as_str() == finding.check_type)
+                {
+                    continue;
+                }
+                let mut message = finding.message;
+                if let Some(byte_range) = finding.byte_range {
+                    message = format!("{message} (bytes {}..{})", byte_range.start, byte_range.end);
+                }
+                issues.push(ConsistencyIssue {
+                    severity: finding.severity.as_str().to_string(),
+                    check_type: finding.check_type.to_string(),
+                    message,
+                    entity_ids: vec![scene.scene_id.clone()],
+                    suggested_action: Some(
+                        "revise scene prose or supporting canon records".to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-router driven semantic world-rule audit. Falls back to the
+    /// in-process heuristic when the configured route does not produce a
+    /// usable response. Mirrors `services/mod.rs:6344` in 705b835^.
+    pub(super) async fn deep_world_rule_compliance_issues(
+        &self,
+        scenes: &[crate::sqlite::records::Scene],
+        rules: &[crate::sqlite::records::WorldRule],
+        coverage: &mut spindle_core::models::AuditCoverage,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use crate::format::world_rule_established_before_scene;
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+        // Emission-cadence asymmetry, by design (mirrors the temporal tier):
+        //   - a rating-clearance rejection (RatingNotCovered) is PER-SCENE and
+        //     stops the run — ratings can differ per scene, so each uncleared
+        //     scene emits its own honest skip; landed behavior, unchanged.
+        //   - a generic TRANSPORT error is ONCE-PER-RUN: on the first transport
+        //     failure we emit ONE degradation finding and set `model_route_dead`,
+        //     then STOP attempting model calls for remaining scenes. The heuristic
+        //     fallback STAYS — it is real coverage; the finding just makes the
+        //     degradation visible instead of silent. (Previously this arm silently
+        //     fell back to the heuristic, so a dead route degraded invisibly.)
+        let mut model_route_dead = false;
+        // Scenes that actually have rules to audit, fanned out with bounded
+        // concurrency and served from the V0039 cache where this prose version
+        // was already analyzed. Results arrive in scene order, so the skip
+        // cadence below is unchanged; the stream is consumed lazily so the
+        // dead-route exit still stops the calls queued behind it.
+        let scanned: Vec<&crate::sqlite::records::Scene> = scenes
+            .iter()
+            .filter(|scene| {
+                rules
+                    .iter()
+                    .any(|rule| world_rule_established_before_scene(rule, scene))
+            })
+            .collect();
+        *coverage = spindle_core::models::AuditCoverage::new(
+            "world_rule_compliance",
+            scanned.iter().map(|s| s.id.clone()),
+        );
+        let rules_for_scene = |scene: &crate::sqlite::records::Scene| {
+            rules
+                .iter()
+                .filter(|rule| world_rule_established_before_scene(rule, scene))
+                .collect::<Vec<_>>()
+        };
+        let prompts = scanned
+            .iter()
+            .map(|scene| build_world_rule_deep_check_prompt(scene, &rules_for_scene(scene)))
+            .collect();
+        let mut outputs = std::pin::pin!(self.deep_tier_output_stream(
+            &scanned,
+            "world_rule_compliance",
+            prompts
+        ));
+
+        let mut index = 0usize;
+        while index < scanned.len() {
+            // Once the route is known dead this run, STOP POLLING the stream:
+            // a dead route won't heal mid-run, and leaving it unpolled is what
+            // keeps the remaining scenes from dispatching a model call each.
+            // The rest of the range still gets heuristic coverage below.
+            let output = if model_route_dead {
+                None
+            } else {
+                futures_util::StreamExt::next(&mut outputs).await
+            };
+            let scene = scanned[index];
+            index += 1;
+            let applicable_rules = rules_for_scene(scene);
+
+            let model_violations = match output {
+                None => heuristic_world_rule_violations(scene, &applicable_rules),
+                Some(output) => match output {
+                    Ok(response) if !response.local_stub => {
+                        match parse_deep_world_rule_check_output(&response.output) {
+                            Ok(findings) => {
+                                coverage.evaluated_ids.push(scene.id.clone());
+                                findings
+                            }
+                            Err(_) => heuristic_world_rule_violations(scene, &applicable_rules),
+                        }
+                    }
+                    Ok(_) => heuristic_world_rule_violations(scene, &applicable_rules),
+                    // Honest skip on a rating-clearance rejection: the `review`
+                    // agent is not cleared for this scene's rating, so the prose
+                    // never left. Emit one info finding that reads as SKIPPED
+                    // (route + rating, no prose) and stop — every remaining scene
+                    // of this rating would hit the same wall. PER-SCENE cadence.
+                    Err(err)
+                        if matches!(
+                            err.downcast_ref::<crate::ai::RouteClearanceError>(),
+                            Some(crate::ai::RouteClearanceError::RatingNotCovered { .. })
+                        ) =>
+                    {
+                        issues.push(world_rule_deep_skip_issue(&err));
+                        return Ok(issues);
+                    }
+                    // Generic transport error (dead/unreachable route): emit ONE
+                    // degradation finding, mark the route dead so no further model
+                    // calls are attempted this run, and fall through to the
+                    // heuristic for THIS scene (and every remaining scene). The
+                    // heuristic coverage is preserved; the finding makes the
+                    // silent degradation visible.
+                    Err(err) => {
+                        issues.push(world_rule_deep_skip_issue(&err));
+                        model_route_dead = true;
+                        heuristic_world_rule_violations(scene, &applicable_rules)
+                    }
+                },
+            };
+
+            if !coverage.evaluated_ids.contains(&scene.id) {
+                coverage.heuristic_ids.push(scene.id.clone());
+            }
+            for violation in model_violations {
+                let Some(rule) = applicable_rules
+                    .iter()
+                    .find(|rule| rule.id == violation.rule_id)
+                else {
+                    continue;
+                };
+                let mut message = format!(
+                    "scene {} may violate world rule '{}': {}",
+                    scene.id,
+                    rule.rule_name,
+                    violation.message.trim()
+                );
+                if let Some(evidence) = violation.evidence.as_ref()
+                    && !evidence.trim().is_empty()
+                {
+                    message.push_str(&format!(" Evidence: {}", evidence.trim()));
+                }
+                issues.push(ConsistencyIssue {
+                    severity: violation.severity.unwrap_or_else(|| "warning".to_string()),
+                    check_type: "world_rule_compliance".to_string(),
+                    message,
+                    entity_ids: vec![scene.id.clone(), rule.id.clone()],
+                    suggested_action: Some(
+                        "revise the scene, explain the exception on page, or update the rule if canon changed"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Tier 2 of the temporal-coherence subsystem: a model-router-driven
+    /// semantic pass over each scene's prose that catches the in-world time
+    /// jumps the deterministic lexicon scan (Tier 1) cannot — idiomatic elapsed
+    /// time ("three cigarettes later"), implied light/meal/errand cues, and
+    /// drift the fixed vocabulary misses. Advisory `warning`s under the same
+    /// `temporal_coherence` check_type. When no review model is configured the
+    /// route returns no parseable findings, so this adds nothing and the
+    /// deterministic scan stands alone. Mirrors `deep_world_rule_compliance_issues`.
+    /// One deep-tier model call for one scene, served from the V0039 cache when
+    /// this exact prose version has already been analyzed by this tier.
+    ///
+    /// A deep check over a chapter range is `tiers x scenes` model calls; on a
+    /// reasoning model that runs past any client timeout, and the audit used to
+    /// hold everything in memory until the very end, so a timeout threw away
+    /// every completed scene and the retry re-paid for all of it. Banking the
+    /// raw output per (scene, prose version, tier) turns the retry into forward
+    /// progress: analyzed scenes re-parse for free and only the remainder calls
+    /// the model.
+    ///
+    /// Local-stub output is NOT cached — it is free to recompute, and caching
+    /// it would freeze a stub answer in front of a real model configured later.
+    pub(super) async fn deep_tier_model_output(
+        &self,
+        scene: &crate::sqlite::records::Scene,
+        check_type: &str,
+        prompt: String,
+    ) -> Result<DeepTierOutput> {
+        use crate::ai::ModelRequest;
+
+        let fingerprint = scene_revision_fingerprint(scene);
+        if let Some(cached) = self
+            .repository
+            .get_deep_check_cache(&scene.id, &fingerprint, check_type)
+            .await?
+        {
+            // Only external output is ever cached, so a hit is never a stub.
+            return Ok(DeepTierOutput {
+                output: cached,
+                local_stub: false,
+            });
+        }
+
+        // This pass carries scene prose, so it MUST stamp the scene's content
+        // rating (lowercased) — the rating-gated chokepoint then routes an
+        // explicit-rated scene only to an explicit-cleared agent (evolution §4).
+        let response = self
+            .repository
+            .model_router()
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt,
+                rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
+                context: Some(crate::ai::RequestContext {
+                    project_id: Some(scene.project_id.clone()),
+                    scene_id: Some(scene.id.clone()),
+                    ..Default::default()
+                }),
+            })
+            .await?;
+
+        let local_stub = response.adapter_kind == "local";
+        if !local_stub {
+            // A cache write must never fail the audit: the analysis in hand is
+            // still valid, we just lose the chance to reuse it.
+            if let Err(error) = self
+                .repository
+                .put_deep_check_cache(&scene.id, &fingerprint, check_type, &response.output)
+                .await
+            {
+                tracing::warn!(
+                    scene_id = %scene.id,
+                    check_type,
+                    error = %format!("{error:#}"),
+                    "failed to cache deep-check output; a retry will re-call the model"
+                );
+            }
+        }
+        Ok(DeepTierOutput {
+            output: response.output,
+            local_stub,
+        })
+    }
+
+    /// Stream one deep tier's per-scene model calls with bounded concurrency,
+    /// yielding results in scene order.
+    ///
+    /// The per-scene calls are independent, so running them in sequence only
+    /// summed their latencies — the difference between a chapter range that
+    /// finishes and one that never does. The cap keeps a wide range from opening
+    /// one connection per scene against the provider.
+    ///
+    /// Returned as a lazy stream, not a collected Vec, so a caller that stops on
+    /// the first failure (both per-scene tiers do — a dead route will not heal
+    /// mid-run) drops the stream and cancels the calls still queued behind it.
+    pub(super) fn deep_tier_output_stream<'a>(
+        &'a self,
+        scenes: &'a [&'a crate::sqlite::records::Scene],
+        check_type: &'a str,
+        prompts: Vec<String>,
+    ) -> impl futures_util::Stream<Item = Result<DeepTierOutput>> + 'a {
+        use futures_util::stream::StreamExt;
+
+        // The FIRST scene is deliberately probed alone, and only then does the
+        // rest fan out. Both tiers promise that a dead or uncleared route costs
+        // exactly ONE attempt before they stop; fanning out from the start would
+        // put `DEEP_CHECK_CONCURRENCY` calls on the wire before the first
+        // failure was even observed, hammering a route already known broken.
+        // Probing first keeps that promise exact, while a healthy route -- the
+        // case that actually needs the speed -- still gets the full fan-out.
+        let mut prompts = prompts.into_iter();
+        let probe = scenes
+            .first()
+            .zip(prompts.next())
+            .map(|(scene, prompt)| self.deep_tier_model_output(scene, check_type, prompt));
+        let rest = futures_util::stream::iter(
+            scenes
+                .iter()
+                .skip(1)
+                .zip(prompts)
+                .map(|(scene, prompt)| self.deep_tier_model_output(scene, check_type, prompt)),
+        )
+        .buffered(DEEP_CHECK_CONCURRENCY);
+
+        // `chain` does not poll `rest` until the probe has yielded, so a caller
+        // that bails on the probe's error never dispatches the remainder.
+        futures_util::stream::iter(probe)
+            .then(|future| future)
+            .chain(rest)
+    }
+
+    pub(super) async fn deep_temporal_coherence_issues(
+        &self,
+        scenes: &[crate::sqlite::records::Scene],
+        coverage: &mut spindle_core::models::AuditCoverage,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+        // Emission-cadence asymmetry, by design:
+        //   - a rating-clearance rejection (RatingNotCovered) is PER-SCENE:
+        //     ratings can differ per scene, so each uncleared scene emits its own
+        //     honest skip. It also stops the run (every remaining scene of that
+        //     rating would hit the same wall), matching the landed behavior.
+        //   - a generic TRANSPORT error is ONCE-PER-RUN: a dead route won't heal
+        //     mid-run, so on the first transport failure we emit ONE deep-tier
+        //     skip finding and STOP calling the model for remaining scenes rather
+        //     than emitting a duplicate finding per scene. (Previously this arm
+        //     silently returned Vec::new(), so a dead route read as a clean scan.)
+        // Scenes with prose, fanned out with bounded concurrency and served from
+        // the V0039 cache where this prose version was already analyzed. Results
+        // come back in scene order, so the skip cadence below is unchanged.
+        let scanned: Vec<&crate::sqlite::records::Scene> = scenes
+            .iter()
+            .filter(|scene| !scene.full_text.trim().is_empty())
+            .collect();
+        *coverage = spindle_core::models::AuditCoverage::new(
+            "temporal_coherence",
+            scanned.iter().map(|s| s.id.clone()),
+        );
+        let prompts = scanned
+            .iter()
+            .map(|scene| build_temporal_deep_check_prompt(scene))
+            .collect();
+        let mut outputs =
+            std::pin::pin!(self.deep_tier_output_stream(&scanned, "temporal_coherence", prompts));
+
+        let mut index = 0usize;
+        while let Some(output) = futures_util::StreamExt::next(&mut outputs).await {
+            let scene = scanned[index];
+            index += 1;
+            let findings = match output {
+                // Parse regardless of adapter kind: a non-JSON local stub
+                // (the default `review` route) parses to nothing, so Tier 2 is
+                // a no-op unless a real review model returns structured findings.
+                Ok(output) => match parse_deep_temporal_check_output(&output.output) {
+                    Ok(findings) => {
+                        if output.local_stub {
+                            coverage.heuristic_ids.push(scene.id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(scene.id.clone());
+                        }
+                        findings
+                    }
+                    _ => Vec::new(),
+                },
+                // Honest skip on a rating-clearance rejection: the `review` agent
+                // is not cleared for this scene's rating, so the prose never left.
+                // Emit one info finding that reads as SKIPPED (route + rating, no
+                // prose) and stop — every remaining scene of this rating would hit
+                // the same wall. PER-SCENE cadence (ratings can differ per scene).
+                Err(err)
+                    if matches!(
+                        err.downcast_ref::<crate::ai::RouteClearanceError>(),
+                        Some(crate::ai::RouteClearanceError::RatingNotCovered { .. })
+                    ) =>
+                {
+                    issues.push(temporal_deep_skip_issue(&err));
+                    return Ok(issues);
+                }
+                // Generic transport error (dead/unreachable route): a dead route
+                // won't heal mid-run, so emit ONE deep-tier skip finding and STOP
+                // calling the model for remaining scenes. This replaces the legacy
+                // silent `Err(_) => Vec::new()` that let a dead route read as a
+                // clean scan. Deterministic Tier-1 findings (produced by the
+                // caller) are unaffected.
+                Err(err) => {
+                    issues.push(temporal_deep_skip_issue(&err));
+                    return Ok(issues);
+                }
+            };
+
+            for finding in findings {
+                let mut message = format!("scene {}: {}", scene.id, finding.message.trim());
+                if let Some(evidence) = finding.evidence.as_ref()
+                    && !evidence.trim().is_empty()
+                {
+                    message.push_str(&format!(" Evidence: {}", evidence.trim()));
+                }
+                issues.push(ConsistencyIssue {
+                    severity: finding.severity.unwrap_or_else(|| "warning".to_string()),
+                    check_type: "temporal_coherence".to_string(),
+                    message,
+                    entity_ids: vec![scene.id.clone()],
+                    suggested_action: Some(
+                        "add a transition beat or scene break at the jump, split into separately \
+                         clocked scenes, or mark an intended rewind with temporal_mode \"flashback\""
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-backed promise-payoff candidate detection (T-106, Tier 2).
+    /// Proposes — never writes — that an unresolved promise the scoped prose
+    /// already delivered should be confirmed via `update_promise_status`.
+    ///
+    /// `promises` arrives already filtered to non-resolved, non-archived rows in
+    /// scope, urgency-ranked, and capped to the first 10; `unscanned` is the
+    /// count that overflowed the cap (surfaced as one summary info finding so a
+    /// silent cap never hides a dropped thread). `scenes` is the scoped prose.
+    ///
+    /// Unlike the temporal check's silent `Err(_) => Vec::new()`, an errored or
+    /// unusable review route here emits ONE honest-skip info finding: a route
+    /// failure must never read as a clean payoff scan.
+    pub(super) async fn deep_promise_payoff_issues(
+        &self,
+        promises: &[crate::sqlite::records::NarrativePromise],
+        scenes: &[crate::sqlite::records::Scene],
+        unscanned: usize,
+        coverage: &mut spindle_core::models::AuditCoverage,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use crate::ai::ModelRequest;
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+
+        if unscanned > 0 {
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "promise_payoff_detection".to_string(),
+                message: format!(
+                    "{unscanned} additional unresolved promise(s) were not scanned for payoff \
+                     (at most 10 candidates are audited per page; inspect audit_coverage.next_offset)"
+                ),
+                entity_ids: Vec::new(),
+                suggested_action: Some(
+                    "narrow the scope or resolve higher-urgency promises, then re-run".to_string(),
+                ),
+            });
+        }
+
+        // The prompt concatenates every scoped scene's prose, so the request
+        // must carry the STRICTEST rating in the batch — the rating-gated
+        // chokepoint then routes an explicit batch only to an explicit-cleared
+        // agent (evolution §4). `None` (no scenes) leaves the request unrated.
+        let batch_rating = max_scene_rating(scenes);
+
+        for promise in promises {
+            let matches = match self
+                .repository
+                .model_router()
+                .complete(&ModelRequest {
+                    route: "review".to_string(),
+                    prompt: build_promise_payoff_deep_check_prompt(promise, scenes),
+                    rating: batch_rating.clone(),
+                    context: Some(crate::ai::RequestContext {
+                        project_id: Some(promise.project_id.clone()),
+                        ..Default::default()
+                    }),
+                })
+                .await
+            {
+                // A non-JSON local stub (the default `review` route) parses to
+                // nothing, so a local-only deployment degrades to no proposals.
+                Ok(response) => match parse_deep_promise_payoff_output(&response.output) {
+                    Ok(findings) if !response.truncated => {
+                        if response.adapter_kind == "local" {
+                            coverage.heuristic_ids.push(promise.id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(promise.id.clone());
+                        }
+                        findings
+                    }
+                    _ => Vec::new(),
+                },
+                // Honest skip: the review route is unreachable/missing or not
+                // cleared for the batch rating. Emit one info finding that reads
+                // as SKIPPED rather than clean, then stop (every promise hits the
+                // same route). A rating-clearance failure names route+rating —
+                // never any prose.
+                Err(err) => {
+                    issues.push(payoff_skip_issue(&err));
+                    return Ok(issues);
+                }
+            };
+
+            for m in matches {
+                if !m.paid_off {
+                    continue;
+                }
+                let scene_ref = m
+                    .scene_ref
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("the scoped prose");
+                let desc = crate::format::truncate_at_chars(&promise.description, 80);
+                let mut message = format!(
+                    "promise {} (\"{}\") appears to be paid off in {} — confirm with \
+                     update_promise_status",
+                    promise.id, desc, scene_ref
+                );
+                if let Some(evidence) = m.evidence.as_ref() {
+                    let cleaned = evidence.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !cleaned.is_empty() {
+                        message.push_str(&format!(
+                            " Evidence: {}",
+                            crate::format::truncate_at_chars(&cleaned, 200)
+                        ));
+                    }
+                }
+                issues.push(ConsistencyIssue {
+                    severity: "info".to_string(),
+                    check_type: "promise_payoff_detection".to_string(),
+                    message,
+                    entity_ids: vec![promise.id.clone()],
+                    suggested_action: Some(
+                        "confirm the payoff and call update_promise_status(\"paid_off\"), or \
+                         reinforce the thread if it is not actually landed"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-backed scene-purpose fulfillment audit (evolution design §3.6):
+    /// did the drafted scene accomplish its chapter-plan `purpose`?
+    ///
+    /// `units` arrives in scene story order, already capped to the first
+    /// [`SCENE_PURPOSE_SCAN_CAP`]; `unscanned` is the overflow surfaced as one
+    /// summary info finding so a silent cap never hides an unaudited scene. One
+    /// model call per unit carries that scene's prose, stamped with the scene's
+    /// rating so the router applies the `(review, rating)` override (evolution
+    /// §4: an explicit-rated scene's audit never reaches an uncleared model) —
+    /// the same per-scene pattern as the behavioral secret-leak audit.
+    ///
+    /// Findings are ADVISORY (`info`, design §3.6: purpose drift is editorial
+    /// judgment, not an error). `fulfilled:true` yields no finding — silence is
+    /// the pass. A verdict whose `fulfilled` field is missing is DISCARDED (the
+    /// model does not get to leave the verdict ambiguous), and a malformed
+    /// payload yields no finding for that scene (never a guess). A route failure
+    /// emits one honest-skip info finding (never reads as clean) and stops.
+    pub(super) async fn deep_scene_purpose_issues(
+        &self,
+        units: &[ScenePurposeScanUnit],
+        unscanned: usize,
+        coverage: &mut spindle_core::models::AuditCoverage,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+
+        if unscanned > 0 {
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "scene_purpose_fulfillment".to_string(),
+                message: format!(
+                    "{unscanned} additional scene(s) with a planned purpose were not scanned for \
+                     purpose fulfillment (at most {SCENE_PURPOSE_SCAN_CAP} scenes in \
+                     scope are audited per page; inspect audit_coverage.next_offset)"
+                ),
+                entity_ids: Vec::new(),
+                suggested_action: Some(
+                    "narrow the scope to the scenes you want audited, then re-run".to_string(),
+                ),
+            });
+        }
+
+        for unit in units {
+            let prompt = build_scene_purpose_prompt(&unit.purpose, &unit.scene_text);
+            let request = build_scene_purpose_request(&unit.scene_rating, prompt);
+            let verdict = match self.repository.model_router().complete(&request).await {
+                // A non-JSON local stub (the default `review` route) parses to
+                // an error the caller treats as no finding rather than a guess.
+                Ok(response) => match parse_scene_purpose_output(&response.output) {
+                    Ok(verdict) if !response.truncated && verdict.fulfilled.is_some() => {
+                        if response.adapter_kind == "local" {
+                            coverage.heuristic_ids.push(unit.scene_id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(unit.scene_id.clone());
+                        }
+                        verdict
+                    }
+                    _ => continue,
+                },
+                // Honest skip: the review route is unreachable/missing or not
+                // cleared for the scene rating. Emit one info finding that reads
+                // as SKIPPED rather than clean, then stop (every unit hits the
+                // same route). A rating-clearance failure names route+rating —
+                // never any prose.
+                Err(err) => {
+                    issues.push(scene_purpose_skip_issue(&err));
+                    return Ok(issues);
+                }
+            };
+
+            // Discard a verdict with no `fulfilled` field (never guess); a
+            // `fulfilled:true` verdict is the silent pass.
+            match verdict.fulfilled {
+                Some(false) => {}
+                Some(true) | None => continue,
+            }
+
+            let purpose = crate::format::truncate_at_chars(&unit.purpose, 120);
+            let mut message = format!(
+                "scene {} did not appear to accomplish its planned purpose (\"{}\")",
+                unit.scene_ref, purpose
+            );
+            if let Some(assessment) = unit.assessment(&verdict) {
+                message.push_str(&format!(" — {assessment}"));
+            }
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "scene_purpose_fulfillment".to_string(),
+                message,
+                entity_ids: vec![unit.scene_id.clone()],
+                suggested_action: Some(
+                    "if the scene drifted from its purpose, revise it or replan the beat; if the \
+                     divergence improves the story, update the plan's purpose to match"
+                        .to_string(),
+                ),
+            });
+        }
+
+        Ok(issues)
+    }
+
+    /// Model-backed behavioral secret-leak audit (design §2.4 deep tier, Item 5).
+    ///
+    /// `units` arrives ranked by scene story order and already capped to the
+    /// first [`SECRET_LEAK_DEEP_SCAN_CAP`] (scene, secret-set) calls; `unscanned`
+    /// is the overflow surfaced as one summary info finding so a silent cap never
+    /// hides an unaudited scene. One model call per unit carries that scene's
+    /// prose + its in-play secrets, stamped with the scene's rating so the router
+    /// applies the `(review, rating)` override (design §5: an explicit-rated
+    /// scene's audit never reaches an uncleared model).
+    ///
+    /// Findings add to the SAME `secret_leak` check_type as the deterministic
+    /// tier, suffixed "(model-detected behavioral leak)". A finding whose
+    /// `character_id` is not a present out-of-circle character for that scene is
+    /// DISCARDED — the model does not get to invent violations. A route failure
+    /// emits one honest-skip info finding (never reads as clean) and stops.
+    pub(super) async fn deep_secret_behavioral_leak_issues(
+        &self,
+        units: &[SecretLeakScanUnit],
+        unscanned: usize,
+        coverage: &mut spindle_core::models::AuditCoverage,
+    ) -> Result<Vec<spindle_core::models::ConsistencyIssue>> {
+        use spindle_core::models::ConsistencyIssue;
+
+        let mut issues = Vec::new();
+
+        if unscanned > 0 {
+            issues.push(ConsistencyIssue {
+                severity: "info".to_string(),
+                check_type: "secret_leak".to_string(),
+                message: format!(
+                    "{unscanned} additional (scene, secret-set) pair(s) were not scanned for \
+                     behavioral secret leaks (at most {SECRET_LEAK_DEEP_SCAN_CAP} scenes \
+                     in scope are audited per page; inspect audit_coverage.next_offset)"
+                ),
+                entity_ids: Vec::new(),
+                suggested_action: Some(
+                    "narrow the scope to the scenes you want audited, then re-run".to_string(),
+                ),
+            });
+        }
+
+        for unit in units {
+            let prompt = build_secret_behavioral_leak_prompt(&unit.scene_text, &unit.secrets);
+            let request = build_secret_behavioral_leak_request(&unit.scene_rating, prompt);
+            let findings = match self.repository.model_router().complete(&request).await {
+                // A non-JSON local stub (the default `review` route) parses to
+                // nothing, so a local-only deployment adds no behavioral findings.
+                Ok(response) => match parse_deep_secret_leak_output(&response.output) {
+                    Ok(findings) if !response.truncated => {
+                        if response.adapter_kind == "local" {
+                            coverage.heuristic_ids.push(unit.scene_id.clone());
+                        } else {
+                            coverage.evaluated_ids.push(unit.scene_id.clone());
+                        }
+                        findings
+                    }
+                    _ => Vec::new(),
+                },
+                // Honest skip: the review route is unreachable/missing or not
+                // cleared for the scene rating. Emit one info finding that reads
+                // as SKIPPED rather than clean, then stop (every unit hits the
+                // same route). A rating-clearance failure names route+rating —
+                // never any prose.
+                Err(err) => {
+                    issues.push(secret_leak_skip_issue(&err));
+                    return Ok(issues);
+                }
+            };
+
+            for finding in findings {
+                // Discard: the model may only name a present out-of-circle
+                // character for this scene. Anything else (a knower, an invented
+                // id, an absent character) is dropped.
+                let Some(name) = unit.unaware_present.get(finding.character_id.as_str()) else {
+                    continue;
+                };
+                let mut message = format!(
+                    "scene {}: {} ({}) betrays knowledge of a secret they were never told",
+                    unit.scene_ref, name, finding.character_id,
+                );
+                if let Some(evidence) = finding
+                    .evidence
+                    .as_deref()
+                    .or(finding.description.as_deref())
+                {
+                    let cleaned = evidence.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !cleaned.is_empty() {
+                        message.push_str(&format!(
+                            " Evidence: {}",
+                            crate::format::truncate_at_chars(&cleaned, 200)
+                        ));
+                    }
+                }
+                message.push_str(" (model-detected behavioral leak)");
+                issues.push(ConsistencyIssue {
+                    severity: "warning".to_string(),
+                    check_type: "secret_leak".to_string(),
+                    message,
+                    entity_ids: vec![finding.character_id.clone(), unit.scene_id.clone()],
+                    suggested_action: Some(
+                        "record the reveal (record_knowledge with secret_of_fact_id) if intended, \
+                         or revise the scene so the out-of-circle character does not act on the secret"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        Ok(issues)
+    }
+
+    /// Find scene/book/chapter spine inconsistencies. Mirrors
+    /// `services/mod.rs:6672` in 705b835^.
+    pub(super) async fn find_orphan_scenes(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<SceneSpineIntegrityIssue>> {
+        use std::collections::BTreeMap;
+
+        let books = self.repository.list_books_by_project(project_id).await?;
+        let mut books_by_id = BTreeMap::new();
+        let mut chapters_by_id = BTreeMap::new();
+
+        for book in &books {
+            books_by_id.insert(book.id.clone(), book.clone());
+            for chapter in self.repository.list_chapters_by_book(&book.id).await? {
+                chapters_by_id.insert(chapter.id.clone(), chapter);
+            }
+        }
+
+        let scenes = self
+            .repository
+            .list_scenes_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let mut issues = Vec::new();
+
+        for scene in &scenes {
+            let scene_id = scene.id.clone();
+            let book_id = scene.book_id.clone();
+            let chapter_id = scene.chapter_id.clone();
+
+            match books_by_id.get(&book_id) {
+                Some(book) => {
+                    if book.book_number != scene.book_number {
+                        issues.push(SceneSpineIntegrityIssue {
+                            severity: "error",
+                            book_number: scene.book_number,
+                            chapter_number: scene.chapter_number,
+                            scene_order: scene.scene_order,
+                            message: format!(
+                                "scene {} points to book {} but carries book_number {}",
+                                scene_id, book_id, scene.book_number
+                            ),
+                            entity_ids: vec![scene_id.clone()],
+                            suggested_action: Some(
+                                "repair the scene book_id or renumber the scene placement"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+                None => issues.push(SceneSpineIntegrityIssue {
+                    severity: "error",
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: scene.scene_order,
+                    message: format!("scene {} points to missing book_id {}", scene_id, book_id),
+                    entity_ids: vec![scene_id.clone()],
+                    suggested_action: Some(
+                        "repair the scene book_id or recreate the missing book record".to_string(),
+                    ),
+                }),
+            }
+
+            match chapters_by_id.get(&chapter_id) {
+                Some(chapter) => {
+                    let chapter_book_id = chapter.book_id.clone();
+                    if chapter_book_id != book_id {
+                        issues.push(SceneSpineIntegrityIssue {
+                            severity: "error",
+                            book_number: scene.book_number,
+                            chapter_number: scene.chapter_number,
+                            scene_order: scene.scene_order,
+                            message: format!(
+                                "scene {} points to chapter {} in book {} but carries book_id {}",
+                                scene_id, chapter_id, chapter_book_id, book_id
+                            ),
+                            entity_ids: vec![scene_id.clone()],
+                            suggested_action: Some(
+                                "repair the scene chapter_id/book_id pair so they refer to the same chapter spine"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    if chapter.book_number != scene.book_number
+                        || chapter.chapter_number != scene.chapter_number
+                    {
+                        issues.push(SceneSpineIntegrityIssue {
+                            severity: "error",
+                            book_number: scene.book_number,
+                            chapter_number: scene.chapter_number,
+                            scene_order: scene.scene_order,
+                            message: format!(
+                                "scene {} points to chapter {} but carries placement {}.{}",
+                                scene_id, chapter_id, scene.book_number, scene.chapter_number
+                            ),
+                            entity_ids: vec![scene_id.clone()],
+                            suggested_action: Some(
+                                "repair the scene chapter_id or renumber the scene placement"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+                None => issues.push(SceneSpineIntegrityIssue {
+                    severity: "error",
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: scene.scene_order,
+                    message: format!(
+                        "scene {} points to missing chapter_id {}",
+                        scene_id, chapter_id
+                    ),
+                    entity_ids: vec![scene_id.clone()],
+                    suggested_action: Some(
+                        "repair the scene chapter_id or recreate the missing chapter record"
+                            .to_string(),
+                    ),
+                }),
+            }
+        }
+
+        let mut scenes_by_position: BTreeMap<(i32, i32, i32), Vec<String>> = BTreeMap::new();
+        for scene in &scenes {
+            scenes_by_position
+                .entry((scene.book_number, scene.chapter_number, scene.scene_order))
+                .or_default()
+                .push(scene.id.clone());
+        }
+
+        for ((book_number, chapter_number, scene_order), entity_ids) in scenes_by_position {
+            if entity_ids.len() < 2 {
+                continue;
+            }
+            issues.push(SceneSpineIntegrityIssue {
+                severity: "error",
+                book_number,
+                chapter_number,
+                scene_order,
+                message: format!(
+                    "book {} chapter {} has duplicate scene_order {}",
+                    book_number, chapter_number, scene_order
+                ),
+                entity_ids,
+                suggested_action: Some(
+                    "renumber or move the colliding scenes so each chapter position is unique"
+                        .to_string(),
+                ),
+            });
+        }
+
+        Ok(issues)
+    }
+    pub(super) async fn resolve_phase_four_caches(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        ids: &[PhaseFourCacheId],
+    ) -> Result<usize> {
+        let mut resolved = 0;
+        for id in ids {
+            resolved += self
+                .repository
+                .resolve_validator_findings_for_validator(project_id, branch_id, id.as_str())
+                .await?;
+        }
+        Ok(resolved)
+    }
+
+    pub(crate) async fn resolve_phase_four_caches_for_project(
+        &self,
+        project_id: &str,
+        ids: &[PhaseFourCacheId],
+    ) -> Result<usize> {
+        let mut resolved = 0;
+        for branch in self.repository.list_branches_by_project(project_id).await? {
+            resolved += self
+                .resolve_phase_four_caches(project_id, &branch.id, ids)
+                .await?;
+        }
+        Ok(resolved)
+    }
+
+    pub(super) async fn phase_four_cache_target_for_entity_update(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        changes: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<Option<(String, Option<String>, Vec<PhaseFourCacheId>)>> {
+        if changes.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(match entity_type {
+            "project"
+                if changes.contains_key("genre")
+                    || changes.contains_key("project_type")
+                    || changes.contains_key("reader_contract")
+                    || changes.contains_key("promise")
+                    || changes.contains_key("boundaries")
+                    || changes.contains_key("style_notes") =>
+            {
+                let project = self.repository.get_project(entity_id).await?;
+                Some((project.id, None, vec![PhaseFourCacheId::StyleCompliance]))
+            }
+            "world_rule" => {
+                let rule = self.repository.get_world_rule(entity_id).await?;
+                let mut cache_ids = vec![PhaseFourCacheId::WorldRuleSemanticDrift];
+                if rule.rule_type.eq_ignore_ascii_case("style")
+                    || changes
+                        .get("rule_type")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|rule_type| rule_type.eq_ignore_ascii_case("style"))
+                {
+                    cache_ids.push(PhaseFourCacheId::StyleCompliance);
+                }
+                Some((rule.project_id, Some(rule.branch_id), cache_ids))
+            }
+            "character"
+                if changes.contains_key("name")
+                    || changes.contains_key("normalized_name")
+                    || changes.contains_key("voice_profile")
+                    || changes.contains_key("voice_profile_data") =>
+            {
+                let character = self.repository.get_character(entity_id).await?;
+                Some((
+                    character.project_id,
+                    Some(character.branch_id),
+                    vec![PhaseFourCacheId::VoiceDrift],
+                ))
+            }
+            "timeline_event" => {
+                let event = self.repository.get_timeline_event(entity_id).await?;
+                Some((
+                    event.project_id,
+                    Some(event.branch_id),
+                    vec![PhaseFourCacheId::RetconReachability],
+                ))
+            }
+            "temporal_intervention" => {
+                let intervention = self.repository.get_temporal_intervention(entity_id).await?;
+                Some((
+                    intervention.project_id,
+                    Some(intervention.branch_id),
+                    vec![PhaseFourCacheId::RetconReachability],
+                ))
+            }
+            _ => None,
+        })
+    }
+}

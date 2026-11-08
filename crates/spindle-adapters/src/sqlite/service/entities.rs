@@ -1,0 +1,341 @@
+use super::*;
+
+impl SqliteSpindleService {
+    // =========================================================================
+    // Entity creation tools
+    // =========================================================================
+
+    pub async fn create_character(
+        &self,
+        input: CreateCharacterInput,
+    ) -> Result<CreateCharacterOutput> {
+        self.repository.get_project(&input.project_id).await?;
+        let (character, voice_profile, emotional_profile, state) =
+            self.repository.create_character(&input).await?;
+
+        // Mirror the SurrealDB service: clear voice_drift validator findings
+        // on the active branch when a new character lands. Search-embedding
+        // refresh happens here too so the new character is searchable.
+        let active_branch_id = self
+            .repository
+            .active_branch_id_public(&input.project_id)
+            .await?;
+        self.resolve_phase_four_caches(
+            &input.project_id,
+            &active_branch_id,
+            &[PhaseFourCacheId::VoiceDrift],
+        )
+        .await?;
+        let document = character_search_document(&character);
+        self.repository
+            .refresh_search_embedding_for_entity(
+                &input.project_id,
+                &active_branch_id,
+                &character.id,
+                &document,
+            )
+            .await?;
+
+        Ok(CreateCharacterOutput {
+            character_id: character.id,
+            voice_profile_id: voice_profile.id,
+            emotional_profile_id: emotional_profile.id,
+            state_id: state.id,
+        })
+    }
+
+    pub async fn create_location(
+        &self,
+        input: CreateLocationInput,
+    ) -> Result<CreateLocationOutput> {
+        self.repository.get_project(&input.project_id).await?;
+        let (location, world_state) = self.repository.create_location(&input).await?;
+
+        let active_branch_id = self
+            .repository
+            .active_branch_id_public(&input.project_id)
+            .await?;
+        let document = SearchDocument {
+            entity_table: "location".into(),
+            title: location.name.clone(),
+            excerpt: location.summary.clone(),
+            content: format!("{}\n\n{}", location.name, location.summary),
+        };
+        self.repository
+            .refresh_search_embedding_for_entity(
+                &input.project_id,
+                &active_branch_id,
+                &location.id,
+                &document,
+            )
+            .await?;
+
+        Ok(CreateLocationOutput {
+            location_id: location.id,
+            world_state_id: world_state.id,
+        })
+    }
+
+    pub async fn create_relationship(
+        &self,
+        input: CreateRelationshipInput,
+    ) -> Result<CreateRelationshipOutput> {
+        let source_character = self.repository.get_character(&input.character_a_id).await?;
+        let target_character = self.repository.get_character(&input.character_b_id).await?;
+        if source_character.project_id != target_character.project_id {
+            anyhow::bail!("relationship characters must belong to the same project");
+        }
+        let branch_id = self
+            .repository
+            .active_branch_id_public(&source_character.project_id)
+            .await?;
+        let rel = self
+            .repository
+            .create_relationship(&branch_id, &input)
+            .await?;
+        // The SQLite schema's relates_to has no surrogate id — the composite
+        // key (branch_id, in_id, out_id) is the natural identifier. Encode
+        // it into the output's relationship_id field so callers can roundtrip.
+        Ok(CreateRelationshipOutput {
+            relationship_id: format!("relates_to:{}:{}:{}", rel.branch_id, rel.in_id, rel.out_id),
+        })
+    }
+
+    /// Commit a character state snapshot at the moment of a scene.
+    /// Merges the input patch on top of the most recent character_state at
+    /// or before the scene, then appends a new state row + a progression
+    /// event recording the change.
+    pub async fn commit_character_state(
+        &self,
+        input: CommitCharacterStateInput,
+    ) -> Result<CommitCharacterStateOutput> {
+        let character = self.repository.get_character(&input.character_id).await?;
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        if scene.project_id != character.project_id {
+            anyhow::bail!("scene and character must belong to the same project");
+        }
+        let progression_delta = serde_json::to_value(&input.changes)?;
+        let changes = input.changes;
+
+        let state_id = self
+            .repository
+            .with_transaction(move |tx| {
+                let target_branch_id =
+                    tx.resolve_effective_scene_branch(&character.project_id, &scene.branch_id)?;
+                let latest_state = tx.resolve_character_state_for_branch(
+                    &target_branch_id,
+                    &character.id,
+                    scene.book_number,
+                    scene.chapter_number,
+                    scene.scene_order + 1,
+                )?;
+                let merged = CharacterStatePatch {
+                    emotional_state: if changes.emotional_state.is_empty() {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.emotional_state.clone())
+                            .unwrap_or_default()
+                    } else {
+                        changes.emotional_state
+                    },
+                    goals: Some(changes.goals.unwrap_or_else(|| {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.goals.clone())
+                            .unwrap_or_default()
+                    })),
+                    status: Some(changes.status.unwrap_or_else(|| {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.status.clone())
+                            .unwrap_or_default()
+                    })),
+                    notes: Some(changes.notes.unwrap_or_else(|| {
+                        latest_state
+                            .as_ref()
+                            .map(|s| s.notes.clone())
+                            .unwrap_or_default()
+                    })),
+                    source_summary: changes
+                        .source_summary
+                        .or_else(|| latest_state.as_ref().and_then(|s| s.source_summary.clone()))
+                        .or_else(|| Some(format!("scene update for {}", character.name))),
+                };
+
+                let state = tx.append_character_state(AppendCharacterStateParams {
+                    project_id: character.project_id.clone(),
+                    branch_id: target_branch_id.clone(),
+                    character_id: character.id.clone(),
+                    scene_id: Some(scene.id.clone()),
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: scene.scene_order,
+                    patch: merged,
+                })?;
+
+                tx.append_progression_event(AppendProgressionEventParams {
+                    project_id: character.project_id.clone(),
+                    branch_id: target_branch_id,
+                    subject_table: "character".to_string(),
+                    subject_id: character.id.clone(),
+                    overlay_id: None,
+                    kind: "character_state_commit".to_string(),
+                    delta_json: progression_delta,
+                    source_scene_id: Some(scene.id.clone()),
+                    placement: Some(StoryPlacement {
+                        book_number: scene.book_number,
+                        chapter_number: scene.chapter_number,
+                        scene_order: Some(scene.scene_order),
+                        note: None,
+                    }),
+                    created_at: chrono::Utc::now(),
+                })?;
+
+                Ok(state.id)
+            })
+            .await?;
+
+        Ok(CommitCharacterStateOutput { state_id })
+    }
+
+    /// Update a relationship's trust + tension by deltas, set reason and
+    /// last_scene_id. Returns the post-update trust + tension so callers can
+    /// surface the new equilibrium.
+    pub async fn update_relationship(
+        &self,
+        input: UpdateRelationshipInput,
+    ) -> Result<UpdateRelationshipOutput> {
+        self.update_relationship_with_source(input, "scene").await
+    }
+
+    pub(crate) async fn update_relationship_with_source(
+        &self,
+        input: UpdateRelationshipInput,
+        source: &str,
+    ) -> Result<UpdateRelationshipOutput> {
+        let scene = self.repository.get_scene(&input.scene_id).await?;
+        let source_character = self.repository.get_character(&input.character_a_id).await?;
+        let target_character = self.repository.get_character(&input.character_b_id).await?;
+        if source_character.project_id != target_character.project_id {
+            anyhow::bail!("relationship characters must belong to the same project");
+        }
+        if scene.project_id != source_character.project_id {
+            anyhow::bail!("scene does not belong to the same project as the characters");
+        }
+        let rel = self
+            .repository
+            .update_relationship_with_source(&scene.branch_id, &input, source)
+            .await?;
+        Ok(UpdateRelationshipOutput {
+            relationship_id: format!("relates_to:{}:{}:{}", rel.branch_id, rel.in_id, rel.out_id),
+            trust: rel.trust,
+            tension: rel.tension,
+        })
+    }
+
+    /// MCP search_bible: find Bible entities matching the query. Uses the
+    /// vec0 kNN path for `Semantic` mode and FTS5 for `Exact` / `Fuzzy`.
+    /// Returns the canonical SearchBibleOutput shape that MCP exposes.
+    pub async fn search_bible(&self, input: SearchBibleInput) -> Result<SearchBibleOutput> {
+        let mode = input.mode.unwrap_or(SearchBibleMode::Semantic);
+        let limit = input.limit.unwrap_or(20).min(100);
+        let project_id = input.project_id.clone();
+        let branch_id = self.repository.active_branch_id_public(&project_id).await?;
+
+        let results: Vec<SearchBibleResultItem> = match mode {
+            SearchBibleMode::Semantic => {
+                // Use the configured embedder to produce a query vector,
+                // then ask the vec0 mirror for the k nearest matches.
+                let embedding_session = self.repository.model_router().embedding_session()?;
+                let query_embedding = embedding_session.embed_text(&input.query).await?;
+                let hits = self
+                    .repository
+                    .knn_search_embeddings(&project_id, Some(&branch_id), &query_embedding, limit)
+                    .await?;
+                hits.into_iter()
+                    .map(|(se, distance)| SearchBibleResultItem {
+                        entity_type: se.entity_table,
+                        entity_id: se.entity_id,
+                        title: se.title,
+                        excerpt: se.excerpt,
+                        // Lower distance = more similar; report as a score where
+                        // higher is better, in the [0, 1] range that callers
+                        // typically display.
+                        score: 1.0 / (1.0 + distance),
+                    })
+                    .collect()
+            }
+            SearchBibleMode::Exact | SearchBibleMode::Fuzzy => {
+                // FTS5: combine scene + character + location + world_rule hits.
+                let mut combined = Vec::new();
+                for (entity_type, hits) in [
+                    (
+                        "scene",
+                        self.repository
+                            .fts_search_scenes(&project_id, Some(&branch_id), &input.query, limit)
+                            .await?,
+                    ),
+                    (
+                        "character",
+                        self.repository
+                            .fts_search_characters(
+                                &project_id,
+                                Some(&branch_id),
+                                &input.query,
+                                limit,
+                            )
+                            .await?,
+                    ),
+                    (
+                        "location",
+                        self.repository
+                            .fts_search_locations(
+                                &project_id,
+                                Some(&branch_id),
+                                &input.query,
+                                limit,
+                            )
+                            .await?,
+                    ),
+                    (
+                        "world_rule",
+                        self.repository
+                            .fts_search_world_rules(
+                                &project_id,
+                                Some(&branch_id),
+                                &input.query,
+                                limit,
+                            )
+                            .await?,
+                    ),
+                ] {
+                    for (id, rank, snippet) in hits {
+                        combined.push(SearchBibleResultItem {
+                            entity_type: entity_type.to_string(),
+                            entity_id: id,
+                            title: String::new(),
+                            excerpt: snippet,
+                            // FTS5 rank is negative (smaller = better). Flip sign
+                            // for a "higher is better" score so callers can sort
+                            // both modes the same way.
+                            score: -rank,
+                        });
+                    }
+                }
+                combined.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                combined.truncate(limit);
+                combined
+            }
+        };
+
+        Ok(SearchBibleOutput {
+            results,
+            canonical_facts: Vec::new(),
+            markdown: None,
+        })
+    }
+}
