@@ -1181,6 +1181,35 @@ max_tokens = 123
         pkt.project_id = project.project_id.clone();
         pkt.branch_id = branch.id.clone();
         pkt.scene_id = Some("scene-shadow-1".into());
+        let pkt_src = pkt.source_versions[0].clone();
+        pkt.continuity.knowledge_boundaries.push(PacketItem {
+            source: pkt_src.clone(),
+            proposition_id: "kb-shadow-1".into(),
+            text: "SHADOW_SENTINEL_KB_NO_TOWER_KEY".into(),
+            relevance: 95,
+            recency: 10,
+        });
+        pkt.continuity.facts.push(PacketItem {
+            source: pkt_src.clone(),
+            proposition_id: "fact-shadow-1".into(),
+            text: "SHADOW_SENTINEL_FACT_ROPE_FRAYED".into(),
+            relevance: 90,
+            recency: 9,
+        });
+        pkt.voice.rules.push(PacketItem {
+            source: pkt_src.clone(),
+            proposition_id: "voice-shadow-1".into(),
+            text: "SHADOW_SENTINEL_VOICE_SHORT_CADENCE".into(),
+            relevance: 88,
+            recency: 8,
+        });
+        pkt.editorial_memory.recurring_images.push(PacketItem {
+            source: pkt_src,
+            proposition_id: "mem-shadow-1".into(),
+            text: "SHADOW_SENTINEL_MEMORY_FLOOD_FOAM".into(),
+            relevance: 80,
+            recency: 7,
+        });
 
         let mut draft_budget = budget();
         draft_budget.model_id = "venice-model".into();
@@ -1354,19 +1383,25 @@ max_tokens = 500
             other => panic!("expected Critiqued outcome after repair, got {other:?}"),
         }
 
-        // Verify both initial and repair prompts included the full CritiqueV1 contract/schema/template
+        // Verify both initial and repair prompts included the full CritiqueV1 contract/schema/template and packet context sentinels
         let first_req_body: serde_json::Value =
             serde_json::from_str(&captured_reqs.lock().unwrap()[0]).unwrap();
         let first_user_msg = first_req_body["messages"][1]["content"].as_str().unwrap();
         assert!(first_user_msg.contains("CRITIQUE_V1 FIELD & ENUM REQUIREMENTS"));
         assert!(first_user_msg.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
         assert!(first_user_msg.contains("CRITIQUE_V1 JSON SCHEMA"));
+        assert!(first_user_msg.contains("SHADOW_SENTINEL_KB_NO_TOWER_KEY"));
+        assert!(first_user_msg.contains("SHADOW_SENTINEL_FACT_ROPE_FRAYED"));
+        assert!(first_user_msg.contains("SHADOW_SENTINEL_VOICE_SHORT_CADENCE"));
+        assert!(first_user_msg.contains("SHADOW_SENTINEL_MEMORY_FLOOD_FOAM"));
 
         let second_req_body: serde_json::Value =
             serde_json::from_str(&captured_reqs.lock().unwrap()[1]).unwrap();
         let second_user_msg = second_req_body["messages"][1]["content"].as_str().unwrap();
         assert!(second_user_msg.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
         assert!(second_user_msg.contains("CRITIQUE_V1 JSON SCHEMA"));
+        assert!(second_user_msg.contains("SHADOW_SENTINEL_KB_NO_TOWER_KEY"));
+        assert!(second_user_msg.contains("SHADOW_SENTINEL_VOICE_SHORT_CADENCE"));
         assert!(second_user_msg.contains("SCHEMA / ANCHOR REPAIR REQUIRED"));
 
         // Verify shadow mode did NOT mutate the draft artifact on disk

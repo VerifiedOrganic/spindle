@@ -314,6 +314,18 @@ fn detect_author_lock_or_canon_conflict(
     directive: &CritiqueDirective,
     packet: &DraftingPacketV1,
 ) -> Option<(Option<String>, String)> {
+    // 0. Chapter-scoped directives violate the scene-only revision contract and must be
+    // quarantined before textual keyword matching.
+    if directive.scope == DirectiveScope::Chapter {
+        return Some((
+            Some("directive.scope:chapter".into()),
+            format!(
+                "directive {} has chapter scope and cannot be executed in a scene-only revision pass",
+                directive.id
+            ),
+        ));
+    }
+
     let combined = format!(
         "{} {}",
         directive.diagnosis.to_lowercase(),
@@ -738,6 +750,8 @@ pub fn assemble_critic_messages(
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
     let constraints_json = serde_json::to_string(&packet.hard_constraints)
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let knowledge_boundaries_json = serde_json::to_string(&packet.continuity.knowledge_boundaries)
+        .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
     let findings_json = serde_json::to_string(ingested_findings)
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
     let output_template_json = serde_json::to_string(&critique_v1_output_template(
@@ -749,38 +763,182 @@ pub fn assemble_critic_messages(
     let schema_json = serde_json::to_string(&critique_v1_json_schema())
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
 
-    let user = format!(
-        "CRITIC CONTRACT\n\
-         schema_version: {CRITIQUE_SCHEMA_VERSION}\n\
-         rubric_version: {CRITIC_RUBRIC_VERSION}\n\
-         packet_hash: {expected_packet_hash}\n\
-         base_text_hash: {expected_base_text_hash}\n\
-         scene_id: {:?}\n\
-         base_text_utf8_byte_len: {}\n\n\
-         CRITIQUE_V1 FIELD & ENUM REQUIREMENTS\n\
-         - Top-level required fields: schema_version (\"critique_v1\"), base_text_hash, packet_hash, rubric_version (\"scene-critic-v1\"), dimensions (array of all 10 CriticDimensionScore objects), directives (0..=5 CritiqueDirective objects), strengths_to_preserve (array of strings), requires_author_decision (array of AuthorDecisionItem objects), no_edit_reason (string or null; required when directives is empty).\n\
-         - dimensions[] required fields: dimension (one of: scene_purpose | tension_turn | pov | voice | dialogue | freshness | continuity | length | entry_exit_emotion | chapter_role), score_1_to_5 (integer 1..=5), evidence_spans (array of CritiqueAnchor), rationale (non-empty string).\n\
-         - directives[] required fields: id (non-empty string), dimension (CriticDimension enum), severity (one of: blocker | major | minor | polish), priority (integer 1..=5), anchor (CritiqueAnchor object), diagnosis (non-empty string), requested_change (non-empty string), preserve (array of strings), success_test (non-empty string), source_finding_ids (array of strings), scope (one of: span | scene | chapter).\n\
-         - CritiqueAnchor required fields: scene_id (matching scene_id above), base_text_hash (matching base_text_hash above), start_byte (usize), end_byte (usize), exact_quote (verbatim UTF-8 substring base_text[start_byte..end_byte]; empty string only when start_byte == end_byte), context_before (optional string; required if start_byte == end_byte and context_after is null), context_after (optional string; required if start_byte == end_byte and context_before is null).\n\
-         - requires_author_decision[] fields: id, reason, blocking_constraint_id (string or null), proposed_change, source_finding_ids (array of strings).\n\n\
-         CRITIQUE_V1 OUTPUT TEMPLATE\n\
-         {output_template_json}\n\n\
-         CRITIQUE_V1 JSON SCHEMA\n\
-         {schema_json}\n\n\
-         CRITIC RUBRIC {CRITIC_RUBRIC_VERSION}\n\
-         {CRITIC_RUBRIC}\n\n\
-         SCENE CARD\n\
-         {scene_card_json}\n\n\
-         HARD CONSTRAINTS\n\
-         {constraints_json}\n\n\
-         INGESTED FINDINGS (DEDUPLICATED)\n\
-         {findings_json}\n\n\
-         EXACT BASE DRAFT UTF-8\n\
-         {base_text}\n",
-        packet.scene_id,
-        base_text.len()
-    );
+    let render_critic_user = |continuity_sec: &str,
+                              voice_sec: &str,
+                              editorial_sec: &str|
+     -> String {
+        format!(
+            "CRITIC CONTRACT\n\
+                 schema_version: {CRITIQUE_SCHEMA_VERSION}\n\
+                 rubric_version: {CRITIC_RUBRIC_VERSION}\n\
+                 packet_hash: {expected_packet_hash}\n\
+                 base_text_hash: {expected_base_text_hash}\n\
+                 scene_id: {:?}\n\
+                 base_text_utf8_byte_len: {}\n\n\
+                 CRITIQUE_V1 FIELD & ENUM REQUIREMENTS\n\
+                 - Top-level required fields: schema_version (\"critique_v1\"), base_text_hash, packet_hash, rubric_version (\"scene-critic-v1\"), dimensions (array of all 10 CriticDimensionScore objects), directives (0..=5 CritiqueDirective objects), strengths_to_preserve (array of strings), requires_author_decision (array of AuthorDecisionItem objects), no_edit_reason (string or null; required when directives is empty).\n\
+                 - dimensions[] required fields: dimension (one of: scene_purpose | tension_turn | pov | voice | dialogue | freshness | continuity | length | entry_exit_emotion | chapter_role), score_1_to_5 (integer 1..=5), evidence_spans (array of CritiqueAnchor), rationale (non-empty string).\n\
+                 - directives[] required fields: id (non-empty string), dimension (CriticDimension enum), severity (one of: blocker | major | minor | polish), priority (integer 1..=5), anchor (CritiqueAnchor object), diagnosis (non-empty string), requested_change (non-empty string), preserve (array of strings), success_test (non-empty string), source_finding_ids (array of strings), scope (one of: span | scene | chapter).\n\
+                 - CritiqueAnchor required fields: scene_id (matching scene_id above), base_text_hash (matching base_text_hash above), start_byte (usize), end_byte (usize), exact_quote (verbatim UTF-8 substring base_text[start_byte..end_byte]; empty string only when start_byte == end_byte), context_before (optional string; required if start_byte == end_byte and context_after is null), context_after (optional string; required if start_byte == end_byte and context_before is null).\n\
+                 - requires_author_decision[] fields: id, reason, blocking_constraint_id (string or null), proposed_change, source_finding_ids (array of strings).\n\n\
+                 CRITIQUE_V1 OUTPUT TEMPLATE\n\
+                 {output_template_json}\n\n\
+                 CRITIQUE_V1 JSON SCHEMA\n\
+                 {schema_json}\n\n\
+                 CRITIC RUBRIC {CRITIC_RUBRIC_VERSION}\n\
+                 {CRITIC_RUBRIC}\n\n\
+                 SCENE CARD\n\
+                 {scene_card_json}\n\n\
+                 HARD CONSTRAINTS\n\
+                 {constraints_json}\n\n\
+                 KNOWLEDGE BOUNDARIES (MANDATORY)\n\
+                 {knowledge_boundaries_json}\n\n\
+                 CONTINUITY CONTEXT\n\
+                 {continuity_sec}\n\
+                 VOICE & STYLE CONTEXT\n\
+                 {voice_sec}\n\
+                 EDITORIAL MEMORY & STORY CONTEXT\n\
+                 {editorial_sec}\n\
+                 INGESTED FINDINGS (DEDUPLICATED)\n\
+                 {findings_json}\n\n\
+                 EXACT BASE DRAFT UTF-8\n\
+                 {base_text}\n",
+            packet.scene_id,
+            base_text.len()
+        )
+    };
 
+    // 1. Verify mandatory context (contract, schema, rubric, scene_card, hard_constraints,
+    // knowledge_boundaries, ingested_findings, and base_text) fits within the critic budget.
+    let mandatory_messages = DraftMessages {
+        system: system.clone(),
+        user: render_critic_user("", "", ""),
+    };
+    let mandatory_tokens = t
+        .count_messages(&mandatory_messages)
+        .map_err(CritiqueError::BudgetUnknown)?;
+    if !fits_critic_context(mandatory_tokens, budget) {
+        return Err(CritiqueError::MandatoryOverflow(
+            "mandatory critic context (scene card, hard constraints, knowledge boundaries, findings, schema, and base draft) exceeds critic budget".into(),
+        ));
+    }
+
+    // 2. Render compact packet sections (continuity, voice, and editorial memory) in priority
+    // order under the remaining critic token budget.
+    let c = &packet.continuity;
+    let m = &packet.editorial_memory;
+    let mut tier_continuity: Vec<(&str, PacketItem)> = Vec::new();
+    for (label, items) in [
+        ("character state", &c.character_states),
+        ("fact", &c.facts),
+        ("open thread", &c.open_threads),
+    ] {
+        for item in items {
+            tier_continuity.push((label, item.clone()));
+        }
+    }
+    if let Some(tail) = &c.prior_scene_tail {
+        tier_continuity.push(("prior scene tail", tail.clone()));
+    }
+
+    let mut tier_voice: Vec<(&str, PacketItem)> = Vec::new();
+    for item in &packet.voice.rules {
+        tier_voice.push(("voice rule", item.clone()));
+    }
+    for exemplar in &packet.voice.exemplars {
+        let mut item = exemplar.item.clone();
+        item.text = serde_json::to_string(exemplar)
+            .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+        tier_voice.push(("approved prose example (not canon)", item));
+    }
+
+    let mut tier_editorial: Vec<(&str, PacketItem)> = Vec::new();
+    for (label, items) in [
+        ("story so far", &c.story_so_far),
+        ("recent opening", &m.recent_openings),
+        ("recent ending", &m.recent_endings),
+        ("recurring image", &m.recurring_images),
+        ("repeated phrase", &m.repeated_phrases),
+        ("pacing history", &m.pacing_history),
+        ("research", &packet.research_evidence),
+    ] {
+        for item in items {
+            tier_editorial.push((label, item.clone()));
+        }
+    }
+
+    let sort_tier = |group: &mut Vec<(&str, PacketItem)>| {
+        group.sort_by(|(la, a), (lb, b)| {
+            b.relevance
+                .cmp(&a.relevance)
+                .then(b.recency.cmp(&a.recency))
+                .then(a.source.cmp(&b.source))
+                .then(a.proposition_id.cmp(&b.proposition_id))
+                .then(la.cmp(lb))
+                .then(a.text.cmp(&b.text))
+        });
+    };
+    sort_tier(&mut tier_continuity);
+    sort_tier(&mut tier_voice);
+    sort_tier(&mut tier_editorial);
+
+    let mut seen_propositions: BTreeSet<(PacketSource, String)> = BTreeSet::new();
+    for kb in &c.knowledge_boundaries {
+        seen_propositions.insert((kb.source.clone(), kb.proposition_id.clone()));
+    }
+
+    let mut continuity_sec = String::new();
+    let mut voice_sec = String::new();
+    let mut editorial_sec = String::new();
+
+    for (tier_idx, group) in [tier_continuity, tier_voice, tier_editorial]
+        .into_iter()
+        .enumerate()
+    {
+        for (label, item) in group {
+            let prop_key = (item.source.clone(), item.proposition_id.clone());
+            if seen_propositions.contains(&prop_key) {
+                continue;
+            }
+            let item_json = serde_json::to_string(&item)
+                .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+            let line = format!("{label}: {item_json}\n");
+            let (prop_cont, prop_voice, prop_edit) = match tier_idx {
+                0 => (
+                    format!("{continuity_sec}{line}"),
+                    voice_sec.clone(),
+                    editorial_sec.clone(),
+                ),
+                1 => (
+                    continuity_sec.clone(),
+                    format!("{voice_sec}{line}"),
+                    editorial_sec.clone(),
+                ),
+                _ => (
+                    continuity_sec.clone(),
+                    voice_sec.clone(),
+                    format!("{editorial_sec}{line}"),
+                ),
+            };
+            let proposed_messages = DraftMessages {
+                system: system.clone(),
+                user: render_critic_user(&prop_cont, &prop_voice, &prop_edit),
+            };
+            let proposed_tokens = t
+                .count_messages(&proposed_messages)
+                .map_err(CritiqueError::BudgetUnknown)?;
+            if fits_critic_context(proposed_tokens, budget) {
+                seen_propositions.insert(prop_key);
+                match tier_idx {
+                    0 => continuity_sec = prop_cont,
+                    1 => voice_sec = prop_voice,
+                    _ => editorial_sec = prop_edit,
+                }
+            }
+        }
+    }
+
+    let user = render_critic_user(&continuity_sec, &voice_sec, &editorial_sec);
     let messages = DraftMessages { system, user };
     let input_tokens = t
         .count_messages(&messages)

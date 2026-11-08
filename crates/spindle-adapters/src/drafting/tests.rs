@@ -969,11 +969,34 @@ fn critique_quarantines_author_lock_prohibited_outcome_and_canon_conflicts_and_c
         scope: DirectiveScope::Scene,
     });
 
+    // Add a chapter-scoped directive whose text contains none of the keyword conflict markers
+    raw.directives.push(CritiqueDirective {
+        id: "dir-chapter-scope".into(),
+        dimension: CriticDimension::ChapterRole,
+        severity: DirectiveSeverity::Minor,
+        priority: 2,
+        anchor: CritiqueAnchor {
+            scene_id: Some("scene-1".into()),
+            base_text_hash: base_hash.clone(),
+            start_byte: 0,
+            end_byte: first_line.len(),
+            exact_quote: first_line.into(),
+            context_before: None,
+            context_after: None,
+        },
+        diagnosis: "Pacing slows after the crossing.".into(),
+        requested_change: "Tighten pacing in the surrounding chapter.".into(),
+        preserve: vec![],
+        success_test: "Transition into next scene is brisk.".into(),
+        source_finding_ids: vec![],
+        scope: DirectiveScope::Chapter,
+    });
+
     let validated =
         validate_and_normalize_critique(raw, &pkt, "pkt-hash-1", base_text, &base_hash).unwrap();
 
-    // Both conflicting directives were quarantined into requires_author_decision
-    assert_eq!(validated.requires_author_decision.len(), 2);
+    // All three conflicting/chapter-scoped directives were quarantined into requires_author_decision
+    assert_eq!(validated.requires_author_decision.len(), 3);
     assert_eq!(
         validated.requires_author_decision[0]
             .blocking_constraint_id
@@ -985,6 +1008,12 @@ fn critique_quarantines_author_lock_prohibited_outcome_and_canon_conflicts_and_c
             .blocking_constraint_id
             .as_deref(),
         Some("scene_card.prohibited_outcomes")
+    );
+    assert_eq!(
+        validated.requires_author_decision[2]
+            .blocking_constraint_id
+            .as_deref(),
+        Some("directive.scope:chapter")
     );
 
     // Actionable directives capped at MAX_ACTIONABLE_DIRECTIVES (5) and ordered with Continuity first, ScenePurpose second
@@ -1006,6 +1035,53 @@ fn critic_prompt_embeds_complete_json_schema_and_template_that_validates_without
     let base_hash = sha256_hex(base_text.as_bytes());
     let mut pkt = fixture();
     pkt.scene_id = Some("scene-contract-1".into());
+    let src = pkt.source_versions[0].clone();
+    let mk_item = |prop_id: &str, text: &str| PacketItem {
+        source: src.clone(),
+        proposition_id: prop_id.into(),
+        text: text.into(),
+        relevance: 90,
+        recency: 10,
+    };
+    pkt.continuity.knowledge_boundaries = vec![mk_item(
+        "kb-sentinel",
+        "SENTINEL_KB_MAE_DOES_NOT_KNOW_SLUICE_CODE",
+    )];
+    pkt.continuity.character_states = vec![mk_item(
+        "cs-sentinel",
+        "SENTINEL_CS_MAE_LEFT_WRIST_SPRAINED",
+    )];
+    pkt.continuity.facts = vec![mk_item(
+        "fact-sentinel",
+        "SENTINEL_FACT_RIVER_CREST_AT_DUSK",
+    )];
+    pkt.continuity.open_threads = vec![mk_item(
+        "thread-sentinel",
+        "SENTINEL_THREAD_MISSING_LANTERN_SIGNAL",
+    )];
+    pkt.continuity.prior_scene_tail =
+        Some(mk_item("tail-sentinel", "SENTINEL_TAIL_BELL_TOLLED_TWICE"));
+    pkt.continuity.story_so_far = vec![mk_item("ssf-sentinel", "SENTINEL_SSF_NORTH_WEIR_BREACHED")];
+    pkt.voice.rules = vec![mk_item(
+        "voice-sentinel",
+        "SENTINEL_VOICE_TACTILE_VERBS_NO_ADVERBS",
+    )];
+    pkt.voice.exemplars = vec![ApprovedExemplar {
+        item: mk_item("ex-sentinel", "SENTINEL_EXEMPLAR_COLD_IRON_RIVETS"),
+        speaker_id: Some("pov1".into()),
+        approved_revision_hash: src.revision_hash.clone(),
+    }];
+    pkt.editorial_memory.recent_openings = vec![mk_item(
+        "open-sentinel",
+        "SENTINEL_MEM_OPENING_RAIN_ON_SLATE",
+    )];
+    pkt.editorial_memory.recurring_images =
+        vec![mk_item("img-sentinel", "SENTINEL_MEM_IMAGE_RUSTED_WINCH")];
+    pkt.editorial_memory.pacing_history = vec![mk_item(
+        "pace-sentinel",
+        "SENTINEL_MEM_PACING_TWO_SLOW_SCENES",
+    )];
+
     let critic_budget = CriticBudget::scene_default("fixture".into(), 20_000);
 
     let (initial_msgs, _, _) = assemble_critic_messages(
@@ -1019,6 +1095,46 @@ fn critic_prompt_embeds_complete_json_schema_and_template_that_validates_without
         "Route system framing.",
     )
     .unwrap();
+
+    // Verify all packet continuity, voice, and editorial memory sentinels reach the critic prompt
+    for sentinel in [
+        "KNOWLEDGE BOUNDARIES (MANDATORY)",
+        "CONTINUITY CONTEXT",
+        "VOICE & STYLE CONTEXT",
+        "EDITORIAL MEMORY & STORY CONTEXT",
+        "SENTINEL_KB_MAE_DOES_NOT_KNOW_SLUICE_CODE",
+        "SENTINEL_CS_MAE_LEFT_WRIST_SPRAINED",
+        "SENTINEL_FACT_RIVER_CREST_AT_DUSK",
+        "SENTINEL_THREAD_MISSING_LANTERN_SIGNAL",
+        "SENTINEL_TAIL_BELL_TOLLED_TWICE",
+        "SENTINEL_SSF_NORTH_WEIR_BREACHED",
+        "SENTINEL_VOICE_TACTILE_VERBS_NO_ADVERBS",
+        "SENTINEL_EXEMPLAR_COLD_IRON_RIVETS",
+        "SENTINEL_MEM_OPENING_RAIN_ON_SLATE",
+        "SENTINEL_MEM_IMAGE_RUSTED_WINCH",
+        "SENTINEL_MEM_PACING_TWO_SLOW_SCENES",
+    ] {
+        assert!(
+            initial_msgs.user.contains(sentinel),
+            "initial critic prompt missing packet context sentinel {sentinel:?}"
+        );
+    }
+
+    // Verify mandatory context overflow fails explicitly with CritiqueError::MandatoryOverflow
+    let mut tiny_budget = critic_budget.clone();
+    tiny_budget.input_limit = 200;
+    let overflow_err = assemble_critic_messages(
+        &pkt,
+        "pkt-hash-contract",
+        base_text,
+        &base_hash,
+        &[],
+        &tiny_budget,
+        Some(&VerifiedFixtureTokenizer),
+        "Route system framing.",
+    )
+    .unwrap_err();
+    assert!(matches!(overflow_err, CritiqueError::MandatoryOverflow(_)));
 
     // Verify all required field names and enum values are present in the initial prompt
     for required_token in [
