@@ -266,7 +266,11 @@ impl ToolRouter {
                 // run policy in force plus this checkpoint's automation outcome
                 // and any scenes awaiting manual dual-persona review. Ids/enums
                 // only, never prose (I8).
-                checkpoint_policy: outcome.state.checkpoint_policy.clone(),
+                checkpoint_policy: outcome
+                    .state
+                    .checkpoint_policy
+                    .as_deref()
+                    .and_then(|raw| raw.parse::<AuthoringCheckpointPolicy>().ok()),
                 auto_outcome: cp.auto_outcome.clone(),
                 pending_manual_scene_ids: cp.pending_manual_scene_ids.clone(),
                 reader_sim_engagement,

@@ -913,6 +913,8 @@ pub(crate) enum PlanningAttemptClaim {
     Existing(Box<PlanningAdvanceReport>),
     Claimed {
         attempt_id: String,
+        claim_token: String,
+        active_guard: PlanningActiveAttemptGuard,
         created_at: i64,
         session: Box<PlanningSession>,
     },
@@ -1051,11 +1053,11 @@ impl Repository {
     ) -> Result<Option<PlanningAdvanceReport>> {
         let session_id = session_id.to_owned();
         let retry_key = retry_key.to_owned();
-        let active_snapshot = self.active_planning_attempts_snapshot();
+        let db_path = self.pool().db_path().to_path_buf();
         self.pool()
             .read(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT id, outcome, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                    "SELECT id, outcome, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
                 )?;
                 let mut rows = stmt.query(rusqlite::params![session_id, retry_key])?;
                 let Some(row) = rows.next()? else {
@@ -1063,8 +1065,14 @@ impl Repository {
                 };
                 let id: String = row.get(0)?;
                 let outcome: String = row.get(1)?;
-                let data: String = row.get(2)?;
-                if outcome == "in_progress" && active_snapshot.contains(&id) {
+                let lease_expires_at: Option<i64> = row.get(2)?;
+                let data: String = row.get(3)?;
+                let now = timestamp_to_micros(chrono::Utc::now());
+                let lease_unexpired = lease_expires_at.is_none_or(|exp| now < exp);
+                if outcome == "in_progress"
+                    && lease_unexpired
+                    && super::is_planning_attempt_lock_held(&db_path, &id)
+                {
                     return Ok(Ok(None));
                 }
                 Ok((|| -> Result<_> { Ok(Some(serde_json::from_str(&data)?)) })())
@@ -1078,26 +1086,32 @@ impl Repository {
         scope: Option<PlanningScope>,
     ) -> Result<Vec<PlanningAdvanceReport>> {
         let session_id = session_id.to_owned();
-        let active_snapshot = self.active_planning_attempts_snapshot();
+        let db_path = self.pool().db_path().to_path_buf();
         self.pool()
             .read(move |conn| {
                 Ok((|| -> Result<_> {
                     check_session(conn, &session_id, &scope)?;
+                    let now = timestamp_to_micros(chrono::Utc::now());
                     let mut stmt = conn.prepare(
-                        "SELECT id, outcome, data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
+                        "SELECT id, outcome, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 ORDER BY created_at, id",
                     )?;
                     let rows = stmt
                         .query_map([&session_id], |r| {
                             Ok((
                                 r.get::<_, String>(0)?,
                                 r.get::<_, String>(1)?,
-                                r.get::<_, String>(2)?,
+                                r.get::<_, Option<i64>>(2)?,
+                                r.get::<_, String>(3)?,
                             ))
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     let mut out = Vec::new();
-                    for (id, outcome, data) in rows {
-                        if outcome == "in_progress" && active_snapshot.contains(&id) {
+                    for (id, outcome, lease_expires_at, data) in rows {
+                        let lease_unexpired = lease_expires_at.is_none_or(|exp| now < exp);
+                        if outcome == "in_progress"
+                            && lease_unexpired
+                            && super::is_planning_attempt_lock_held(&db_path, &id)
+                        {
                             continue;
                         }
                         out.push(serde_json::from_str(&data)?);
@@ -1115,30 +1129,37 @@ impl Repository {
         retry_key: Option<String>,
     ) -> Result<PlanningAttemptClaim> {
         let session_id = session_id.to_owned();
-        let active_snapshot = self.active_planning_attempts_snapshot();
+        let db_path = self.pool().db_path().to_path_buf();
         self.pool()
             .write(move |conn| {
                 Ok((|| -> Result<PlanningAttemptClaim> {
                     let tx = conn.transaction()?;
                     let s = check_session(&tx, &session_id, &scope)?;
+                    let now = timestamp_to_micros(chrono::Utc::now());
+                    let lease_ttl_micros: i64 = 300_000_000;
                     if let Some(rk) = retry_key.as_deref() {
-                        let existing: Option<(String, String, String)> = tx
+                        let existing: Option<(String, String, Option<i64>, String)> = tx
                             .query_row(
-                                "SELECT id, outcome, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
+                                "SELECT id, outcome, lease_expires_at, data FROM planning_generation_attempt WHERE session_id=?1 AND retry_key=?2 LIMIT 1",
                                 rusqlite::params![session_id, rk],
-                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                             )
                             .optional_inner()?;
-                        if let Some((existing_id, outcome, data)) = existing {
+                        if let Some((existing_id, outcome, lease_expires_at, data)) = existing {
                             if outcome != "in_progress" {
                                 let report: PlanningAdvanceReport = serde_json::from_str(&data)?;
                                 return Ok(PlanningAttemptClaim::Existing(Box::new(report)));
                             }
+                            let lease_unexpired =
+                                lease_expires_at.is_none_or(|exp| now < exp);
                             anyhow::ensure!(
-                                !active_snapshot.contains(&existing_id),
+                                !(lease_unexpired && super::is_planning_attempt_lock_held(&db_path, &existing_id)),
                                 "planning generation attempt for retry_key '{rk}' is already in progress"
                             );
-                            let created_at = timestamp_to_micros(chrono::Utc::now());
+                            let claim_token = mint_id("planning_claim");
+                            let active_guard = super::acquire_planning_attempt_lock(&db_path, &existing_id);
+                            let created_at = now;
+                            let next_lease = created_at + lease_ttl_micros;
                             let recovered_report = PlanningAdvanceReport {
                                 attempt_id: existing_id.clone(),
                                 session_id: session_id.clone(),
@@ -1160,9 +1181,11 @@ impl Repository {
                                 created_at,
                             };
                             tx.execute(
-                                "UPDATE planning_generation_attempt SET data=?2, created_at=?3 WHERE id=?1",
+                                "UPDATE planning_generation_attempt SET claim_token=?2, lease_expires_at=?3, data=?4, created_at=?5 WHERE id=?1 AND outcome='in_progress'",
                                 rusqlite::params![
                                     existing_id,
+                                    claim_token,
+                                    next_lease,
                                     serde_json::to_string(&recovered_report)?,
                                     created_at
                                 ],
@@ -1170,13 +1193,18 @@ impl Repository {
                             tx.commit()?;
                             return Ok(PlanningAttemptClaim::Claimed {
                                 attempt_id: existing_id,
+                                claim_token,
+                                active_guard,
                                 created_at,
                                 session: Box::new(s),
                             });
                         }
                     }
                     let attempt_id = mint_id("planning_generation_attempt");
-                    let created_at = timestamp_to_micros(chrono::Utc::now());
+                    let claim_token = mint_id("planning_claim");
+                    let active_guard = super::acquire_planning_attempt_lock(&db_path, &attempt_id);
+                    let created_at = now;
+                    let next_lease = created_at + lease_ttl_micros;
                     let initial_report = PlanningAdvanceReport {
                         attempt_id: attempt_id.clone(),
                         session_id: session_id.clone(),
@@ -1198,11 +1226,13 @@ impl Repository {
                         created_at,
                     };
                     tx.execute(
-                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,'contract',?3,'in_progress',NULL,?4,?5)",
+                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,claim_token,lease_expires_at,data,created_at) VALUES(?1,?2,'contract',?3,'in_progress',NULL,?4,?5,?6,?7)",
                         rusqlite::params![
                             attempt_id,
                             session_id,
                             retry_key,
+                            claim_token,
+                            next_lease,
                             serde_json::to_string(&initial_report)?,
                             created_at
                         ],
@@ -1210,6 +1240,8 @@ impl Repository {
                     tx.commit()?;
                     Ok(PlanningAttemptClaim::Claimed {
                         attempt_id,
+                        claim_token,
+                        active_guard,
                         created_at,
                         session: Box::new(s),
                     })
@@ -1218,22 +1250,29 @@ impl Repository {
             .await?
     }
 
-    pub(crate) async fn abort_planning_generation_attempt(&self, attempt_id: &str) -> Result<()> {
+    pub(crate) async fn abort_planning_generation_attempt(
+        &self,
+        attempt_id: &str,
+        claim_token: &str,
+    ) -> Result<()> {
         let attempt_id = attempt_id.to_owned();
+        let claim_token = claim_token.to_owned();
         self.pool()
             .write(move |conn| {
                 conn.execute(
-                    "DELETE FROM planning_generation_attempt WHERE id=?1 AND outcome='in_progress'",
-                    [attempt_id],
+                    "DELETE FROM planning_generation_attempt WHERE id=?1 AND outcome='in_progress' AND claim_token=?2",
+                    rusqlite::params![attempt_id, claim_token],
                 )?;
                 Ok(())
             })
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn reserve_planning_model_call(
         &self,
         attempt_id: &str,
+        claim_token: &str,
         level: PlanningLevel,
         session_id: &str,
         scope: Option<PlanningScope>,
@@ -1250,11 +1289,28 @@ impl Repository {
         >,
     > {
         let attempt_id = attempt_id.to_owned();
+        let claim_token = claim_token.to_owned();
         let session_id = session_id.to_owned();
         self.pool()
             .write(move |conn| {
                 Ok((|| -> Result<_> {
                     let tx = conn.transaction()?;
+                    let existing_attempt: Option<(String, Option<String>, String)> = tx
+                        .query_row(
+                            "SELECT outcome, claim_token, data FROM planning_generation_attempt WHERE id=?1",
+                            [&attempt_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .optional_inner()?;
+                    let Some((existing_outcome, existing_token, existing_data)) = existing_attempt
+                    else {
+                        anyhow::bail!("planning generation claim '{attempt_id}' does not exist");
+                    };
+                    anyhow::ensure!(
+                        existing_outcome == "in_progress"
+                            && existing_token.as_deref() == Some(claim_token.as_str()),
+                        "stale or already finalized planning generation claim"
+                    );
                     let mut s = check_session(&tx, &session_id, &scope)?;
                     let usage_before = s.usage.clone();
                     match check_budget_in_conn(&budget, &s.usage, estimated_input_tokens) {
@@ -1282,15 +1338,8 @@ impl Repository {
                                 "UPDATE planning_session SET data=?2 WHERE id=?1",
                                 rusqlite::params![s.id, serde_json::to_string(&s)?],
                             )?;
-                            if let Some(existing_data) = tx
-                                .query_row(
-                                    "SELECT data FROM planning_generation_attempt WHERE id=?1 AND outcome='in_progress'",
-                                    [&attempt_id],
-                                    |r| r.get::<_, String>(0),
-                                )
-                                .optional_inner()?
-                                && let Ok(mut pending_report) =
-                                    serde_json::from_str::<PlanningAdvanceReport>(&existing_data)
+                            if let Ok(mut pending_report) =
+                                serde_json::from_str::<PlanningAdvanceReport>(&existing_data)
                             {
                                 pending_report.level = level;
                                 pending_report.usage = s.usage.clone();
@@ -1299,12 +1348,15 @@ impl Repository {
                                     .as_str()
                                     .unwrap_or("contract")
                                     .to_string();
+                                let next_lease = timestamp_to_micros(chrono::Utc::now()) + 300_000_000;
                                 tx.execute(
-                                    "UPDATE planning_generation_attempt SET level=?2, data=?3 WHERE id=?1 AND outcome='in_progress'",
+                                    "UPDATE planning_generation_attempt SET level=?2, lease_expires_at=?3, data=?4 WHERE id=?1 AND outcome='in_progress' AND claim_token=?5",
                                     rusqlite::params![
                                         attempt_id,
                                         level_str,
-                                        serde_json::to_string(&pending_report)?
+                                        next_lease,
+                                        serde_json::to_string(&pending_report)?,
+                                        claim_token
                                     ],
                                 )?;
                             }
@@ -1575,14 +1627,34 @@ impl Repository {
 
     pub(crate) async fn commit_planning_generation(
         &self,
+        claim_token: &str,
         meta: PlanningSessionMetadataUpdate,
         staged: Option<PlanningStagedCommitCandidate>,
         mut report: PlanningAdvanceReport,
     ) -> Result<PlanningAdvanceReport> {
+        let claim_token = claim_token.to_owned();
         self.pool()
             .write(move |conn| {
                 Ok((|| -> Result<PlanningAdvanceReport> {
                     let tx = conn.transaction()?;
+                    let existing_attempt: Option<(String, Option<String>)> = tx
+                        .query_row(
+                            "SELECT outcome, claim_token FROM planning_generation_attempt WHERE id=?1",
+                            [&report.attempt_id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional_inner()?;
+                    let Some((existing_outcome, existing_token)) = existing_attempt else {
+                        anyhow::bail!(
+                            "planning generation claim '{}' does not exist",
+                            report.attempt_id
+                        );
+                    };
+                    anyhow::ensure!(
+                        existing_outcome == "in_progress"
+                            && existing_token.as_deref() == Some(claim_token.as_str()),
+                        "stale or already finalized planning generation claim"
+                    );
                     let mut live_session = check_session(&tx, &meta.session_id, &meta.scope)?;
                     live_session.horizon = meta.horizon;
                     live_session.budget = meta.budget;
@@ -1670,20 +1742,23 @@ impl Repository {
                         .as_str()
                         .unwrap_or("staged")
                         .to_string();
-                    tx.execute(
-                        "INSERT INTO planning_generation_attempt(id,session_id,level,retry_key,outcome,proposal_id,data,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) \
-                         ON CONFLICT(id) DO UPDATE SET level=excluded.level, retry_key=excluded.retry_key, outcome=excluded.outcome, proposal_id=excluded.proposal_id, data=excluded.data, created_at=excluded.created_at",
+                    let updated = tx.execute(
+                        "UPDATE planning_generation_attempt SET level=?2, retry_key=?3, outcome=?4, proposal_id=?5, claim_token=NULL, lease_expires_at=NULL, data=?6, created_at=?7 WHERE id=?1 AND outcome='in_progress' AND claim_token=?8",
                         rusqlite::params![
                             report.attempt_id,
-                            report.session_id,
                             level_str,
                             report.retry_key,
                             outcome_str,
                             proposal_id,
                             serde_json::to_string(&report)?,
-                            report.created_at
+                            report.created_at,
+                            claim_token
                         ],
                     )?;
+                    anyhow::ensure!(
+                        updated == 1,
+                        "stale or already finalized planning generation claim"
+                    );
                     tx.commit()?;
                     Ok(report)
                 })())

@@ -7,6 +7,8 @@ CREATE TABLE planning_generation_attempt (
  retry_key TEXT,
  outcome TEXT NOT NULL CHECK(outcome IN ('in_progress','staged','needs_author','needs_route','model_output_rejected','budget_exhausted')),
  proposal_id TEXT REFERENCES planning_proposal(id) ON DELETE SET NULL,
+ claim_token TEXT,
+ lease_expires_at INTEGER,
  data TEXT NOT NULL CHECK(json_valid(data)),
  created_at INTEGER NOT NULL
 );

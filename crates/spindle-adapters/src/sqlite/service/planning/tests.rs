@@ -4111,13 +4111,19 @@ agent = "recover-agent"
         .claim_planning_generation_attempt(&s.id, None, Some("reopen-key-001".into()))
         .await
         .unwrap();
-    let crashed_attempt_id = match crashed_claim {
-        crate::sqlite::repository::PlanningAttemptClaim::Claimed { attempt_id, .. } => attempt_id,
+    let (crashed_attempt_id, crashed_claim_token, crashed_guard) = match crashed_claim {
+        crate::sqlite::repository::PlanningAttemptClaim::Claimed {
+            attempt_id,
+            claim_token,
+            active_guard,
+            ..
+        } => (attempt_id, claim_token, active_guard),
         _ => panic!("expected fresh claim"),
     };
     svc2.repository
         .reserve_planning_model_call(
             &crashed_attempt_id,
+            &crashed_claim_token,
             PlanningLevel::CastWorld,
             &s.id,
             None,
@@ -4127,6 +4133,7 @@ agent = "recover-agent"
         .await
         .unwrap()
         .unwrap();
+    drop(crashed_guard);
     drop(svc2);
 
     // Reopen in a fresh service instance and retry "reopen-key-001": must recover and reach `Staged`
@@ -4632,9 +4639,39 @@ agent = "tx-guard-agent"
         allow_review_backend: false,
         last_outcome: PlanningSessionOutcome::Staged,
     };
+    let (race_attempt_1, race_token_1, _guard_1) = match svc
+        .repository
+        .claim_planning_generation_attempt(&s_tx_race.id, None, Some("race-1".into()))
+        .await
+        .unwrap()
+    {
+        crate::sqlite::repository::PlanningAttemptClaim::Claimed {
+            attempt_id,
+            claim_token,
+            active_guard,
+            ..
+        } => (attempt_id, claim_token, active_guard),
+        _ => panic!("expected claim 1"),
+    };
+    let (race_attempt_2, race_token_2, _guard_2) = match svc
+        .repository
+        .claim_planning_generation_attempt(&s_tx_race.id, None, Some("race-2".into()))
+        .await
+        .unwrap()
+    {
+        crate::sqlite::repository::PlanningAttemptClaim::Claimed {
+            attempt_id,
+            claim_token,
+            active_guard,
+            ..
+        } => (attempt_id, claim_token, active_guard),
+        _ => panic!("expected claim 2"),
+    };
+
     let rep_1 = svc
         .repository
         .commit_planning_generation(
+            &race_token_1,
             meta.clone(),
             Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
                 input: tx_race_input.clone(),
@@ -4643,7 +4680,7 @@ agent = "tx-guard-agent"
                 fallback_host_request: dummy_host_req.clone(),
             }),
             PlanningAdvanceReport {
-                attempt_id: "planning_generation_attempt:race1".into(),
+                attempt_id: race_attempt_1,
                 session_id: s_tx_race.id.clone(),
                 level: PlanningLevel::CastWorld,
                 retry_key: Some("race-1".into()),
@@ -4668,6 +4705,7 @@ agent = "tx-guard-agent"
     let rep_2 = svc
         .repository
         .commit_planning_generation(
+            &race_token_2,
             meta,
             Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
                 input: tx_race_input,
@@ -4676,7 +4714,7 @@ agent = "tx-guard-agent"
                 fallback_host_request: dummy_host_req,
             }),
             PlanningAdvanceReport {
-                attempt_id: "planning_generation_attempt:race2".into(),
+                attempt_id: race_attempt_2,
                 session_id: s_tx_race.id.clone(),
                 level: PlanningLevel::CastWorld,
                 retry_key: Some("race-2".into()),
@@ -4709,6 +4747,290 @@ agent = "tx-guard-agent"
             .unwrap()
             .len(),
         1
+    );
+
+    srv_handle.join().unwrap();
+}
+
+#[tokio::test]
+async fn two_repositories_on_same_database_coordinate_retry_key_and_fence_stale_claims() {
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let valid_contract = json!({
+        "schema_version": 1,
+        "level": "contract",
+        "rationale": "Cross-repository coordinated contract.",
+        "operations": [{
+            "output_ref": "contract:project",
+            "operation": {
+                "operation": "create_project",
+                "input": {
+                    "name": "Shared DB Harbor",
+                    "project_type": "novel",
+                    "genre": "mystery",
+                    "reader_contract": {"promise": "Single dispatch across repos", "style_notes": [], "boundaries": []}
+                }
+            }
+        }]
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let call_counter = Arc::new(AtomicUsize::new(0));
+    let call_counter_srv = call_counter.clone();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let body = json!({
+        "choices": [{"message": {"content": valid_contract.to_string()}}],
+        "usage": {"prompt_tokens": 105, "completion_tokens": 45}
+    })
+    .to_string();
+
+    let srv_handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        let mut buf = [0u8; 65536];
+        let mut total = 0usize;
+        loop {
+            match stream.read(&mut buf[total..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    total += n;
+                    let s = String::from_utf8_lossy(&buf[..total]);
+                    if let Some(hdr_end) = s.find("\r\n\r\n") {
+                        let hdrs = &s[..hdr_end];
+                        let content_len = hdrs
+                            .lines()
+                            .find_map(|l| {
+                                let lower = l.to_ascii_lowercase();
+                                lower
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if total >= hdr_end + 4 + content_len {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        call_counter_srv.fetch_add(1, Ordering::SeqCst);
+        let _ = entered_tx.send(());
+        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(reply.as_bytes());
+        let _ = stream.flush();
+    });
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("shared_planning.db");
+    let config_path = tmp.path().join("spindle.toml");
+    let endpoint = format!("http://{addr}/v1");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "shared-db-agent"
+name = "Shared DB Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "shared-db-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "plan"
+agent = "shared-db-agent"
+"#
+        ),
+    )
+    .unwrap();
+
+    // Open two separate SqlitePool + Repository + SqliteSpindleService instances on the same database.
+    let pool_a = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let router_a = crate::ai::ModelRouter::local_only();
+    router_a
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let svc_a = SqliteSpindleService::new(Repository::with_model_router(
+        pool_a,
+        tmp.path().join("data_a"),
+        router_a,
+    ));
+
+    let pool_b = crate::sqlite::SqlitePool::open(&db_path).await.unwrap();
+    let router_b = crate::ai::ModelRouter::local_only();
+    router_b
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+    let svc_b = SqliteSpindleService::new(Repository::with_model_router(
+        pool_b,
+        tmp.path().join("data_b"),
+        router_b,
+    ));
+
+    let s = svc_a
+        .begin_planning(BeginPlanningInput {
+            premise: "Coordinate retry key across two live repositories".into(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+
+    let req = AdvancePlanningInput {
+        session_id: s.id.clone(),
+        scope: None,
+        level: Some(PlanningLevel::Contract),
+        parents: None,
+        target_range: None,
+        allow_review_backend: None,
+        rating_ceiling: None,
+        budget: None,
+        host_submission: None,
+        retry_key: Some("shared-db-retry-001".into()),
+    };
+
+    let fut_a = svc_a.advance_planning(req.clone());
+    let fut_b = async {
+        entered_rx.await.unwrap();
+        // While svc_a's call is paused in flight, retrying the same key through the second
+        // repository instance must detect the live claim and refuse to reclaim or dispatch a second call,
+        // and lookup/list APIs on svc_b must hide the live in-progress row.
+        let in_flight_retry = svc_b.advance_planning(req.clone()).await;
+        assert!(
+            in_flight_retry.is_err(),
+            "second repository instance must not reclaim a live in-progress attempt while first is in flight"
+        );
+        assert!(
+            in_flight_retry
+                .unwrap_err()
+                .to_string()
+                .contains("already in progress")
+        );
+        assert_eq!(call_counter.load(Ordering::SeqCst), 1);
+        assert!(
+            svc_b
+                .repository
+                .find_planning_generation_attempt(&s.id, "shared-db-retry-001")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Release svc_a's HTTP response.
+        let _ = release_tx.send(());
+    };
+
+    let (res_a, ()) = tokio::join!(fut_a, fut_b);
+    let res_a = res_a.unwrap();
+    let res_b = svc_b.advance_planning(req).await.unwrap();
+    assert_eq!(res_a.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(res_b.outcome, PlanningSessionOutcome::Staged);
+    assert_eq!(res_a.attempt_id, res_b.attempt_id);
+    assert_eq!(
+        res_a.proposal.as_ref().unwrap().id,
+        res_b.proposal.as_ref().unwrap().id
+    );
+    assert_eq!(call_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        svc_b
+            .get_planning_session(&s.id)
+            .await
+            .unwrap()
+            .usage
+            .model_calls,
+        1
+    );
+    assert_eq!(
+        svc_b
+            .list_planning_proposals(&s.id, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Fencing check: if an attempt is claimed (token 1) and its lease expires (or its guard is dropped)
+    // and is reclaimed by a second owner (token 2), a stale reserve or commit from token 1 is rejected.
+    let (fenced_id, stale_token, guard_1) = match svc_a
+        .repository
+        .claim_planning_generation_attempt(&s.id, None, Some("fenced-retry-key".into()))
+        .await
+        .unwrap()
+    {
+        crate::sqlite::repository::PlanningAttemptClaim::Claimed {
+            attempt_id,
+            claim_token,
+            active_guard,
+            ..
+        } => (attempt_id, claim_token, active_guard),
+        _ => panic!("expected initial claim"),
+    };
+    // Expire the lease in SQLite even while guard_1 is still held (simulating a stalled owner past TTL).
+    let fenced_id_exp = fenced_id.clone();
+    svc_a
+        .repository
+        .pool()
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE planning_generation_attempt SET lease_expires_at = 0 WHERE id = ?1",
+                [&fenced_id_exp],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let (reclaimed_id, fresh_token, _guard_2) = match svc_b
+        .repository
+        .claim_planning_generation_attempt(&s.id, None, Some("fenced-retry-key".into()))
+        .await
+        .unwrap()
+    {
+        crate::sqlite::repository::PlanningAttemptClaim::Claimed {
+            attempt_id,
+            claim_token,
+            active_guard,
+            ..
+        } => (attempt_id, claim_token, active_guard),
+        _ => panic!("expected reclaimed claim"),
+    };
+    drop(guard_1);
+    assert_eq!(fenced_id, reclaimed_id);
+    assert_ne!(stale_token, fresh_token);
+
+    let stale_reserve = svc_a
+        .repository
+        .reserve_planning_model_call(
+            &fenced_id,
+            &stale_token,
+            PlanningLevel::CastWorld,
+            &s.id,
+            None,
+            PlanningBudget::default(),
+            100,
+        )
+        .await;
+    assert!(
+        stale_reserve.is_err(),
+        "stale claim_token must not reserve budget"
     );
 
     srv_handle.join().unwrap();

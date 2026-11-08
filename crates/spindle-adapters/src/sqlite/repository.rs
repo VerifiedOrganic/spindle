@@ -625,17 +625,78 @@ pub struct Repository {
 
 type PlanningRetryLockMap =
     std::sync::Mutex<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
-type PlanningActiveAttemptSet = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+fn planning_attempt_lock_path(db_path: &Path, attempt_id: &str) -> Option<PathBuf> {
+    if db_path.as_os_str().is_empty() || db_path == Path::new(":memory:") {
+        return None;
+    }
+    let sanitized: String = attempt_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut os = db_path.as_os_str().to_os_string();
+    os.push(format!(".{sanitized}.lock"));
+    Some(PathBuf::from(os))
+}
+
+pub(crate) fn acquire_planning_attempt_lock(
+    db_path: &Path,
+    attempt_id: &str,
+) -> PlanningActiveAttemptGuard {
+    let mut lock_file = None;
+    let lock_path = planning_attempt_lock_path(db_path, attempt_id);
+    if let Some(ref lp) = lock_path
+        && let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(lp)
+    {
+        let _ = file.try_lock();
+        lock_file = Some(file);
+    }
+    PlanningActiveAttemptGuard {
+        lock_file,
+        lock_path,
+    }
+}
+
+pub(crate) fn is_planning_attempt_lock_held(db_path: &Path, attempt_id: &str) -> bool {
+    let Some(lp) = planning_attempt_lock_path(db_path, attempt_id) else {
+        return true;
+    };
+    let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&lp) else {
+        return false;
+    };
+    match file.try_lock() {
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(_) => false,
+    }
+}
 
 pub(crate) struct PlanningActiveAttemptGuard {
-    active: PlanningActiveAttemptSet,
-    attempt_id: String,
+    lock_file: Option<std::fs::File>,
+    lock_path: Option<PathBuf>,
 }
 
 impl Drop for PlanningActiveAttemptGuard {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.active.lock() {
-            guard.remove(&self.attempt_id);
+        if let Some(file) = &self.lock_file {
+            let _ = file.unlock();
+        }
+        if let Some(path) = &self.lock_path {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -645,7 +706,6 @@ struct Inner {
     data_dir: PathBuf,
     model_router: ModelRouter,
     planning_retry_locks: PlanningRetryLockMap,
-    planning_active_attempts: PlanningActiveAttemptSet,
 }
 
 mod authoring;
@@ -695,32 +755,8 @@ impl Repository {
                 data_dir,
                 model_router,
                 planning_retry_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
-                planning_active_attempts: Arc::new(std::sync::Mutex::new(
-                    std::collections::HashSet::new(),
-                )),
             }),
         }
-    }
-
-    pub(crate) fn register_active_planning_attempt(
-        &self,
-        attempt_id: &str,
-    ) -> PlanningActiveAttemptGuard {
-        if let Ok(mut guard) = self.inner.planning_active_attempts.lock() {
-            guard.insert(attempt_id.to_owned());
-        }
-        PlanningActiveAttemptGuard {
-            active: self.inner.planning_active_attempts.clone(),
-            attempt_id: attempt_id.to_owned(),
-        }
-    }
-
-    pub(crate) fn active_planning_attempts_snapshot(&self) -> std::collections::HashSet<String> {
-        self.inner
-            .planning_active_attempts
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
     }
 
     pub(crate) fn planning_retry_lock(

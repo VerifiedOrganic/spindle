@@ -547,7 +547,7 @@ impl SqliteSpindleService {
             None => None,
         };
 
-        let (attempt_id, now, session) = match self
+        let (attempt_id, claim_token, _active_guard, now, session) = match self
             .repository
             .claim_planning_generation_attempt(
                 &input.session_id,
@@ -561,23 +561,22 @@ impl SqliteSpindleService {
             }
             crate::sqlite::repository::PlanningAttemptClaim::Claimed {
                 attempt_id,
+                claim_token,
+                active_guard,
                 created_at,
                 session,
-            } => (attempt_id, created_at, *session),
+            } => (attempt_id, claim_token, active_guard, created_at, *session),
         };
-        let _active_guard = self
-            .repository
-            .register_active_planning_attempt(&attempt_id);
 
         match self
-            .advance_planning_claimed(input, session, attempt_id.clone(), now)
+            .advance_planning_claimed(input, session, attempt_id.clone(), claim_token.clone(), now)
             .await
         {
             Ok(report) => Ok(report),
             Err(err) => {
                 let _ = self
                     .repository
-                    .abort_planning_generation_attempt(&attempt_id)
+                    .abort_planning_generation_attempt(&attempt_id, &claim_token)
                     .await;
                 Err(err)
             }
@@ -589,6 +588,7 @@ impl SqliteSpindleService {
         input: AdvancePlanningInput,
         mut session: PlanningSession,
         attempt_id: String,
+        claim_token: String,
         now: i64,
     ) -> Result<PlanningAdvanceReport> {
         let existing_proposals = self
@@ -707,6 +707,7 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
+                        &claim_token,
                         meta_for_session(&session, outcome),
                         Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
                             input: stage_input,
@@ -746,6 +747,7 @@ impl SqliteSpindleService {
             return self
                 .repository
                 .commit_planning_generation(
+                    &claim_token,
                     meta_for_session(&session, PlanningSessionOutcome::ModelOutputRejected),
                     None,
                     report,
@@ -791,6 +793,7 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
+                        &claim_token,
                         meta_for_session(&session, PlanningSessionOutcome::NeedsRoute),
                         None,
                         report,
@@ -805,6 +808,7 @@ impl SqliteSpindleService {
             .repository
             .reserve_planning_model_call(
                 &attempt_id,
+                &claim_token,
                 level,
                 &session.id,
                 session.scope.clone(),
@@ -841,6 +845,7 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
+                        &claim_token,
                         meta_for_session(&session, PlanningSessionOutcome::BudgetExhausted),
                         None,
                         report,
@@ -912,6 +917,7 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
+                        &claim_token,
                         meta_for_session(&session, PlanningSessionOutcome::NeedsRoute),
                         None,
                         report,
@@ -1001,6 +1007,7 @@ impl SqliteSpindleService {
             return self
                 .repository
                 .commit_planning_generation(
+                    &claim_token,
                     meta_for_session(&session, outcome),
                     Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
                         input: stage_input,
@@ -1070,6 +1077,7 @@ impl SqliteSpindleService {
             return self
                 .repository
                 .commit_planning_generation(
+                    &claim_token,
                     meta_for_session(&session, PlanningSessionOutcome::ModelOutputRejected),
                     None,
                     report,
@@ -1085,6 +1093,7 @@ impl SqliteSpindleService {
             .repository
             .reserve_planning_model_call(
                 &attempt_id,
+                &claim_token,
                 level,
                 &session.id,
                 session.scope.clone(),
@@ -1142,6 +1151,7 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
+                        &claim_token,
                         meta_for_session(&session, PlanningSessionOutcome::BudgetExhausted),
                         None,
                         report,
@@ -1228,6 +1238,7 @@ impl SqliteSpindleService {
                 return self
                     .repository
                     .commit_planning_generation(
+                        &claim_token,
                         meta_for_session(&session, PlanningSessionOutcome::NeedsRoute),
                         None,
                         report,
@@ -1318,6 +1329,7 @@ impl SqliteSpindleService {
             return self
                 .repository
                 .commit_planning_generation(
+                    &claim_token,
                     meta_for_session(&session, outcome),
                     Some(crate::sqlite::repository::PlanningStagedCommitCandidate {
                         input: stage_input,
@@ -1361,6 +1373,7 @@ impl SqliteSpindleService {
         };
         self.repository
             .commit_planning_generation(
+                &claim_token,
                 meta_for_session(&session, PlanningSessionOutcome::ModelOutputRejected),
                 None,
                 report,
