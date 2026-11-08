@@ -1297,25 +1297,73 @@ impl Repository {
                     let drafts: Vec<CanonEventDraftV1> = plan
                         .accepted_source_events
                         .iter()
-                        .map(|src_ev| CanonEventDraftV1 {
-                            subject: src_ev.subject.clone(),
-                            payload: src_ev.payload.clone(),
-                            effective_position: src_ev.effective_position,
-                            within_scene_order: src_ev.within_scene_order,
-                            in_world_time: src_ev.in_world_time.clone(),
-                            scene_id: src_ev.scene_id.clone(),
-                            source_claim_ids: src_ev.source_claim_ids.clone(),
-                            evidence_sha256: src_ev.evidence_sha256.clone(),
-                            provenance: CanonProvenanceKind::Merged,
-                            supersedes_event_id: src_ev.supersedes_event_id.clone(),
-                            withdraws_event_id: src_ev.withdraws_event_id.clone(),
-                            legacy_record_scope: src_ev.legacy_record_scope.clone(),
-                            merge_provenance: Some(MergeEventProvenanceV1 {
-                                source_branch_id: src_ev.branch_id.clone(),
-                                source_event_id: src_ev.event_id.clone(),
-                                source_decision_id: src_ev.decision_id.clone(),
-                                common_ancestor_branch_id: Some(common_ancestor_branch_id.clone()),
-                            }),
+                        .map(|src_ev| {
+                            let mut payload = src_ev.payload.clone();
+                            if let CanonEventPayloadV1::SourceInvalidation { invalidation } =
+                                &mut payload
+                                && !invalidation.invalidated_revision_ids.is_empty()
+                            {
+                                for candidate in &events {
+                                    if candidate.event_id == src_ev.event_id {
+                                        continue;
+                                    }
+                                    let matches_rev =
+                                        invalidation.invalidated_revision_ids.iter().any(|rev| {
+                                            candidate.source_revision_id == *rev
+                                                || candidate
+                                                    .merge_provenance
+                                                    .as_ref()
+                                                    .and_then(|mp| mp.source_revision_id.as_deref())
+                                                    .is_some_and(|src_rev| src_rev == rev)
+                                        });
+                                    let matches_scene = invalidation
+                                        .scene_id
+                                        .as_ref()
+                                        .is_none_or(|s| candidate.scene_id.as_ref() == Some(s));
+                                    if matches_rev && matches_scene {
+                                        if !invalidation
+                                            .invalidated_event_ids
+                                            .contains(&candidate.event_id)
+                                        {
+                                            invalidation
+                                                .invalidated_event_ids
+                                                .push(candidate.event_id.clone());
+                                        }
+                                        if let Some(mp) = &candidate.merge_provenance
+                                            && !invalidation
+                                                .invalidated_event_ids
+                                                .contains(&mp.source_event_id)
+                                        {
+                                            invalidation
+                                                .invalidated_event_ids
+                                                .push(mp.source_event_id.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            CanonEventDraftV1 {
+                                subject: src_ev.subject.clone(),
+                                payload,
+                                effective_position: src_ev.effective_position,
+                                within_scene_order: src_ev.within_scene_order,
+                                in_world_time: src_ev.in_world_time.clone(),
+                                scene_id: src_ev.scene_id.clone(),
+                                source_claim_ids: src_ev.source_claim_ids.clone(),
+                                evidence_sha256: src_ev.evidence_sha256.clone(),
+                                provenance: CanonProvenanceKind::Merged,
+                                supersedes_event_id: src_ev.supersedes_event_id.clone(),
+                                withdraws_event_id: src_ev.withdraws_event_id.clone(),
+                                legacy_record_scope: src_ev.legacy_record_scope.clone(),
+                                merge_provenance: Some(MergeEventProvenanceV1 {
+                                    source_branch_id: src_ev.branch_id.clone(),
+                                    source_event_id: src_ev.event_id.clone(),
+                                    source_decision_id: src_ev.decision_id.clone(),
+                                    common_ancestor_branch_id: Some(
+                                        common_ancestor_branch_id.clone(),
+                                    ),
+                                    source_revision_id: Some(src_ev.source_revision_id.clone()),
+                                }),
+                            }
                         })
                         .collect();
 

@@ -535,6 +535,15 @@ fn event_matches_id_or_merged_source(event: &CanonEventV1, target_id: &str) -> b
             .is_some_and(|mp| mp.source_event_id == target_id)
 }
 
+fn event_matches_revision_or_merged_source(event: &CanonEventV1, revision_id: &str) -> bool {
+    event.source_revision_id == revision_id
+        || event
+            .merge_provenance
+            .as_ref()
+            .and_then(|mp| mp.source_revision_id.as_deref())
+            .is_some_and(|src_rev| src_rev == revision_id)
+}
+
 fn active_lineage_events_at_watermark<'a>(
     branch_id: &str,
     lineage: &[String],
@@ -721,7 +730,7 @@ pub fn state_at(
                 (*inv_depth < depth
                     || (*inv_depth == depth
                         && (event.decision_seq, event.append_seq) < (*inv_dec, *inv_app)))
-                    && rev_id == &event.source_revision_id
+                    && event_matches_revision_or_merged_source(event, rev_id)
                     && scene_filter
                         .as_ref()
                         .is_none_or(|s| event.scene_id.as_ref() == Some(s))
@@ -773,87 +782,16 @@ pub fn state_at(
             }
         }
 
-        // Check child-over-ancestor or same-branch tombstone/merged coverage masks.
-        let masked_by_descendant =
-            masks_by_depth
-                .iter()
-                .any(|(mask_depth, mask_dec, mask_app, is_merged, mask)| {
-                    let mask_applies = *mask_depth < depth
-                        || (*mask_depth == depth
-                            && (event.decision_seq, event.append_seq) < (*mask_dec, *mask_app)
-                            && (mask.tombstone
-                                || *is_merged
-                                || matches!(
-                                    mask.target,
-                                    CoverageMaskTargetV1::AncestorEvent { .. }
-                                )));
-                    if !mask_applies {
-                        return false;
-                    }
-                    if !mask_matches_event_target(mask, event) {
-                        return false;
-                    }
-                    match &mask.target {
-                        CoverageMaskTargetV1::AncestorEvent { .. } => true,
-                        CoverageMaskTargetV1::Stream { .. }
-                        | CoverageMaskTargetV1::LegacyWholeRecord { .. } => {
-                            if is_delta_event(event) && !mask.tombstone {
-                                // Delta streams: any ancestor delta inside `[start, end]` is masked.
-                                mask.covers_position(effective_pos)
-                            } else {
-                                // State/collection streams (or tombstone mask):
-                                // - Before `mask.start_position`, ancestor state remains visible.
-                                // - During `[mask.start_position, mask.end_position]`, ancestor state at
-                                //   or before `mask.end_position` is shadowed by the child stream.
-                                // - After a bounded `mask.end_position`, inheritance of ancestor state resumes.
-                                let cursor_in_mask = match cursor.position {
-                                    Some(c_pos) => mask.covers_position(Some(c_pos)),
-                                    None => mask.end_position.is_none(),
-                                };
-                                if cursor_in_mask {
-                                    effective_pos.is_none_or(|ev_pos| {
-                                        mask.end_position.is_none_or(|end| ev_pos <= end)
-                                    })
-                                } else {
-                                    false
-                                }
-                            }
-                        }
-                    }
-                });
-        if masked_by_descendant {
+        if !is_assertion_visible_at_position(
+            depth,
+            effective_pos,
+            event,
+            effective_lineage.len(),
+            &masks_by_depth,
+            cursor.position,
+            cursor.position.is_none(),
+        ) {
             continue;
-        }
-
-        // Also if this event is on a child branch (`depth`) that declared a bounded
-        // coverage mask `[start, Some(end)]` for this stream, and the query cursor
-        // is strictly after `end` (`cursor > end`), then the child's bounded override
-        // interval has ended and ancestor inheritance has resumed!
-        if !is_delta_event(event) {
-            let expired_child_override =
-                masks_by_depth
-                    .iter()
-                    .any(|(mask_depth, _mask_dec, _mask_app, is_merged, mask)| {
-                        let same_override_layer = *mask_depth == depth
-                            && (depth + 1 < effective_lineage.len()
-                                || (*is_merged && event.provenance == CanonProvenanceKind::Merged));
-                        if !same_override_layer || !mask_matches_event_target(mask, event) {
-                            return false;
-                        }
-                        let Some(end_pos) = mask.end_position else {
-                            return false;
-                        };
-                        if !mask.covers_position(effective_pos) {
-                            return false;
-                        }
-                        match cursor.position {
-                            Some(c_pos) => c_pos > end_pos,
-                            None => true,
-                        }
-                    });
-            if expired_child_override {
-                continue;
-            }
         }
 
         visible_events.push((depth, effective_pos, event));
@@ -864,25 +802,7 @@ pub fn state_at(
     //     lineage depth DESC [ancestor before child at identical step], decision_seq ASC,
     //     append_seq ASC, event_id ASC).
     visible_events.sort_by(|(depth_a, pos_a, ev_a), (depth_b, pos_b, ev_b)| {
-        let pos_key_a = pos_a.map_or((0, 0, 0), |p| {
-            (p.book_number, p.chapter_number, p.scene_order)
-        });
-        let pos_key_b = pos_b.map_or((0, 0, 0), |p| {
-            (p.book_number, p.chapter_number, p.scene_order)
-        });
-        let step_key_a = ev_a
-            .within_scene_order
-            .map_or((1u8, u32::MAX), |s| (0u8, s));
-        let step_key_b = ev_b
-            .within_scene_order
-            .map_or((1u8, u32::MAX), |s| (0u8, s));
-        pos_key_a
-            .cmp(&pos_key_b)
-            .then_with(|| step_key_a.cmp(&step_key_b))
-            .then_with(|| depth_b.cmp(depth_a))
-            .then_with(|| ev_a.decision_seq.cmp(&ev_b.decision_seq))
-            .then_with(|| ev_a.append_seq.cmp(&ev_b.append_seq))
-            .then_with(|| ev_a.event_id.cmp(&ev_b.event_id))
+        reducer_event_cmp(*depth_a, *pos_a, ev_a, *depth_b, *pos_b, ev_b)
     });
 
     let mut view = CanonStateViewV1 {
@@ -2150,9 +2070,128 @@ pub fn validate_event_batch_preconditions(
     Ok(())
 }
 
+fn reducer_event_cmp(
+    depth_a: usize,
+    pos_a: Option<CanonPositionV1>,
+    ev_a: &CanonEventV1,
+    depth_b: usize,
+    pos_b: Option<CanonPositionV1>,
+    ev_b: &CanonEventV1,
+) -> std::cmp::Ordering {
+    let pos_key_a = pos_a.map_or((0, 0, 0), |p| {
+        (p.book_number, p.chapter_number, p.scene_order)
+    });
+    let pos_key_b = pos_b.map_or((0, 0, 0), |p| {
+        (p.book_number, p.chapter_number, p.scene_order)
+    });
+    let step_key_a = ev_a
+        .within_scene_order
+        .map_or((1u8, u32::MAX), |s| (0u8, s));
+    let step_key_b = ev_b
+        .within_scene_order
+        .map_or((1u8, u32::MAX), |s| (0u8, s));
+    pos_key_a
+        .cmp(&pos_key_b)
+        .then_with(|| step_key_a.cmp(&step_key_b))
+        .then_with(|| depth_b.cmp(&depth_a))
+        .then_with(|| ev_a.decision_seq.cmp(&ev_b.decision_seq))
+        .then_with(|| ev_a.append_seq.cmp(&ev_b.append_seq))
+        .then_with(|| ev_a.event_id.cmp(&ev_b.event_id))
+}
+
+fn is_assertion_visible_at_position(
+    depth: usize,
+    effective_pos: Option<CanonPositionV1>,
+    event: &CanonEventV1,
+    effective_lineage_len: usize,
+    masks_by_depth: &[(usize, i64, i64, bool, StreamCoverageMaskV1)],
+    query_pos: Option<CanonPositionV1>,
+    is_unbounded_query: bool,
+) -> bool {
+    let masked_by_descendant =
+        masks_by_depth
+            .iter()
+            .any(|(mask_depth, mask_dec, mask_app, is_merged, mask)| {
+                let mask_applies = *mask_depth < depth
+                    || (*mask_depth == depth
+                        && (event.decision_seq, event.append_seq) < (*mask_dec, *mask_app)
+                        && (mask.tombstone
+                            || *is_merged
+                            || matches!(mask.target, CoverageMaskTargetV1::AncestorEvent { .. })));
+                if !mask_applies || !mask_matches_event_target(mask, event) {
+                    return false;
+                }
+                match &mask.target {
+                    CoverageMaskTargetV1::AncestorEvent { .. } => true,
+                    CoverageMaskTargetV1::Stream { .. }
+                    | CoverageMaskTargetV1::LegacyWholeRecord { .. } => {
+                        if is_delta_event(event) && !mask.tombstone {
+                            // Delta streams: any ancestor delta inside `[start, end]` is masked.
+                            mask.covers_position(effective_pos)
+                        } else {
+                            // State/collection streams (or tombstone mask):
+                            // - Before `mask.start_position`, ancestor state remains visible.
+                            // - During `[mask.start_position, mask.end_position]`, ancestor state at
+                            //   or before `mask.end_position` is shadowed by the child stream.
+                            // - After a bounded `mask.end_position`, inheritance of ancestor state resumes.
+                            let cursor_in_mask = match query_pos {
+                                Some(c_pos) => mask.covers_position(Some(c_pos)),
+                                None if is_unbounded_query => mask.end_position.is_none(),
+                                None => mask.covers_position(None),
+                            };
+                            if cursor_in_mask {
+                                effective_pos.is_none_or(|ev_pos| {
+                                    mask.end_position.is_none_or(|end| ev_pos <= end)
+                                })
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                }
+            });
+    if masked_by_descendant {
+        return false;
+    }
+
+    // Also if this event is on a child branch (`depth`) that declared a bounded
+    // coverage mask `[start, Some(end)]` for this stream, and the query cursor
+    // is strictly after `end` (`cursor > end`), then the child's bounded override
+    // interval has ended and ancestor inheritance has resumed!
+    if !is_delta_event(event) {
+        let expired_child_override =
+            masks_by_depth
+                .iter()
+                .any(|(mask_depth, _mask_dec, _mask_app, is_merged, mask)| {
+                    let same_override_layer = *mask_depth == depth
+                        && (depth + 1 < effective_lineage_len
+                            || (*is_merged && event.provenance == CanonProvenanceKind::Merged));
+                    if !same_override_layer || !mask_matches_event_target(mask, event) {
+                        return false;
+                    }
+                    let Some(end_pos) = mask.end_position else {
+                        return false;
+                    };
+                    if !mask.covers_position(effective_pos) {
+                        return false;
+                    }
+                    match query_pos {
+                        Some(c_pos) => c_pos > end_pos,
+                        None => is_unbounded_query,
+                    }
+                });
+        if expired_child_override {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Validate a batch of candidate events against the full branch lineage history,
 /// building the pre-event state in exact reducer order (including within-scene step
-/// bounds and intervening history across multi-position batches).
+/// bounds, cursor-dependent coverage mask intervals, and intervening history across
+/// multi-position batches).
 pub fn validate_event_batch_in_history(
     branch_id: &str,
     lineage: &[String],
@@ -2164,16 +2203,34 @@ pub fn validate_event_batch_in_history(
 ) -> Result<(), CanonAppendError> {
     validate_event_batch_structure_and_conservation(actor, candidate_events)?;
 
-    let mut combined_events: Vec<CanonEventV1> =
-        Vec::with_capacity(existing_events.len() + candidate_events.len());
-    combined_events.extend_from_slice(existing_events);
-    combined_events.extend_from_slice(candidate_events);
-
-    let candidate_index_by_id: BTreeMap<&str, usize> = candidate_events
+    let max_existing_decision_seq = existing_events
         .iter()
-        .enumerate()
-        .map(|(idx, ev)| (ev.event_id.as_str(), idx))
-        .collect();
+        .map(|e| e.decision_seq)
+        .max()
+        .unwrap_or(0);
+    let max_existing_append_seq = existing_events
+        .iter()
+        .map(|e| e.append_seq)
+        .max()
+        .unwrap_or(0);
+
+    let mut normalized_candidates: Vec<CanonEventV1> = Vec::with_capacity(candidate_events.len());
+    for (idx, cand) in candidate_events.iter().enumerate() {
+        let mut cloned = cand.clone();
+        if cloned.decision_seq <= max_existing_decision_seq {
+            cloned.decision_seq = max_existing_decision_seq + 1;
+        }
+        let min_append_seq = max_existing_append_seq + 1 + idx as i64;
+        if cloned.append_seq < min_append_seq {
+            cloned.append_seq = min_append_seq;
+        }
+        normalized_candidates.push(cloned);
+    }
+
+    let mut combined_events: Vec<CanonEventV1> =
+        Vec::with_capacity(existing_events.len() + normalized_candidates.len());
+    combined_events.extend_from_slice(existing_events);
+    combined_events.extend(normalized_candidates.iter().cloned());
 
     let (effective_lineage, max_decision_seq, max_event_seq, active_lineage_events) =
         active_lineage_events_at_watermark(branch_id, lineage, &combined_events, tier, None);
@@ -2243,7 +2300,7 @@ pub fn validate_event_batch_in_history(
         }
     }
 
-    let mut visible_events: Vec<(usize, Option<CanonPositionV1>, &CanonEventV1)> = Vec::new();
+    let mut unmasked_assertions: Vec<(usize, Option<CanonPositionV1>, &CanonEventV1)> = Vec::new();
     for (depth, event) in active_lineage_events {
         if !matches!(event.payload, CanonEventPayloadV1::Assertion { .. })
             || is_withdrawal_only_event(event)
@@ -2266,7 +2323,7 @@ pub fn validate_event_batch_in_history(
                 (*inv_depth < depth
                     || (*inv_depth == depth
                         && (event.decision_seq, event.append_seq) < (*inv_dec, *inv_app)))
-                    && rev_id == &event.source_revision_id
+                    && event_matches_revision_or_merged_source(event, rev_id)
                     && scene_filter
                         .as_ref()
                         .is_none_or(|s| event.scene_id.as_ref() == Some(s))
@@ -2288,125 +2345,89 @@ pub fn validate_event_batch_in_history(
             }
         }
 
-        let masked_by_descendant =
-            masks_by_depth
-                .iter()
-                .any(|(mask_depth, mask_dec, mask_app, is_merged, mask)| {
-                    let mask_applies = *mask_depth < depth
-                        || (*mask_depth == depth
-                            && (event.decision_seq, event.append_seq) < (*mask_dec, *mask_app)
-                            && (mask.tombstone
-                                || *is_merged
-                                || matches!(
-                                    mask.target,
-                                    CoverageMaskTargetV1::AncestorEvent { .. }
-                                )));
-                    if !mask_applies || !mask_matches_event_target(mask, event) {
-                        return false;
-                    }
-                    match &mask.target {
-                        CoverageMaskTargetV1::AncestorEvent { .. } => true,
-                        CoverageMaskTargetV1::Stream { .. }
-                        | CoverageMaskTargetV1::LegacyWholeRecord { .. } => {
-                            if is_delta_event(event) && !mask.tombstone {
-                                mask.covers_position(effective_pos)
-                            } else {
-                                // Validate against the candidate's own effective position cursor when checking masks.
-                                mask.end_position.is_none()
-                                    && effective_pos.is_none_or(|ev_pos| {
-                                        mask.end_position.is_none_or(|end| ev_pos <= end)
-                                    })
-                            }
-                        }
-                    }
-                });
-        if masked_by_descendant {
-            continue;
-        }
-
-        visible_events.push((depth, effective_pos, event));
+        unmasked_assertions.push((depth, effective_pos, event));
     }
 
-    visible_events.sort_by(|(depth_a, pos_a, ev_a), (depth_b, pos_b, ev_b)| {
-        let pos_key_a = pos_a.map_or((0, 0, 0), |p| {
-            (p.book_number, p.chapter_number, p.scene_order)
-        });
-        let pos_key_b = pos_b.map_or((0, 0, 0), |p| {
-            (p.book_number, p.chapter_number, p.scene_order)
-        });
-        let step_key_a = ev_a
-            .within_scene_order
-            .map_or((1u8, u32::MAX), |s| (0u8, s));
-        let step_key_b = ev_b
-            .within_scene_order
-            .map_or((1u8, u32::MAX), |s| (0u8, s));
-        pos_key_a
-            .cmp(&pos_key_b)
-            .then_with(|| step_key_a.cmp(&step_key_b))
-            .then_with(|| depth_b.cmp(depth_a))
-            .then_with(|| ev_a.decision_seq.cmp(&ev_b.decision_seq))
-            .then_with(|| ev_a.append_seq.cmp(&ev_b.append_seq))
-            .then_with(|| ev_a.event_id.cmp(&ev_b.event_id))
+    unmasked_assertions.sort_by(|(depth_a, pos_a, ev_a), (depth_b, pos_b, ev_b)| {
+        reducer_event_cmp(*depth_a, *pos_a, ev_a, *depth_b, *pos_b, ev_b)
     });
 
-    let mut working_state = CanonStateViewV1 {
-        branch_id: branch_id.to_string(),
-        lineage: effective_lineage,
-        cursor: CanonCursorV1::unbounded(),
-        tier,
-        decision_watermark: max_decision_seq,
-        event_watermark: max_event_seq,
-        reducer_version: CANON_REDUCER_VERSION,
-        entities: BTreeMap::new(),
-        relationships: BTreeMap::new(),
-        quantities: BTreeMap::new(),
-        knowledge: BTreeMap::new(),
-        rules: BTreeMap::new(),
-        timeline: ProjectedTimelineV1 {
-            scene_clocks: BTreeMap::new(),
-            latest_clock: None,
-            source_event_ids: Vec::new(),
-            reducer_version: CANON_REDUCER_VERSION,
-        },
-        open_threads: BTreeMap::new(),
-        uncertain_orderings: Vec::new(),
-        precondition_anomalies: Vec::new(),
-        invalidated_scene_suffixes: Vec::new(),
-        visible_event_ids: Vec::new(),
-    };
-
-    let mut validated_candidate_indices: BTreeSet<usize> = BTreeSet::new();
-    for (_depth, effective_pos, event) in &visible_events {
-        if let Some(&cand_idx) = candidate_index_by_id.get(event.event_id.as_str()) {
-            validate_single_assertion_preconditions(
-                actor,
-                action,
-                cand_idx,
-                event,
-                &working_state,
-            )?;
-            validated_candidate_indices.insert(cand_idx);
-        }
-        apply_event_to_view(&mut working_state, event, *effective_pos)?;
-    }
-
-    // Also validate any candidate assertion events that were filtered out by
-    // masks/visibility against the state at their exact position/step cursor.
-    for (idx, cand) in candidate_events.iter().enumerate() {
-        if validated_candidate_indices.contains(&idx) {
+    for (cand_idx, cand) in normalized_candidates.iter().enumerate() {
+        if !matches!(cand.payload, CanonEventPayloadV1::Assertion { .. })
+            || is_withdrawal_only_event(cand)
+        {
             continue;
         }
-        if matches!(cand.payload, CanonEventPayloadV1::Assertion { .. })
-            && !is_withdrawal_only_event(cand)
+
+        let cand_depth = effective_lineage
+            .iter()
+            .position(|b| b == &cand.branch_id)
+            .unwrap_or(0);
+        let mut cand_effective_pos = cand.effective_position;
+        if let Some(scene_id) = &cand.scene_id
+            && let Some((vis_depth, vis)) = scene_visibility_by_id.get(scene_id)
+            && *vis_depth <= cand_depth
+            && let Some(override_pos) = vis.position_override
         {
-            let sub_cursor = CanonCursorV1 {
-                position: cand.effective_position,
-                within_scene_order: cand.within_scene_order,
-            };
-            let cursor_state =
-                state_at(branch_id, lineage, existing_events, &sub_cursor, tier, None)?;
-            validate_single_assertion_preconditions(actor, action, idx, cand, &cursor_state)?;
+            cand_effective_pos = Some(override_pos);
         }
+
+        let mut pre_cand_state = CanonStateViewV1 {
+            branch_id: branch_id.to_string(),
+            lineage: effective_lineage.clone(),
+            cursor: CanonCursorV1 {
+                position: cand_effective_pos,
+                within_scene_order: cand.within_scene_order,
+            },
+            tier,
+            decision_watermark: max_decision_seq,
+            event_watermark: max_event_seq,
+            reducer_version: CANON_REDUCER_VERSION,
+            entities: BTreeMap::new(),
+            relationships: BTreeMap::new(),
+            quantities: BTreeMap::new(),
+            knowledge: BTreeMap::new(),
+            rules: BTreeMap::new(),
+            timeline: ProjectedTimelineV1 {
+                scene_clocks: BTreeMap::new(),
+                latest_clock: None,
+                source_event_ids: Vec::new(),
+                reducer_version: CANON_REDUCER_VERSION,
+            },
+            open_threads: BTreeMap::new(),
+            uncertain_orderings: Vec::new(),
+            precondition_anomalies: Vec::new(),
+            invalidated_scene_suffixes: Vec::new(),
+            visible_event_ids: Vec::new(),
+        };
+
+        for &(depth, effective_pos, event) in &unmasked_assertions {
+            if reducer_event_cmp(
+                depth,
+                effective_pos,
+                event,
+                cand_depth,
+                cand_effective_pos,
+                cand,
+            ) != std::cmp::Ordering::Less
+            {
+                break;
+            }
+            if !is_assertion_visible_at_position(
+                depth,
+                effective_pos,
+                event,
+                effective_lineage.len(),
+                &masks_by_depth,
+                cand_effective_pos,
+                false,
+            ) {
+                continue;
+            }
+            apply_event_to_view(&mut pre_cand_state, event, effective_pos)?;
+        }
+
+        validate_single_assertion_preconditions(actor, action, cand_idx, cand, &pre_cand_state)?;
     }
 
     Ok(())
@@ -2591,46 +2612,46 @@ pub fn plan_canon_branch_merge(
     let find_source_removal_ids = |entity_id: &str, ancestor_event_ids: &[String]| -> Vec<String> {
         let mut matched: Vec<String> = Vec::new();
         for &ctrl in &source_control_events {
-            let matches_ancestor = ancestor_event_ids.iter().any(|anc_id| {
-                let Some(&anc_ev) = events_by_id.get(anc_id.as_str()) else {
-                    return false;
-                };
-                if ctrl
-                    .withdraws_event_id
-                    .as_ref()
-                    .is_some_and(|w| event_matches_id_or_merged_source(anc_ev, w))
-                    || ctrl
-                        .supersedes_event_id
+            let matches_ancestor =
+                ancestor_event_ids.iter().any(|anc_id| {
+                    let Some(&anc_ev) = events_by_id.get(anc_id.as_str()) else {
+                        return false;
+                    };
+                    if ctrl
+                        .withdraws_event_id
                         .as_ref()
-                        .is_some_and(|s| event_matches_id_or_merged_source(anc_ev, s))
-                {
-                    return true;
-                }
-                match &ctrl.payload {
-                    CanonEventPayloadV1::SceneVisibility { visibility } => {
-                        !visibility.visible
-                            && anc_ev.scene_id.as_deref() == Some(visibility.scene_id.as_str())
+                        .is_some_and(|w| event_matches_id_or_merged_source(anc_ev, w))
+                        || ctrl
+                            .supersedes_event_id
+                            .as_ref()
+                            .is_some_and(|s| event_matches_id_or_merged_source(anc_ev, s))
+                    {
+                        return true;
                     }
-                    CanonEventPayloadV1::SourceInvalidation { invalidation } => {
-                        invalidation
-                            .invalidated_event_ids
-                            .iter()
-                            .any(|id| event_matches_id_or_merged_source(anc_ev, id))
-                            || (invalidation
-                                .invalidated_revision_ids
-                                .contains(&anc_ev.source_revision_id)
-                                && invalidation
+                    match &ctrl.payload {
+                        CanonEventPayloadV1::SceneVisibility { visibility } => {
+                            !visibility.visible
+                                && anc_ev.scene_id.as_deref() == Some(visibility.scene_id.as_str())
+                        }
+                        CanonEventPayloadV1::SourceInvalidation { invalidation } => {
+                            invalidation
+                                .invalidated_event_ids
+                                .iter()
+                                .any(|id| event_matches_id_or_merged_source(anc_ev, id))
+                                || (invalidation.invalidated_revision_ids.iter().any(|rev| {
+                                    event_matches_revision_or_merged_source(anc_ev, rev)
+                                }) && invalidation
                                     .scene_id
                                     .as_ref()
                                     .is_none_or(|s| anc_ev.scene_id.as_ref() == Some(s)))
+                        }
+                        CanonEventPayloadV1::CoverageMask { mask } => {
+                            mask_matches_event_target(mask, anc_ev)
+                        }
+                        CanonEventPayloadV1::Assertion { .. }
+                        | CanonEventPayloadV1::WatermarkRestore { .. } => false,
                     }
-                    CanonEventPayloadV1::CoverageMask { mask } => {
-                        mask_matches_event_target(mask, anc_ev)
-                    }
-                    CanonEventPayloadV1::Assertion { .. }
-                    | CanonEventPayloadV1::WatermarkRestore { .. } => false,
-                }
-            });
+                });
             if matches_ancestor || ctrl.subject_key() == entity_id {
                 push_unique_id(&mut matched, &ctrl.event_id);
             }
@@ -2901,7 +2922,39 @@ pub fn plan_canon_branch_merge(
     let accepted_source_events = source_only_events
         .into_iter()
         .filter(|ev| !conflicting_source_event_ids.contains(&ev.event_id))
-        .cloned()
+        .map(|ev| {
+            let mut cloned = ev.clone();
+            if let CanonEventPayloadV1::SourceInvalidation { invalidation } = &mut cloned.payload
+                && !invalidation.invalidated_revision_ids.is_empty()
+            {
+                for candidate in events {
+                    if candidate.event_id == cloned.event_id {
+                        continue;
+                    }
+                    let matches_rev = invalidation
+                        .invalidated_revision_ids
+                        .iter()
+                        .any(|rev| event_matches_revision_or_merged_source(candidate, rev));
+                    let matches_scene = invalidation
+                        .scene_id
+                        .as_ref()
+                        .is_none_or(|s| candidate.scene_id.as_ref() == Some(s));
+                    if matches_rev && matches_scene {
+                        push_unique_id(
+                            &mut invalidation.invalidated_event_ids,
+                            &candidate.event_id,
+                        );
+                        if let Some(mp) = &candidate.merge_provenance {
+                            push_unique_id(
+                                &mut invalidation.invalidated_event_ids,
+                                &mp.source_event_id,
+                            );
+                        }
+                    }
+                }
+            }
+            cloned
+        })
         .collect();
 
     Ok(CanonMergePlanV1 {

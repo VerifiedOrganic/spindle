@@ -1267,4 +1267,141 @@ async fn sqlite_checkpoint_rollback_nested_inheritance_and_branch_merge() {
         .await
         .is_err()
     );
+
+    // 9. Incremental merge of a revision-only `SourceInvalidation` (empty `invalidated_event_ids`)
+    //    removes the previously merged target copy of the invalidated source revision.
+    svc.append_canon_decision(AppendCanonDecisionInputV1 {
+        project_id: project.project_id.clone(),
+        branch_id: child_branch.id.clone(),
+        resolve_active_descendant_branch: false,
+        action: CanonPolicyAction::Ratify,
+        tier: CanonTier::Ratified,
+        actor: "author:human".into(),
+        policy_version: CANON_POLICY_VERSION_V1.into(),
+        source_revision_id: "rev:child_alias_shadow".into(),
+        target_scene_id: None,
+        replace_prior_scene_revisions: false,
+        previous_decision_id: None,
+        confidence_inputs: Vec::new(),
+        reason: "child sets temporary alias".into(),
+        events: vec![draft_assertion(
+            "character:veyra",
+            ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "alias".into(),
+                value: ClaimScalar::Text {
+                    value: "Shadowblade".into(),
+                },
+                nature: AttributeNature::Evolving,
+            },
+            p3,
+            Some(10),
+            None,
+        )],
+    })
+    .await
+    .unwrap();
+
+    let (plan_m3, out_m3) = svc
+        .merge_canon_branch_events(
+            &project.project_id,
+            &main_branch.id,
+            &main_branch.id,
+            &child_branch.id,
+            "author:human",
+            "incremental merge 3 (merge alias)",
+        )
+        .await
+        .unwrap();
+    assert!(plan_m3.conflicts.is_empty());
+    assert_eq!(out_m3.unwrap().events.len(), 1);
+
+    let main_after_m3 = svc
+        .canon_state_at(
+            &project.project_id,
+            &main_branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        main_after_m3.entities["character:veyra"].attributes["alias"].scalar_value,
+        Some(ClaimScalar::Text {
+            value: "Shadowblade".into()
+        })
+    );
+
+    // Now append a revision-only invalidation on `child_branch` naming `rev:child_alias_shadow`
+    // with an empty `invalidated_event_ids` list, and merge into `main_branch` again.
+    svc.append_canon_decision(AppendCanonDecisionInputV1 {
+        project_id: project.project_id.clone(),
+        branch_id: child_branch.id.clone(),
+        resolve_active_descendant_branch: false,
+        action: CanonPolicyAction::InvalidateSource,
+        tier: CanonTier::Ratified,
+        actor: "author:human".into(),
+        policy_version: CANON_POLICY_VERSION_V1.into(),
+        source_revision_id: "rev:child_invalidate_alias_rev_only".into(),
+        target_scene_id: None,
+        replace_prior_scene_revisions: false,
+        previous_decision_id: None,
+        confidence_inputs: Vec::new(),
+        reason: "revision-only invalidation of rev:child_alias_shadow".into(),
+        events: vec![CanonEventDraftV1 {
+            subject: resolved("character:veyra"),
+            payload: CanonEventPayloadV1::SourceInvalidation {
+                invalidation: SourceInvalidationV1 {
+                    scene_id: None,
+                    invalidated_revision_ids: vec!["rev:child_alias_shadow".into()],
+                    invalidated_event_ids: Vec::new(),
+                    replacement_revision_id: None,
+                },
+            },
+            effective_position: Some(p3),
+            within_scene_order: None,
+            in_world_time: None,
+            scene_id: None,
+            source_claim_ids: Vec::new(),
+            evidence_sha256: exact_text_sha256("invalidate_rev_child_alias_shadow"),
+            provenance: CanonProvenanceKind::ManualAuthor,
+            supersedes_event_id: None,
+            withdraws_event_id: None,
+            legacy_record_scope: None,
+            merge_provenance: None,
+        }],
+    })
+    .await
+    .unwrap();
+
+    let (plan_m4, out_m4) = svc
+        .merge_canon_branch_events(
+            &project.project_id,
+            &main_branch.id,
+            &main_branch.id,
+            &child_branch.id,
+            "author:human",
+            "incremental merge 4 (merge revision-only invalidation)",
+        )
+        .await
+        .unwrap();
+    assert!(plan_m4.conflicts.is_empty());
+    assert_eq!(out_m4.unwrap().events.len(), 1);
+
+    let main_after_m4 = svc
+        .canon_state_at(
+            &project.project_id,
+            &main_branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !main_after_m4.entities["character:veyra"]
+            .attributes
+            .contains_key("alias")
+    );
 }

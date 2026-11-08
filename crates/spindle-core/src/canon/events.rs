@@ -620,6 +620,8 @@ pub struct MergeEventProvenanceV1 {
     pub source_event_id: String,
     pub source_decision_id: String,
     pub common_ancestor_branch_id: Option<String>,
+    #[serde(default)]
+    pub source_revision_id: Option<String>,
 }
 
 /// Versioned scene-placement and visibility mapping for move/delete/restore.

@@ -2140,4 +2140,360 @@ fn v1_policy_guard_and_three_way_branch_merge_conflicts() {
     .unwrap_err();
     assert_eq!(multi_err.code, CanonAppendErrorCode::Precondition);
     assert_eq!(multi_err.event_index, Some(1));
+
+    // 9. Coverage bounds are evaluated at each candidate's cursor during validation
+    //    (matching `state_at` before, within, and after a mask interval).
+    let p5 = CanonPositionV1::new(1, 5, 1).unwrap();
+    let p6 = CanonPositionV1::new(1, 6, 1).unwrap();
+    let p7 = CanonPositionV1::new(1, 7, 1).unwrap();
+    let p8 = CanonPositionV1::new(1, 8, 1).unwrap();
+    let p10 = CanonPositionV1::new(1, 10, 1).unwrap();
+    let p12 = CanonPositionV1::new(1, 12, 1).unwrap();
+
+    let parent_open_p1 = make_test_event(
+        "canon_event:parent_open_p1",
+        "branch:main",
+        1,
+        1,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Set,
+            measure: "wealth".into(),
+            amount: "100".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p1),
+        Some(1),
+        Some("scene:1"),
+        "rev:m_open",
+    );
+    let child_unbounded_mask_from_p10 = make_test_event(
+        "canon_event:child_mask_p10_onward",
+        "branch:child",
+        2,
+        2,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::QuantityMeasure {
+                        subject_id: "character:veyra".into(),
+                        measure: "wealth".into(),
+                        unit: "gold".into(),
+                    },
+                },
+                start_position: Some(p10),
+                end_position: None,
+                tombstone: false,
+            },
+        },
+        Some(p10),
+        None,
+        Some("scene:10"),
+        "rev:c_mask10",
+    );
+    let child_delta_p5 = make_test_event(
+        "canon_event:child_delta_p5",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-15".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p5),
+        Some(1),
+        Some("scene:5"),
+        "rev:c_p5",
+    );
+    let child_delta_p10 = make_test_event(
+        "canon_event:child_delta_p10",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-15".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p10),
+        Some(1),
+        Some("scene:10"),
+        "rev:c_p10",
+    );
+
+    // Before the unbounded mask `[p10, None)` starts, child delta at `p5` inherits the
+    // parent opening balance at `p1` and validates cleanly.
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[
+                parent_open_p1.clone(),
+                child_unbounded_mask_from_p10.clone()
+            ],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p5),
+        )
+        .is_ok()
+    );
+    // Within `[p10, None)`, the parent opening is masked and child delta at `p10` fails
+    // without a child opening balance.
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1.clone(), child_unbounded_mask_from_p10],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p10),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+
+    // Bounded tombstone mask `[p5, p10]`: candidate before (`p3`) passes, candidate
+    // within (`p7`) fails, and candidate after (`p12`) passes once inheritance resumes.
+    let bounded_tombstone_p5_p10 = make_test_event(
+        "canon_event:child_tombstone_p5_p10",
+        "branch:child",
+        2,
+        2,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::QuantityMeasure {
+                        subject_id: "character:veyra".into(),
+                        measure: "wealth".into(),
+                        unit: "gold".into(),
+                    },
+                },
+                start_position: Some(p5),
+                end_position: Some(p10),
+                tombstone: true,
+            },
+        },
+        Some(p5),
+        None,
+        Some("scene:5"),
+        "rev:c_tomb",
+    );
+    let child_delta_p3 = make_test_event(
+        "canon_event:child_delta_p3",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p3),
+        Some(1),
+        Some("scene:3"),
+        "rev:c_p3",
+    );
+    let child_delta_p7 = make_test_event(
+        "canon_event:child_delta_p7",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p7),
+        Some(1),
+        Some("scene:7"),
+        "rev:c_p7",
+    );
+    let child_delta_p12 = make_test_event(
+        "canon_event:child_delta_p12",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Quantity {
+            operation: QuantityOperation::Delta,
+            measure: "wealth".into(),
+            amount: "-10".into(),
+            unit: "gold".into(),
+            transaction_id: None,
+        }),
+        Some(p12),
+        Some(1),
+        Some("scene:12"),
+        "rev:c_p12",
+    );
+
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1.clone(), bounded_tombstone_p5_p10.clone()],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p3),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1.clone(), bounded_tombstone_p5_p10.clone()],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p7),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[parent_open_p1, bounded_tombstone_p5_p10],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_delta_p12),
+        )
+        .is_ok()
+    );
+
+    // Bounded child override `[p5, p10]` without parent possession: child acquisition at `p6`
+    // satisfies a drop within the interval (`p8`), but expires after `p10` so a drop at `p12` fails.
+    let bounded_item_mask_p5_p10 = make_test_event(
+        "canon_event:child_item_mask_p5_p10",
+        "branch:child",
+        1,
+        1,
+        "character:veyra",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::PossessionItem {
+                        subject_id: "character:veyra".into(),
+                        item_id: "item:badge".into(),
+                        custody: CustodyKind::Custodian,
+                    },
+                },
+                start_position: Some(p5),
+                end_position: Some(p10),
+                tombstone: false,
+            },
+        },
+        Some(p5),
+        None,
+        Some("scene:5"),
+        "rev:c_item_mask",
+    );
+    let child_acq_p6 = make_test_event(
+        "canon_event:child_acq_p6",
+        "branch:child",
+        2,
+        2,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Acquire,
+            item: ClaimEntity::Resolved {
+                id: "item:badge".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p6),
+        Some(1),
+        Some("scene:6"),
+        "rev:c_acq6",
+    );
+    let child_drop_p8 = make_test_event(
+        "canon_event:child_drop_p8",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:badge".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p8),
+        Some(1),
+        Some("scene:8"),
+        "rev:c_drop8",
+    );
+    let child_drop_p12 = make_test_event(
+        "canon_event:child_drop_p12",
+        "branch:child",
+        3,
+        3,
+        "character:veyra",
+        narration_assertion(ClaimAssertion::Possession {
+            operation: PossessionOperation::Lose,
+            item: ClaimEntity::Resolved {
+                id: "item:badge".into(),
+            },
+            counterparty: None,
+            custody: CustodyKind::Custodian,
+        }),
+        Some(p12),
+        Some(1),
+        Some("scene:12"),
+        "rev:c_drop12",
+    );
+
+    assert!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[bounded_item_mask_p5_p10.clone(), child_acq_p6.clone()],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_drop_p8),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        validate_event_batch_in_history(
+            "branch:child",
+            &["branch:child".into(), "branch:main".into()],
+            &[bounded_item_mask_p5_p10, child_acq_p6],
+            "author:op",
+            CanonPolicyAction::Ratify,
+            CanonTier::Ratified,
+            std::slice::from_ref(&child_drop_p12),
+        )
+        .unwrap_err()
+        .code,
+        CanonAppendErrorCode::Precondition
+    );
 }
