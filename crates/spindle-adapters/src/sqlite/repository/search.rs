@@ -13,6 +13,11 @@ impl Repository {
         entity_id: &str,
         document: &SearchDocument,
     ) -> Result<()> {
+        if self.pool().in_application_transaction() {
+            return self
+                .queue_planning_embedding(project_id, branch_id, entity_id, document)
+                .await;
+        }
         self.upsert_search_embedding_document(project_id, branch_id, entity_id, document)
             .await
     }

@@ -21,6 +21,7 @@ use tokio_rusqlite::Connection as AsyncConnection;
 
 use super::error::SqlResultExt;
 use super::migrations;
+mod application;
 
 /// Number of dedicated reader connections. SQLite serializes writes regardless,
 /// so this bounds *reader* concurrency only. Four matches a typical desktop CLI
@@ -43,6 +44,7 @@ impl std::fmt::Debug for SqlitePool {
 
 struct Inner {
     writer: AsyncConnection,
+    application_gate: Arc<tokio::sync::Mutex<()>>,
     readers: Vec<AsyncConnection>,
     next_reader: AtomicUsize,
 }
@@ -87,6 +89,7 @@ impl SqlitePool {
         Ok(Self {
             inner: Arc::new(Inner {
                 writer,
+                application_gate: Arc::new(tokio::sync::Mutex::new(())),
                 readers,
                 next_reader: AtomicUsize::new(0),
             }),
@@ -102,22 +105,45 @@ impl SqlitePool {
         F: FnOnce(&mut Connection) -> rusqlite::Result<R> + Send + 'static,
         R: Send + 'static,
     {
+        let application = self.in_application_transaction();
+        let _gate = if application {
+            None
+        } else {
+            Some(self.inner.application_gate.lock().await)
+        };
         self.inner
             .writer
-            .call(move |conn| f(conn).map_err(tokio_rusqlite::Error::from))
+            .call(move |conn| {
+                if application {
+                    application::require_open(conn)?;
+                }
+                f(conn).map_err(tokio_rusqlite::Error::from)
+            })
             .await
             .with_sql_context("writer call")
     }
 
     /// Run a closure with read-only access. Round-robin over the reader pool;
     /// `query_only = 1` is set on every reader connection so writes attempted
-    /// here will error rather than silently mutate.
+    /// here will error rather than silently mutate. The internal application
+    /// unit of work pins readbacks to its writer for read-your-writes semantics.
     #[tracing::instrument(level = "trace", skip_all)]
     pub async fn read<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&mut Connection) -> rusqlite::Result<R> + Send + 'static,
         R: Send + 'static,
     {
+        if self.in_application_transaction() {
+            return self
+                .inner
+                .writer
+                .call(move |conn| {
+                    application::require_open(conn)?;
+                    f(conn).map_err(tokio_rusqlite::Error::from)
+                })
+                .await
+                .with_sql_context("transaction readback");
+        }
         let idx = self.inner.next_reader.fetch_add(1, Ordering::Relaxed) % self.inner.readers.len();
         self.inner.readers[idx]
             .call(move |conn| f(conn).map_err(tokio_rusqlite::Error::from))

@@ -1,5 +1,5 @@
 //! Initial-planning contracts. These never authorize in-run amendments.
-use crate::models::ContentRating;
+use crate::models::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -431,6 +431,10 @@ pub struct PlanningProposal {
     pub payload_hash: String,
     pub status: PlanningProposalStatus,
     pub policy_snapshot: PlanningPolicy,
+    /// Existing records/targets captured at staging or approved parent-ID resolution;
+    /// checked again under the writer gate.
+    #[serde(default)]
+    pub base_state: BTreeMap<String, String>,
     pub decided_by: Option<String>,
     pub decision_note: Option<String>,
     pub decided_at: Option<i64>,
@@ -651,4 +655,63 @@ mod tests {
             rejects_at(conflict.clone(), path);
         }
     }
+}
+
+/// A committed operation receipt. IDs include the operation's named output and
+/// root aliases `<output>:book`, `<output>:chapter`, `<output>:branch`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanningOperationReceipt {
+    pub proposal_id: String,
+    pub operation_index: usize,
+    pub input_hash: String,
+    pub returned_ids: BTreeMap<String, String>,
+    pub actor: String,
+    pub decision_note: String,
+    pub result: Option<PlanningAppliedOutput>,
+    pub prior_state: serde_json::Value,
+    pub outcome: PlanningOperationOutcome,
+    pub error: Option<String>,
+    pub recorded_at: i64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningOperationOutcome {
+    Applied,
+    Failed,
+    NotReached,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlanningApplyReport {
+    pub attempt_id: String,
+    /// Completion of this application batch, never a drafting-readiness verdict.
+    pub complete: bool,
+    pub proposals: Vec<PlanningProposal>,
+    pub operations: Vec<PlanningOperationReceipt>,
+    pub error: Option<String>,
+    pub pending_search_refreshes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "operation", content = "output", rename_all = "snake_case")]
+pub enum PlanningAppliedOutput {
+    CreateProject(Box<CreateProjectOutput>),
+    CreateCharacter(Box<CreateCharacterOutput>),
+    CreateLocation(Box<CreateLocationOutput>),
+    CreateWorldRule(Box<CreateWorldRuleOutput>),
+    CreateRelationship(Box<CreateRelationshipOutput>),
+    CreatePlotLine(Box<CreatePlotLineOutput>),
+    CreateConflict(Box<CreateConflictOutput>),
+    CreateTheme(Box<CreateThemeOutput>),
+    CreateMotif(Box<CreateMotifOutput>),
+    CreateNarrativePromise(Box<CreateNarrativePromiseOutput>),
+    CreateCharacterArc(Box<CreateCharacterArcOutput>),
+    CreatePacingConfig(Box<CreatePacingConfigOutput>),
+    CreatePacingCurve(Box<CreatePacingCurveOutput>),
+    SetArcPacingConstraints(Box<SetArcPacingConstraintsOutput>),
+    CreateBook(Box<CreateBookOutput>),
+    CreateChapter(Box<CreateChapterOutput>),
+    SetBookOutline(Box<SetBookOutlineOutput>),
+    SetChapterOutline(Box<SetChapterOutlineOutput>),
+    PlanChapter(Box<PlanChapterOutput>),
+    UpdateReaderContract(Box<UpdateEntityOutput>),
 }
