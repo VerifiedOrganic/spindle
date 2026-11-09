@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::repository::legacy_claim;
+use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
 
 impl SqliteSpindleService {
@@ -294,6 +294,19 @@ impl SqliteSpindleService {
                             created_at: chrono::Utc::now(),
                         })?;
                     let mirror_claim_count_before = mirror_claims.len();
+                    let snapshot_index = mirror_claims.len();
+                    mirror_claims.push(legacy_snapshot_claim(
+                        &tx_project_id,
+                        &target_branch_id,
+                        &mirror_revision_id,
+                        Some(&tx_scene.id),
+                        &mirror_placement,
+                        &mirror_character_id,
+                        format!("legacy.character_state.snapshot.{}", state.id),
+                        &state,
+                        Some(0),
+                        snapshot_index,
+                    )?);
                     if let Some(statuses) = &mirror_statuses {
                         for status in statuses {
                             let assertion = match status.trim().to_ascii_lowercase().as_str() {
@@ -463,7 +476,39 @@ impl SqliteSpindleService {
                         }
                         None => None,
                     };
-                    let mirror_fact_added = mirror_scalar.is_some();
+                    let snapshot_index = mirror_claims.len();
+                    mirror_claims.push(legacy_snapshot_claim(
+                        &tx_project_id,
+                        &target_branch_id,
+                        &mirror_revision_id,
+                        Some(&tx_scene.id),
+                        &mirror_placement,
+                        &mirror_subject_id,
+                        format!("legacy.canonical_fact.{}", fact.id),
+                        &fact,
+                        Some(0),
+                        snapshot_index,
+                    )?);
+                    if let Some(old) = &superseded_fact_id {
+                        let old_fact = tx.get_canonical_fact(old)?;
+                        let old_index = mirror_claims.len();
+                        mirror_claims.push(legacy_snapshot_claim(
+                            &tx_project_id,
+                            &target_branch_id,
+                            &mirror_revision_id,
+                            Some(&tx_scene.id),
+                            &mirror_placement,
+                            old_fact
+                                .subject_id
+                                .as_deref()
+                                .unwrap_or(&format!("project:{tx_project_id}")),
+                            format!("legacy.canonical_fact.{}", old_fact.id),
+                            &old_fact,
+                            Some(0),
+                            old_index,
+                        )?);
+                    }
+                    let mirror_fact_added = true;
                     if let Some(value) = mirror_scalar {
                         let index = mirror_claims.len();
                         mirror_claims.push(legacy_claim(
@@ -556,6 +601,22 @@ impl SqliteSpindleService {
                         Some(0),
                         index,
                     ));
+                    let snapshot_index = mirror_claims.len();
+                    mirror_claims.push(legacy_snapshot_claim(
+                        &tx_project_id,
+                        &target_branch_id,
+                        &format!(
+                            "{mirror_revision_id}:relationship:{}:{}",
+                            rel.in_id, rel.out_id
+                        ),
+                        Some(&tx_scene.id),
+                        &mirror_placement,
+                        &rel.in_id,
+                        format!("legacy.relates_to.{}|{}", rel.in_id, rel.out_id),
+                        &rel,
+                        Some(0),
+                        snapshot_index,
+                    )?);
                     mirror_source_keys.push((
                         "relates_to".to_string(),
                         format!("{}|{}|{}", rel.branch_id, rel.in_id, rel.out_id),

@@ -1,5 +1,5 @@
 use super::canon_backfill::mark_legacy_rows_mapped_in_conn;
-use super::canon_policy::{legacy_claim, mirror_legacy_claims_in_tx};
+use super::canon_policy::{legacy_claim, legacy_snapshot_claim, mirror_legacy_claims_in_tx};
 use super::*;
 use spindle_core::canon::*;
 
@@ -483,19 +483,31 @@ impl Repository {
                         ClaimAssertion::Promise {
                             operation,
                             thread: ClaimEntity::Resolved {
-                                id: mirror_promise_id,
+                                id: mirror_promise_id.clone(),
                             },
                         },
                         None,
-                        0,
+                        1,
                     );
+                    let snapshot_claim = legacy_snapshot_claim(
+                        &mirror_project_id,
+                        &mirror_branch_id,
+                        &revision_id,
+                        mirror_source_scene_id.as_deref(),
+                        &placement,
+                        &mirror_promise_id,
+                        "legacy.narrative_promise".to_string(),
+                        &promise,
+                        None,
+                        0,
+                    )?;
                     let mirrored = mirror_legacy_claims_in_tx(
                         &tx,
                         &mirror_project_id,
                         &mirror_branch_id,
                         &revision_id,
                         mirror_source_scene_id.as_deref(),
-                        vec![claim],
+                        vec![snapshot_claim, claim],
                     )?;
                     if mirrored.is_some() {
                         mark_legacy_rows_mapped_in_conn(

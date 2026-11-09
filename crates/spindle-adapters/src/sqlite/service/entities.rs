@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::repository::legacy_claim;
+use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
 
 impl SqliteSpindleService {
@@ -206,6 +206,19 @@ impl SqliteSpindleService {
                 })?;
 
                 let mut mirror_claims = Vec::new();
+                let snapshot_index = mirror_claims.len();
+                mirror_claims.push(legacy_snapshot_claim(
+                    &character.project_id,
+                    &target_branch_id,
+                    &mirror_revision_id,
+                    Some(&scene.id),
+                    &mirror_placement,
+                    &character.id,
+                    format!("legacy.character_state.snapshot.{}", state.id),
+                    &state,
+                    Some(0),
+                    snapshot_index,
+                )?);
                 if let Some(statuses) = &mirror_statuses {
                     for status in statuses {
                         let assertion = match status.trim().to_ascii_lowercase().as_str() {

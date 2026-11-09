@@ -2973,6 +2973,7 @@ fn policy_input(
             claim,
             provenance: CanonProvenanceKind::Extracted,
             secret_linked: false,
+            supersedes_event_id: None,
         }],
         context,
     }
@@ -3156,11 +3157,13 @@ async fn hard_v1_high_impact_claims_stage_provisional_not_ratified() {
                 claim: death,
                 provenance: CanonProvenanceKind::Extracted,
                 secret_linked: false,
+                supersedes_event_id: None,
             },
             CanonPolicyClaimRequestV1 {
                 claim: secret,
                 provenance: CanonProvenanceKind::Extracted,
                 secret_linked: true,
+                supersedes_event_id: None,
             },
         ],
         context,
@@ -3461,4 +3464,191 @@ async fn legacy_unverified_provisional_findings_never_become_error_blocks() {
         .unwrap();
     assert!(!pending.continuity_clean());
     assert!(pending.next_scene_has_pending_work);
+}
+
+#[tokio::test]
+async fn dual_write_character_state_emits_compatibility_snapshot_for_canon_read() {
+    use spindle_core::models::{
+        CharacterStatePatch, CommitCharacterStateInput, GetCharacterSnapshotInput,
+    };
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "State Snapshot Parity").await;
+    let character_id = create_character_named(&svc, &project.project_id, "Veyra").await;
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+    let mut emotional_state = std::collections::BTreeMap::new();
+    emotional_state.insert("fear".to_string(), serde_json::json!("tight"));
+    svc.commit_character_state(CommitCharacterStateInput {
+        character_id: character_id.clone(),
+        scene_id: scene_id.clone(),
+        changes: CharacterStatePatch {
+            emotional_state,
+            goals: Some(vec!["escape the docks".into()]),
+            status: Some(vec!["alive".into()]),
+            notes: Some(vec!["left hand bandaged".into()]),
+            source_summary: Some("dual-write snapshot".into()),
+        },
+    })
+    .await
+    .unwrap();
+    let readiness = svc
+        .evaluate_project_canon_cutover_readiness(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        readiness.unmapped_legacy_row_count, 0,
+        "blocking: {:?}",
+        readiness.blocking_reasons
+    );
+    assert!(
+        readiness.cutover_allowed,
+        "blocking: {:?}",
+        readiness.blocking_reasons
+    );
+    svc.set_canon_cutover_mode(
+        &project.project_id,
+        CanonCutoverModeV1::ShadowRead,
+        "shadow",
+    )
+    .await
+    .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::CanonRead, "read")
+        .await
+        .unwrap();
+    let snapshot = svc
+        .get_character_snapshot(GetCharacterSnapshotInput {
+            project_id: project.project_id.clone(),
+            character_id: character_id.clone(),
+            branch_id: None,
+        })
+        .await
+        .unwrap();
+    let state = snapshot.current_state.expect("projected character state");
+    assert_eq!(state.goals, vec!["escape the docks"]);
+    assert_eq!(state.notes, vec!["left hand bandaged"]);
+    assert_eq!(
+        state.emotional_state.get("fear"),
+        Some(&serde_json::json!("tight"))
+    );
+}
+
+#[tokio::test]
+async fn dual_write_relationship_replaces_prior_scene_delta_and_reverts() {
+    use spindle_core::models::UpdateRelationshipInput;
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Relationship Replace").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+    for trust_delta in [2, 3, 2] {
+        svc.update_relationship(UpdateRelationshipInput {
+            character_a_id: a.clone(),
+            character_b_id: b.clone(),
+            trust_delta,
+            tension_delta: 0,
+            reason: "scene revision".into(),
+            scene_id: scene_id.clone(),
+        })
+        .await
+        .unwrap();
+    }
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state.relationship(&a, &b).expect("canon relationship");
+    assert_eq!(relationship.accumulated_trust_delta, 2);
+    assert_eq!(relationship.accumulated_tension_delta, 0);
+    let legacy = svc
+        .repository()
+        .list_relationships_by_branch(&branch.id)
+        .await
+        .unwrap();
+    let legacy_pair = legacy
+        .iter()
+        .find(|row| (row.in_id == a && row.out_id == b) || (row.in_id == b && row.out_id == a))
+        .expect("legacy relationship");
+    assert_eq!(legacy_pair.trust, 2);
+}
+
+#[tokio::test]
+async fn dual_write_commit_scene_relationship_replaces_prior_scene_delta() {
+    use spindle_core::models::{CommitSceneChangesInput, RelationshipUpdateEntry};
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Commit Relationship Replace").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+    for trust_delta in [2, 3, 2] {
+        svc.commit_scene_changes(CommitSceneChangesInput {
+            project_id: project.project_id.clone(),
+            scene_id: scene_id.clone(),
+            character_states: Vec::new(),
+            canonical_facts: Vec::new(),
+            relationship_updates: vec![RelationshipUpdateEntry {
+                character_a_id: a.clone(),
+                character_b_id: b.clone(),
+                trust_delta,
+                tension_delta: 0,
+                reason: "scene revision".into(),
+            }],
+            accept_world_rule_risks: true,
+            accept_continuity_risks: true,
+            continuity_gate: Some(spindle_core::models::CommitContinuityGate::Off),
+        })
+        .await
+        .unwrap();
+    }
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state.relationship(&a, &b).expect("canon relationship");
+    assert_eq!(relationship.accumulated_trust_delta, 2);
+    let legacy = svc
+        .repository()
+        .list_relationships_by_branch(&branch.id)
+        .await
+        .unwrap();
+    let legacy_pair = legacy
+        .iter()
+        .find(|row| (row.in_id == a && row.out_id == b) || (row.in_id == b && row.out_id == a))
+        .expect("legacy relationship");
+    assert_eq!(legacy_pair.trust, 2);
 }

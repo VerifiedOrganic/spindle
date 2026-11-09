@@ -11,7 +11,11 @@ use super::*;
 use spindle_core::canon::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn policy_event_draft(claim: &ClaimV1, provenance: CanonProvenanceKind) -> CanonEventDraftV1 {
+fn policy_event_draft(
+    claim: &ClaimV1,
+    provenance: CanonProvenanceKind,
+    supersedes_event_id: Option<String>,
+) -> CanonEventDraftV1 {
     CanonEventDraftV1 {
         subject: claim.proposed.subject.clone(),
         payload: CanonEventPayloadV1::Assertion {
@@ -28,7 +32,7 @@ fn policy_event_draft(claim: &ClaimV1, provenance: CanonProvenanceKind) -> Canon
         source_claim_ids: vec![claim.proposed.claim_id.clone()],
         evidence_sha256: evidence_sha256(&claim.proposed.evidence),
         provenance,
-        supersedes_event_id: None,
+        supersedes_event_id,
         withdraws_event_id: None,
         legacy_record_scope: None,
         merge_provenance: None,
@@ -185,12 +189,27 @@ pub(crate) fn apply_canon_policy_input_in_tx(
     let mut evaluations = Vec::with_capacity(input.requests.len());
     let mut claims = Vec::with_capacity(input.requests.len());
     let mut decisions = Vec::with_capacity(input.requests.len());
-    let mut previous_decision_id = input.previous_decision_id.clone();
     for (index, request) in input.requests.iter().enumerate() {
+        // Only the first claim is compared against the caller-supplied tip.
+        // Later claims in this transaction cannot race an external writer, and
+        // a deduplicated earlier claim must not become a stale tip for them.
+        let previous_decision_id = if index == 0 {
+            input.previous_decision_id.clone()
+        } else {
+            None
+        };
+        let secret_linked = request.secret_linked
+            || match &request.claim.proposed.assertion {
+                ClaimAssertion::Knowledge { proposition, .. } => input
+                    .context
+                    .secret_linked_propositions
+                    .contains(&entity_key(proposition)),
+                _ => false,
+            };
         let evaluation = evaluate_canon_policy(
             &request.claim,
             CanonPolicyProvenanceV1::from_provenance(request.provenance),
-            request.secret_linked,
+            secret_linked,
             &input.context,
         )?;
         let record = upsert_canon_claim_in_conn(
@@ -207,7 +226,11 @@ pub(crate) fn apply_canon_policy_input_in_tx(
             CanonPolicyDispositionV1::StageProvisional
             | CanonPolicyDispositionV1::AutoRatify
             | CanonPolicyDispositionV1::Ratify => {
-                vec![policy_event_draft(&request.claim, request.provenance)]
+                vec![policy_event_draft(
+                    &request.claim,
+                    request.provenance,
+                    request.supersedes_event_id.clone(),
+                )]
             }
             CanonPolicyDispositionV1::Reject
             | CanonPolicyDispositionV1::Supersede
@@ -222,7 +245,7 @@ pub(crate) fn apply_canon_policy_input_in_tx(
             tier: evaluation.tier,
             actor: evaluation.actor.clone(),
             policy_version: evaluation.policy_version.clone(),
-            source_revision_id: input.source_revision_id.clone(),
+            source_revision_id: request.claim.binding.revision_id.clone(),
             target_scene_id: input.target_scene_id.clone(),
             replace_prior_scene_revisions: input.replace_prior_scene_revisions && index == 0,
             previous_decision_id: previous_decision_id.clone(),
@@ -236,7 +259,6 @@ pub(crate) fn apply_canon_policy_input_in_tx(
             CanonDecisionAuditV1::from(&evaluation),
             now_micros,
         )?;
-        previous_decision_id = Some(output.decision.decision_id.clone());
         evaluations.push(evaluation);
         claims.push(record);
         decisions.push(output);
@@ -295,6 +317,44 @@ pub(crate) fn legacy_claim(
     }
 }
 
+/// Build a canonical compatibility-snapshot attribute for a legacy row. The
+/// projection reads these exact JSON records, so every mirrored store must emit
+/// one in addition to its typed assertions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn legacy_snapshot_claim<T: serde::Serialize>(
+    project_id: &str,
+    branch_id: &str,
+    source_revision_id: &str,
+    scene_id: Option<&str>,
+    placement: &spindle_core::models::StoryPlacement,
+    subject_id: &str,
+    attribute_key: String,
+    record: &T,
+    within_scene_order: Option<u32>,
+    index: usize,
+) -> Result<ClaimV1> {
+    Ok(legacy_claim(
+        project_id,
+        branch_id,
+        source_revision_id,
+        scene_id,
+        placement,
+        ClaimEntity::Resolved {
+            id: subject_id.to_string(),
+        },
+        ClaimAssertion::Attribute {
+            operation: AttributeOperation::Set,
+            key: attribute_key,
+            value: ClaimScalar::Text {
+                value: serde_json::to_string(record)?,
+            },
+            nature: AttributeNature::Evolving,
+        },
+        within_scene_order,
+        index,
+    ))
+}
+
 /// Mirror authoritative legacy writes into canon inside the same transaction.
 /// Enabled only in dual-write/shadow-read/canon-read modes. Ordinary writes are
 /// authored (`ManualAuthor`) and may ratify; v1 high-impact classes stay
@@ -333,14 +393,58 @@ pub(crate) fn mirror_legacy_claims_in_tx(
         calibrations: Vec::new(),
         config: CanonPolicyConfigV1::default(),
     };
-    let requests = claims
-        .into_iter()
-        .map(|claim| CanonPolicyClaimRequestV1 {
+    let mut requests = Vec::with_capacity(claims.len());
+    for mut claim in claims {
+        let stream_key = claim_semantic_stream_key(&claim);
+        let new_payload = CanonEventPayloadV1::Assertion {
+            assertion: claim.proposed.assertion.clone(),
+            modality: claim.proposed.modality,
+            temporal_scope: claim.proposed.temporal_scope,
+            speaker: claim.proposed.speaker.clone(),
+            experiencer: claim.proposed.experiencer.clone(),
+        };
+        let new_fingerprint = semantic_event_fingerprint(
+            &claim.proposed.subject,
+            &new_payload,
+            story_placement_to_canon_position(&claim.binding.position),
+            claim.proposed.within_scene_order,
+            &claim.proposed.in_world_time,
+        );
+        let prior = stream_key.as_deref().and_then(|stream_key| {
+            events
+                .iter()
+                .filter(|event| {
+                    event.provenance == CanonProvenanceKind::ManualAuthor
+                        && event.scene_id == claim.binding.scene_id
+                        && event_semantic_stream_key(event).as_deref() == Some(stream_key)
+                })
+                .max_by_key(|event| event.append_seq)
+        });
+        let mut supersedes_event_id = None;
+        if let Some(prior) = prior {
+            // An exact retry is already reflected in canon; skip it. A changed
+            // (or reverted) value must not deduplicate against an older
+            // decision, so bind this mirror to the event it replaces.
+            if prior.semantic_fingerprint == new_fingerprint {
+                continue;
+            }
+            claim.binding.revision_id = format!(
+                "{}#supersedes:{}",
+                claim.binding.revision_id, prior.event_id
+            );
+            claim.binding.accepted_text_sha256 = exact_text_sha256(&claim.binding.revision_id);
+            supersedes_event_id = Some(prior.event_id.clone());
+        }
+        requests.push(CanonPolicyClaimRequestV1 {
             claim,
             provenance: CanonProvenanceKind::ManualAuthor,
             secret_linked: false,
-        })
-        .collect();
+            supersedes_event_id,
+        });
+    }
+    if requests.is_empty() {
+        return Ok(None);
+    }
     let now_micros = timestamp_to_micros(chrono::Utc::now());
     apply_canon_policy_input_in_tx(
         conn,

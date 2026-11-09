@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::repository::legacy_claim;
+use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
 
 impl SqliteSpindleService {
@@ -134,7 +134,31 @@ impl SqliteSpindleService {
                         source: None,
                     }
                 };
-                let mirror_claim = legacy_claim(
+                let mut mirror_claims = vec![legacy_snapshot_claim(
+                    &fact.project_id,
+                    &tx_branch_id,
+                    &mirror_revision_id,
+                    None,
+                    &mirror_placement,
+                    &fact.character_id,
+                    format!("legacy.knowledge_fact.{}", fact.id),
+                    &fact,
+                    None,
+                    0,
+                )?];
+                mirror_claims.push(legacy_snapshot_claim(
+                    &fact.project_id,
+                    &tx_branch_id,
+                    &mirror_revision_id,
+                    None,
+                    &mirror_placement,
+                    &knows.in_id,
+                    format!("legacy.knows.{}", knows.out_id),
+                    &knows,
+                    None,
+                    1,
+                )?);
+                mirror_claims.push(legacy_claim(
                     &fact.project_id,
                     &tx_branch_id,
                     &mirror_revision_id,
@@ -145,14 +169,14 @@ impl SqliteSpindleService {
                     },
                     assertion,
                     None,
-                    0,
-                );
+                    2,
+                ));
                 let mirrored = tx.mirror_canon_claims(
                     &fact.project_id,
                     &tx_branch_id,
                     &mirror_revision_id,
                     None,
-                    vec![mirror_claim],
+                    mirror_claims,
                 )?;
                 if mirrored.is_some() {
                     let knows_pk = format!("{}|{}|{}", knows.branch_id, knows.in_id, knows.out_id);

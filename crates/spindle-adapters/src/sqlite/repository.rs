@@ -748,7 +748,7 @@ pub use canon_backfill::*;
 mod canon_cutover;
 mod canon_events;
 mod canon_policy;
-pub(crate) use canon_policy::legacy_claim;
+pub(crate) use canon_policy::{legacy_claim, legacy_snapshot_claim};
 mod characters;
 mod entities;
 mod export;

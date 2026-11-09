@@ -1,5 +1,5 @@
 use super::canon_backfill::mark_legacy_rows_mapped_in_conn;
-use super::canon_policy::legacy_claim;
+use super::canon_policy::{legacy_claim, legacy_snapshot_claim};
 use super::*;
 use spindle_core::canon::*;
 
@@ -208,6 +208,21 @@ impl Repository {
                     scene_order: Some(scene.scene_order),
                     note: None,
                 };
+                let snapshot_claim = legacy_snapshot_claim(
+                    &scene.project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    Some(&scene.id),
+                    &placement,
+                    &relationship.in_id,
+                    format!(
+                        "legacy.relates_to.{}|{}",
+                        relationship.in_id, relationship.out_id
+                    ),
+                    &relationship,
+                    Some(0),
+                    0,
+                )?;
                 let claim = legacy_claim(
                     &scene.project_id,
                     &effective_branch_id,
@@ -226,14 +241,14 @@ impl Repository {
                         tension: input_owned.tension_delta,
                     },
                     Some(0),
-                    0,
+                    1,
                 );
                 let mirrored = tx.mirror_canon_claims(
                     &scene.project_id,
                     &effective_branch_id,
                     &revision_id,
                     Some(&scene.id),
-                    vec![claim],
+                    vec![snapshot_claim, claim],
                 )?;
                 if mirrored.is_some() {
                     let pair_key = format!(

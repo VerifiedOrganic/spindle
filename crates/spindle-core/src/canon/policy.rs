@@ -769,6 +769,8 @@ pub struct CanonPolicyClaimRequestV1 {
     pub provenance: CanonProvenanceKind,
     /// Secret-fact linkage discovered from legacy canon, not inferred from prose.
     pub secret_linked: bool,
+    /// Prior same-stream event this mirror replaces; `None` for new claims.
+    pub supersedes_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1468,6 +1470,26 @@ pub fn classify_legacy_finding(finding: LegacyCanonFindingV1) -> LegacyCanonFind
     } else {
         finding
     }
+}
+
+/// Stable semantic stream key for a candidate claim, matching the key stored on
+/// events. Used by compatibility mirroring to find the prior contribution.
+pub fn claim_semantic_stream_key(claim: &ClaimV1) -> Option<String> {
+    let subject_key = match &claim.proposed.subject {
+        ClaimEntity::Resolved { id } => id.clone(),
+        ClaimEntity::Unresolved { label } => format!("unresolved:{label}"),
+    };
+    let position = story_placement_to_canon_position(&claim.binding.position);
+    assertion_semantic_stream_key(&subject_key, &claim.proposed.assertion, position)
+        .and_then(|key| serde_json::to_string(&key).ok())
+}
+
+/// Stable semantic stream key for a stored event, serialized identically to
+/// [`claim_semantic_stream_key`].
+pub fn event_semantic_stream_key(event: &CanonEventV1) -> Option<String> {
+    event
+        .semantic_stream_key()
+        .and_then(|key| serde_json::to_string(&key).ok())
 }
 
 /// Narrative position of a claim, or an error when placement is missing.

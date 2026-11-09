@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::repository::legacy_claim;
+use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
 
 impl SqliteSpindleService {
@@ -1649,9 +1649,23 @@ impl SqliteSpindleService {
             .repository
             .with_transaction(move |tx| {
                 let fact = tx.create_canonical_fact(params)?;
-                let mut mirrored_fact = false;
+                let mut mirror_claims = Vec::new();
+                let snapshot_index = mirror_claims.len();
+                mirror_claims.push(legacy_snapshot_claim(
+                    &fact.project_id,
+                    &fact.branch_id,
+                    &mirror_revision_id,
+                    mirror_scene_id.as_deref(),
+                    &mirror_placement,
+                    &mirror_subject_id,
+                    format!("legacy.canonical_fact.{}", fact.id),
+                    &fact,
+                    Some(0),
+                    snapshot_index,
+                )?);
                 if let Some(value) = mirror_value {
-                    let claim = legacy_claim(
+                    let index = mirror_claims.len();
+                    mirror_claims.push(legacy_claim(
                         &fact.project_id,
                         &fact.branch_id,
                         &mirror_revision_id,
@@ -1667,16 +1681,8 @@ impl SqliteSpindleService {
                             nature: mirror_nature,
                         },
                         Some(0),
-                        0,
-                    );
-                    let mirrored = tx.mirror_canon_claims(
-                        &fact.project_id,
-                        &fact.branch_id,
-                        &mirror_revision_id,
-                        mirror_scene_id.as_deref(),
-                        vec![claim],
-                    )?;
-                    mirrored_fact = mirrored.is_some();
+                        index,
+                    ));
                 }
                 if let Some(secrecy) = secrecy.as_ref() {
                     let fact_text = crate::format::canonical_fact_hard_constraint(&fact).statement;
@@ -1700,11 +1706,35 @@ impl SqliteSpindleService {
                     }
                     None => None,
                 };
-                if mirrored_fact {
-                    let mut keys = vec![("canonical_fact".to_string(), fact.id.clone())];
-                    if let Some(old) = &superseded_fact_id {
-                        keys.push(("canonical_fact".to_string(), old.clone()));
-                    }
+                let mut keys = vec![("canonical_fact".to_string(), fact.id.clone())];
+                if let Some(old) = &superseded_fact_id {
+                    let old_fact = tx.get_canonical_fact(old)?;
+                    let old_index = mirror_claims.len();
+                    mirror_claims.push(legacy_snapshot_claim(
+                        &fact.project_id,
+                        &fact.branch_id,
+                        &mirror_revision_id,
+                        mirror_scene_id.as_deref(),
+                        &mirror_placement,
+                        old_fact
+                            .subject_id
+                            .as_deref()
+                            .unwrap_or(fact.subject_id.as_deref().unwrap_or("project")),
+                        format!("legacy.canonical_fact.{}", old_fact.id),
+                        &old_fact,
+                        Some(0),
+                        old_index,
+                    )?);
+                    keys.push(("canonical_fact".to_string(), old.clone()));
+                }
+                let mirrored = tx.mirror_canon_claims(
+                    &fact.project_id,
+                    &fact.branch_id,
+                    &mirror_revision_id,
+                    mirror_scene_id.as_deref(),
+                    mirror_claims,
+                )?;
+                if mirrored.is_some() {
                     tx.mark_canon_source_rows_mapped(&fact.project_id, &fact.branch_id, keys)?;
                 }
                 tx.resolve_validator_findings_for_validator(
