@@ -685,8 +685,7 @@ fn parse_amount_phrase(tokens: &[(&str, usize, usize)]) -> Option<f64> {
                 "eighty" => 80.0,
                 "ninety" => 90.0,
                 "hundred" => {
-                    total += if current == 0.0 { 1.0 } else { current } * 100.0;
-                    current = 0.0;
+                    current = if current == 0.0 { 1.0 } else { current } * 100.0;
                     saw_value = true;
                     continue;
                 }

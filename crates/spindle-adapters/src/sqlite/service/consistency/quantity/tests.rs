@@ -801,3 +801,107 @@ async fn affordability_first_person_protagonist_warns() {
         out.issues
     );
 }
+
+#[tokio::test]
+async fn affordability_ignores_balances_negated_purchases_and_recipients() {
+    use spindle_core::models::{
+        CommitQuantityStateInput, ContentRating, QuantityDenomination, QuantityScheme,
+        QuantityState, SaveSceneDraftInput, SetProjectQuantitySchemeInput,
+    };
+
+    let (_tmp, svc) = fresh_service().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "affordability-negatives".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+        project_id: proj.project_id.clone(),
+        scheme: QuantityScheme {
+            measure: "wealth".into(),
+            denominations: vec![QuantityDenomination {
+                name: "silver".into(),
+                per_base: 1,
+            }],
+            bands: Vec::new(),
+            max_band_jump: None,
+        },
+    })
+    .await
+    .unwrap();
+    let mara = seed_character(&svc, &proj.project_id, "Mara Voss").await;
+
+    for (scene_order, full_text) in [
+        (
+            1,
+            "Mara Voss paid twelve silver for the blade and had ten silver left.",
+        ),
+        (2, "Mara Voss did not buy the thirty silver coat."),
+        (3, "The merchant paid Mara Voss twelve silver."),
+        (4, "Mara Voss was paid twelve silver by the merchant."),
+    ] {
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order,
+            full_text: full_text.into(),
+            summary: "market".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+    svc.commit_quantity_state(CommitQuantityStateInput {
+        project_id: proj.project_id.clone(),
+        subject_table: "character".into(),
+        subject_id: mara.clone(),
+        measure: "wealth".into(),
+        book_number: 1,
+        chapter_number: 1,
+        scene_order: 1,
+        scene_id: None,
+        state: QuantityState {
+            amount: Some(15.0),
+            unit: Some("silver".into()),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let out = svc
+        .check_consistency(spindle_core::models::CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: proj.project_id.clone(),
+            scope: spindle_core::models::ConsistencyScopeInput::full(),
+            checks: vec!["affordability".into()],
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        !out.issues
+            .iter()
+            .any(|issue| issue.check_type == "affordability" && issue.severity == "warning"),
+        "balance, negation, and receipt must not warn: {:?}",
+        out.issues
+    );
+}

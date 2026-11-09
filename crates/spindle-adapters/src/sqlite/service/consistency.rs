@@ -908,16 +908,19 @@ impl SqliteSpindleService {
                         };
                         let (sentence_start, sentence_end) =
                             price_sentence_bounds(&scene.full_text, mention.start, mention.end);
-                        if !sentence_has_spend_verb(&scene.full_text[sentence_start..sentence_end])
-                        {
+                        let sentence = &scene.full_text[sentence_start..sentence_end];
+                        let Some((verb_start, _)) =
+                            spending_verb_for_mention(sentence, mention.start - sentence_start)
+                        else {
                             continue;
-                        }
+                        };
                         let price_base = mention.amount * per_base;
                         match resolve_price_spender(
                             &scene.full_text,
                             mention,
                             &mention_resolver,
                             scene_pov.as_deref(),
+                            sentence_start + verb_start,
                         ) {
                             Ok(character_id) => {
                                 *charges.entry(character_id).or_default() += price_base;
@@ -2630,36 +2633,129 @@ fn sentence_has_dialogue(sentence: &str) -> bool {
     sentence.contains('"') || sentence.contains('“') || sentence.contains('”')
 }
 
-fn sentence_has_spend_verb(sentence: &str) -> bool {
-    [
-        "paid",
-        "pay",
-        "pays",
-        "paying",
-        "bought",
-        "buy",
-        "buys",
-        "buying",
-        "spent",
-        "spend",
-        "spends",
-        "spending",
-        "cost",
-        "costs",
-        "lost",
-        "lose",
-        "loses",
-        "losing",
-        "purchased",
-        "purchase",
-        "purchases",
-        "gave",
-        "give",
-        "offered",
-        "offer",
-    ]
-    .iter()
-    .any(|verb| contains_case_insensitive_word_boundary(sentence, verb))
+const SPEND_VERBS: &[&str] = &[
+    "paid",
+    "pay",
+    "pays",
+    "paying",
+    "bought",
+    "buy",
+    "buys",
+    "buying",
+    "spent",
+    "spend",
+    "spends",
+    "spending",
+    "cost",
+    "costs",
+    "lost",
+    "lose",
+    "loses",
+    "losing",
+    "purchased",
+    "purchase",
+    "purchases",
+    "gave",
+    "give",
+];
+
+const NON_AFFIRMATIVE_MARKERS: &[&str] = &[
+    "not",
+    "never",
+    "if",
+    "whether",
+    "would",
+    "could",
+    "should",
+    "might",
+    "asked",
+    "asking",
+    "unless",
+    "suppose",
+    "supposing",
+];
+
+const BALANCE_MARKERS: &[&str] = &[
+    "had",
+    "has",
+    "left",
+    "remaining",
+    "remained",
+    "kept",
+    "held",
+    "balance",
+    "saved",
+    "change",
+    "leaving",
+];
+
+fn word_at_boundary(text: &str, start: usize, end: usize) -> bool {
+    let prev_is_word = text[..start]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let next_is_word = text[end..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+    !prev_is_word && !next_is_word
+}
+
+fn contains_marker(text: &str, marker: &str) -> bool {
+    if marker.contains('\'') {
+        return text.to_ascii_lowercase().contains(marker);
+    }
+    contains_case_insensitive_word_boundary(text, marker)
+}
+
+fn contains_any_marker(text: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| contains_marker(text, marker))
+}
+
+fn last_spend_verb_before(sentence: &str, before: usize) -> Option<(usize, usize)> {
+    let lower = sentence.to_ascii_lowercase();
+    let mut best: Option<(usize, usize)> = None;
+    for verb in SPEND_VERBS {
+        let mut search_from = 0;
+        while let Some(relative) = lower[search_from..before].find(verb) {
+            let start = search_from + relative;
+            let end = start + verb.len();
+            if word_at_boundary(&lower, start, end)
+                && best.is_none_or(|(_, best_end)| end > best_end)
+            {
+                best = Some((start, end));
+            }
+            search_from = end;
+        }
+    }
+    best
+}
+
+fn spending_verb_for_mention(sentence: &str, mention_offset: usize) -> Option<(usize, usize)> {
+    let (verb_start, verb_end) = last_spend_verb_before(sentence, mention_offset)?;
+    let prefix = &sentence[..verb_start];
+    if passive_before(prefix) || contains_any_marker(prefix, NON_AFFIRMATIVE_MARKERS) {
+        return None;
+    }
+    let between = &sentence[verb_end..mention_offset];
+    if contains_any_marker(between, BALANCE_MARKERS) {
+        return None;
+    }
+    let after_end = (mention_offset + 40).min(sentence.len());
+    if contains_any_marker(&sentence[mention_offset..after_end], BALANCE_MARKERS) {
+        return None;
+    }
+    Some((verb_start, verb_end))
+}
+
+fn passive_before(prefix: &str) -> bool {
+    let last = prefix
+        .split_whitespace()
+        .next_back()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_ascii_lowercase();
+    matches!(last.as_str(), "was" | "were" | "been" | "got" | "be")
 }
 
 fn sentence_starts_with_first_person(sentence: &str) -> bool {
@@ -2695,11 +2791,14 @@ fn resolve_price_spender(
     mention: &PriceMention,
     resolver: &CharacterMentionResolver,
     scene_pov: Option<&str>,
+    spend_verb_start: usize,
 ) -> Result<String, &'static str> {
     let (sentence_start, sentence_end) = price_sentence_bounds(text, mention.start, mention.end);
     let sentence = &text[sentence_start..sentence_end];
-    let dialogue = sentence_has_dialogue(sentence);
-    if !dialogue && sentence_starts_with_first_person(sentence) {
+    if sentence_has_dialogue(sentence) {
+        return Err("ambiguous");
+    }
+    if sentence_starts_with_first_person(sentence) {
         let Some(pov) = scene_pov else {
             return Err("unresolved");
         };
@@ -2709,28 +2808,25 @@ fn resolve_price_spender(
             Err("unresolved")
         };
     }
-    if !dialogue && sentence_starts_with_pronoun(sentence) {
-        let prefix_start = text[..mention.start]
-            .rfind("\n\n")
+    let verb_offset = spend_verb_start
+        .saturating_sub(sentence_start)
+        .min(sentence.len());
+    if sentence_starts_with_pronoun(sentence) {
+        let prefix_start = text[..spend_verb_start]
+            .rfind("\\n\\n")
             .map_or(0, |index| index + 2);
-        let antecedents = resolver.mentioned_ids(&text[prefix_start..mention.start]);
+        let antecedents = resolver.mentioned_ids(&text[prefix_start..spend_verb_start]);
         return match antecedents.len() {
             0 => Err("unresolved"),
             1 => antecedents.into_iter().next().ok_or("unresolved"),
             _ => Err("ambiguous"),
         };
     }
-    let named = resolver.mentioned_ids(sentence);
-    if named.len() == 1 {
-        return named.into_iter().next().ok_or("unresolved");
+    let subject_prefix = &sentence[..verb_offset];
+    let subjects = resolver.mentioned_ids(subject_prefix);
+    match subjects.len() {
+        1 => subjects.into_iter().next().ok_or("unresolved"),
+        _ if subjects.is_empty() => Err("unresolved"),
+        _ => Err("ambiguous"),
     }
-    if named.len() > 1 || dialogue {
-        return Err("ambiguous");
-    }
-    if let Some(pov) = scene_pov
-        && resolver.mentions_with_pov(sentence, pov, Some(pov))
-    {
-        return Ok(pov.to_string());
-    }
-    Err("unresolved")
 }
