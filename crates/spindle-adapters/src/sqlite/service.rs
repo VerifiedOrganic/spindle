@@ -1431,7 +1431,7 @@ fn derive_craft_concerns(scene: &crate::sqlite::records::Scene) -> Vec<String> {
 /// language (e.g. "Quiet, contained. The grief beat of the chapter."), so they
 /// are scanned as the declared tone; the final scene also gets the
 /// chapter-ending check. Returns per-scene warning strings.
-fn validate_chapter_plan_style(
+pub(crate) fn validate_chapter_plan_style(
     directive: &spindle_core::style::StyleDirective,
     scenes: &[spindle_core::models::PlanChapterSceneInput],
 ) -> Vec<String> {

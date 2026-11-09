@@ -130,7 +130,6 @@ use rmcp::schemars::generate::SchemaSettings;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Number, Value};
-use spindle_adapters::DraftRoutePreflightProblem;
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 use spindle_core::models::*;
 use spindle_core::style::*;
@@ -310,8 +309,6 @@ impl ToolRouter {
         all_tool_schemas().to_vec()
     }
 }
-
-const MAX_PREPARE_CHAPTER_SPAN: i64 = 1000;
 
 /// The Grok skill adapter content for Spindle.
 /// This makes the bible://skills/* resources usable as first-class skills in Grok.

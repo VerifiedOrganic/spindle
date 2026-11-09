@@ -409,7 +409,7 @@ pub enum CheckpointStatus {
     Reviewed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SceneDraftDiagnostics {
     #[serde(default)]
     pub pacing_warnings: Vec<String>,
@@ -421,6 +421,10 @@ pub struct SceneDraftDiagnostics {
     pub content_rating_valid: bool,
     #[serde(default)]
     pub content_rating_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_plan_revision: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_handoff_plan_revision: Option<i64>,
 }
 
 pub fn load_seed(path: &Path) -> Result<HarnessSeed> {

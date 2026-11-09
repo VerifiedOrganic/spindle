@@ -153,6 +153,10 @@ impl SqliteSpindleService {
             .as_deref()
             .unwrap_or("operator")
             .to_string();
+        anyhow::ensure!(
+            !decided_by.trim_start().starts_with("policy:"),
+            "decide_canon_deltas requires a human operator decision actor; delegated policy actors ('{decided_by}') cannot ratify canon deltas"
+        );
 
         // ── Pre-flight ALL ───────────────────────────────────────────────────
         // Resolve every referenced row, assert project ownership + staged status,
