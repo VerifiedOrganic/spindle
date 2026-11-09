@@ -8,7 +8,7 @@ use super::{
 };
 use spindle_core::drafting::{
     AuthorDecisionItem, ChapterConcernV1, ChapterCoverageV1, ChapterCritiqueV1,
-    ChapterEditProposalV1, CriticFindingInput, validate_chapter_critique,
+    ChapterEditProposalV1, ChapterWindowV1, CriticFindingInput, validate_chapter_critique,
 };
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -105,11 +105,32 @@ pub fn chapter_critique_output_template(chapter_number: u32) -> serde_json::Valu
     })
 }
 
+/// Aggregate hash over the chapter index and exact scene text.
+pub fn chapter_text_hash(
+    coverage: &ChapterCoverageV1,
+    scene_texts: &BTreeMap<String, String>,
+) -> String {
+    let mut hasher = sha2::Sha256::new();
+    use sha2::Digest;
+    for scene in &coverage.chapter_index {
+        hasher.update(scene.scene_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(scene.text_sha256.as_bytes());
+        hasher.update([0]);
+        if let Some(text) = scene_texts.get(&scene.scene_id) {
+            hasher.update(text.as_bytes());
+        }
+        hasher.update([0xff]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 /// Assemble and token-verify the one-call chapter critic prompt. The full scene
 /// index and prose are mandatory; if they do not fit, the caller must review
 /// smaller deterministic windows instead of silently truncating.
 pub fn assemble_chapter_critic_messages(
     coverage: &ChapterCoverageV1,
+    window: Option<&ChapterWindowV1>,
     scene_texts: &BTreeMap<String, String>,
     feedback: &[CriticFindingInput],
     budget: &ChapterCriticBudget,
@@ -142,8 +163,27 @@ pub fn assemble_chapter_critic_messages(
             .map_err(|error| ChapterCriticError::MalformedJson(error.to_string()))?;
     let schema_json = serde_json::to_string(&chapter_critique_json_schema())
         .map_err(|error| ChapterCriticError::MalformedJson(error.to_string()))?;
+    let window_refs: Vec<&spindle_core::drafting::ChapterSceneRefV1> = match window {
+        Some(window) => {
+            let mut refs = Vec::new();
+            for scene_id in &window.scene_ids {
+                let scene = coverage
+                    .chapter_index
+                    .iter()
+                    .find(|scene| &scene.scene_id == scene_id)
+                    .ok_or_else(|| {
+                        ChapterCriticError::Invalid(format!(
+                            "window references unknown scene {scene_id}"
+                        ))
+                    })?;
+                refs.push(scene);
+            }
+            refs
+        }
+        None => coverage.chapter_index.iter().collect(),
+    };
     let mut scene_block = String::new();
-    for scene in &coverage.chapter_index {
+    for scene in window_refs {
         let text = scene_texts.get(&scene.scene_id).ok_or_else(|| {
             ChapterCriticError::Invalid(format!("missing text for {}", scene.scene_id))
         })?;
@@ -152,6 +192,15 @@ pub fn assemble_chapter_critic_messages(
             scene.scene_id, scene.scene_order, scene.text_sha256, scene.word_count, text
         ));
     }
+    let window_scope = match window {
+        Some(window) => format!(
+            "window {} of {}: scenes {}",
+            window.index,
+            coverage.windows.len().max(1),
+            window.scene_ids.join(", ")
+        ),
+        None => "full chapter index".to_string(),
+    };
     let user = format!(
         "CHAPTER CRITIQUE CONTRACT\n\
          schema_version: {}\n\
@@ -166,6 +215,7 @@ pub fn assemble_chapter_critic_messages(
          CHAPTER CRITIQUE RUBRIC\n{CHAPTER_CRITIC_RUBRIC}\n\n\
          CHAPTER INDEX\n{index_json}\n\n\
          COVERAGE REPORT\n{coverage_json}\n\n\
+         WINDOW SCOPE\n{window_scope}\n\n\
          RETAINED CHECKPOINT FEEDBACK\n{feedback_json}\n\n\
          OUTPUT TEMPLATE\n{template_json}\n\n\
          JSON SCHEMA\n{schema_json}\n\n\
@@ -352,6 +402,7 @@ mod tests {
         let budget = ChapterCriticBudget::scene_default("fixture".into(), 20_000);
         let (messages, hash, tokens) = assemble_chapter_critic_messages(
             &coverage(),
+            None,
             &scene_texts(),
             &[],
             &budget,
@@ -369,6 +420,7 @@ mod tests {
         };
         let error = assemble_chapter_critic_messages(
             &coverage(),
+            None,
             &scene_texts(),
             &[],
             &tiny,
@@ -376,6 +428,81 @@ mod tests {
             "",
         )
         .expect_err("overflow must not truncate");
+        assert!(matches!(error, ChapterCriticError::MandatoryOverflow(_)));
+    }
+
+    #[test]
+    fn full_chapter_overflow_dispatches_fitting_windows() {
+        let texts = BTreeMap::from([
+            (
+                "scene:1".to_string(),
+                format!("Cold water rose. {}", "a ".repeat(300)),
+            ),
+            (
+                "scene:2".to_string(),
+                format!("Warm fire fell. {}", "b ".repeat(1_000)),
+            ),
+        ]);
+        let coverage = plan_chapter_windows(
+            3,
+            &[
+                ChapterSceneRefV1 {
+                    scene_id: "scene:1".into(),
+                    scene_order: 1,
+                    text_sha256: sha256_hex(texts["scene:1"].as_bytes()),
+                    word_count: 600,
+                },
+                ChapterSceneRefV1 {
+                    scene_id: "scene:2".into(),
+                    scene_order: 2,
+                    text_sha256: sha256_hex(texts["scene:2"].as_bytes()),
+                    word_count: 2_000,
+                },
+            ],
+            1,
+        );
+        assert_eq!(coverage.windows.len(), 2);
+        let window_budget = ChapterCriticBudget::scene_default("fixture".into(), 20_000);
+        let mut max_window_tokens = 0usize;
+        for window in &coverage.windows {
+            let (_, _, tokens) = assemble_chapter_critic_messages(
+                &coverage,
+                Some(window),
+                &texts,
+                &[],
+                &window_budget,
+                Some(&VerifiedFixtureTokenizer),
+                "",
+            )
+            .expect("each window fits the normal budget");
+            max_window_tokens = max_window_tokens.max(tokens);
+        }
+        let tight = ChapterCriticBudget {
+            input_limit: max_window_tokens,
+            ..window_budget
+        };
+        for window in &coverage.windows {
+            assemble_chapter_critic_messages(
+                &coverage,
+                Some(window),
+                &texts,
+                &[],
+                &tight,
+                Some(&VerifiedFixtureTokenizer),
+                "",
+            )
+            .expect("each planned window fits on its own");
+        }
+        let error = assemble_chapter_critic_messages(
+            &coverage,
+            None,
+            &texts,
+            &[],
+            &tight,
+            Some(&VerifiedFixtureTokenizer),
+            "",
+        )
+        .expect_err("the full chapter does not fit the same budget");
         assert!(matches!(error, ChapterCriticError::MandatoryOverflow(_)));
     }
 

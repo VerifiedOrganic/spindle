@@ -974,6 +974,10 @@ activates a prose-affecting default.
   it; any tie, incumbent win, order disagreement, truncation, new blocker, or
   unavailable judge retains the pre-line-edit accepted prose. The pass is
   marked attempted either way and its ledger/attribution rows are recorded.
+  If the line candidate is generated but judge admission is denied by the
+  remaining caps, the completed line call is reconciled, the attempt is marked,
+  and the accepted prose is retained instead of leaving an unrecoverable pending
+  line edit.
 - The harness already exposes `line_edit_enabled` in resolved settings; the
   controller's next-action report returns `line_edit` only when the terminal
   scene has not attempted it. Tests cover the disabled/no-route skip (accepted
@@ -992,16 +996,22 @@ activates a prose-affecting default.
   unverifiable anchor becomes `advisory = true` and never drives an edit.
   Invalid proposal anchors are dropped, and at most two scene-edit proposals
   survive validation.
-- `run_editorial_chapter_critic` admits one `ChapterCritique` pass through the
-  durable controller ledger, persists the validated critique as a local
-  artifact, and returns it. A missing route/tokenizer/price returns an honest
-  skip; no prose or plan is mutated.
+- `run_editorial_chapter_critic` dispatches one `ChapterCritique` call per
+  planned window, each with its own charged admission identity, and validates
+  each result against that window's exact scene text. It persists per-window
+  critiques plus an aggregate artifact, aggregates concerns/proposals (still
+  capped at two chapter edits), and records `windows_reviewed` /
+  `windows_skipped` so a partial pass is never reported as full coverage. A
+  missing route/tokenizer/price returns an honest skip; no prose or plan is
+  mutated.
 - Applying edits requires an explicit `ChapterEditSelectionV1`. Each selected
   proposal is converted to a scene `CritiqueDirective` and flows through the
   existing deterministic-check + doubled-order judge loop with
   `pre_selected_directives` (the scene critic is skipped) and bounded chapter
-  context included in both judge orders. Unselected proposals are never
-  applied; stale base hashes/scene mismatches are skipped. Acceptance returns a
+  context included in both judge orders. Each selected proposal gets a distinct
+  durable reservation namespace so a retained first proposal cannot block or
+  reuse a second proposal's charge. Unselected proposals are never applied;
+  stale base hashes, invalid anchors, and scene mismatches are skipped. Acceptance returns a
   `ChapterInvalidationPlanV1` covering the chapter summary, scene extraction,
   beat annotations, reader notes, re-extraction, and downstream revalidation.
   The chapter-level rejection test verifies a judge tie keeps the accepted

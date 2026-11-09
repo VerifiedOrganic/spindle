@@ -2,7 +2,7 @@ use super::*;
 use crate::drafting::{
     DraftTokenizer, PacketBudget, PreparedDraftingPacket, assemble_packet_with_system,
     chapter::{
-        ChapterCriticBudget, assemble_chapter_critic_messages,
+        ChapterCriticBudget, assemble_chapter_critic_messages, chapter_text_hash,
         parse_and_validate_chapter_critique_output,
     },
     critique::{
@@ -16,8 +16,8 @@ use crate::drafting::{
     },
 };
 use spindle_core::drafting::{
-    ChapterCoverageV1, ChapterCritiqueV1, CriticFindingInput, CritiqueDirective, DeblindedArm,
-    DraftingPacketV1, EditorialPolicy, EditorialRouteAvailability, IngestedFinding,
+    ChapterCoverageV1, ChapterCritiqueV1, ChapterWindowV1, CriticFindingInput, CritiqueDirective,
+    DeblindedArm, DraftingPacketV1, EditorialPolicy, EditorialRouteAvailability, IngestedFinding,
     ShadowCritiqueOutcome, SinglePassJudgeRecord,
 };
 use std::collections::BTreeMap;
@@ -1273,6 +1273,7 @@ impl ModelRouter {
         policy: EditorialPolicy,
         rating: &str,
         coverage: &ChapterCoverageV1,
+        window: Option<&ChapterWindowV1>,
         scene_texts: &BTreeMap<String, String>,
         feedback: &[CriticFindingInput],
         budget: &ChapterCriticBudget,
@@ -1287,7 +1288,7 @@ impl ModelRouter {
             .read()
             .map_err(|_| poisoned_lock("model router read lock"))?
             .clone();
-        let chapter_text_hash = chapter_aggregate_hash(coverage, scene_texts);
+        let aggregate_hash = chapter_text_hash(coverage, scene_texts);
         let mut route = resolve_cleared_route(&runtime, "review", Some(rating))?.clone();
         anyhow::ensure!(
             route.adapter_kind == "http",
@@ -1329,6 +1330,7 @@ impl ModelRouter {
         let route_system = system_prompt_for_request(&route, Some(rating));
         let (messages, prompt_hash, input_tokens) = assemble_chapter_critic_messages(
             coverage,
+            window,
             scene_texts,
             feedback,
             budget,
@@ -1413,7 +1415,7 @@ impl ModelRouter {
         let critique = parse_and_validate_chapter_critique_output(
             &response.output,
             coverage.chapter_number,
-            &chapter_text_hash,
+            &aggregate_hash,
             coverage,
             scene_texts,
         )?;
@@ -1751,25 +1753,6 @@ impl ModelRouter {
             record,
         })
     }
-}
-
-fn chapter_aggregate_hash(
-    coverage: &ChapterCoverageV1,
-    scene_texts: &BTreeMap<String, String>,
-) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    for scene in &coverage.chapter_index {
-        hasher.update(scene.scene_id.as_bytes());
-        hasher.update([0]);
-        hasher.update(scene.text_sha256.as_bytes());
-        hasher.update([0]);
-        if let Some(text) = scene_texts.get(&scene.scene_id) {
-            hasher.update(text.as_bytes());
-        }
-        hasher.update([0xff]);
-    }
-    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

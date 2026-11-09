@@ -239,6 +239,11 @@ pub struct ChapterCritiqueV1 {
     pub requires_author_decision: Vec<crate::drafting::AuthorDecisionItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<ChapterCoverageV1>,
+    /// Windows actually reviewed by the model. A partial pass remains explicit.
+    #[serde(default)]
+    pub windows_reviewed: u32,
+    #[serde(default)]
+    pub windows_skipped: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_edit_reason: Option<String>,
 }
@@ -428,6 +433,10 @@ pub enum ChapterCriticOutcomeV1 {
         critique: Box<ChapterCritiqueV1>,
         critique_artifact_path: String,
         prompt_hash: String,
+        #[serde(default)]
+        windows_reviewed: u32,
+        #[serde(default)]
+        windows_skipped: u32,
         #[serde(default)]
         model_call_ids: Vec<String>,
     },
@@ -1099,6 +1108,8 @@ mod tests {
             strengths_to_preserve: vec!["Cold image".into()],
             requires_author_decision: Vec::new(),
             coverage: None,
+            windows_reviewed: 0,
+            windows_skipped: 0,
             no_edit_reason: None,
         };
         validate_chapter_critique(&mut critique, &scene_texts).expect("validates");

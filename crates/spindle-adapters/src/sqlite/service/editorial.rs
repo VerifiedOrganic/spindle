@@ -572,100 +572,179 @@ impl SqliteSpindleService {
                 reason: "chapter_critic_route_unavailable".into(),
             });
         }
-        let reservation = match update_editorial_controller(controller_path, |state| {
-            let attempt = state
-                .scenes
-                .get(scene_index)
-                .map(|scene| scene.attempt)
-                .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
-            let reservation = crate::drafting::editorial::admit_editorial_action_in_controller(
-                state,
-                scene_index,
-                EditorialActionKind::ChapterCritique,
-                attempt,
-                now_millis,
-                true,
-            )
-            .map_err(|denial| anyhow::anyhow!("{denial}"))?;
-            let claimed = state.scenes[scene_index].ledger.claim_dispatch(
-                &reservation.idempotency_key,
-                "chapter_critique",
-                now_millis,
-            );
-            anyhow::ensure!(
-                claimed == Some(true),
-                "editorial_dispatch_in_progress: chapter critique already dispatched"
-            );
-            Ok(reservation)
-        }) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                return Ok(ChapterCriticOutcomeV1::Skipped {
-                    reason: error.to_string(),
-                });
-            }
+        let windows = coverage.windows.clone();
+        if windows.is_empty() {
+            return Ok(ChapterCriticOutcomeV1::Skipped {
+                reason: "no_chapter_windows".into(),
+            });
+        }
+        let mut aggregate = ChapterCritiqueV1 {
+            schema_version: spindle_core::drafting::CHAPTER_CRITIQUE_SCHEMA_VERSION.into(),
+            chapter_number: coverage.chapter_number,
+            chapter_text_hash: crate::drafting::chapter::chapter_text_hash(coverage, scene_texts),
+            concerns: Vec::new(),
+            edit_proposals: Vec::new(),
+            strengths_to_preserve: Vec::new(),
+            requires_author_decision: Vec::new(),
+            coverage: Some(coverage.clone()),
+            windows_reviewed: 0,
+            windows_skipped: 0,
+            no_edit_reason: None,
         };
-        let key = reservation.idempotency_key.clone();
-        let reserved = reservation.reserved;
-        let started = std::time::Instant::now();
-        let result = router
-            .chapter_critic(
-                EditorialPolicy::CritiqueV1,
-                rating,
-                coverage,
-                scene_texts,
-                feedback,
-                budget,
-                tokenizer,
-            )
-            .await;
-        let elapsed_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => {
-                let _ = reconcile_chapter_critic(
-                    controller_path,
+        let mut prompt_hashes = Vec::new();
+        let mut model_call_ids = Vec::new();
+        let mut seen_concern_ids = std::collections::BTreeSet::new();
+        for window in &windows {
+            let window_texts: std::collections::BTreeMap<String, String> = window
+                .scene_ids
+                .iter()
+                .filter_map(|scene_id| {
+                    scene_texts
+                        .get(scene_id)
+                        .map(|text| (scene_id.clone(), text.clone()))
+                })
+                .collect();
+            if window_texts.len() != window.scene_ids.len() {
+                aggregate.windows_skipped += 1;
+                continue;
+            }
+            let reservation = match update_editorial_controller(controller_path, |state| {
+                let reservation = crate::drafting::editorial::admit_editorial_action_in_controller(
+                    state,
                     scene_index,
-                    &key,
-                    "",
-                    reserved,
-                    None,
-                    Vec::new(),
+                    EditorialActionKind::ChapterCritique,
+                    window.index,
+                    now_millis,
+                    true,
+                )
+                .map_err(|denial| anyhow::anyhow!("{denial}"))?;
+                let claim = format!("chapter_critic_window_{}", window.index);
+                let claimed = state.scenes[scene_index].ledger.claim_dispatch(
+                    &reservation.idempotency_key,
+                    &claim,
                     now_millis,
                 );
-                return Ok(ChapterCriticOutcomeV1::Skipped {
-                    reason: format!("chapter_critic_failed: {error}"),
-                });
+                anyhow::ensure!(
+                    claimed == Some(true),
+                    "editorial_dispatch_in_progress: chapter critic window {} already dispatched",
+                    window.index
+                );
+                Ok(reservation)
+            }) {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    aggregate.windows_skipped += 1;
+                    continue;
+                }
+            };
+            let key = reservation.idempotency_key.clone();
+            let reserved = reservation.reserved;
+            let started = std::time::Instant::now();
+            let result = router
+                .chapter_critic(
+                    EditorialPolicy::CritiqueV1,
+                    rating,
+                    coverage,
+                    Some(window),
+                    &window_texts,
+                    feedback,
+                    budget,
+                    tokenizer,
+                )
+                .await;
+            let elapsed_millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            match result {
+                Ok(result) => {
+                    aggregate.windows_reviewed += 1;
+                    let window_path = controller_path.with_extension(format!(
+                        "chapter-{}.window-{}.critique.json",
+                        coverage.chapter_number, window.index
+                    ));
+                    save_chapter_critique(&window_path, &result.critique)?;
+                    for concern in result.critique.concerns {
+                        if seen_concern_ids.insert(concern.id.clone()) {
+                            aggregate.concerns.push(concern);
+                        }
+                    }
+                    aggregate
+                        .edit_proposals
+                        .extend(result.critique.edit_proposals);
+                    aggregate
+                        .strengths_to_preserve
+                        .extend(result.critique.strengths_to_preserve);
+                    aggregate
+                        .requires_author_decision
+                        .extend(result.critique.requires_author_decision);
+                    prompt_hashes.push(result.prompt_hash.clone());
+                    model_call_ids.extend(result.model_call_ids.clone());
+                    let actual =
+                        controller
+                            .settings
+                            .pricing
+                            .as_ref()
+                            .map(|pricing| EditorialBudgetUsage {
+                                calls: 1,
+                                tokens: result.input_tokens.saturating_add(result.output_tokens),
+                                millis: elapsed_millis,
+                                usd_micros: pricing
+                                    .cost_micros(result.input_tokens, result.output_tokens),
+                            });
+                    reconcile_chapter_critic(
+                        controller_path,
+                        scene_index,
+                        &key,
+                        &result.prompt_hash,
+                        reserved,
+                        actual,
+                        result.model_call_ids,
+                        now_millis,
+                    )?;
+                }
+                Err(_) => {
+                    aggregate.windows_skipped += 1;
+                    let _ = reconcile_chapter_critic(
+                        controller_path,
+                        scene_index,
+                        &key,
+                        "",
+                        reserved,
+                        None,
+                        Vec::new(),
+                        now_millis,
+                    );
+                }
             }
-        };
+        }
+        if aggregate.windows_reviewed == 0 {
+            return Ok(ChapterCriticOutcomeV1::Skipped {
+                reason: "chapter_critic_no_window_reviewed".into(),
+            });
+        }
+        aggregate
+            .edit_proposals
+            .truncate(spindle_core::drafting::MAX_CHAPTER_EDIT_PROPOSALS);
+        aggregate.strengths_to_preserve.sort();
+        aggregate.strengths_to_preserve.dedup();
+        aggregate
+            .requires_author_decision
+            .dedup_by(|left, right| left.id == right.id);
         let critique_path = controller_path
             .with_extension(format!("chapter-{}.critique.json", coverage.chapter_number));
-        save_chapter_critique(&critique_path, &result.critique)?;
-        let actual = controller
-            .settings
-            .pricing
-            .as_ref()
-            .map(|pricing| EditorialBudgetUsage {
-                calls: 1,
-                tokens: result.input_tokens.saturating_add(result.output_tokens),
-                millis: elapsed_millis,
-                usd_micros: pricing.cost_micros(result.input_tokens, result.output_tokens),
-            });
-        reconcile_chapter_critic(
-            controller_path,
-            scene_index,
-            &key,
-            &result.prompt_hash,
-            reserved,
-            actual,
-            result.model_call_ids.clone(),
-            now_millis,
-        )?;
+        save_chapter_critique(&critique_path, &aggregate)?;
+        let prompt_hash = if prompt_hashes.len() == 1 {
+            prompt_hashes.remove(0)
+        } else {
+            crate::drafting::editorial::editorial_sha256_hex(prompt_hashes.join(":").as_bytes())
+        };
+        let windows_reviewed = aggregate.windows_reviewed;
+        let windows_skipped = aggregate.windows_skipped;
         Ok(ChapterCriticOutcomeV1::Critiqued {
-            critique: Box::new(result.critique),
+            critique: Box::new(aggregate),
             critique_artifact_path: critique_path.to_string_lossy().into_owned(),
-            prompt_hash: result.prompt_hash,
-            model_call_ids: result.model_call_ids,
+            prompt_hash,
+            windows_reviewed,
+            windows_skipped,
+            model_call_ids,
         })
     }
 
@@ -693,14 +772,15 @@ impl SqliteSpindleService {
             controller.settings.chapter_pass_enabled,
             "chapter pass is disabled"
         );
-        let selected: Vec<&spindle_core::drafting::ChapterEditProposalV1> = selection
+        let mut selected: Vec<&spindle_core::drafting::ChapterEditProposalV1> = selection
             .selected_proposals(critique)
             .into_iter()
             .take(spindle_core::drafting::MAX_CHAPTER_EDIT_PROPOSALS)
             .collect();
+        selected.sort_by(|left, right| left.id.cmp(&right.id));
         let mut edits = Vec::new();
         let mut accepted_scene_ids = Vec::new();
-        for proposal in selected {
+        for (proposal_index, proposal) in selected.into_iter().enumerate() {
             let draft = artifact::load_artifact(draft_artifact_path)?;
             if draft.text_sha256 != proposal.base_text_sha256 {
                 edits.push(ChapterEditResultV1 {
@@ -765,7 +845,12 @@ impl SqliteSpindleService {
                 revision_budget.model_id.clone(),
                 revision_budget.context_window,
             );
-            let gate = ControllerRevisionBudgetGate::new(controller_path, scene_index, now_millis);
+            let gate = ControllerRevisionBudgetGate::with_namespace(
+                controller_path,
+                scene_index,
+                now_millis,
+                u32::try_from(proposal_index + 1).unwrap_or(u32::MAX),
+            );
             let result = self
                 .revise_artifact_loop_with_gate(
                     EditorialPolicy::CritiqueV1,
@@ -1061,7 +1146,7 @@ impl SqliteSpindleService {
                 return Ok(outcome);
             }
         };
-        let judge_reservation = update_editorial_controller(controller_path, |state| {
+        let judge_reservation = match update_editorial_controller(controller_path, |state| {
             let attempt = state
                 .scenes
                 .get(scene_index)
@@ -1086,7 +1171,33 @@ impl SqliteSpindleService {
                 "editorial_dispatch_in_progress: line-edit judge already dispatched"
             );
             Ok(reservation)
-        })?;
+        }) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                // The paid line-edit candidate exists, but judging cannot be
+                // reserved. Keep the accepted prose, charge the completed line
+                // call, mark the attempt, and stop offering line edit.
+                let outcome = LineEditOutcomeV1::Retained {
+                    reason: format!("judge_budget_denied: {error}"),
+                    incumbent_text_sha256: draft.text_sha256.clone(),
+                    candidate_text_sha256: candidate_hash.clone(),
+                };
+                finalize_line_edit(
+                    controller_path,
+                    scene_index,
+                    &line_key,
+                    line_reserved,
+                    line_actual,
+                    call_ids,
+                    Some((candidate.response.output.clone(), candidate_hash.clone())),
+                    now_millis,
+                    outcome.clone(),
+                    draft.text_sha256.clone(),
+                    None,
+                )?;
+                return Ok(outcome);
+            }
+        };
         let judge_key = judge_reservation.idempotency_key.clone();
         let judge_reserved = judge_reservation.reserved;
         let (pass_1_arm, _pass_2_arm) = select_initial_judge_order(
@@ -1726,6 +1837,9 @@ pub(crate) struct ControllerRevisionBudgetGate<'a> {
     controller_path: &'a std::path::Path,
     scene_index: usize,
     now_millis: u64,
+    /// Distinguishes one bounded chapter-edit operation from another on the same
+    /// scene. The normal scene loop uses namespace 0.
+    namespace: u32,
 }
 
 impl<'a> ControllerRevisionBudgetGate<'a> {
@@ -1734,11 +1848,25 @@ impl<'a> ControllerRevisionBudgetGate<'a> {
         scene_index: usize,
         now_millis: u64,
     ) -> Self {
+        Self::with_namespace(controller_path, scene_index, now_millis, 0)
+    }
+
+    pub(crate) fn with_namespace(
+        controller_path: &'a std::path::Path,
+        scene_index: usize,
+        now_millis: u64,
+        namespace: u32,
+    ) -> Self {
         Self {
             controller_path,
             scene_index,
             now_millis,
+            namespace,
         }
+    }
+
+    fn effective_attempt(&self, attempt: u32) -> u32 {
+        self.namespace.saturating_mul(1_000).saturating_add(attempt)
     }
 }
 
@@ -1754,7 +1882,7 @@ impl crate::drafting::revision::RevisionBudgetGate for ControllerRevisionBudgetG
                 state,
                 self.scene_index,
                 action,
-                attempt,
+                self.effective_attempt(attempt),
                 self.now_millis,
                 true,
             )
