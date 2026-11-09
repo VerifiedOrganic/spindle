@@ -1158,6 +1158,22 @@ impl SqliteSpindleService {
                         if already_promoted_by_pending {
                             return Ok(true);
                         }
+                        // Compose with P3 active-run scene handoff plan-revision check so
+                        // a superseded or mismatched authoring-run scene handoff cannot be
+                        // bypassed by revision promotion.
+                        let handoff_ok =
+                            crate::sqlite::repository::check_active_run_scene_handoff_plan_revision_in_conn(
+                                conn,
+                                &current_disk_draft.project_id,
+                                &current_disk_draft.branch_id,
+                                current_disk_draft.placement.book_number,
+                                current_disk_draft.placement.chapter_number,
+                                current_disk_draft.placement.scene_order.unwrap_or(1),
+                            )
+                            .is_ok();
+                        if !handoff_ok {
+                            return Ok(false);
+                        }
                         let live_cas =
                             resolve_live_cas_expectation_in_conn(conn, &current_disk_draft)?;
                         if live_cas != expected_cas {
@@ -1543,6 +1559,33 @@ fn resolve_live_cas_expectation_in_conn(
             record_rows(&mut plan_state, format!("{b}:{table}"), b, rows)?;
         }
     }
+
+    let scene_order = draft.placement.scene_order.unwrap_or(1);
+    let handoff_rows = query_rows_sorted_json(
+        conn,
+        "SELECT r.id AS run_id, r.status AS run_status, s.phase, s.draft_diagnostics
+         FROM authoring_run r
+         JOIN authoring_run_scene s ON s.authoring_run_id = r.id
+         WHERE r.project_id = ?1
+           AND r.active_branch_id = ?2
+           AND r.book_number = ?3
+           AND r.status IN ('active', 'blocked')
+           AND s.chapter_number = ?4
+           AND s.scene_order = ?5",
+        &[
+            &project_id,
+            &branch_id,
+            &draft.placement.book_number,
+            &draft.placement.chapter_number,
+            &scene_order,
+        ],
+    )?;
+    record_rows(
+        &mut plan_state,
+        format!("{branch_id}:active_run_scene_handoff"),
+        branch_id,
+        handoff_rows,
+    )?;
 
     let live_canon_hash = generation_sha256_hex(&serde_json::to_vec(&canon_state)?);
     let live_plan_hash = generation_sha256_hex(&serde_json::to_vec(&plan_state)?);

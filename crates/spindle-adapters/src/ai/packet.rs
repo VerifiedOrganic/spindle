@@ -3414,5 +3414,158 @@ max_tokens = 500
             assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
             assert_eq!(srv.join().unwrap(), 4);
         }
+
+        // Case 11: Active authoring-run scene handoff plan-revision mismatch (P3 #54 composition)
+        // rejects promotion with StaleCasConflict even if the draft artifact file on disk is untouched.
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case11_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case11_loop.json");
+
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Record an active authoring_run + authoring_run_scene with a superseded handoff
+            // plan revision for chapter 1 scene 1 while leaving d_path untouched on disk.
+            let pid = created.project_id.clone();
+            let bid = active_branch.id.clone();
+            repository
+                .pool()
+                .write(move |conn| {
+                    let now = chrono::Utc::now().timestamp_micros();
+                    conn.execute(
+                        "INSERT INTO authoring_run (
+                            id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
+                            checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
+                            editorial_directives, status, created_at, updated_at, mining_policy,
+                            max_revise_attempts, checkpoint_policy, replan_policy
+                        ) VALUES ('run_handoff_stale', ?1, ?2, 1, 1, 1, 1, 0, 'runs/stale', '[]', 'active', ?3, ?3, 'auto', 2, 'manual', 'manual')",
+                        rusqlite::params![&pid, &bid, now],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO authoring_run_chapter (
+                            authoring_run_id, chapter_number, planned, synopsis, pov_character_id,
+                            status, summary_saved, summary_artifact_path
+                        ) VALUES ('run_handoff_stale', 1, 1, 'Flooded sluice crossing', NULL, 'in_progress', 0, NULL)",
+                        [],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO authoring_run_scene (
+                            authoring_run_id, chapter_number, scene_order, character_ids, location_id,
+                            content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
+                            draft_diagnostics, blocked_reason, research_required, research_tags,
+                            explicit_query, mine_status, mine_detail, verify_status, verify_detail,
+                            revise_attempts, last_finding_fingerprint
+                        ) VALUES ('run_handoff_stale', 1, 1, '[]', 'loc:sluice', 'mature', NULL, NULL, 'pending', NULL, 'scenes/ch01_s01.md', '{\"superseded_handoff_plan_revision\":1}', NULL, 0, '[]', NULL, NULL, NULL, NULL, NULL, 0, NULL)",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            assert_eq!(cas_res.accepted_text, draft_prose);
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
     }
 }
