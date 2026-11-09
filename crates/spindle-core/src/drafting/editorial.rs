@@ -191,10 +191,12 @@ impl EditorialActionKind {
         !matches!(self, Self::DeterministicCheck)
     }
 
-    /// Calls proposed by this action, including required judge passes.
+    /// Calls proposed by this action, including required judge passes and the
+    /// critic's bounded one-shot schema/anchor repair.
     pub fn proposed_calls(self) -> u32 {
         match self {
-            Self::Draft | Self::Critique | Self::Revise | Self::LineEdit | Self::Extract => 1,
+            Self::Draft | Self::Revise | Self::LineEdit | Self::Extract => 1,
+            Self::Critique => 2,
             Self::Judge => 2,
             Self::DeterministicCheck => 0,
         }
@@ -205,7 +207,7 @@ impl EditorialActionKind {
     pub fn proposed_tokens(self) -> usize {
         match self {
             Self::Draft => 15_512,
-            Self::Critique => 17_500,
+            Self::Critique => 35_000,
             Self::Revise => 21_000,
             Self::Judge => 34_000,
             Self::LineEdit => 21_000,
@@ -218,7 +220,8 @@ impl EditorialActionKind {
     pub fn proposed_millis(self) -> u64 {
         match self {
             Self::Draft | Self::Revise | Self::LineEdit => 90_000,
-            Self::Critique | Self::Extract => 45_000,
+            Self::Critique => 90_000,
+            Self::Extract => 45_000,
             Self::Judge => 90_000,
             Self::DeterministicCheck => 0,
         }
@@ -227,7 +230,7 @@ impl EditorialActionKind {
     pub fn proposed_input_tokens(self) -> usize {
         match self {
             Self::Draft => 12_512,
-            Self::Critique => 16_000,
+            Self::Critique => 32_000,
             Self::Revise | Self::LineEdit => 18_000,
             Self::Judge => 32_000,
             Self::Extract => 8_000,
@@ -238,7 +241,7 @@ impl EditorialActionKind {
     pub fn proposed_output_tokens(self) -> usize {
         match self {
             Self::Draft => 3_000,
-            Self::Critique => 1_500,
+            Self::Critique => 3_000,
             Self::Revise | Self::LineEdit => 3_000,
             Self::Judge => 2_000,
             Self::Extract => 2_000,
@@ -1650,7 +1653,7 @@ mod tests {
         assert!(matches!(
             denial,
             BudgetDenial::SceneCalls {
-                requested: 1,
+                requested: 2,
                 used: 1,
                 cap: 1
             }
@@ -1697,6 +1700,39 @@ mod tests {
         );
         assert_eq!(ledger.scene_used().tokens, 1_000);
         assert_eq!(ledger.run_used().tokens, 1_000);
+    }
+
+    #[test]
+    fn successful_nonzero_price_judging_keeps_cost_and_duration_charged() {
+        let mut settings = settings_with_price();
+        settings.pricing = Some(EditorialPricingV1 {
+            input_usd_micros_per_million: 2_000_000,
+            output_usd_micros_per_million: 4_000_000,
+        });
+        let mut ledger = EditorialBudgetLedgerV1::new(
+            EditorialBudgetCaps::scene_default(),
+            EditorialBudgetCaps::run_default(),
+        );
+        let judge = reservation(EditorialActionKind::Judge, "scene:1", &settings);
+        ledger.admit(judge.clone()).expect("judge admitted");
+        let actual = EditorialBudgetUsage {
+            calls: 2,
+            tokens: 3_000,
+            millis: 12_345,
+            usd_micros: 7_000,
+        };
+        ledger.reconcile(
+            &judge.idempotency_key,
+            Some(actual),
+            vec!["model_call:judge1".into(), "model_call:judge2".into()],
+            2,
+        );
+        let used = ledger.scene_used();
+        assert_eq!(used.usd_micros, 7_000, "known cost must not be refunded");
+        assert_eq!(used.millis, 12_345, "measured time must be charged");
+        assert_eq!(used.calls, 2);
+        assert_eq!(used.tokens, 3_000);
+        assert_eq!(ledger.run_used(), used);
     }
 
     #[test]

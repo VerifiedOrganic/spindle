@@ -908,7 +908,15 @@ prose-affecting is activated by this step.
 - Agent mode exposes the same first-draft and bounded revision-loop entry points
   (`execute_editorial_agent_draft`, `execute_editorial_agent_revision_loop`) over
   the same prepared packet and artifacts, recording prose-free attribution for
-  each persisted stage transition.
+  each persisted stage transition. The draft reservation is persisted before
+  dispatch and reconciled afterwards (a failed dispatch keeps the maximum
+  charged). The revision loop admits each model pass (critic with its bounded
+  repair, revision, both judge orders) through a durable controller gate before
+  dispatch and reconciles it afterwards; a failed pass keeps its maximum
+  charged, and exhausted scene/run caps or missing pricing block dispatch.
+- Successful judge reconciliation records measured elapsed time and cost from
+  the configured per-token prices. Unknown usage is never replaced with zero
+  tokens/cost/time; the conservative reservation remains charged.
 
 ### Harness CLI, status, and legacy compatibility
 

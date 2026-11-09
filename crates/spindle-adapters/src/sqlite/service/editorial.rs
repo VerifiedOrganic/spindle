@@ -296,6 +296,7 @@ impl SqliteSpindleService {
                 candidate_text.as_str(),
             ),
         };
+        let judge_start = std::time::Instant::now();
         let pass_1 = match router
             .judge_candidate_single_pass(
                 EditorialPolicy::CritiqueV1,
@@ -350,16 +351,22 @@ impl SqliteSpindleService {
         };
         let (evaluation, retention) =
             resolve_double_order_judgment(pass_1.record.clone(), pass_2.record.clone());
-        let usage = EditorialBudgetUsage {
-            calls: 2,
-            tokens: pass_1
-                .input_tokens
-                .saturating_add(pass_1.output_tokens)
-                .saturating_add(pass_2.input_tokens)
-                .saturating_add(pass_2.output_tokens),
-            millis: 0,
-            usd_micros: 0,
-        };
+        let elapsed_millis = u64::try_from(judge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let input_tokens = pass_1.input_tokens.saturating_add(pass_2.input_tokens);
+        let output_tokens = pass_1.output_tokens.saturating_add(pass_2.output_tokens);
+        // Known usage includes measured wall time and configured-price cost.
+        // Missing pricing keeps `actual = None` so the maximum reservation is
+        // charged instead of refunding the paid judge calls.
+        let usage = controller
+            .settings
+            .pricing
+            .as_ref()
+            .map(|pricing| EditorialBudgetUsage {
+                calls: 2,
+                tokens: input_tokens.saturating_add(output_tokens),
+                millis: elapsed_millis,
+                usd_micros: pricing.cost_micros(input_tokens, output_tokens),
+            });
         let model_call_ids: Vec<String> = pass_1
             .record
             .model_call_id
@@ -389,7 +396,7 @@ impl SqliteSpindleService {
                 let judge_key = judge_reservation_key(&state.run_id, &state.branch_id, scene);
                 scene.ledger.reconcile(
                     &judge_key.idempotency_key(),
-                    Some(usage),
+                    usage,
                     model_call_ids.clone(),
                     now_millis,
                 );
@@ -407,9 +414,14 @@ impl SqliteSpindleService {
                 Some(candidate_hash.clone()),
                 Some(format!("pass_1:{passage_1_arm:?}")),
                 evaluation.verdict.as_str().into(),
-                0,
-                Some(usage),
+                elapsed_millis,
                 usage,
+                usage.unwrap_or_else(|| EditorialBudgetUsage {
+                    calls: 2,
+                    tokens: input_tokens.saturating_add(output_tokens),
+                    millis: elapsed_millis,
+                    usd_micros: 0,
+                }),
                 model_call_ids.clone(),
                 now_millis,
             )?;
@@ -478,25 +490,15 @@ impl SqliteSpindleService {
         now_millis: u64,
     ) -> Result<PlainTextDraftArtifactV1> {
         let packet_content_hash = editorial_sha256_hex(&serde_json::to_vec(&packet)?);
-        let (reserved, reservation_key) = {
-            let mut state = load_editorial_controller(controller_path)?;
-            let attempt = state
-                .scenes
-                .get(scene_index)
-                .map(|scene| scene.attempt)
-                .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
-            let reservation = crate::drafting::editorial::admit_editorial_action_in_controller(
-                &mut state,
-                scene_index,
-                EditorialActionKind::Draft,
-                attempt,
-                now_millis,
-                true,
-            )
-            .map_err(|denial| anyhow::anyhow!("{denial}"))?;
-            (reservation.reserved, reservation.idempotency_key)
-        };
-        let captured = self
+        // Admission is persisted in a locked controller update *before* the paid
+        // dispatch, so a crash or a failed dispatch cannot refund it and two
+        // concurrent callers cannot admit against the same counters.
+        let reservation =
+            admit_editorial_agent_draft_action(controller_path, scene_index, now_millis)?;
+        let reserved = reservation.reserved;
+        let reservation_key = reservation.idempotency_key.clone();
+        let started = std::time::Instant::now();
+        let captured = match self
             .draft_packet_to_artifact(
                 EditorialPolicy::CritiqueV1,
                 packet,
@@ -504,57 +506,44 @@ impl SqliteSpindleService {
                 tokenizer,
                 draft_artifact_path,
             )
-            .await?;
-        let actual = EditorialBudgetUsage {
-            calls: 1,
-            tokens: budget.input_limit,
-            millis: 0,
-            usd_micros: 0,
+            .await
+        {
+            Ok(captured) => captured,
+            Err(error) => {
+                let elapsed = elapsed_millis(started);
+                let _ = reconcile_editorial_agent_draft_action(
+                    controller_path,
+                    scene_index,
+                    draft_artifact_path,
+                    &reservation_key,
+                    reserved,
+                    None,
+                    tokenizer,
+                    elapsed,
+                    now_millis,
+                    packet_content_hash,
+                    Vec::new(),
+                );
+                return Err(error);
+            }
         };
+        let elapsed = elapsed_millis(started);
         let model_call_ids = self
             .editorial_generation_model_call_ids(&captured.receipt.generation_id)
             .await;
-        let mut state = load_editorial_controller(controller_path)?;
-        {
-            let scene = state
-                .scenes
-                .get_mut(scene_index)
-                .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
-            scene.draft_artifact_path = Some(draft_artifact_path.to_string_lossy().into_owned());
-            scene.incumbent = Some(spindle_core::drafting::EditorialTextRefV1 {
-                text_sha256: captured.text_sha256.clone(),
-                generation_id: Some(captured.receipt.generation_id.clone()),
-                agent_id: Some(captured.receipt.agent_id.clone()),
-            });
-            scene.stage = EditorialStage::Drafted;
-            scene.ledger.reconcile(
-                &reservation_key,
-                Some(actual),
-                model_call_ids.clone(),
-                now_millis,
-            );
-        }
-        state.scenes[scene_index].source_packet_sha256 = packet_content_hash.clone();
-        record_model_attribution(
-            &mut state,
+        reconcile_editorial_agent_draft_action(
+            controller_path,
             scene_index,
-            EditorialActionKind::Draft,
-            TEMPLATE_PACKET_DRAFT.into(),
-            TEMPLATE_VERSION_V1.into(),
-            captured.packet_hash.clone(),
-            captured.packet_hash.clone(),
-            None,
-            None,
-            Some(captured.text_sha256.clone()),
-            None,
-            "drafted".into(),
-            0,
-            Some(actual),
+            draft_artifact_path,
+            &reservation_key,
             reserved,
-            model_call_ids,
+            Some(&captured),
+            tokenizer,
+            elapsed,
             now_millis,
+            packet_content_hash,
+            model_call_ids,
         )?;
-        crate::drafting::editorial::save_editorial_controller(controller_path, &state)?;
         Ok(captured)
     }
 
@@ -576,8 +565,18 @@ impl SqliteSpindleService {
         options: RevisionLoopOptions,
         now_millis: u64,
     ) -> Result<spindle_core::drafting::RevisionLoopArtifactV1> {
+        let controller = load_editorial_controller(controller_path)?;
+        anyhow::ensure!(
+            controller.settings.editorial_policy == EditorialPolicy::CritiqueV1,
+            "agent revision loop requires critique_v1 policy"
+        );
+        anyhow::ensure!(
+            controller.scenes.get(scene_index).is_some(),
+            "editorial scene index out of range"
+        );
+        let gate = ControllerRevisionBudgetGate::new(controller_path, scene_index, now_millis);
         let artifact = self
-            .revise_artifact_loop(
+            .revise_artifact_loop_with_gate(
                 EditorialPolicy::CritiqueV1,
                 draft_artifact_path,
                 loop_artifact_path,
@@ -587,6 +586,7 @@ impl SqliteSpindleService {
                 judge_budget,
                 tokenizer,
                 options,
+                Some(&gate),
             )
             .await?;
         update_editorial_controller(controller_path, |state| {
@@ -716,6 +716,222 @@ impl SqliteSpindleService {
             })
             .await
             .unwrap_or_default()
+    }
+}
+
+pub(crate) fn admit_editorial_agent_draft_action(
+    controller_path: &std::path::Path,
+    scene_index: usize,
+    now_millis: u64,
+) -> Result<spindle_core::drafting::EditorialBudgetReservation> {
+    update_editorial_controller(controller_path, |state| {
+        let attempt = state
+            .scenes
+            .get(scene_index)
+            .map(|scene| scene.attempt)
+            .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
+        crate::drafting::editorial::admit_editorial_action_in_controller(
+            state,
+            scene_index,
+            EditorialActionKind::Draft,
+            attempt,
+            now_millis,
+            true,
+        )
+        .map_err(|denial| anyhow::anyhow!("{denial}"))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconcile_editorial_agent_draft_action(
+    controller_path: &std::path::Path,
+    scene_index: usize,
+    draft_artifact_path: &std::path::Path,
+    reservation_key: &str,
+    reserved: EditorialBudgetUsage,
+    captured: Option<&PlainTextDraftArtifactV1>,
+    tokenizer: Option<&dyn DraftTokenizer>,
+    elapsed_millis: u64,
+    now_millis: u64,
+    packet_content_hash: String,
+    model_call_ids: Vec<String>,
+) -> Result<()> {
+    update_editorial_controller(controller_path, |state| {
+        let actual = captured.and_then(|captured| {
+            known_draft_usage(
+                captured,
+                tokenizer,
+                elapsed_millis,
+                state.settings.pricing.as_ref(),
+            )
+        });
+        {
+            let scene = state
+                .scenes
+                .get_mut(scene_index)
+                .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
+            scene
+                .ledger
+                .reconcile(reservation_key, actual, model_call_ids.clone(), now_millis);
+            if let Some(captured) = captured {
+                scene.draft_artifact_path =
+                    Some(draft_artifact_path.to_string_lossy().into_owned());
+                scene.incumbent = Some(spindle_core::drafting::EditorialTextRefV1 {
+                    text_sha256: captured.text_sha256.clone(),
+                    generation_id: Some(captured.receipt.generation_id.clone()),
+                    agent_id: Some(captured.receipt.agent_id.clone()),
+                });
+                scene.stage = EditorialStage::Drafted;
+                scene.source_packet_sha256 = packet_content_hash.clone();
+            }
+        }
+        record_model_attribution(
+            state,
+            scene_index,
+            EditorialActionKind::Draft,
+            TEMPLATE_PACKET_DRAFT.into(),
+            TEMPLATE_VERSION_V1.into(),
+            captured
+                .map(|captured| captured.packet_hash.clone())
+                .unwrap_or_default(),
+            captured
+                .map(|captured| captured.packet_hash.clone())
+                .unwrap_or_default(),
+            None,
+            None,
+            captured.map(|captured| captured.text_sha256.clone()),
+            None,
+            if captured.is_some() {
+                "drafted".into()
+            } else {
+                "dispatch_failed".into()
+            },
+            elapsed_millis,
+            actual,
+            reserved,
+            model_call_ids,
+            now_millis,
+        )?;
+        Ok(())
+    })
+}
+
+fn known_draft_usage(
+    captured: &PlainTextDraftArtifactV1,
+    tokenizer: Option<&dyn DraftTokenizer>,
+    elapsed_millis: u64,
+    pricing: Option<&spindle_core::drafting::EditorialPricingV1>,
+) -> Option<EditorialBudgetUsage> {
+    let input_tokens = captured
+        .prepared_packet
+        .as_ref()?
+        .packet
+        .assembly
+        .as_ref()?
+        .input_tokens;
+    let output_tokens = tokenizer?.count_text(&captured.text).ok()?;
+    let pricing = pricing?;
+    Some(EditorialBudgetUsage {
+        calls: 1,
+        tokens: input_tokens.saturating_add(output_tokens),
+        millis: elapsed_millis,
+        usd_micros: pricing.cost_micros(input_tokens, output_tokens),
+    })
+}
+
+fn elapsed_millis(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Durable revision-loop gate backed by the controller artifact. Each pass is
+/// admitted in a locked controller update before dispatch, and reconciled in a
+/// second locked update. Failure paths reconcile `None`, keeping the maximum
+/// reservation charged.
+pub(crate) struct ControllerRevisionBudgetGate<'a> {
+    controller_path: &'a std::path::Path,
+    scene_index: usize,
+    now_millis: u64,
+}
+
+impl<'a> ControllerRevisionBudgetGate<'a> {
+    pub(crate) fn new(
+        controller_path: &'a std::path::Path,
+        scene_index: usize,
+        now_millis: u64,
+    ) -> Self {
+        Self {
+            controller_path,
+            scene_index,
+            now_millis,
+        }
+    }
+}
+
+impl crate::drafting::revision::RevisionBudgetGate for ControllerRevisionBudgetGate<'_> {
+    fn admit(
+        &self,
+        action: EditorialActionKind,
+        attempt: u32,
+    ) -> Result<crate::drafting::revision::RevisionBudgetAdmission, String> {
+        update_editorial_controller(self.controller_path, |state| {
+            let reservation = crate::drafting::editorial::admit_editorial_action_in_controller(
+                state,
+                self.scene_index,
+                action,
+                attempt,
+                self.now_millis,
+                true,
+            )
+            .map_err(|denial| anyhow::anyhow!("{denial}"))?;
+            Ok(crate::drafting::revision::RevisionBudgetAdmission {
+                admission_id: reservation.idempotency_key,
+                action,
+                reserved: reservation.reserved,
+            })
+        })
+        .map_err(|error| format!("{error:#}"))
+    }
+
+    fn reconcile(
+        &self,
+        admission: &crate::drafting::revision::RevisionBudgetAdmission,
+        usage: Option<crate::drafting::revision::RevisionPassUsage>,
+        model_call_ids: Vec<String>,
+    ) -> Result<(), String> {
+        update_editorial_controller(self.controller_path, |state| {
+            let actual = usage.and_then(|usage| {
+                let pricing = state.settings.pricing.as_ref()?;
+                let usd_micros = match (usage.input_tokens, usage.output_tokens) {
+                    (Some(input), Some(output)) => pricing.cost_micros(input, output),
+                    _ => {
+                        let max_price = pricing
+                            .input_usd_micros_per_million
+                            .max(pricing.output_usd_micros_per_million);
+                        u64::try_from(
+                            (usage.total_tokens as u128).saturating_mul(max_price as u128)
+                                / 1_000_000,
+                        )
+                        .unwrap_or(u64::MAX)
+                    }
+                };
+                Some(EditorialBudgetUsage {
+                    calls: usage.calls,
+                    tokens: usage.total_tokens,
+                    millis: usage.millis,
+                    usd_micros,
+                })
+            });
+            for scene in &mut state.scenes {
+                scene.ledger.reconcile(
+                    &admission.admission_id,
+                    actual,
+                    model_call_ids.clone(),
+                    self.now_millis,
+                );
+            }
+            Ok(())
+        })
+        .map_err(|error| format!("{error:#}"))
     }
 }
 
