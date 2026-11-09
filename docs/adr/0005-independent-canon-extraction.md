@@ -1,6 +1,6 @@
 # ADR 0005: independent evidence-bound canon claims
 
-Status: proposed implementation, shadow contracts + append-only event store/reducers + calibrated policy/cutover + shared claim validators (canon-memory PRs B–F).
+Status: proposed implementation, shadow contracts + append-only event store/reducers + calibrated policy/cutover + shared claim validators + layered memory (canon-memory PRs B–G).
 
 ## Decision
 
@@ -91,6 +91,15 @@ The lanes reuse the existing `canonical_fact_prose_drift`, `knowledge_timing`,
 scanner semantics v4 adds plain-verb inflections and explicit cost-omission
 promotion while retaining the existing lexical behavior. The continuity recall
 corpus/scorer is unchanged; measured results are reported separately.
+
+PR G adds `spindle_core::memory` and migration V0055: scene/chapter/arc/book
+derived summaries with coverage, freshness, secret/reader visibility, dependency
+DAG invalidation, durable lazy-recompute jobs, budget metadata, and ordered thread
+and direct-state entity retrieval. Arc membership defaults to an explicit
+unassigned group rather than an invented arc; summaries never establish canon.
+`story_so_far` prefers fresh layered chapters before the cursor and retains the
+legacy recency path as a fallback. Cursor and secret filtering precede selection,
+and stale summaries are not silently treated as fresh.
 
 The versioned meanings above are a protocol boundary. Unknown predicates are
 rejected, not preserved as arbitrary JSON; changing a predicate's meaning needs

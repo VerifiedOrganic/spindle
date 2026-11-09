@@ -1913,6 +1913,7 @@ mod export;
 mod generation;
 #[path = "imports/tests.rs"]
 mod imports;
+mod memory;
 #[path = "plan_amendments/tests.rs"]
 mod plan_amendments;
 #[path = "reader_sim/tests.rs"]
