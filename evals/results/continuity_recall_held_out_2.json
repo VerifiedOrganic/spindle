@@ -1,0 +1,325 @@
+{
+  "corpus": "held-out-2",
+  "description": "Two independently authored 15-chapter manuscripts; 4 planted contradictions per public category per manuscript; clean twin controls.",
+  "manuscripts": [
+    {
+      "name": "salt_cartographer",
+      "genre": "coastal literary mystery",
+      "voice": "wry close third, past tense",
+      "planted": 28,
+      "localized_detected": 9,
+      "type_detected": 8,
+      "per_type": {
+        "character_attribute": {
+          "planted": 4,
+          "localized": 2,
+          "type_present": 0
+        },
+        "dead_character_acting": {
+          "planted": 4,
+          "localized": 3,
+          "type_present": 4
+        },
+        "timeline_chronology_rewind": {
+          "planted": 4,
+          "localized": 4,
+          "type_present": 4
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "world_rule_cost_violation": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "quantity_affordability": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "secret_leak": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        }
+      },
+      "issues": [
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMSZZJ8S5CGH5HDFE2Q1Q",
+            "scene:01M70PMT0V5P0XF6F9SQZTS533"
+          ]
+        },
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMT3KJMWEZ9S766AJ6T43",
+            "scene:01M70PMT4ET14F0D8CCBSFE83T"
+          ]
+        },
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMT63DBGZQ8DGHA3ASBAR",
+            "scene:01M70PMT6ZQ6WCPDB8B45GM7YJ"
+          ]
+        },
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMT8NQP6QED1GDK38WK05",
+            "scene:01M70PMT9G3QJVEAE6EYB652SV"
+          ]
+        },
+        {
+          "check_type": "dead_character_acting",
+          "severity": "warning",
+          "message": "book 1 chapter 8 scene 1 includes 'Cress Voss' acting after status 'dead'",
+          "entity_ids": [
+            "character:01M70PMSRWZ0BYPM60GFN859T5",
+            "scene:01M70PMT3KJMWEZ9S766AJ6T43"
+          ]
+        },
+        {
+          "check_type": "dead_character_acting",
+          "severity": "warning",
+          "message": "book 1 chapter 11 scene 1 includes 'Cress Voss' acting after status 'dead'",
+          "entity_ids": [
+            "character:01M70PMSRWZ0BYPM60GFN859T5",
+            "scene:01M70PMT63DBGZQ8DGHA3ASBAR"
+          ]
+        },
+        {
+          "check_type": "dead_character_acting",
+          "severity": "warning",
+          "message": "book 1 chapter 13 scene 1 includes 'Cress Voss' acting after status 'dead'",
+          "entity_ids": [
+            "character:01M70PMSRWZ0BYPM60GFN859T5",
+            "scene:01M70PMT7TE720VYJ1190ZJYRG"
+          ]
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "severity": "warning",
+          "message": "book 1 chapter 2 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Mara wrote with her right hand, though the ink blotted at every turn.) (bytes 216..286)",
+          "entity_ids": [
+            "scene:01M70PMSY3A2NPKN2892XXQY68"
+          ]
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "severity": "warning",
+          "message": "book 1 chapter 7 scene 1: 'handedness' conflicts with canonical value 'right' (prose says 'left': Ilya raised his left hand to stop her, though he had lost the fingers on that side years ago.) (bytes 166..260)",
+          "entity_ids": [
+            "scene:01M70PMT2QGY7N2XGP7HPKRHF3"
+          ]
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "severity": "warning",
+          "message": "scene references canonical key 'fingers' but not canonical value 'missing two on the left hand' (bytes 229..236)",
+          "entity_ids": [
+            "scene:01M70PMT2QGY7N2XGP7HPKRHF3"
+          ]
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "severity": "warning",
+          "message": "scene references canonical key 'scar' but not canonical value 'left brow' (bytes 290..294)",
+          "entity_ids": [
+            "scene:01M70PMT58D3723EN3262Q5FVS"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "glass_orchard",
+      "genre": "pastoral science fantasy",
+      "voice": "lyrical first person, present tense",
+      "planted": 28,
+      "localized_detected": 7,
+      "type_detected": 8,
+      "per_type": {
+        "character_attribute": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "dead_character_acting": {
+          "planted": 4,
+          "localized": 3,
+          "type_present": 4
+        },
+        "timeline_chronology_rewind": {
+          "planted": 4,
+          "localized": 4,
+          "type_present": 4
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "world_rule_cost_violation": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "quantity_affordability": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        },
+        "secret_leak": {
+          "planted": 4,
+          "localized": 0,
+          "type_present": 0
+        }
+      },
+      "issues": [
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMX9RK9AFHWZMGGZHQA67",
+            "scene:01M70PMXAMQP4B2N260FDC2KBJ"
+          ]
+        },
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMXDBCG4X7ENF0Y7A9C2S",
+            "scene:01M70PMXE60XY12K8Y1P20361Q"
+          ]
+        },
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMXFXJ17101NECHEQR4K7",
+            "scene:01M70PMXGRHP90XW8BWESE8978"
+          ]
+        },
+        {
+          "check_type": "chronology",
+          "severity": "warning",
+          "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
+          "entity_ids": [
+            "scene:01M70PMXJERTB1TF82QV96MTCQ",
+            "scene:01M70PMXK9MY23MNM525BW2DRE"
+          ]
+        },
+        {
+          "check_type": "dead_character_acting",
+          "severity": "warning",
+          "message": "book 1 chapter 8 scene 1 includes 'Nia Okoro' acting after status 'dead'",
+          "entity_ids": [
+            "character:01M70PMX2T1BA1EG3WHQ5ZJ9BX",
+            "scene:01M70PMXDBCG4X7ENF0Y7A9C2S"
+          ]
+        },
+        {
+          "check_type": "dead_character_acting",
+          "severity": "warning",
+          "message": "book 1 chapter 11 scene 1 includes 'Nia Okoro' acting after status 'dead'",
+          "entity_ids": [
+            "character:01M70PMX2T1BA1EG3WHQ5ZJ9BX",
+            "scene:01M70PMXFXJ17101NECHEQR4K7"
+          ]
+        },
+        {
+          "check_type": "dead_character_acting",
+          "severity": "warning",
+          "message": "book 1 chapter 13 scene 1 includes 'Nia Okoro' acting after status 'dead'",
+          "entity_ids": [
+            "character:01M70PMX2T1BA1EG3WHQ5ZJ9BX",
+            "scene:01M70PMXHK8XF7T8B49GAZBC6Z"
+          ]
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "severity": "warning",
+          "message": "scene references canonical key 'scar' but not canonical value 'burn on the right forearm' (bytes 285..289)",
+          "entity_ids": [
+            "scene:01M70PMXF2KWDH7XK0Q25WV3GR"
+          ]
+        }
+      ]
+    }
+  ],
+  "per_type": {
+    "character_attribute": {
+      "planted": 8,
+      "localized": 2,
+      "type_present": 0,
+      "localized_recall": 0.25,
+      "type_level_recall": 0.0
+    },
+    "dead_character_acting": {
+      "planted": 8,
+      "localized": 6,
+      "type_present": 8,
+      "localized_recall": 0.75,
+      "type_level_recall": 1.0
+    },
+    "timeline_chronology_rewind": {
+      "planted": 8,
+      "localized": 8,
+      "type_present": 8,
+      "localized_recall": 1.0,
+      "type_level_recall": 1.0
+    },
+    "knowledge_leak_before_learned": {
+      "planted": 8,
+      "localized": 0,
+      "type_present": 0,
+      "localized_recall": 0.0,
+      "type_level_recall": 0.0
+    },
+    "world_rule_cost_violation": {
+      "planted": 8,
+      "localized": 0,
+      "type_present": 0,
+      "localized_recall": 0.0,
+      "type_level_recall": 0.0
+    },
+    "quantity_affordability": {
+      "planted": 8,
+      "localized": 0,
+      "type_present": 0,
+      "localized_recall": 0.0,
+      "type_level_recall": 0.0
+    },
+    "secret_leak": {
+      "planted": 8,
+      "localized": 0,
+      "type_present": 0,
+      "localized_recall": 0.0,
+      "type_level_recall": 0.0
+    }
+  },
+  "planted_total": 56,
+  "localized_detected": 16,
+  "type_level_detected": 16,
+  "overall_localized_recall": 0.2857,
+  "overall_type_level_recall": 0.2857,
+  "control_false_positive_count": 0,
+  "control_info_count": 2,
+  "control_false_positives": []
+}

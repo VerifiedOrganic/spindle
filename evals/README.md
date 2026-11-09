@@ -204,6 +204,33 @@ overall (42.86%), 0 control false positives, with `timeline_chronology_rewind`
 exact-phrase, cast-present natural paraphrases. Treat the held-out result as a
 generalization signal, not a replacement for the baseline gate.
 
+## Held-out-2 corpus
+
+`evals/continuity_held_out_2.py` is a second, independently authored corpus for
+grading upcoming detector changes. It was written from the seven public
+contradiction categories and the MCP tool interface only, without reading
+detector implementations or the first held-out corpus. It adds two new
+15-chapter manuscripts in different genres and voices (a wry close-third coastal
+mystery and a lyrical first-person orchard science fantasy), plants four
+contradictions for each of the seven public types per manuscript (56 total), and
+seeds deaths as both character state and a `life_status` fact. Clean twins of
+both manuscripts measure false positives; the controls use only warning/error
+findings so metadata-only info does not inflate the count.
+
+```sh
+python3 evals/continuity_recall.py held-out-2
+python3 evals/continuity_recall.py held-out-2 --output evals/results/continuity_recall_held_out_2.json
+```
+
+The current main (`0a58908`, after the #76 detector generalization) result is
+**16/56 localized (28.57%)**, **16/56 type-present (28.57%)**, and **0 control
+warnings/errors** (2 info diagnostics). Before #76 (on `53721c8`) it was 9/56
+localized and 8/56 type-present. Type-present counts only warning/error findings of a
+category-specific check; localized additionally requires the planted
+scene/keyword (broad checks must name the planted evidence and never count as
+type-present). The gap is the target for upcoming detector work, not a release
+gate. This mode leaves the baseline and first held-out corpus untouched.
+
 ## Run
 
 ```sh

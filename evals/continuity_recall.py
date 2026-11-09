@@ -2680,8 +2680,10 @@ def run_benchmark(
 
 def run_self_test() -> None:
     from continuity_held_out import held_out_self_test
+    from continuity_held_out_2 import held_out_2_self_test
 
     held_out_self_test()
+    held_out_2_self_test()
     """Offline unit test of scoring, matching, and manuscript invariants."""
     assert len(ASHFALL_CHAPTERS) >= 20
     assert len(VERIDIAN_CHAPTERS) >= 20
@@ -2855,11 +2857,15 @@ def main() -> int:
         "held-out",
         help="Run the independent held-out continuity contradiction corpus against spindle-mcp",
     )
+    held_out_2_parser = subparsers.add_parser(
+        "held-out-2",
+        help="Run the second independent held-out continuity corpus against spindle-mcp",
+    )
     verify_prose_parser = subparsers.add_parser(
         "verify-accepted-prose",
         help="Run only the generated-accepted-prose continuity fixture against spindle-mcp",
     )
-    for p in (parser, run_parser, held_out_parser, verify_prose_parser):
+    for p in (parser, run_parser, held_out_parser, held_out_2_parser, verify_prose_parser):
         p.add_argument("--binary", help="Explicit benchmark artifact (bypasses automatic build)")
         p.add_argument("--no-build", action="store_true", default=argparse.SUPPRESS, help="Use an existing binary without building (may be stale)")
         p.add_argument("--output", help="Write JSON report to this file path")
@@ -2889,7 +2895,17 @@ def main() -> int:
         if getattr(args, "accepted_artifacts_dir", None)
         else None
     )
-    if args.command == "held-out":
+    if args.command == "held-out-2":
+        from continuity_held_out_2 import run_held_out_2_benchmark
+
+        if accepted_dir is not None:
+            raise RuntimeError("--accepted-artifacts-dir is not used by the held-out-2 corpus")
+        report = run_held_out_2_benchmark(
+            binary=binary,
+            deep_check=bool(args.deep),
+            agent_config=agent_config,
+        )
+    elif args.command == "held-out":
         from continuity_held_out import run_held_out_benchmark
 
         if accepted_dir is not None:
