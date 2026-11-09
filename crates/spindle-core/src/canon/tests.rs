@@ -2497,3 +2497,267 @@ fn v1_policy_guard_and_three_way_branch_merge_conflicts() {
         CanonAppendErrorCode::Precondition
     );
 }
+
+#[test]
+fn backfill_position_and_knowledge_helpers_never_invent_scene_zero() {
+    assert_eq!(
+        coordinates_to_canon_position(Some(1), Some(2), Some(3)),
+        CanonPositionV1::new(1, 2, 3).ok()
+    );
+    assert_eq!(
+        coordinates_to_canon_position(Some(0), Some(1), Some(1)),
+        None
+    );
+    assert_eq!(
+        coordinates_to_canon_position(Some(1), Some(0), Some(1)),
+        None
+    );
+    assert_eq!(
+        coordinates_to_canon_position(Some(1), Some(1), Some(0)),
+        None
+    );
+    assert_eq!(coordinates_to_canon_position(Some(1), Some(1), None), None);
+
+    let p_valid = crate::models::StoryPlacement {
+        book_number: 2,
+        chapter_number: 4,
+        scene_order: Some(1),
+        note: None,
+    };
+    assert_eq!(
+        story_placement_to_canon_position(&p_valid),
+        CanonPositionV1::new(2, 4, 1).ok()
+    );
+    let p_chapter_only = crate::models::StoryPlacement {
+        book_number: 2,
+        chapter_number: 4,
+        scene_order: None,
+        note: None,
+    };
+    assert_eq!(story_placement_to_canon_position(&p_chapter_only), None);
+
+    // Deduplicated knowledge proposition ID: collision-resistant for punctuation and non-Latin facts,
+    // deterministic across case/whitespace, and preserves secret_of_fact_id grouping.
+    let prop_cipher_1 = deduplicated_knowledge_proposition_id("Veyra has the cipher", None);
+    let prop_cipher_2 = deduplicated_knowledge_proposition_id("  veyra has the cipher  ", None);
+    assert_eq!(prop_cipher_1, prop_cipher_2);
+    assert!(prop_cipher_1.starts_with("proposition:fact:veyra_has_the_cipher:"));
+
+    let prop_gt = deduplicated_knowledge_proposition_id("x > y", None);
+    let prop_lt = deduplicated_knowledge_proposition_id("x < y", None);
+    assert_ne!(
+        prop_gt, prop_lt,
+        "punctuation-distinguished facts must not collide"
+    );
+
+    let prop_zh_1 = deduplicated_knowledge_proposition_id("北门有暗道", None);
+    let prop_zh_2 = deduplicated_knowledge_proposition_id("南塔已封锁", None);
+    assert_ne!(prop_zh_1, prop_zh_2, "non-Latin facts must not collide");
+    assert!(!prop_zh_1.ends_with(":unnamed"));
+
+    assert_eq!(
+        deduplicated_knowledge_proposition_id(
+            "Veyra has the cipher",
+            Some("canonical_fact:secret_1")
+        ),
+        "proposition:secret:canonical_fact:secret_1"
+    );
+    assert_eq!(
+        deduplicated_knowledge_proposition_id("北门有暗道", Some("canonical_fact:secret_1")),
+        "proposition:secret:canonical_fact:secret_1"
+    );
+}
+
+#[test]
+fn diff_character_status_snapshots_emits_life_injury_and_set_diffs() {
+    let initial = diff_character_status_snapshots(
+        "character:veyra",
+        &[],
+        &[
+            "alive".into(),
+            "injury:left_arm:severe".into(),
+            "exhausted".into(),
+        ],
+    );
+    assert!(initial.contains(&ClaimAssertion::LifeStatus {
+        status: LifeStatus::Alive,
+    }));
+    assert!(initial.contains(&ClaimAssertion::Injury {
+        operation: InjuryOperation::Add,
+        injury_id: "legacy_injury:character:veyra:left_arm".into(),
+        body_site: "left_arm".into(),
+        severity: InjurySeverity::Severe,
+    }));
+    assert!(initial.contains(&ClaimAssertion::Attribute {
+        operation: AttributeOperation::Add,
+        key: "character_state.status".into(),
+        value: ClaimScalar::Text {
+            value: "exhausted".into(),
+        },
+        nature: AttributeNature::Evolving,
+    }));
+
+    // Next snapshot heals the injury, removes "exhausted", and marks dead
+    let next = diff_character_status_snapshots(
+        "character:veyra",
+        &[
+            "alive".into(),
+            "injury:left_arm:severe".into(),
+            "exhausted".into(),
+        ],
+        &["dead".into()],
+    );
+    assert!(next.contains(&ClaimAssertion::LifeStatus {
+        status: LifeStatus::Dead,
+    }));
+    assert!(next.contains(&ClaimAssertion::Injury {
+        operation: InjuryOperation::Heal,
+        injury_id: "legacy_injury:character:veyra:left_arm".into(),
+        body_site: "left_arm".into(),
+        severity: InjurySeverity::Severe,
+    }));
+    assert!(next.contains(&ClaimAssertion::Attribute {
+        operation: AttributeOperation::Remove,
+        key: "character_state.status".into(),
+        value: ClaimScalar::Text {
+            value: "exhausted".into(),
+        },
+        nature: AttributeNature::Evolving,
+    }));
+}
+
+#[test]
+fn classify_progression_delta_distinguishes_typed_transitions_from_opaque_blobs() {
+    let tier_up = classify_progression_delta_json(
+        "character:veyra",
+        "tier_up",
+        r#"{"from_tier":"Iron","to_tier":"Silver"}"#,
+    );
+    match tier_up {
+        ProgressionDeltaClassification::Attributable { assertions, .. } => {
+            assert!(assertions.contains(&ClaimAssertion::Attribute {
+                operation: AttributeOperation::Set,
+                key: "progression.to_tier".into(),
+                value: ClaimScalar::Text {
+                    value: "Silver".into(),
+                },
+                nature: AttributeNature::Evolving,
+            }));
+        }
+        other => panic!("expected Attributable, got {other:?}"),
+    }
+
+    let opaque = classify_progression_delta_json(
+        "character:veyra",
+        "custom_mystery",
+        r#"{"unstructured_blob":[1,2,3]}"#,
+    );
+    assert!(matches!(
+        opaque,
+        ProgressionDeltaClassification::Quarantined { .. }
+    ));
+}
+
+#[test]
+fn invalidated_coverage_mask_or_scene_visibility_restores_masked_state() {
+    let p1 = CanonPositionV1::new(1, 1, 1).unwrap();
+    let main_attr = make_test_event(
+        "canon_event:main_attr",
+        "branch:main",
+        1,
+        1,
+        "location:citadel",
+        narration_assertion(ClaimAssertion::Attribute {
+            operation: AttributeOperation::Set,
+            key: "world_state.status".into(),
+            value: ClaimScalar::Text {
+                value: "intact".into(),
+            },
+            nature: AttributeNature::Evolving,
+        }),
+        Some(p1),
+        Some(1),
+        Some("scene:1"),
+        "rev:m1",
+    );
+    let tombstone = make_test_event(
+        "canon_event:child_tombstone",
+        "branch:child",
+        1,
+        1,
+        "location:citadel",
+        CanonEventPayloadV1::CoverageMask {
+            mask: StreamCoverageMaskV1 {
+                target: CoverageMaskTargetV1::Stream {
+                    stream: SemanticStreamKeyV1::AttributeScalar {
+                        subject_id: "location:citadel".into(),
+                        key: "world_state.status".into(),
+                    },
+                },
+                start_position: None,
+                end_position: None,
+                tombstone: true,
+            },
+        },
+        None,
+        None,
+        None,
+        "rev:c_tombstone",
+    );
+
+    let lineage = vec!["branch:child".to_string(), "branch:main".to_string()];
+    let view_masked = state_at(
+        "branch:child",
+        &lineage,
+        &[main_attr.clone(), tombstone.clone()],
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert!(
+        view_masked
+            .entity("location:citadel")
+            .and_then(|e| e.attributes.get("world_state.status"))
+            .is_none()
+    );
+
+    // Now invalidate the tombstone (as happens during a savepoint restore rollback)
+    let rollback = make_test_event(
+        "canon_event:child_rollback",
+        "branch:child",
+        2,
+        2,
+        "branch:child",
+        CanonEventPayloadV1::SourceInvalidation {
+            invalidation: SourceInvalidationV1 {
+                scene_id: None,
+                invalidated_revision_ids: vec!["rev:c_tombstone".into()],
+                invalidated_event_ids: vec!["canon_event:child_tombstone".into()],
+                replacement_revision_id: None,
+            },
+        },
+        None,
+        None,
+        None,
+        "rev:c_rollback",
+    );
+    let view_restored = state_at(
+        "branch:child",
+        &lineage,
+        &[main_attr, tombstone, rollback],
+        &CanonCursorV1::unbounded(),
+        CanonTier::Ratified,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        view_restored
+            .entity("location:citadel")
+            .and_then(|e| e.attributes.get("world_state.status"))
+            .and_then(|a| a.scalar_value.as_ref()),
+        Some(&ClaimScalar::Text {
+            value: "intact".into()
+        })
+    );
+}

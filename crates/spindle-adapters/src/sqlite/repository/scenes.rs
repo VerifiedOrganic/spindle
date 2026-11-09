@@ -480,6 +480,15 @@ impl Repository {
                 .pool
                 .write(move |conn| {
                     let tx = conn.transaction()?;
+                    super::authoring::check_active_run_scene_handoff_plan_revision_in_conn(
+                        &tx,
+                        &project_id_owned,
+                        &branch_id_owned,
+                        book_number,
+                        chapter_number,
+                        scene_order,
+                    )
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
                     // The receipt claim commits with the scene write or not at
                     // all (migration V0034 + the failed-save regression).
                     if let Some((receipt_id, scene_key)) = receipt_claim_owned.as_ref() {
@@ -558,6 +567,15 @@ impl Repository {
                 .pool
                 .write(move |conn| {
                     let tx = conn.transaction()?;
+                    super::authoring::check_active_run_scene_handoff_plan_revision_in_conn(
+                        &tx,
+                        &project_id_owned,
+                        &branch_id_owned,
+                        book_number,
+                        chapter_number,
+                        scene_order,
+                    )
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
                     if let Some((receipt_id, scene_key)) = receipt_claim_owned.as_ref() {
                         claim_generation_receipt_in_tx(&tx, receipt_id, scene_key)
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;

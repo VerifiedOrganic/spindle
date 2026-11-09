@@ -8,14 +8,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftReceiptBinding {
     pub generation_id: String,
     pub agent_id: String,
     /// Existing receipt hash: CRLF normalized and outer whitespace trimmed.
     pub normalized_output_sha256: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptedDraftV1 {
     pub placement: StoryPlacement,
     pub artifact_id: String,

@@ -487,12 +487,78 @@ pub enum PlanningGate {
     Hold,
 }
 
-/// An empty map means human gates at every level. Non-human policy activation
-/// is deliberately unavailable until the audited apply path ships.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPovPolicy {
+    #[serde(default)]
+    pub single_pov: Option<PlanningRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_roster: Vec<PlanningRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub desired_shares: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_tolerance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_absence_chapters: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_chapters: Option<i32>,
+    #[serde(default)]
+    pub hard_constraint: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPacingPolicy {
+    #[serde(default)]
+    pub hard_constraint: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiver_reason: Option<String>,
+}
+
+/// An empty map means human gates at every level. Root levels remain human-gated;
+/// Chapter and Scene levels may opt into `delegate_if_valid` or `hold` once upstream
+/// roots are accepted and a human explicitly ratifies the policy version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningPolicy {
+    #[serde(default)]
     pub gates: BTreeMap<PlanningLevel, PlanningGate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_advisory_findings: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pov_policy: Option<PlanningPovPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pacing_policy: Option<PlanningPacingPolicy>,
+}
+
+impl PlanningPolicy {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn delegated_actor(&self) -> Option<String> {
+        let policy_id = self.policy_id.as_deref()?.trim();
+        let version = self.policy_version?;
+        if policy_id.is_empty() || version == 0 {
+            return None;
+        }
+        Some(format!("policy:{policy_id}:{version}"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetPlanningPolicyInput {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<PlanningScope>,
+    pub policy: PlanningPolicy,
+    pub actor: String,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -527,9 +593,60 @@ pub struct PlanningSession {
     pub rating_ceiling: Option<ContentRating>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_review_backend: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub projection_stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<PlanningSessionOutcome>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPacingMetrics {
+    pub evaluated_items: usize,
+    pub mean_absolute_deviation: f64,
+    pub longest_sustained_deviation: usize,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pov_chapter_counts: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pov_shares: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pov_max_consecutive_chapters: BTreeMap<String, i32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pov_max_absence_chapters: BTreeMap<String, i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningReadinessInput {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<PlanningScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_range: Option<PlanningTargetRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mining_policy: Option<AuthoringMiningPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningReadinessReport {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<PlanningScope>,
+    pub target_range: PlanningTargetRange,
+    pub ready_to_draft: bool,
+    pub planner_checks_passed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale_projection: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<PlanningFinding>,
+    pub pacing_metrics: PlanningPacingMetrics,
+    pub prepare_run: AuthoringPrepareRunOutput,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -992,6 +1109,33 @@ pub struct PlanningStoryPlacement {
     pub note: Option<String>,
 }
 
+impl PlanningStoryPlacement {
+    pub fn has_positive_coordinates(&self) -> bool {
+        self.book_number >= 1
+            && self.chapter_number >= 1
+            && self.scene_order.is_none_or(|scene| scene >= 1)
+    }
+
+    /// Compares two story placements lexicographically by `(book_number, chapter_number, scene_order)`.
+    /// When both placements are in the same `(book_number, chapter_number)` and one has `scene_order: None`
+    /// (chapter-wide), they compare equal for window boundary checks unless strict scene ordering is requested.
+    pub fn cmp_story_order(&self, other: &Self) -> std::cmp::Ordering {
+        match (
+            self.book_number.cmp(&other.book_number),
+            self.chapter_number.cmp(&other.chapter_number),
+        ) {
+            (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal) => {
+                match (self.scene_order, other.scene_order) {
+                    (Some(left), Some(right)) => left.cmp(&right),
+                    _ => std::cmp::Ordering::Equal,
+                }
+            }
+            (std::cmp::Ordering::Equal, chapter_ord) => chapter_ord,
+            (book_ord, _) => book_ord,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningCharacterArcMilestone {
@@ -1123,6 +1267,21 @@ mod tests {
             "total_tokens":0
         }));
         rejects_extra::<PlanningHostSubmission>(json!({"source":"host","payload":{}}));
+        rejects_extra::<PlanningPovPolicy>(json!({}));
+        rejects_extra::<PlanningPacingPolicy>(json!({}));
+        rejects_extra::<PlanningPolicy>(json!({"gates":{}}));
+        rejects_extra::<SetPlanningPolicyInput>(json!({
+            "session_id":"session-1",
+            "policy":{"gates":{}},
+            "actor":"author:alice",
+            "note":"Accept policy"
+        }));
+        rejects_extra::<PlanningPacingMetrics>(json!({
+            "evaluated_items":0,
+            "mean_absolute_deviation":0.0,
+            "longest_sustained_deviation":0
+        }));
+        rejects_extra::<PlanningReadinessInput>(json!({"session_id":"session-1"}));
     }
 
     fn rejects_at(mut operation: Value, path: &str) {

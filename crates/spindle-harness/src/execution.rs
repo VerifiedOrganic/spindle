@@ -339,6 +339,8 @@ async fn draft_scene(
         tone_deviation: save_output.tone_deviation,
         content_rating_valid: save_output.content_rating_valid,
         content_rating_warnings: save_output.content_rating_warnings.clone(),
+        handoff_plan_revision: None,
+        superseded_handoff_plan_revision: None,
     });
     state.save(state_path)?;
 

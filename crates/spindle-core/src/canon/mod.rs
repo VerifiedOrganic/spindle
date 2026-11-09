@@ -19,8 +19,10 @@ macro_rules! vocabulary {
         pub enum $name { $($variant),+ }
     };
 }
+mod backfill;
 mod events;
 mod reducer;
+pub use backfill::*;
 pub use events::*;
 pub use reducer::*;
 vocabulary!(ClaimFamily {

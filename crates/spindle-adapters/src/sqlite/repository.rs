@@ -741,8 +741,11 @@ struct Inner {
 }
 
 mod authoring;
+pub(crate) use authoring::check_active_run_scene_handoff_plan_revision_in_conn;
 mod branches;
 mod canon;
+pub mod canon_backfill;
+pub use canon_backfill::*;
 mod canon_events;
 mod characters;
 mod entities;
