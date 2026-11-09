@@ -230,6 +230,7 @@
           "check_style_profile_sources",
           "compare_style_profiles",
           "create_style_profile_from_markdown",
+          "create_style_revision_patch",
           "evaluate_style_revision_patch",
           "get_style_profile",
           "list_style_profile_applications",

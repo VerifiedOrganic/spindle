@@ -184,6 +184,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "archive_style_profile",
             "Safer profile deletion/archiving. archived profiles cannot be active or default, but preserve audit history.",
         ),
+        tool::<CreateStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
+            "create_style_revision_patch",
+            "Create a non-mutating style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs; evaluate and apply it with the revision-patch tools.",
+        ),
         tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
             "preview_style_revision_patch",
             "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",

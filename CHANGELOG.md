@@ -4,6 +4,16 @@
 
 ### Added
 
+- `refresh_style_profile` and `apply_style_profile` accept `dry_run`. A dry run
+  reports the proposed candidate profile or prose diff (narrator voice, style
+  notes, world-rule action, metric deltas, and quality/apply-safety notes)
+  without inserting a profile version, consuming or dismissing candidates,
+  activating the profile, invalidating caches, or writing an application audit
+  record. `preview_refresh_style_profile` and `preview_apply_style_profile`
+  remain available through release R and delegate to the dry-run paths.
+  `create_style_revision_patch` is the canonical non-mutating patch creation
+  step; `preview_style_revision_patch` remains a release-R alias, and only
+  `apply_style_revision_patch` writes prose.
 - New `commit_scene` MCP tool is the single atomic write for ordinary scene
   work: it persists prose, the author-declared continuity package, beat
   annotations, an optional chapter-completion summary, and the writer cursor in
