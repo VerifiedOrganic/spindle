@@ -15,7 +15,7 @@ Build characters that are psychologically grounded, narratively purposeful, voca
 1. Call `set_active_project` once per session to bind the active project and branch.
 2. Call `find_entity` and `get_entity` before linking existing themes, locations, or characters to avoid duplicate or mismatched IDs.
 3. Call `create_character` with core identity (`name`, `role`, `summary`, optional `realm`, `aliases`), `voice_profile`, `emotional_profile`, and `initial_state`.
-4. Call `set_character_voice_profile` (or `batch_set_character_voice_profiles` for multiple cast members) whenever dialogue voice traits change after creation.
+4. Call `set_character_voice_profile` (or `set_character_voice_profiles` for 1–50 cast members; `batch_set_character_voice_profiles` remains a one-release alias) whenever dialogue voice traits change after creation.
 5. Call `commit_character_state` when a scene shifts a character's `emotional_state`, `goals`, `status`, or `notes`.
 6. Call `create_relationship` and `update_relationship` to model directed trust/tension edges, and `create_character_arc` (linked to `create_theme` IDs) to track transformation milestones. Revise the character with `update_character` and the arc with `update_character_arc`; reserve `update_entity` for fields without a typed update.
 7. Call `register_canonical_fact` for durable decision/physical/boundary facts, `get_character_snapshot` to verify the assembled profile, and `check_consistency` (`subjects: [character_id]`) to catch `voice_drift` or `canonical_fact_prose_drift`.
@@ -63,6 +63,7 @@ Seed baseline `emotional_state`, immediate `goals`, `status` tags, `notes`, and 
 Call `get_character_snapshot` and verify: `example_lines` and `forbidden_words` are populated, `defense_mechanisms` and `triggers` exist, `initial_state` is seeded, and every visible quirk connects to the Ghost -> Wound -> Lie engine (avoiding flawless protagonists, disconnected quirks, unexamined tragic backstories, author mouthpieces, and voice twins). Run `check_consistency` (`subjects: [character_id]`) to confirm zero `voice_drift` or `canonical_fact_prose_drift` issues.
 
 <!-- tool: batch_set_character_voice_profiles -->
+<!-- tool: set_character_voice_profiles -->
 <!-- tool: check_consistency -->
 <!-- tool: commit_character_state -->
 <!-- tool: create_character -->

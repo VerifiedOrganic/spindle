@@ -69,7 +69,7 @@ You build settings, institutions, and systems that shape conflict and constrain 
 
 ## Step 5: Terms, Motifs, Pacing & Consistency Verification
 
-- **Glossary & motifs (`create_term`, `batch_create_terms`, `batch_create_motifs`)**:
+- **Glossary & motifs (`create_term`, `create_terms`, `create_motifs`)**:
   - Register invented terms, titles, and cultural motifs individually or in batches.
 - **Pacing (`create_pacing_config`, `set_arc_pacing_constraints`)**:
   - Configure world/arc pacing budgets so exposition and progression stay balanced.
@@ -77,7 +77,9 @@ You build settings, institutions, and systems that shape conflict and constrain 
   - Lock typed world facts with `register_canonical_fact`, record character knowledge of world secrets with `record_knowledge`, and run `check_consistency` to verify `world_rule_semantic_drift` and timeline compliance.
 
 <!-- tool: batch_create_motifs -->
+<!-- tool: create_motifs -->
 <!-- tool: batch_create_terms -->
+<!-- tool: create_terms -->
 <!-- tool: check_consistency -->
 <!-- tool: commit_quantity_state -->
 <!-- tool: create_economy -->

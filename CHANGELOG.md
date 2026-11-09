@@ -4,6 +4,11 @@
 
 ### Added
 
+- Canonical atomic batch creates: `create_terms`, `create_motifs`,
+  `create_narrative_promises`, and `set_character_voice_profiles` accept 1-50
+  items, support `dry_run`, preflight every item, and commit all-or-nothing in
+  one branch transaction. The four `batch_*` names remain one-release aliases.
+
 - Typed entity updates: `update_character`, `update_location`, `update_conflict`,
   and `update_character_arc` replace the supported fields of the open
   `update_entity` path with unknown-field-rejecting DTOs. `update_entity`

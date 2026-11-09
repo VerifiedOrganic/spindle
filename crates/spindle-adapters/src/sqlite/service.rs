@@ -36,14 +36,15 @@ use spindle_core::models::{
     CreateCharacterOutput, CreateConflictInput, CreateConflictOutput, CreateEconomyInput,
     CreateEconomyOutput, CreateFactionInput, CreateFactionOutput, CreateFutureKnowledgeInput,
     CreateFutureKnowledgeOutput, CreateLocationInput, CreateLocationOutput, CreateMotifInput,
-    CreateMotifOutput, CreateNarrativePromiseInput, CreateNarrativePromiseOutput,
+    CreateMotifOutput, CreateMotifsInput, CreateMotifsOutput, CreateNarrativePromiseInput,
+    CreateNarrativePromiseOutput, CreateNarrativePromisesInput, CreateNarrativePromisesOutput,
     CreatePacingConfigInput, CreatePacingConfigOutput, CreatePacingCurveInput,
     CreatePacingCurveOutput, CreatePlotLineInput, CreatePlotLineOutput, CreateProjectInput,
     CreateProjectOutput, CreateRelationshipInput, CreateRelationshipOutput, CreateReligionInput,
     CreateReligionOutput, CreateSavePointInput, CreateSavePointOutput, CreateSystemOverlayInput,
     CreateSystemOverlayOutput, CreateTemporalInterventionInput, CreateTemporalInterventionOutput,
-    CreateTermInput, CreateTermOutput, CreateThemeInput, CreateThemeOutput,
-    CreateTimelineEventInput, CreateTimelineEventOutput, CreateWorldRuleInput,
+    CreateTermInput, CreateTermOutput, CreateTermsInput, CreateTermsOutput, CreateThemeInput,
+    CreateThemeOutput, CreateTimelineEventInput, CreateTimelineEventOutput, CreateWorldRuleInput,
     CreateWorldRuleOutput, DeleteSceneInput, DeleteSceneOutput, EntityResolutionConfidence,
     FindEntityInput, FindEntityMatch, FindEntityOutput, FindScenesReferencingInput,
     FindScenesReferencingOutput, GetSceneDeleteImpactInput, GetSceneDeleteImpactOutput,
@@ -61,11 +62,11 @@ use spindle_core::models::{
     SceneVersionSummary, SearchBibleInput, SearchBibleMode, SearchBibleOutput,
     SearchBibleResultItem, SetArcPacingConstraintsInput, SetArcPacingConstraintsOutput,
     SetBookOutlineInput, SetBookOutlineOutput, SetChapterOutlineInput, SetChapterOutlineOutput,
-    SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput, StoryPlacement,
-    SwitchBranchInput, SwitchBranchOutput, TestAgentInput, TestAgentOutput,
-    UpdateArcMilestoneInput, UpdateArcMilestoneOutput, UpdateEntityInput, UpdateEntityOutput,
-    UpdatePromiseStatusInput, UpdatePromiseStatusOutput, UpdateRelationshipInput,
-    UpdateRelationshipOutput, UpdateWorldRuleInput, UpdateWorldRuleOutput,
+    SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput, SetCharacterVoiceProfilesInput,
+    SetCharacterVoiceProfilesOutput, StoryPlacement, SwitchBranchInput, SwitchBranchOutput,
+    TestAgentInput, TestAgentOutput, UpdateArcMilestoneInput, UpdateArcMilestoneOutput,
+    UpdateEntityInput, UpdateEntityOutput, UpdatePromiseStatusInput, UpdatePromiseStatusOutput,
+    UpdateRelationshipInput, UpdateRelationshipOutput, UpdateWorldRuleInput, UpdateWorldRuleOutput,
     UpdateWriterPositionInput,
 };
 
@@ -280,6 +281,9 @@ pub struct SqliteSpindleService {
     /// retry arriving on a different service clone joins the SAME job instead
     /// of launching a duplicate run against the model.
     review_jobs: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, ReviewJob>>>,
+    /// Test-only failure injection for post-commit derived-work tests.
+    #[cfg(test)]
+    batch_index_refresh_failure: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 const STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS: &str = "\
@@ -438,6 +442,7 @@ struct ResearchQueryOutputJson {
 }
 
 mod agents;
+mod batch;
 mod branch_snapshots;
 mod branches;
 mod canon_events;
@@ -488,7 +493,19 @@ impl SqliteSpindleService {
             review_jobs: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::BTreeMap::new(),
             )),
+            #[cfg(test)]
+            batch_index_refresh_failure: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
         }
+    }
+
+    /// Test-only hook: make the next post-commit batch index refresh fail so
+    /// the regression can prove committed rows still return a success receipt.
+    #[cfg(test)]
+    pub fn fail_next_batch_index_refresh(&self) {
+        self.batch_index_refresh_failure
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn repository(&self) -> &Repository {
