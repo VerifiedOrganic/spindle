@@ -351,6 +351,144 @@ async fn internal_call_token_allows_reentrant_dispatch_while_blocking_external_c
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn typed_updates_resolve_target_project_and_lock_without_project_id() {
+    let router = router().await;
+    let p1 = prepare_run_project(&router, "Typed Target One").await;
+    let _p2 = prepare_run_project(&router, "Typed Target Two").await;
+
+    let character = structured_json(
+        router
+            .call_tool(
+                "create_character",
+                Some(
+                    serde_json::json!({
+                        "project_id": p1,
+                        "name": "Mira",
+                        "summary": "A courier.",
+                        "role": "supporting"
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let location = structured_json(
+        router
+            .call_tool(
+                "create_location",
+                Some(
+                    serde_json::json!({
+                        "project_id": p1,
+                        "name": "Old Harbor",
+                        "kind": "port",
+                        "summary": "A working harbor."
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let conflict = structured_json(
+        router
+            .call_tool(
+                "create_conflict",
+                Some(
+                    serde_json::json!({
+                        "project_id": p1,
+                        "name": "The blocked ford",
+                        "conflict_type": "external",
+                        "stakes": "The company cannot cross."
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let arc = structured_json(
+        router
+            .call_tool(
+                "create_character_arc",
+                Some(
+                    serde_json::json!({
+                        "project_id": p1,
+                        "character_id": character["character_id"],
+                        "arc_type": "positive",
+                        "starting_state": "Cautious",
+                        "ending_state": "Trusting",
+                        "thematic_purpose": "Trust is earned."
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+
+    let cases = [
+        (
+            "update_character",
+            serde_json::json!({"character_id": character["character_id"], "summary": "Updated."}),
+        ),
+        (
+            "update_location",
+            serde_json::json!({"location_id": location["location_id"], "kind": "ruined port"}),
+        ),
+        (
+            "update_conflict",
+            serde_json::json!({"conflict_id": conflict["conflict_id"], "stakes": "Higher stakes."}),
+        ),
+        (
+            "update_character_arc",
+            serde_json::json!({"character_arc_id": arc["character_arc_id"], "status": "active"}),
+        ),
+    ];
+    for (tool, args) in cases {
+        let scope = router
+            .tool_serialization_scope(tool, args.as_object().unwrap())
+            .await
+            .unwrap();
+        assert!(
+            matches!(scope, Some(ToolSerializationScope::Project(ref project)) if project == &p1),
+            "{tool} must lock the target project, got {scope:?}"
+        );
+        let updated = router
+            .call_tool(tool, args.as_object())
+            .await
+            .unwrap_or_else(|error| panic!("{tool} failed: {error:#}"));
+        assert_ne!(updated.is_error, Some(true), "{tool}: {updated:?}");
+    }
+
+    let entity = structured_json(
+        router
+            .call_tool(
+                "get_entity",
+                Some(
+                    serde_json::json!({
+                        "project_id": p1,
+                        "table": "character",
+                        "entity_id": character["character_id"]
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(
+        serde_json::to_string(&entity).unwrap().contains("Updated."),
+        "typed character update did not persist: {entity:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn update_entity_locks_resolved_project_id_when_project_id_omitted() {
     let router = router().await;
     let p1 = prepare_run_project(&router, "Project One").await;
