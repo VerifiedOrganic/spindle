@@ -16,6 +16,34 @@ impl SqliteSpindleService {
         })
     }
 
+    pub async fn update_character(
+        &self,
+        input: spindle_core::models::UpdateCharacterInput,
+    ) -> Result<UpdateEntityOutput> {
+        self.update_entity(input.into_update_entity()).await
+    }
+
+    pub async fn update_location(
+        &self,
+        input: spindle_core::models::UpdateLocationInput,
+    ) -> Result<UpdateEntityOutput> {
+        self.update_entity(input.into_update_entity()).await
+    }
+
+    pub async fn update_conflict(
+        &self,
+        input: spindle_core::models::UpdateConflictInput,
+    ) -> Result<UpdateEntityOutput> {
+        self.update_entity(input.into_update_entity()).await
+    }
+
+    pub async fn update_character_arc(
+        &self,
+        input: spindle_core::models::UpdateCharacterArcInput,
+    ) -> Result<UpdateEntityOutput> {
+        self.update_entity(input.into_update_entity()).await
+    }
+
     /// Generic field-merge update on a row identified by (entity_type, entity_id).
     /// The repository enforces a per-table column allowlist; unknown columns
     /// surface an error rather than silently being ignored.

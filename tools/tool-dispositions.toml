@@ -1206,11 +1206,39 @@ review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 
 [[tools]]
-name = "update_entity"
+name = "update_character"
 classification = "retained"
+owner = "character-creator, continuity-editor, scene-writer, worldbuilder"
+review_by = "R+1"
+reason = "Typed replacement for the supported character fields of update_entity."
+
+[[tools]]
+name = "update_location"
+classification = "retained"
+owner = "continuity-editor, scene-writer, worldbuilder"
+review_by = "R+1"
+reason = "Typed replacement for the supported location fields of update_entity."
+
+[[tools]]
+name = "update_conflict"
+classification = "retained"
+owner = "continuity-editor, plot-architect, worldbuilder"
+review_by = "R+1"
+reason = "Typed replacement for the supported conflict fields of update_entity."
+
+[[tools]]
+name = "update_character_arc"
+classification = "retained"
+owner = "character-creator, continuity-editor, plot-architect"
+review_by = "R+1"
+reason = "Typed replacement for the supported character-arc fields of update_entity."
+
+[[tools]]
+name = "update_entity"
+classification = "compatibility"
 owner = "authoring-supervisor, continuity-editor, plot-architect, revision-manager, scene-writer, worldbuilder"
 review_by = "R"
-reason = "Current public API; declared by an owning skill or reference."
+reason = "One-release generic compatibility path for entity types that do not have typed update replacements yet; typed character/location/conflict/character_arc updates are canonical."
 
 [[tools]]
 name = "update_promise_status"

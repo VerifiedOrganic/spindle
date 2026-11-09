@@ -17,7 +17,7 @@ Build characters that are psychologically grounded, narratively purposeful, voca
 3. Call `create_character` with core identity (`name`, `role`, `summary`, optional `realm`, `aliases`), `voice_profile`, `emotional_profile`, and `initial_state`.
 4. Call `set_character_voice_profile` (or `batch_set_character_voice_profiles` for multiple cast members) whenever dialogue voice traits change after creation.
 5. Call `commit_character_state` when a scene shifts a character's `emotional_state`, `goals`, `status`, or `notes`.
-6. Call `create_relationship` and `update_relationship` to model directed trust/tension edges, and `create_character_arc` (linked to `create_theme` IDs) to track transformation milestones.
+6. Call `create_relationship` and `update_relationship` to model directed trust/tension edges, and `create_character_arc` (linked to `create_theme` IDs) to track transformation milestones. Revise the character with `update_character` and the arc with `update_character_arc`; reserve `update_entity` for fields without a typed update.
 7. Call `register_canonical_fact` for durable decision/physical/boundary facts, `get_character_snapshot` to verify the assembled profile, and `check_consistency` (`subjects: [character_id]`) to catch `voice_drift` or `canonical_fact_prose_drift`.
 
 ## Step 1: Inner Psychological Architecture
@@ -76,4 +76,7 @@ Call `get_character_snapshot` and verify: `example_lines` and `forbidden_words` 
 <!-- tool: register_canonical_fact -->
 <!-- tool: set_active_project -->
 <!-- tool: set_character_voice_profile -->
+<!-- tool: update_character -->
+<!-- tool: update_character_arc -->
+<!-- tool: update_entity -->
 <!-- tool: update_relationship -->

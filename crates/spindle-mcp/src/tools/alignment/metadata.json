@@ -163,6 +163,9 @@
       "register_canonical_fact",
       "set_active_project",
       "set_character_voice_profile",
+      "update_character",
+      "update_character_arc",
+      "update_entity",
       "update_relationship"
     ],
     "version": 1
@@ -204,7 +207,11 @@
       "set_project_quantity_scheme",
       "set_scene_clock",
       "update_arc_milestone",
+      "update_character",
+      "update_character_arc",
+      "update_conflict",
       "update_entity",
+      "update_location",
       "update_promise_status"
     ],
     "version": 1
@@ -357,6 +364,8 @@
       "set_arc_pacing_constraints",
       "set_book_outline",
       "set_chapter_outline",
+      "update_character_arc",
+      "update_conflict",
       "update_entity",
       "update_promise_status"
     ],
@@ -545,7 +554,9 @@
       "save_summary",
       "set_active_project",
       "set_scene_clock",
+      "update_character",
       "update_entity",
+      "update_location",
       "update_promise_status",
       "update_relationship",
       "update_world_rule",
@@ -641,7 +652,10 @@
       "set_project_quantity_scheme",
       "set_scene_clock",
       "set_timeline_event_clock",
+      "update_character",
+      "update_conflict",
       "update_entity",
+      "update_location",
       "update_world_rule"
     ],
     "version": 1

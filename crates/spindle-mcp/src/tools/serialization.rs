@@ -211,6 +211,17 @@ impl ToolRouter {
         Ok(Some(ToolSerializationScope::Project(project_id)))
     }
 
+    async fn project_id_for_entity_id(&self, entity_id: &str) -> anyhow::Result<String> {
+        Ok(self
+            .service
+            .read_entity_by_id(entity_id)
+            .await?
+            .get("project_id")
+            .and_then(Value::as_str)
+            .context("entity is missing project_id")?
+            .to_string())
+    }
+
     pub(super) async fn resolve_project_id_for_scoped_tool(
         &self,
         name: &str,
@@ -227,6 +238,22 @@ impl ToolRouter {
                     .and_then(Value::as_str)
                     .context("entity is missing project_id")?
                     .to_string())
+            }
+            "update_character" => {
+                let entity_id = required_string_argument(arguments, "character_id")?;
+                self.project_id_for_entity_id(entity_id).await
+            }
+            "update_location" => {
+                let entity_id = required_string_argument(arguments, "location_id")?;
+                self.project_id_for_entity_id(entity_id).await
+            }
+            "update_conflict" => {
+                let entity_id = required_string_argument(arguments, "conflict_id")?;
+                self.project_id_for_entity_id(entity_id).await
+            }
+            "update_character_arc" => {
+                let entity_id = required_string_argument(arguments, "character_arc_id")?;
+                self.project_id_for_entity_id(entity_id).await
             }
             "update_world_rule" => {
                 let entity_id = required_string_argument(arguments, "world_rule_id")?;

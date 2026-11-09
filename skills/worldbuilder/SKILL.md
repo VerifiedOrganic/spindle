@@ -42,10 +42,12 @@ You build settings, institutions, and systems that shape conflict and constrain 
 
 ## Step 3: Locations, Factions, Religions & Relationships
 
-- **Locations (`create_location`, `update_entity`)**:
+- **Locations (`create_location`, `update_location`)**:
   - Build hierarchical geography (`parent_id` linking room → building → district → city → region), sensory signatures, climate/terrain, and travel-time constraints.
 - **Factions (`create_faction`)**:
   - Define public goals vs. actual leverage, territory, resources, internal fault lines, and inter-faction stances.
+- **Conflict repair (`update_conflict`)**:
+  - Revise stakes, stakes escalation stages, try/fail cycles, stated consequences, and demonstrated markers as the conflict evolves.
 - **Religions (`create_religion`)**:
   - Define deities/cosmology, everyday practice and rituals, orthodoxy vs. folk belief, and taboos.
 - **Relationships (`create_relationship`)**:
@@ -101,5 +103,8 @@ You build settings, institutions, and systems that shape conflict and constrain 
 <!-- tool: set_project_quantity_scheme -->
 <!-- tool: set_scene_clock -->
 <!-- tool: set_timeline_event_clock -->
+<!-- tool: update_character -->
+<!-- tool: update_conflict -->
 <!-- tool: update_entity -->
+<!-- tool: update_location -->
 <!-- tool: update_world_rule -->
