@@ -1,19 +1,35 @@
 use super::*;
 use crate::drafting::{
     DraftTokenizer, PacketBudget, PreparedDraftingPacket, assemble_packet_with_system,
+    chapter::{
+        ChapterCriticBudget, assemble_chapter_critic_messages, chapter_text_hash,
+        parse_and_validate_chapter_critique_output,
+    },
     critique::{
         CriticBudget, assemble_critic_messages, assemble_critic_repair_messages,
         ingest_and_dedup_findings, parse_and_validate_critique_output,
     },
+    line_edit::{LineEditBudget, assemble_line_edit_messages},
     revision::{
         JudgeBudget, RevisionBudget, assemble_pairwise_judge_messages, assemble_revision_messages,
         parse_and_validate_single_judge_pass,
     },
 };
 use spindle_core::drafting::{
-    CriticFindingInput, CritiqueDirective, DeblindedArm, DraftingPacketV1, EditorialPolicy,
-    EditorialRouteAvailability, IngestedFinding, ShadowCritiqueOutcome, SinglePassJudgeRecord,
+    ChapterCoverageV1, ChapterCritiqueV1, ChapterWindowV1, CriticFindingInput, CritiqueDirective,
+    DeblindedArm, DraftingPacketV1, EditorialPolicy, EditorialRouteAvailability, IngestedFinding,
+    ShadowCritiqueOutcome, SinglePassJudgeRecord,
 };
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+pub struct ChapterCriticRunResult {
+    pub critique: ChapterCritiqueV1,
+    pub prompt_hash: String,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub model_call_ids: Vec<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ShadowCritiqueRunResult {
@@ -1248,6 +1264,328 @@ impl ModelRouter {
         })
     }
 
+    /// Run one chapter advisory critic over a deterministic chapter index/window.
+    /// The returned critique is validated against exact scene text; it never
+    /// mutates prose or applies an edit.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn chapter_critic(
+        &self,
+        policy: EditorialPolicy,
+        rating: &str,
+        coverage: &ChapterCoverageV1,
+        window: Option<&ChapterWindowV1>,
+        scene_texts: &BTreeMap<String, String>,
+        feedback: &[CriticFindingInput],
+        budget: &ChapterCriticBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+    ) -> anyhow::Result<ChapterCriticRunResult> {
+        anyhow::ensure!(
+            policy == EditorialPolicy::CritiqueV1,
+            "chapter critic requires critique_v1 policy"
+        );
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let aggregate_hash = chapter_text_hash(coverage, scene_texts);
+        let mut route = resolve_cleared_route(&runtime, "review", Some(rating))?.clone();
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: chapter critic framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        anyhow::ensure!(
+            agent.config.model == budget.model_id,
+            "budget_unknown: resolved chapter-critic model does not match budget"
+        );
+        let reserve: u32 = budget.output_reserve.try_into()?;
+        anyhow::ensure!(
+            reserve > 0,
+            "chapter critic output reserve must be positive"
+        );
+        route.max_tokens = Some(route.max_tokens.map_or(reserve, |max| max.min(reserve)));
+        if budget.generation_seed.is_some() {
+            route.seed = budget.generation_seed;
+        }
+        let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
+            Some(self.counter_scope(&runtime, &route)?)
+        } else {
+            None
+        };
+        if let Some(scope) = &scope {
+            anyhow::ensure!(
+                budget.context_window <= scope.max_context,
+                "chapter critic window exceeds configured model context"
+            );
+        }
+        let configured = scope
+            .as_ref()
+            .map(|scope| self.configured_tokenizer(scope))
+            .transpose()?;
+        let t = configured
+            .as_deref()
+            .map(|encoder| encoder as &dyn DraftTokenizer)
+            .or(tokenizer);
+        let route_system = system_prompt_for_request(&route, Some(rating));
+        let (messages, prompt_hash, input_tokens) = assemble_chapter_critic_messages(
+            coverage,
+            window,
+            scene_texts,
+            feedback,
+            budget,
+            t,
+            &route_system,
+        )?;
+        route.system_prompt = messages.system.clone();
+        let req = ModelRequest {
+            route: "review".into(),
+            prompt: messages.user.clone(),
+            rating: Some(rating.into()),
+            context: Some(RequestContext {
+                project_id: None,
+                scene_id: None,
+                run_id: None,
+                prompt_template_id: Some("review.chapter_critic_v1".into()),
+                prompt_version: Some("v1".into()),
+                context_packet_hash: Some(prompt_hash.clone()),
+                ..Default::default()
+            }),
+        };
+        let verified_count = if let (Some(scope), Some(encoder)) = (&scope, &configured)
+            && encoder.config().verify_each_prompt
+        {
+            let receipt = self
+                .probe_count(scope, &messages, Some(rating), req.context.as_ref())
+                .await?;
+            encoder.verify_count(&messages, receipt.input_tokens)?;
+            Some(receipt.input_tokens)
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        self.record_dispatch(DispatchRecord::Dispatch {
+            route: req.route.clone(),
+            agent: dispatch_agent_label(&runtime, &route),
+            rating: req.rating.clone(),
+            prompt: req.prompt.clone(),
+        })?;
+        let start = std::time::Instant::now();
+        let mut response = if let Some(scope) = &scope {
+            self.run_ollama_packet(scope, &route, &messages).await
+        } else {
+            self.run_http_inner(&runtime, &route, req.rating.as_deref(), &req.prompt, false)
+                .await
+        };
+        self.record_usage(
+            &req.route,
+            req.rating.as_deref(),
+            req.context.as_ref(),
+            &req.prompt,
+            false,
+            Some(&route),
+            start,
+            &mut response,
+        )
+        .await;
+        let response = response?;
+        if let Some(encoder) = &configured {
+            let count = response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.input_tokens)
+                .context("native chapter critic missing prompt_eval_count; recovery required")?;
+            encoder.verify_count(&messages, count.try_into()?)?;
+            if let Some(verified) = verified_count {
+                anyhow::ensure!(
+                    count == verified as u64,
+                    "native chapter critic prompt count differs from verified probe; recovery required"
+                );
+            }
+        }
+        let output_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.output_tokens)
+            .map(|count| count as usize)
+            .unwrap_or_else(|| {
+                t.and_then(|tokenizer| tokenizer.count_text(&response.output).ok())
+                    .unwrap_or(0)
+            });
+        let critique = parse_and_validate_chapter_critique_output(
+            &response.output,
+            coverage.chapter_number,
+            &aggregate_hash,
+            coverage,
+            scene_texts,
+        )?;
+        Ok(ChapterCriticRunResult {
+            critique,
+            prompt_hash,
+            input_tokens,
+            output_tokens,
+            model_call_ids: response.call_id.into_iter().collect(),
+        })
+    }
+
+    /// Execute an optional line-edit polish pass on the `line_edit` route. There
+    /// is no fallback to `draft`: an unconfigured line-edit route is an honest
+    /// skip. The returned candidate still passes deterministic checks and the
+    /// swapped-order acceptance judge before any promotion.
+    pub async fn line_edit_candidate(
+        &self,
+        policy: EditorialPolicy,
+        packet: &DraftingPacketV1,
+        accepted_text: &str,
+        accepted_text_hash: &str,
+        budget: &LineEditBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+    ) -> anyhow::Result<RevisionCandidateRunResult> {
+        anyhow::ensure!(
+            policy == EditorialPolicy::CritiqueV1,
+            "line edit requires critique_v1 policy"
+        );
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let rating = packet.scene_card.rating.as_str();
+        let mut route = resolve_cleared_route(&runtime, "line_edit", Some(rating))?.clone();
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: line-edit framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        anyhow::ensure!(
+            agent.config.model == budget.model_id,
+            "budget_unknown: resolved line-edit model does not match budget"
+        );
+        let reserve: u32 = budget.output_reserve.try_into()?;
+        anyhow::ensure!(reserve > 0, "line-edit output reserve must be positive");
+        anyhow::ensure!(
+            route.max_tokens.is_none_or(|max| max <= reserve),
+            "configured line-edit output exceeds line-edit reservation"
+        );
+        if route.max_tokens.is_none() {
+            route.max_tokens = Some(reserve);
+        }
+        if budget.generation_seed.is_some() {
+            route.seed = budget.generation_seed;
+        }
+        let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
+            Some(self.counter_scope(&runtime, &route)?)
+        } else {
+            None
+        };
+        if let Some(scope) = &scope {
+            anyhow::ensure!(
+                budget.context_window <= scope.max_context,
+                "line-edit window exceeds configured model context"
+            );
+        }
+        let configured = scope
+            .as_ref()
+            .map(|scope| self.configured_tokenizer(scope))
+            .transpose()?;
+        let t = configured
+            .as_deref()
+            .map(|encoder| encoder as &dyn DraftTokenizer)
+            .or(tokenizer);
+
+        let route_system = system_prompt_for_request(&route, Some(rating));
+        let (messages, prompt_hash, input_tokens) = assemble_line_edit_messages(
+            packet,
+            accepted_text,
+            accepted_text_hash,
+            budget,
+            t,
+            &route_system,
+        )?;
+        route.system_prompt = messages.system.clone();
+        let req = ModelRequest {
+            route: "line_edit".into(),
+            prompt: messages.user.clone(),
+            rating: Some(rating.into()),
+            context: Some(RequestContext {
+                project_id: Some(packet.project_id.clone()),
+                scene_id: packet.scene_id.clone(),
+                run_id: packet.run_id.clone(),
+                prompt_template_id: Some("draft.line_edit_v1".into()),
+                prompt_version: Some("v1".into()),
+                context_packet_hash: Some(prompt_hash.clone()),
+                ..Default::default()
+            }),
+        };
+        let verified_count = if let (Some(scope), Some(encoder)) = (&scope, &configured)
+            && encoder.config().verify_each_prompt
+        {
+            let receipt = self
+                .probe_count(scope, &messages, Some(rating), req.context.as_ref())
+                .await?;
+            encoder.verify_count(&messages, receipt.input_tokens)?;
+            Some(receipt.input_tokens)
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        self.record_dispatch(DispatchRecord::Dispatch {
+            route: req.route.clone(),
+            agent: dispatch_agent_label(&runtime, &route),
+            rating: req.rating.clone(),
+            prompt: req.prompt.clone(),
+        })?;
+        let start = std::time::Instant::now();
+        let mut response = if let Some(scope) = &scope {
+            self.run_ollama_packet(scope, &route, &messages).await
+        } else {
+            self.run_http_inner(&runtime, &route, req.rating.as_deref(), &req.prompt, false)
+                .await
+        };
+        self.record_usage(
+            &req.route,
+            req.rating.as_deref(),
+            req.context.as_ref(),
+            &req.prompt,
+            false,
+            Some(&route),
+            start,
+            &mut response,
+        )
+        .await;
+        let response = response?;
+        if let Some(encoder) = &configured {
+            let count = response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.input_tokens)
+                .context("native line-edit missing prompt_eval_count; recovery required")?;
+            encoder.verify_count(&messages, count.try_into()?)?;
+            if let Some(verified) = verified_count {
+                anyhow::ensure!(
+                    count == verified as u64,
+                    "native line-edit prompt count differs from verified probe; recovery required"
+                );
+            }
+        }
+        let output_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.output_tokens)
+            .map(|count| count as usize)
+            .unwrap_or_else(|| {
+                t.and_then(|tokenizer| tokenizer.count_text(&response.output).ok())
+                    .unwrap_or(0)
+            });
+        Ok(RevisionCandidateRunResult {
+            route_used: "line_edit".into(),
+            prompt_hash,
+            input_tokens,
+            output_tokens,
+            response,
+        })
+    }
+
     /// Execute a single blinded pairwise acceptance judge pass on the `review` route.
     /// Any transport, token verification, or JSON validation error is returned so the
     /// caller can fail closed (`JudgeInvalidOrUnavailable`) and retain the incumbent.
@@ -1263,6 +1601,7 @@ impl ModelRouter {
         passage_2_text: &str,
         budget: &JudgeBudget,
         tokenizer: Option<&dyn DraftTokenizer>,
+        chapter_context: Option<&str>,
     ) -> anyhow::Result<SinglePassJudgeRunResult> {
         anyhow::ensure!(
             policy == EditorialPolicy::CritiqueV1,
@@ -1320,6 +1659,7 @@ impl ModelRouter {
             budget,
             t,
             &route_system,
+            chapter_context,
         )?;
         route.system_prompt = messages.system.clone();
         let req = ModelRequest {

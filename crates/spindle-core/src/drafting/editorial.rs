@@ -25,6 +25,7 @@ pub const TEMPLATE_CRITIC: &str = "review.critic_v1";
 pub const TEMPLATE_REVISION: &str = "draft.revise_v1";
 pub const TEMPLATE_JUDGE: &str = "review.pairwise_judge_v1";
 pub const TEMPLATE_LINE_EDIT: &str = "draft.line_edit_v1";
+pub const TEMPLATE_CHAPTER_CRITIC: &str = "review.chapter_critic_v1";
 pub const TEMPLATE_ACCEPTED_EXTRACTION: &str = "extract.accepted_v1";
 pub const TEMPLATE_VERSION_V1: &str = "v1";
 
@@ -159,6 +160,7 @@ pub enum EditorialActionKind {
     Revise,
     Judge,
     LineEdit,
+    ChapterCritique,
     Extract,
 }
 
@@ -171,6 +173,7 @@ impl EditorialActionKind {
             Self::Revise => "revise",
             Self::Judge => "judge",
             Self::LineEdit => "line_edit",
+            Self::ChapterCritique => "chapter_critique",
             Self::Extract => "extract",
         }
     }
@@ -182,6 +185,7 @@ impl EditorialActionKind {
             Self::Revise => Some(TEMPLATE_REVISION),
             Self::Judge => Some(TEMPLATE_JUDGE),
             Self::LineEdit => Some(TEMPLATE_LINE_EDIT),
+            Self::ChapterCritique => Some(TEMPLATE_CHAPTER_CRITIC),
             Self::Extract => Some(TEMPLATE_ACCEPTED_EXTRACTION),
             Self::DeterministicCheck => None,
         }
@@ -195,7 +199,9 @@ impl EditorialActionKind {
     /// critic's bounded one-shot schema/anchor repair.
     pub fn proposed_calls(self) -> u32 {
         match self {
-            Self::Draft | Self::Revise | Self::LineEdit | Self::Extract => 1,
+            Self::Draft | Self::Revise | Self::LineEdit | Self::ChapterCritique | Self::Extract => {
+                1
+            }
             Self::Critique => 2,
             Self::Judge => 2,
             Self::DeterministicCheck => 0,
@@ -211,6 +217,7 @@ impl EditorialActionKind {
             Self::Revise => 21_000,
             Self::Judge => 34_000,
             Self::LineEdit => 21_000,
+            Self::ChapterCritique => 26_000,
             Self::Extract => 10_000,
             Self::DeterministicCheck => 0,
         }
@@ -219,7 +226,7 @@ impl EditorialActionKind {
     /// Wall-clock reservation: hard timeouts, not p50 promises.
     pub fn proposed_millis(self) -> u64 {
         match self {
-            Self::Draft | Self::Revise | Self::LineEdit => 90_000,
+            Self::Draft | Self::Revise | Self::LineEdit | Self::ChapterCritique => 90_000,
             Self::Critique => 90_000,
             Self::Extract => 45_000,
             Self::Judge => 90_000,
@@ -232,6 +239,7 @@ impl EditorialActionKind {
             Self::Draft => 12_512,
             Self::Critique => 32_000,
             Self::Revise | Self::LineEdit => 18_000,
+            Self::ChapterCritique => 24_000,
             Self::Judge => 32_000,
             Self::Extract => 8_000,
             Self::DeterministicCheck => 0,
@@ -243,6 +251,7 @@ impl EditorialActionKind {
             Self::Draft => 3_000,
             Self::Critique => 3_000,
             Self::Revise | Self::LineEdit => 3_000,
+            Self::ChapterCritique => 2_000,
             Self::Judge => 2_000,
             Self::Extract => 2_000,
             Self::DeterministicCheck => 0,
@@ -874,6 +883,27 @@ pub enum HostSubmissionOutcomeV1 {
     },
 }
 
+/// Outcome of an optional post-acceptance line-edit pass. Any non-`Accepted`
+/// result leaves the accepted scene prose untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum LineEditOutcomeV1 {
+    /// The route was unavailable, judging was unavailable, or the candidate was
+    /// not accepted. The accepted prose is unchanged.
+    Retained {
+        reason: String,
+        incumbent_text_sha256: String,
+        candidate_text_sha256: String,
+    },
+    Skipped {
+        reason: String,
+    },
+    Accepted {
+        text_sha256: String,
+        generation_id: String,
+    },
+}
+
 /// Persisted, resolved editorial configuration. Older run state has no such
 /// record and resumes exact legacy behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1084,9 +1114,9 @@ impl EditorialRouteAvailability {
             EditorialActionKind::Draft | EditorialActionKind::Revise => {
                 (!self.draft).then(|| "draft".to_string())
             }
-            EditorialActionKind::Critique | EditorialActionKind::Judge => {
-                (!self.review).then(|| "review".to_string())
-            }
+            EditorialActionKind::Critique
+            | EditorialActionKind::Judge
+            | EditorialActionKind::ChapterCritique => (!self.review).then(|| "review".to_string()),
             EditorialActionKind::LineEdit => (!self.line_edit).then(|| "line_edit".to_string()),
             EditorialActionKind::Extract => (!self.extract).then(|| "extract".to_string()),
             EditorialActionKind::DeterministicCheck => None,
@@ -1193,6 +1223,11 @@ pub struct EditorialControllerStateV1 {
     /// Prose-free attribution events linked to `model_call` ids.
     #[serde(default)]
     pub attribution: Vec<EditorialAttributionV1>,
+    /// Stable per-chapter-edit reservation namespaces keyed by
+    /// `chapter:base_hash:proposal_id`. Persisted so a proposal keeps the same
+    /// identity across selection subsets and restarts.
+    #[serde(default)]
+    pub chapter_edit_namespaces: std::collections::BTreeMap<String, u32>,
 }
 
 fn default_controller_schema_version() -> String {
@@ -1214,6 +1249,7 @@ impl EditorialControllerStateV1 {
             settings,
             scenes: Vec::new(),
             attribution: Vec::new(),
+            chapter_edit_namespaces: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1250,6 +1286,24 @@ impl EditorialControllerStateV1 {
             .fold(EditorialBudgetUsage::default(), |usage, (_, scene)| {
                 usage.saturating_add(scene.ledger.run_used())
             })
+    }
+
+    /// Allocate (or reuse) a durable namespace for one chapter-edit proposal.
+    /// Identity must include the chapter, base hash, and proposal id.
+    pub fn allocate_chapter_edit_namespace(&mut self, identity: &str) -> u32 {
+        if let Some(namespace) = self.chapter_edit_namespaces.get(identity) {
+            return *namespace;
+        }
+        let next = self
+            .chapter_edit_namespaces
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.chapter_edit_namespaces
+            .insert(identity.to_string(), next);
+        next
     }
 
     pub fn attribution(&self, event_id: &str) -> Option<&EditorialAttributionV1> {
@@ -1400,6 +1454,7 @@ fn action_message(action: EditorialActionKind) -> String {
         EditorialActionKind::Revise => "revise the draft".into(),
         EditorialActionKind::Judge => "run the swapped-order judge".into(),
         EditorialActionKind::LineEdit => "polish accepted prose".into(),
+        EditorialActionKind::ChapterCritique => "run the chapter advisory critique".into(),
         EditorialActionKind::Extract => "extract structured metadata".into(),
     }
 }
@@ -1932,6 +1987,53 @@ mod tests {
             ),
             "unexpected denial: {denial:?}"
         );
+    }
+
+    #[test]
+    fn terminal_scene_offers_line_edit_only_when_enabled_and_unattempted() {
+        let mut settings = settings_with_price();
+        settings.line_edit_enabled = true;
+        let mut scene = EditorialSceneStateV1 {
+            chapter_number: 1,
+            scene_order: 1,
+            scene_id: Some("scene:1".into()),
+            packet_hash: "packet:1".into(),
+            source_packet_sha256: "source:1".into(),
+            draft_artifact_path: None,
+            candidate_artifact_path: None,
+            loop_artifact_path: None,
+            stage: EditorialStage::AcceptedOriginal,
+            attempt: 0,
+            incumbent: None,
+            candidate: None,
+            critic: None,
+            judge: None,
+            selected_directives: Vec::new(),
+            strengths_to_preserve: Vec::new(),
+            last_edit_span_summary: None,
+            parked_issues: Vec::new(),
+            pending_host_task: None,
+            pending_manual_judgment: None,
+            availability: EditorialRouteAvailability::all_available(),
+            ledger: EditorialBudgetLedgerV1::new(
+                EditorialBudgetCaps::scene_default(),
+                EditorialBudgetCaps::run_default(),
+            ),
+            attribution_event_ids: Vec::new(),
+            line_edit_attempted: false,
+            extracted: false,
+        };
+        assert_eq!(
+            editorial_next_action(&scene, &settings)
+                .expect("line edit action")
+                .action,
+            EditorialActionKind::LineEdit
+        );
+        scene.line_edit_attempted = true;
+        assert!(editorial_next_action(&scene, &settings).is_none());
+        settings.line_edit_enabled = false;
+        scene.line_edit_attempted = false;
+        assert!(editorial_next_action(&scene, &settings).is_none());
     }
 
     #[test]

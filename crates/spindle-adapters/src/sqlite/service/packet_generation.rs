@@ -554,7 +554,33 @@ impl SqliteSpindleService {
             }
 
             // Stage 2: Critiqued
-            if loop_artifact.rounds[(round_num - 1) as usize]
+            let pre_selected = if round_num == 1 {
+                options.pre_selected_directives.clone()
+            } else {
+                None
+            };
+            if let Some(directives) = pre_selected {
+                let round_index = (round_num - 1) as usize;
+                if loop_artifact.rounds[round_index].critique_outcome.is_none()
+                    && loop_artifact.rounds[round_index]
+                        .selected_directives
+                        .is_empty()
+                {
+                    let output_hash = generation_sha256_hex(&serde_json::to_vec(&directives)?);
+                    loop_artifact.rounds[round_index].selected_directives = directives;
+                    loop_artifact.rounds[round_index].strengths_to_preserve = Vec::new();
+                    record_transition(
+                        &mut loop_artifact,
+                        &working_hash,
+                        EditorialStage::Critiqued,
+                        round_num,
+                        output_hash,
+                        Vec::new(),
+                        0,
+                    );
+                    revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                }
+            } else if loop_artifact.rounds[(round_num - 1) as usize]
                 .critique_outcome
                 .is_none()
             {
@@ -1004,6 +1030,7 @@ impl SqliteSpindleService {
                         p2_text,
                         judge_budget,
                         tokenizer,
+                        options.chapter_context.as_deref(),
                     )
                     .await
                 {
@@ -1114,6 +1141,7 @@ impl SqliteSpindleService {
                         p2_text,
                         judge_budget,
                         tokenizer,
+                        options.chapter_context.as_deref(),
                     )
                     .await
                 {

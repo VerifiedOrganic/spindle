@@ -622,7 +622,7 @@ pub fn parse_and_validate_critique_output(
     )
 }
 
-fn strip_thinking_and_fences(raw: &str) -> &str {
+pub(crate) fn strip_thinking_and_fences(raw: &str) -> &str {
     let mut s = raw.trim();
     if let Some(end_think) = s.find("</think>") {
         s = s[end_think + "</think>".len()..].trim();
