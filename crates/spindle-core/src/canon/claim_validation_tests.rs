@@ -501,6 +501,22 @@ fn numeric_height_sight_and_first_person_attribute_families() {
         .is_none()
     );
 
+    let metric = attribute_fact("height", "180 cm", &["Mara Voss", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara carried a five foot ladder across the yard."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood beside Tomas, who was six feet tall."),
+            &metric,
+        )
+        .is_none()
+    );
+
     let sight = attribute_fact("sight", "blind", &["Rook", "Elder Rook"]);
     assert!(
         detect_attribute_prose_contradiction(&scene("Rook saw the crack in the glass."), &sight,)

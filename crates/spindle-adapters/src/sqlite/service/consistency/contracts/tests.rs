@@ -6608,6 +6608,40 @@ mod claim_validation_lanes {
             })
             .expect("canonical life_status death must flag a first-name action");
         assert!(dead.message.contains("life_status") || dead.message.contains("dead"));
+
+        // Unrelated quoted first-person dialogue is not POV action evidence.
+        let _ = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: project.project_id.clone(),
+                book_id: None,
+                book_number: Some(1),
+                chapter_number: Some(3),
+                title: None,
+            })
+            .await;
+        let quoted = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 3,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "My hands shook. Tomas said, \"I met her yesterday.\"".into(),
+                summary: "Quoted first person only.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let quoted_issues = run_checks(&svc, &project.project_id, "retcon_reachability").await;
+        assert!(!quoted_issues.iter().any(|issue| {
+            issue.check_type == "retcon_reachability"
+                && issue.entity_ids.contains(&quoted.scene_id)
+                && issue.message.contains("Sela Voss")
+        }));
     }
 
     async fn run_checks(

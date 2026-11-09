@@ -265,6 +265,22 @@ fn build_alias_regex(alias: &str) -> Option<Regex> {
 /// (`I`, `me`, `my`, `mine`, `myself`). Quoted dialogue is ignored so a
 /// character saying "I" does not make the scene first-person.
 pub fn first_person_narration(text: &str) -> bool {
+    unquoted_narration(text)
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '\'')
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            matches!(
+                token.trim_matches('\'').to_ascii_lowercase().as_str(),
+                "i" | "me" | "my" | "mine" | "myself"
+            )
+        })
+}
+
+/// Narration text with quoted dialogue removed. Detectors that resolve a
+/// first-person POV must run their actual evidence scan on this text, not on
+/// the whole scene, so another character's quoted "I" cannot be attributed to
+/// the POV character.
+pub fn unquoted_narration(text: &str) -> String {
     let mut unquoted = String::with_capacity(text.len());
     let mut in_quote = false;
     for ch in text.chars() {
@@ -275,14 +291,6 @@ pub fn first_person_narration(text: &str) -> bool {
         }
     }
     unquoted
-        .split(|ch: char| !ch.is_alphanumeric() && ch != '\'')
-        .filter(|token| !token.is_empty())
-        .any(|token| {
-            matches!(
-                token.trim_matches('\'').to_ascii_lowercase().as_str(),
-                "i" | "me" | "my" | "mine" | "myself"
-            )
-        })
 }
 
 #[cfg(test)]

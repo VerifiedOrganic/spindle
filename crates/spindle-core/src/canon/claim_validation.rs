@@ -794,6 +794,8 @@ pub fn detect_attribute_prose_contradiction(
         {
             continue;
         }
+        let numeric_height_verified = families.contains(&AttributeFamily::Height)
+            && height_measurement_belongs_to_subject(sentence, fact);
         let mut canonical_terms = Vec::new();
         let mut prose_terms = Vec::new();
         if !canonical_prosthetic.is_empty()
@@ -820,7 +822,9 @@ pub fn detect_attribute_prose_contradiction(
             if !canonical_terms.is_empty() {
                 break;
             }
-            if let Some((expected, found)) = family_contradiction(*family, &canonical, &lower) {
+            if let Some((expected, found)) =
+                family_contradiction(*family, &canonical, &lower, numeric_height_verified)
+            {
                 canonical_terms.push(expected);
                 prose_terms.push(found);
             }
@@ -899,6 +903,7 @@ fn family_contradiction(
     family: AttributeFamily,
     canonical: &str,
     prose: &str,
+    numeric_height_verified: bool,
 ) -> Option<(String, String)> {
     match family {
         AttributeFamily::EyeColor | AttributeFamily::HairColor | AttributeFamily::SkinColor => {
@@ -919,8 +924,9 @@ fn family_contradiction(
                 .then(|| (canonical_side.to_string(), prose_side.to_string()))
         }
         AttributeFamily::Height => {
-            if let (Some(canonical_inches), Some(prose_inches)) =
-                (parse_height_inches(canonical), parse_height_inches(prose))
+            if numeric_height_verified
+                && let (Some(canonical_inches), Some(prose_inches)) =
+                    (parse_height_inches(canonical), parse_height_inches(prose))
             {
                 if (canonical_inches - prose_inches).abs() > 1.0 {
                     return Some((
@@ -1203,23 +1209,25 @@ fn normalize_height_number_words(text: &str) -> String {
         .join(" ")
 }
 
-fn parse_height_inches(text: &str) -> Option<f64> {
+fn parse_height_measurement(text: &str) -> Option<(f64, usize, usize)> {
     let normalized = normalize_height_number_words(&text.to_ascii_lowercase());
     let cm = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:cm|centimet(?:er|re)s?)")
         .ok()?
         .captures(&normalized);
     if let Some(captures) = cm
         && let Some(value) = captures.get(1).and_then(|m| m.as_str().parse::<f64>().ok())
+        && let Some(full) = captures.get(0)
     {
-        return Some(value / 2.54);
+        return Some((value / 2.54, full.start(), full.end()));
     }
     let meters = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:m|meters?|metres?)\b")
         .ok()?
         .captures(&normalized);
     if let Some(captures) = meters
         && let Some(value) = captures.get(1).and_then(|m| m.as_str().parse::<f64>().ok())
+        && let Some(full) = captures.get(0)
     {
-        return Some(value * 39.370_078_740_157_48);
+        return Some((value * 39.370_078_740_157_48, full.start(), full.end()));
     }
     let feet = regex::Regex::new(
         r#"(\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)?)?"#,
@@ -1231,7 +1239,84 @@ fn parse_height_inches(text: &str) -> Option<f64> {
         .get(2)
         .and_then(|m| m.as_str().parse::<f64>().ok())
         .unwrap_or(0.0);
-    Some(feet_value * 12.0 + inches_value)
+    let full = feet.get(0)?;
+    Some((feet_value * 12.0 + inches_value, full.start(), full.end()))
+}
+
+fn parse_height_inches(text: &str) -> Option<f64> {
+    parse_height_measurement(text).map(|(value, _, _)| value)
+}
+
+fn height_measurement_belongs_to_subject(sentence: &str, fact: &AttributeValidationFactV1) -> bool {
+    let normalized_case = normalize_height_number_words(sentence);
+    let normalized = normalized_case.to_ascii_lowercase();
+    let Some((_, measurement_start, measurement_end)) = parse_height_measurement(&normalized)
+    else {
+        return false;
+    };
+    let Some((subject_start, subject_end)) = subject_position(&normalized, fact) else {
+        return false;
+    };
+    let (between, between_case, gap) = if measurement_start >= subject_end {
+        (
+            &normalized[subject_end..measurement_start],
+            &normalized_case[subject_end..measurement_start],
+            measurement_start - subject_end,
+        )
+    } else if subject_start >= measurement_end {
+        (
+            &normalized[measurement_end..subject_start],
+            &normalized_case[measurement_end..subject_start],
+            subject_start - measurement_end,
+        )
+    } else {
+        return false;
+    };
+    if gap > 80 {
+        return false;
+    }
+    let stature_cue = [
+        "stood", "stand", "stands", "was", "were", "is", "are", "measured", "measures", "height",
+        "stature", "tall", "short", "frame",
+    ]
+    .iter()
+    .any(|word| contains_inflected_word(between, word));
+    if !stature_cue {
+        return false;
+    }
+    // A different capitalized name between the subject and the measurement
+    // means the measurement likely belongs to that person, not the subject.
+    let another_name = between_case.split_whitespace().any(|token| {
+        let token = token.trim_matches(|ch: char| !ch.is_alphanumeric());
+        token.chars().next().is_some_and(char::is_uppercase)
+            && !fact
+                .subject_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(token))
+    });
+    !another_name
+}
+
+fn subject_position(text: &str, fact: &AttributeValidationFactV1) -> Option<(usize, usize)> {
+    let lower = text.to_ascii_lowercase();
+    for name in &fact.subject_names {
+        let name = name.to_ascii_lowercase();
+        if let Some(start) = lower.find(&name) {
+            return Some((start, start + name.len()));
+        }
+    }
+    if fact.first_person_subject {
+        let mut offset = 0usize;
+        for token in lower.split_inclusive(|ch: char| !ch.is_alphanumeric()) {
+            let cleaned = token.trim_matches(|ch: char| !ch.is_alphanumeric());
+            if matches!(cleaned, "i" | "me" | "my" | "mine" | "myself") {
+                let start = offset + token.find(cleaned).unwrap_or(0);
+                return Some((start, start + cleaned.len()));
+            }
+            offset += token.len();
+        }
+    }
+    None
 }
 
 fn sight_state(text: &str) -> Option<&'static str> {

@@ -570,8 +570,10 @@ impl SqliteSpindleService {
                 &scene.full_text,
                 mention_resolver.aliases_for(character_id),
             ) || (pov_character_id.as_deref() == Some(character_id.as_str())
-                && spindle_core::character_mentions::first_person_narration(&scene.full_text)
-                && has_named_character_action(&scene.full_text, &["I".to_string()]));
+                && has_named_character_action(
+                    &spindle_core::character_mentions::unquoted_narration(&scene.full_text),
+                    &["I".to_string()],
+                ));
             let latest_state = states
                 .iter()
                 .filter(|state| state.character_id == *character_id)
