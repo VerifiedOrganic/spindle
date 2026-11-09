@@ -1615,6 +1615,7 @@ mod tests {
                 story_clock: "Day 2, 03:15".into(),
                 rating: ContentRating::General,
                 tone: Some("tense".into()),
+                scene_type: None,
                 participants: vec![],
                 required_beats: vec!["Key snaps in lock".into()],
                 promises_due: vec![],

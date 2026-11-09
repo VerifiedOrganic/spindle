@@ -125,6 +125,7 @@ async fn prepare_scene_single_call_assembles_ordinary_scene_without_mutating_cur
             "summary": "Mara bribes the lock-keeper before the third bell.",
             "content_rating": "general",
             "location_id": location_id,
+            "tone": "action",
             "authorship": "assistant"
         }),
     )
@@ -208,6 +209,15 @@ async fn prepare_scene_single_call_assembles_ordinary_scene_without_mutating_cur
     );
 
     assert!(prepared.preparation_id.starts_with("prep:"));
+    let prepared_packet = prepared
+        .drafting_packet_v1
+        .as_ref()
+        .expect("prepare_scene assembles DraftingPacketV1");
+    assert_eq!(
+        prepared_packet.scene_card.scene_type.as_deref(),
+        Some("action"),
+        "the real service path must carry the explicit scene classification from the scene tone"
+    );
     assert_eq!(prepared.project_id, project_id);
     assert_eq!(prepared.branch_id, active_branch.id);
     assert_eq!(prepared.scene_id.as_deref(), Some(scene_id.as_str()));
