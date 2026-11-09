@@ -49,7 +49,15 @@ async fn unknown_profiles_fail_closed_and_legacy_all_preserves_catalog() {
         Some(true)
     );
     router.tool_profile = Some("legacy-all".to_owned());
-    assert_eq!(router.list_tools(), router.all_tools());
+    let expected: Vec<_> = router
+        .all_tools()
+        .into_iter()
+        .filter(|tool| !is_operator_only(tool.name.as_ref()))
+        .collect();
+    assert_eq!(router.list_tools(), expected);
+    for name in OPERATOR_ONLY_TOOLS {
+        assert!(!router.has_tool(name), "legacy-all must deny {name}");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

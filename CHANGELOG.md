@@ -4,6 +4,17 @@
 
 ### Added
 
+- Operator migration (release R): `configure-agents`, `test-agent`,
+  `rebuild-search-index`, `backfill-scene-source-offsets`, and
+  `operator-delete-scene` are now `spindle-mcp` CLI commands; the existing
+  `init-grok-skills` CLI covers skill installation. Their old MCP names are
+  hidden from every model profile (including unset and `legacy-all`) and denied
+  by name on stdio/HTTP model transports. DB-mutating commands acquire the
+  workspace primary lock, and `--data-dir`/`--config` override the matching
+  environment variables. The authoring harness retains its internal
+  `test_agent` dispatch through a server-issued token. Added
+  `docs/tool-migration-r.md` with the CLI mapping, compatibility aliases,
+  profile guidance, and the R+1 removal plan.
 - `refresh_style_profile` and `apply_style_profile` accept `dry_run`. A dry run
   reports the proposed candidate profile or prose diff (narrator voice, style
   notes, world-rule action, metric deltas, and quality/apply-safety notes)

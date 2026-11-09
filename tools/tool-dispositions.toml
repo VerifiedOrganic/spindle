@@ -102,9 +102,9 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "backfill_scene_source_offsets"
 classification = "operator"
-owner = "P4"
+owner = "cli"
 review_by = "R"
-reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+reason = "Operator-only CLI command; hidden from model discovery and denied by name during R. See docs/tool-migration-r.md."
 
 [[tools]]
 name = "batch_create_motifs"
@@ -214,9 +214,9 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "configure_agents"
 classification = "operator"
-owner = "P4"
+owner = "cli"
 review_by = "R"
-reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+reason = "Operator-only CLI command; hidden from model discovery and denied by name during R. See docs/tool-migration-r.md."
 
 [[tools]]
 name = "continue_generation"
@@ -676,9 +676,9 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "init_grok_skills"
 classification = "operator"
-owner = "P4"
+owner = "cli"
 review_by = "R"
-reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+reason = "Operator-only CLI command; hidden from model discovery and denied by name during R. See docs/tool-migration-r.md."
 
 [[tools]]
 name = "list_agents"
@@ -795,9 +795,9 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "operator_delete_scene"
 classification = "operator"
-owner = "P4"
+owner = "cli"
 review_by = "R"
-reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+reason = "Operator-only CLI command; hidden from model discovery and denied by name during R. See docs/tool-migration-r.md."
 
 [[tools]]
 name = "plan_chapter"
@@ -907,9 +907,9 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "rebuild_search_index"
 classification = "operator"
-owner = "P4"
+owner = "cli"
 review_by = "R"
-reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+reason = "Operator-only CLI command; hidden from model discovery and denied by name during R. See docs/tool-migration-r.md."
 
 [[tools]]
 name = "record_knowledge"
@@ -1194,9 +1194,9 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "test_agent"
 classification = "operator"
-owner = "P4"
+owner = "cli"
 review_by = "R"
-reason = "Retained in current model catalog until CLI migration; never a skill dependency."
+reason = "Operator-only CLI command; hidden from model discovery and denied by name during R. See docs/tool-migration-r.md."
 
 [[tools]]
 name = "update_arc_milestone"

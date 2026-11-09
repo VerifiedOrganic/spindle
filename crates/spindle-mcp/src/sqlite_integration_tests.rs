@@ -2877,15 +2877,20 @@ async fn host_draft_and_save_scene_1(fx: &MiningRunFixture, full_text: &str) {
 
 async fn execute_next(fx: &MiningRunFixture) -> serde_json::Value {
     let exec_args = serde_json::json!({ "project_id": fx.project_id, "run_id": fx.run_id });
-    fx.router
+    let result = fx
+        .router
         .call_tool(
             "authoring_execute_next",
             Some(exec_args.as_object().unwrap()),
         )
         .await
-        .unwrap()
-        .structured_content
-        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.is_error,
+        Some(false),
+        "authoring_execute_next failed: {result:?}"
+    );
+    result.structured_content.unwrap()
 }
 
 async fn status(fx: &MiningRunFixture) -> serde_json::Value {
@@ -4393,15 +4398,20 @@ async fn verify_execute_next(fx: &VerifyRunFixture) -> serde_json::Value {
         "run_id": fx.run_id,
         "mode": "agent",
     });
-    fx.router
+    let result = fx
+        .router
         .call_tool(
             "authoring_execute_next",
             Some(exec_args.as_object().unwrap()),
         )
         .await
-        .unwrap()
-        .structured_content
-        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.is_error,
+        Some(false),
+        "authoring_execute_next failed: {result:?}"
+    );
+    result.structured_content.unwrap()
 }
 
 async fn verify_status(fx: &VerifyRunFixture) -> serde_json::Value {

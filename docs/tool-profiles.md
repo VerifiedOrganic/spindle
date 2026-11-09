@@ -38,15 +38,20 @@ Every generated profile includes the shared entry core (`spindle`, 6 entry tools
 Large context/analysis output schemas load optionally through versioned
 [response contracts](tool-response-contracts.md); actual results are unchanged.
 Their measured byte ceilings are explicit in `tools/profile-budgets.json`;
-canonical target caps remain unmet until domain consolidation, operator
-migration, and compatibility cleanup complete; `commit_scene` is the first
+canonical target caps remain unmet until domain consolidation and compatibility
+cleanup complete; `commit_scene` is the first
 receipts-inline canonical write in these profiles. `get_skill` and `get_reference` check active profile coverage and
 return structured coverage metadata (`covered`, `required_profile`,
 `available_units`, `missing_capabilities`) without mutating the active profile.
 Generated import has no style dependency; style is a separately selected profile.
-No generated profile includes the six currently classified operator tools. This
-is discovery/invocation filtering, not operator authentication; operator CLI
-migration and removal from compatibility MCP catalogs are separate work.
+Operator-only commands (`configure_agents`, `init_grok_skills`, `test_agent`,
+`rebuild_search_index`, `backfill_scene_source_offsets`, and
+`operator_delete_scene`) are omitted from every model profile, including unset
+and `legacy-all`, and denied by name on stdio and HTTP model transports. Use the
+CLI commands in the [release R migration guide](tool-migration-r.md). The
+authoring harness reaches `test_agent` only through a server-issued internal
+token; an external caller cannot. This is discovery/invocation filtering, not
+operator authentication.
 
 `skills/profiles.toml` composes skill and named-reference units. The build resolves
 transitive skill dependencies, includes each reference's owning core, rejects

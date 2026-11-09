@@ -98,8 +98,8 @@
 //! | `import_apply_review_decisions`, `import_status` | Read+Write |
 //! | `run_dual_persona_review`, `check_consistency` | Compute |
 //! | `search_bible`, `find_scenes_referencing` | Search (dynamic) |
-//! | `rebuild_search_index`, `backfill_scene_source_offsets` | Compute |
-//! | `configure_agents`, `test_agent`, `continue_generation`, `revise_generation` | Compute |
+//! | `continue_generation`, `revise_generation` | Compute |
+//! | `rebuild_search_index`, `backfill_scene_source_offsets`, `configure_agents`, `test_agent` | Operator CLI only (hidden/denied on model transports) |
 //! | `research_query` | Compute |
 //! | `export_epub`, `preflight_book_export`, `export_bible` | Compute/Export |
 //! | `list_scene_versions`, `restore_scene_version` | Read+Write |
@@ -157,6 +157,9 @@ use serialization::*;
 mod catalog;
 use catalog::*;
 mod profiles;
+#[cfg(test)]
+pub(crate) use profiles::OPERATOR_ONLY_TOOLS;
+pub(crate) use profiles::is_operator_only;
 #[cfg(test)]
 pub(crate) use profiles::profile_names;
 use profiles::*;
@@ -280,11 +283,18 @@ impl ToolRouter {
 
     pub fn list_tools(&self) -> Vec<Tool> {
         let all = all_tool_schemas();
+        let visible = |tools: &[Tool]| -> Vec<Tool> {
+            tools
+                .iter()
+                .filter(|tool| !is_operator_only(tool.name.as_ref()))
+                .cloned()
+                .collect()
+        };
         let Some(profile) = self.tool_profile.as_deref() else {
-            return all.to_vec();
+            return visible(all);
         };
         if profile == "legacy-all" {
-            return all.to_vec();
+            return visible(all);
         }
         let Some(allowed) = profile_allowed_tool_names(profile) else {
             return Vec::new();
@@ -298,7 +308,7 @@ impl ToolRouter {
             all
         };
         view.iter()
-            .filter(|t| allowed.contains(&t.name.as_ref()))
+            .filter(|t| allowed.contains(&t.name.as_ref()) && !is_operator_only(t.name.as_ref()))
             .cloned()
             .collect()
     }
