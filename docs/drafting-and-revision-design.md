@@ -58,7 +58,7 @@ DraftingPacketV1 {
     emotion: { entry, exit },
     chapter: { book_number, number, scene_index, planned_scene_count?, is_closer },
     target_words: { min, preferred, max },
-    location: { id, name }, story_clock, rating, tone?,
+    location: { id, name }, story_clock, rating, tone?, scene_type?,
     participants: [{ id, display_name, role }],
     required_beats[], promises_due[], prohibited_outcomes[]
   },
@@ -83,6 +83,10 @@ can fill a persisted provisional scene card from existing plans. Do not invent
 canon or silently resolve contradictory author locks. P3 can later provide the
 same card. `is_closer` is explicit even when final chapter length is unknown.
 Person/tense may inherit an author-approved project default, with provenance.
+`scene_type` is an optional explicit classification (action, quiet-interior,
+dialogue-heavy, reveal, chapter-closer); the service packet builder carries it
+from the scene's tone label when that label names a recognized mode, and
+`value_shift.axis` remains the narrative value axis.
 
 Only approved prose excerpts enter `exemplars`; existing do-rules remain rules.
 If none exist, say `exemplars=[]`. Never manufacture a “voice sample.” Default
@@ -704,7 +708,9 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
     `exact_quote` matching `&base_text[start_byte..end_byte]` byte-for-byte.
     Before validation, a unique `exact_quote` is resolved to its actual byte
     offsets; a repeated quote keeps an already-valid span or requires
-    `context_before`/`context_after`. Ambiguous quotes are a typed failure.
+    `context_before`/`context_after` that selects exactly one occurrence.
+    Ambiguous quotes (including context shared by multiple occurrences) are a
+    typed failure.
   - Zero-width insertion spans (`start_byte == end_byte`) must have
     `exact_quote == ""` and at least one non-empty surrounding context
     (`context_before` matching the bytes immediately preceding `start_byte`, or
@@ -1113,21 +1119,25 @@ drafts** from the row-6 G run, not with a new full G. Each draft was replayed
 through critic + prior-draft revision + the internal acceptance judge using
 `spindle-tokenizer revise-artifact`; the before column is the original G critic,
 the after column is the new quote-first / typed-no-change / scene-focus critic.
+Because the original G packets predate `scene_card.scene_type`, the replay
+injects the brief's explicit scene classification into each saved packet; the
+production path is covered separately by the `prepare_scene` service test.
 Results are checked in at `evals/results/drafting_critic_quality.json`.
 
 | Metric | Before | After | Delta |
 | --- | ---: | ---: | ---: |
-| Invalid critic output | 22.2% (20/90) | 3.3% (3/90) | -18.9 pp |
-| Actionable directive | 15.6% (14/90) | 96.7% (87/90) | +81.1 pp |
-| Revision attempted | 15.6% (14/90) | 96.7% (87/90) | +81.1 pp |
-| Revision promoted by internal judge | 10.0% (9/90) | 42.2% (38/90) | +32.2 pp |
+| Invalid critic output | 22.2% (20/90) | 4.4% (4/90) | -17.8 pp |
+| Actionable directive | 15.6% (14/90) | 95.6% (86/90) | +80.0 pp |
+| Revision attempted | 15.6% (14/90) | 95.6% (86/90) | +80.0 pp |
+| Revision promoted by internal judge | 10.0% (9/90) | 45.6% (41/90) | +35.6 pp |
 
-Per-scene-type promoted rates before → after: action 11.1% → 27.8%,
-chapter-closer 11.1% → 44.4%, dialogue-heavy 5.6% → 44.4%, quiet-interior
-11.1% → 44.4%, reveal 11.1% → 50.0%. The internal judge is the same gemma
+Per-scene-type promoted rates before → after: action 11.1% → 22.2%,
+chapter-closer 11.1% → 55.6%, dialogue-heavy 5.6% → 38.9%, quiet-interior
+11.1% → 66.7%, reveal 11.1% → 44.4%. The internal judge is the same gemma
 review route used by the loop; this replay is a critic-quality measurement, not
-the 3-family G verdict. A full G on merged main is the next gate (PR 2), and no
-default is activated by this result.
+the 3-family G verdict. The 4 remaining invalid outputs are the same honest
+typed failure (missing top-level `base_text_hash` after repair). A full G on
+merged main is the next gate (PR 2), and no default is activated by this result.
 
 ### Gates and defaults
 

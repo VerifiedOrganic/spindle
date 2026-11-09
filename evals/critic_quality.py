@@ -115,10 +115,14 @@ def metric_delta(before: dict, after: dict) -> dict:
     }
 
 
-def build_initial_artifact(candidate: dict, work_dir: Path) -> Path:
+def build_initial_artifact(candidate: dict, scene_type: str, work_dir: Path) -> Path:
     loop = read_json(candidate["loop_artifact_path"])
     final = read_json(candidate["artifact_path"])
     initial = dict(final)
+    # The original G packets predate the explicit scene_type field. Inject the
+    # brief's scene classification for this offline focus replay; prose and
+    # packet identity are unchanged.
+    initial["prepared_packet"]["packet"]["scene_card"]["scene_type"] = scene_type
     initial["text"] = loop["initial_text"]
     initial["text_sha256"] = loop["initial_text_sha256"]
     initial["receipt"] = loop["initial_receipt"]
@@ -162,7 +166,7 @@ def replay(args: argparse.Namespace) -> dict:
         before["scene_type"] = scene_type
         before_rows.append(before)
 
-        initial_path = build_initial_artifact(candidate, work_dir)
+        initial_path = build_initial_artifact(candidate, scene_type, work_dir)
         loop_path = work_dir / "loops" / f"{brief_id}_{seed}.loop.json"
         cmd = [
             args.binary,

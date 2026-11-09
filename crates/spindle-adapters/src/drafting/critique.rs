@@ -50,18 +50,21 @@ const SCENE_FOCUS_REVEAL: &str = "REVEAL: protect earned perception and characte
 const SCENE_FOCUS_CLOSER: &str = "CHAPTER-CLOSER: protect earned exit emotion, forward propulsion, and closing-image discipline. Flag tacked-on cliffhanger clichés, summary endings, or a closing image that restates rather than turns; anchor the change to the exact closing beat. Do not add a new plot event.";
 const SCENE_FOCUS_GENERIC: &str = "GENERIC SCENE: prioritize the scene card's goal, opposition, turn, intended outcome, and value shift over ornamental polish. Anchor every change to a concrete span and preserve the planned outcome.";
 
+fn normalized_scene_type(packet: &DraftingPacketV1) -> Option<String> {
+    packet
+        .scene_card
+        .scene_type
+        .as_deref()
+        .map(|scene_type| scene_type.trim().to_lowercase().replace('_', "-"))
+}
+
 fn scene_focus_requires_directive(packet: &DraftingPacketV1) -> bool {
     if packet.scene_card.chapter.is_closer {
         return false;
     }
     matches!(
-        packet.scene_card.value_shift.axis.to_lowercase().as_str(),
-        "action"
-            | "quiet-interior"
-            | "quiet_interior"
-            | "dialogue-heavy"
-            | "dialogue_heavy"
-            | "reveal"
+        normalized_scene_type(packet).as_deref(),
+        Some("action" | "quiet-interior" | "dialogue-heavy" | "reveal")
     )
 }
 
@@ -69,11 +72,11 @@ fn scene_focus(packet: &DraftingPacketV1) -> &'static str {
     if packet.scene_card.chapter.is_closer {
         return SCENE_FOCUS_CLOSER;
     }
-    match packet.scene_card.value_shift.axis.to_lowercase().as_str() {
-        "action" => SCENE_FOCUS_ACTION,
-        "quiet-interior" | "quiet_interior" => SCENE_FOCUS_QUIET_INTERIOR,
-        "dialogue-heavy" | "dialogue_heavy" => SCENE_FOCUS_DIALOGUE,
-        "reveal" => SCENE_FOCUS_REVEAL,
+    match normalized_scene_type(packet).as_deref() {
+        Some("action") => SCENE_FOCUS_ACTION,
+        Some("quiet-interior") => SCENE_FOCUS_QUIET_INTERIOR,
+        Some("dialogue-heavy") => SCENE_FOCUS_DIALOGUE,
+        Some("reveal") => SCENE_FOCUS_REVEAL,
         _ => SCENE_FOCUS_GENERIC,
     }
 }
@@ -202,22 +205,25 @@ fn resolve_anchor_offsets(
             occurrences,
         });
     }
-    let candidate = matches.into_iter().find(|&start| {
-        let before_ok = anchor
-            .context_before
-            .as_deref()
-            .filter(|context| !context.is_empty())
-            .is_none_or(|context| base_text[..start].ends_with(context));
-        let after_ok = anchor
-            .context_after
-            .as_deref()
-            .filter(|context| !context.is_empty())
-            .is_none_or(|context| base_text[start + quote_len..].starts_with(context));
-        before_ok && after_ok
-    });
-    if let Some(start) = candidate {
-        anchor.start_byte = start;
-        anchor.end_byte = start + quote_len;
+    let candidates: Vec<usize> = matches
+        .into_iter()
+        .filter(|&start| {
+            let before_ok = anchor
+                .context_before
+                .as_deref()
+                .filter(|context| !context.is_empty())
+                .is_none_or(|context| base_text[..start].ends_with(context));
+            let after_ok = anchor
+                .context_after
+                .as_deref()
+                .filter(|context| !context.is_empty())
+                .is_none_or(|context| base_text[start + quote_len..].starts_with(context));
+            before_ok && after_ok
+        })
+        .collect();
+    if let [start] = candidates.as_slice() {
+        anchor.start_byte = *start;
+        anchor.end_byte = *start + quote_len;
         Ok(())
     } else {
         Err(CritiqueError::AmbiguousAnchorQuote {

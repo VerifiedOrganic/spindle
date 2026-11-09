@@ -76,6 +76,7 @@ pub(crate) fn fixture() -> DraftingPacketV1 {
             story_clock: "dawn".into(),
             rating: spindle_core::models::ContentRating::General,
             tone: None,
+            scene_type: None,
             participants: vec![],
             required_beats: vec![],
             promises_due: vec![],
@@ -843,6 +844,52 @@ fn critique_resolves_quote_first_offsets_and_rejects_ambiguous_quotes() {
         validate_and_normalize_critique(ambiguous, &pkt, "pkt-quote", base_text, &base_hash)
             .unwrap_err();
     assert!(matches!(error, CritiqueError::AmbiguousAnchorQuote { .. }));
+
+    // Context shared by multiple occurrences is still ambiguous, never first-match wins.
+    let repeated_text = "A rose. A rose.";
+    let repeated_hash = sha256_hex(repeated_text.as_bytes());
+    let mut repeated_pkt = fixture();
+    repeated_pkt.scene_id = Some("scene-quote".into());
+    let mut repeated = valid_critique_fixture(
+        repeated_text,
+        &repeated_hash,
+        "pkt-quote",
+        Some("scene-quote".into()),
+    );
+    repeated.directives[0].anchor.start_byte = 0;
+    repeated.directives[0].anchor.end_byte = 1;
+    repeated.directives[0].anchor.exact_quote = "rose".into();
+    repeated.directives[0].anchor.context_before = Some("A ".into());
+    let error = validate_and_normalize_critique(
+        repeated,
+        &repeated_pkt,
+        "pkt-quote",
+        repeated_text,
+        &repeated_hash,
+    )
+    .unwrap_err();
+    assert!(matches!(error, CritiqueError::AmbiguousAnchorQuote { .. }));
+
+    // Context that selects exactly one later occurrence resolves to that occurrence.
+    let later_text = "A rose. B rose.";
+    let later_hash = sha256_hex(later_text.as_bytes());
+    let mut later_pkt = fixture();
+    later_pkt.scene_id = Some("scene-quote".into());
+    let mut later = valid_critique_fixture(
+        later_text,
+        &later_hash,
+        "pkt-quote",
+        Some("scene-quote".into()),
+    );
+    later.directives[0].anchor.start_byte = 0;
+    later.directives[0].anchor.end_byte = 1;
+    later.directives[0].anchor.exact_quote = "rose".into();
+    later.directives[0].anchor.context_before = Some("B ".into());
+    let validated =
+        validate_and_normalize_critique(later, &later_pkt, "pkt-quote", later_text, &later_hash)
+            .unwrap();
+    let expected_start = later_text.rfind("rose").unwrap();
+    assert_eq!(validated.directives[0].anchor.start_byte, expected_start);
 }
 
 #[test]
@@ -883,7 +930,7 @@ fn critique_requires_typed_no_change_and_rejects_contradictions() {
     );
 
     let mut action_pkt = pkt.clone();
-    action_pkt.scene_card.value_shift.axis = "action".into();
+    action_pkt.scene_card.scene_type = Some("action".into());
     let mut action_no_change = no_change.clone();
     action_no_change.no_change = Some(spindle_core::drafting::NoChangeV1 {
         reason_code: spindle_core::drafting::NoChangeReason::AlreadySatisfiesBrief,
@@ -937,7 +984,7 @@ fn critic_prompt_uses_scene_specific_focus_and_typed_no_change_contract() {
     pkt.scene_id = Some("scene-focus".into());
     let budget = CriticBudget::scene_default("fixture".into(), 20_000);
 
-    pkt.scene_card.value_shift.axis = "quiet-interior".into();
+    pkt.scene_card.scene_type = Some("quiet-interior".into());
     let (quiet, _, _) = assemble_critic_messages(
         &pkt,
         "pkt-focus",
@@ -957,7 +1004,7 @@ fn critic_prompt_uses_scene_specific_focus_and_typed_no_change_contract() {
     );
     assert!(quiet.user.contains("no_change"));
 
-    pkt.scene_card.value_shift.axis = "action".into();
+    pkt.scene_card.scene_type = Some("action".into());
     let (action, _, _) = assemble_critic_messages(
         &pkt,
         "pkt-focus",
