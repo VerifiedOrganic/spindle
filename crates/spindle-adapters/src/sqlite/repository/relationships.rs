@@ -223,6 +223,10 @@ impl Repository {
                     Some(0),
                     0,
                 )?;
+                // Legacy treats (A, B) and (B, A) as one pair and returns its
+                // persisted orientation; canon relationship streams are
+                // directional, so mirror that orientation rather than the
+                // caller's argument order.
                 let claim = legacy_claim(
                     &scene.project_id,
                     &effective_branch_id,
@@ -230,12 +234,12 @@ impl Repository {
                     Some(&scene.id),
                     &placement,
                     ClaimEntity::Resolved {
-                        id: input_owned.character_a_id.clone(),
+                        id: relationship.in_id.clone(),
                     },
                     ClaimAssertion::Relationship {
                         operation: RelationshipOperation::Delta,
                         other: ClaimEntity::Resolved {
-                            id: input_owned.character_b_id.clone(),
+                            id: relationship.out_id.clone(),
                         },
                         trust: input_owned.trust_delta,
                         tension: input_owned.tension_delta,

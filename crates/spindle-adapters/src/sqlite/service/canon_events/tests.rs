@@ -3781,3 +3781,181 @@ async fn dual_write_commit_scene_relationship_replaces_backfilled_scene_delta() 
         .expect("legacy relationship");
     assert_eq!(legacy_pair.trust, 2);
 }
+
+#[tokio::test]
+async fn dual_write_relationship_replaces_live_delta_across_reversed_pair_arguments() {
+    use spindle_core::models::UpdateRelationshipInput;
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Reversed Pair Live").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+    let update = |first: &str, second: &str, delta: i32| UpdateRelationshipInput {
+        character_a_id: first.to_string(),
+        character_b_id: second.to_string(),
+        trust_delta: delta,
+        tension_delta: 0,
+        reason: "reversed revision".into(),
+        scene_id: scene_id.clone(),
+    };
+    svc.update_relationship(update(&a, &b, 2)).await.unwrap();
+    svc.update_relationship(update(&b, &a, 3)).await.unwrap();
+    svc.update_relationship(update(&a, &b, 2)).await.unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state
+        .relationship(&a, &b)
+        .or_else(|| state.relationship(&b, &a))
+        .expect("canon relationship");
+    assert_eq!(relationship.accumulated_trust_delta, 2);
+    let legacy = svc
+        .repository()
+        .list_relationships_by_branch(&branch.id)
+        .await
+        .unwrap();
+    let legacy_pair = legacy
+        .iter()
+        .find(|row| (row.in_id == a && row.out_id == b) || (row.in_id == b && row.out_id == a))
+        .expect("legacy relationship");
+    assert_eq!(legacy_pair.trust, 2);
+}
+
+#[tokio::test]
+async fn dual_write_relationship_replaces_backfilled_delta_across_reversed_pair_arguments() {
+    use spindle_core::models::UpdateRelationshipInput;
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Reversed Pair Backfill").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    let update = |first: &str, second: &str, delta: i32| UpdateRelationshipInput {
+        character_a_id: first.to_string(),
+        character_b_id: second.to_string(),
+        trust_delta: delta,
+        tension_delta: 0,
+        reason: "reversed revision".into(),
+        scene_id: scene_id.clone(),
+    };
+    svc.update_relationship(update(&a, &b, 2)).await.unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+    svc.update_relationship(update(&b, &a, 3)).await.unwrap();
+    svc.update_relationship(update(&a, &b, 2)).await.unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state
+        .relationship(&a, &b)
+        .or_else(|| state.relationship(&b, &a))
+        .expect("canon relationship");
+    assert_eq!(relationship.accumulated_trust_delta, 2);
+    let legacy = svc
+        .repository()
+        .list_relationships_by_branch(&branch.id)
+        .await
+        .unwrap();
+    let legacy_pair = legacy
+        .iter()
+        .find(|row| (row.in_id == a && row.out_id == b) || (row.in_id == b && row.out_id == a))
+        .expect("legacy relationship");
+    assert_eq!(legacy_pair.trust, 2);
+}
+
+#[tokio::test]
+async fn dual_write_commit_scene_relationship_replaces_delta_across_reversed_pair_arguments() {
+    use spindle_core::models::{
+        CommitContinuityGate, CommitSceneChangesInput, RelationshipUpdateEntry,
+    };
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Reversed Pair Commit").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    let commit = |first: &str, second: &str, delta: i32| CommitSceneChangesInput {
+        project_id: project.project_id.clone(),
+        scene_id: scene_id.clone(),
+        character_states: Vec::new(),
+        canonical_facts: Vec::new(),
+        relationship_updates: vec![RelationshipUpdateEntry {
+            character_a_id: first.to_string(),
+            character_b_id: second.to_string(),
+            trust_delta: delta,
+            tension_delta: 0,
+            reason: "reversed revision".into(),
+        }],
+        accept_world_rule_risks: true,
+        accept_continuity_risks: true,
+        continuity_gate: Some(CommitContinuityGate::Off),
+    };
+    svc.commit_scene_changes(commit(&a, &b, 2)).await.unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+    svc.commit_scene_changes(commit(&b, &a, 3)).await.unwrap();
+    svc.commit_scene_changes(commit(&a, &b, 2)).await.unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state
+        .relationship(&a, &b)
+        .or_else(|| state.relationship(&b, &a))
+        .expect("canon relationship");
+    assert_eq!(relationship.accumulated_trust_delta, 2);
+    let legacy = svc
+        .repository()
+        .list_relationships_by_branch(&branch.id)
+        .await
+        .unwrap();
+    let legacy_pair = legacy
+        .iter()
+        .find(|row| (row.in_id == a && row.out_id == b) || (row.in_id == b && row.out_id == a))
+        .expect("legacy relationship");
+    assert_eq!(legacy_pair.trust, 2);
+}

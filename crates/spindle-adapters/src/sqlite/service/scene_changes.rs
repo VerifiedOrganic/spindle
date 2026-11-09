@@ -588,12 +588,12 @@ impl SqliteSpindleService {
                         Some(&tx_scene.id),
                         &mirror_placement,
                         ClaimEntity::Resolved {
-                            id: entry.character_a_id.clone(),
+                            id: rel.in_id.clone(),
                         },
                         ClaimAssertion::Relationship {
                             operation: RelationshipOperation::Delta,
                             other: ClaimEntity::Resolved {
-                                id: entry.character_b_id.clone(),
+                                id: rel.out_id.clone(),
                             },
                             trust: entry.trust_delta,
                             tension: entry.tension_delta,
