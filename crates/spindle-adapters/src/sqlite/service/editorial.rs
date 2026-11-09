@@ -364,6 +364,8 @@ impl SqliteSpindleService {
             self.promote_host_candidate(
                 draft_artifact_path,
                 &task.task_id,
+                &task.packet_hash,
+                &incumbent_hash,
                 &candidate_text,
                 &candidate_hash,
             )
@@ -645,14 +647,17 @@ impl SqliteSpindleService {
         Ok(artifact)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn promote_host_candidate(
         &self,
         draft_artifact_path: &std::path::Path,
         task_id: &str,
+        expected_packet_hash: &str,
+        expected_incumbent_hash: &str,
         candidate_text: &str,
         candidate_hash: &str,
     ) -> Result<()> {
-        let mut draft = artifact::load_artifact(draft_artifact_path)?;
+        let draft = artifact::load_artifact(draft_artifact_path)?;
         let branch = self.repository.get_active_branch(&draft.project_id).await?;
         anyhow::ensure!(
             branch.id == draft.branch_id,
@@ -661,6 +666,23 @@ impl SqliteSpindleService {
         anyhow::ensure!(
             editorial_sha256_hex(candidate_text.as_bytes()) == candidate_hash,
             "candidate hash mismatch before promotion"
+        );
+        let _lock = artifact::lock_artifact(draft_artifact_path)?;
+        let mut draft = artifact::load_artifact(draft_artifact_path)?;
+        anyhow::ensure!(
+            draft.packet_hash == expected_packet_hash,
+            "stale_cas_conflict: draft packet hash changed before promotion"
+        );
+        if draft.text_sha256 == candidate_hash
+            && draft.receipt.generation_id == format!("host:{task_id}")
+        {
+            // A crashed attempt already promoted this candidate; recover
+            // idempotently instead of reporting a stale incumbent.
+            return Ok(());
+        }
+        anyhow::ensure!(
+            draft.text_sha256 == expected_incumbent_hash,
+            "stale_cas_conflict: incumbent text changed before promotion"
         );
         draft.text = candidate_text.to_string();
         draft.text_sha256 = candidate_hash.to_string();
@@ -738,9 +760,10 @@ pub(crate) fn admit_editorial_agent_draft_action(
                     "editorial_dispatch_in_progress: reservation {key_string} was already dispatched;                      a failed attempt must be reconciled before a new charged attempt"
                 );
             }
-            let claimed = state.scenes[scene_index]
-                .ledger
-                .claim_dispatch(&key_string, now_millis);
+            let claimed =
+                state.scenes[scene_index]
+                    .ledger
+                    .claim_dispatch(&key_string, "draft", now_millis);
             anyhow::ensure!(
                 claimed == Some(true),
                 "editorial_dispatch_in_progress: reservation {key_string} was already dispatched"
@@ -760,9 +783,11 @@ pub(crate) fn admit_editorial_agent_draft_action(
             true,
         )
         .map_err(|denial| anyhow::anyhow!("{denial}"))?;
-        let claimed = state.scenes[scene_index]
-            .ledger
-            .claim_dispatch(&reservation.idempotency_key, now_millis);
+        let claimed = state.scenes[scene_index].ledger.claim_dispatch(
+            &reservation.idempotency_key,
+            "draft",
+            now_millis,
+        );
         anyhow::ensure!(
             claimed == Some(true),
             "editorial_dispatch_in_progress: reservation was already dispatched"
@@ -935,6 +960,7 @@ impl crate::drafting::revision::RevisionBudgetGate for ControllerRevisionBudgetG
         &self,
         action: EditorialActionKind,
         attempt: u32,
+        claim: &str,
     ) -> Result<crate::drafting::revision::RevisionBudgetAdmission, String> {
         update_editorial_controller(self.controller_path, |state| {
             let reservation = crate::drafting::editorial::admit_editorial_action_in_controller(
@@ -948,12 +974,13 @@ impl crate::drafting::revision::RevisionBudgetGate for ControllerRevisionBudgetG
             .map_err(|denial| anyhow::anyhow!("{denial}"))?;
             let claimed = state.scenes[self.scene_index]
                 .ledger
-                .claim_dispatch(&reservation.idempotency_key, self.now_millis);
+                .claim_dispatch(&reservation.idempotency_key, claim, self.now_millis);
             anyhow::ensure!(
                 claimed == Some(true),
-                "editorial_dispatch_in_progress: revision pass {} attempt {} was already dispatched",
+                "editorial_dispatch_in_progress: revision pass {} attempt {} claim {} was already dispatched",
                 action.as_str(),
-                attempt
+                attempt,
+                claim
             );
             Ok(crate::drafting::revision::RevisionBudgetAdmission {
                 admission_id: reservation.idempotency_key,

@@ -2363,17 +2363,17 @@ async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pric
     crate::drafting::editorial::save_editorial_controller(&path, &controller)
         .expect("save controller");
     let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&path, 0, 10);
-    gate.admit(EditorialActionKind::Critique, 1)
+    gate.admit(EditorialActionKind::Critique, 1, "critic")
         .expect("first pass admits");
     let in_flight = gate
-        .admit(EditorialActionKind::Critique, 1)
+        .admit(EditorialActionKind::Critique, 1, "critic")
         .expect_err("an in-flight pass cannot be reused");
     assert!(
         in_flight.contains("dispatch_in_progress"),
         "unexpected in-flight error: {in_flight}"
     );
     let denial = gate
-        .admit(EditorialActionKind::Revise, 1)
+        .admit(EditorialActionKind::Revise, 1, "revision")
         .expect_err("the shared run call cap must deny the next pass");
     assert!(
         denial.contains("run_calls_exhausted"),
@@ -2389,7 +2389,7 @@ async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pric
     let gate =
         crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&missing_price, 0, 10);
     let denial = gate
-        .admit(EditorialActionKind::Critique, 1)
+        .admit(EditorialActionKind::Critique, 1, "critic")
         .expect_err("paid dispatch without price must deny");
     assert!(
         denial.contains("missing_price"),
@@ -2409,7 +2409,7 @@ async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pric
         .expect("save controller");
     let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&priced, 0, 10);
     let admission = gate
-        .admit(EditorialActionKind::Critique, 1)
+        .admit(EditorialActionKind::Critique, 1, "critic")
         .expect("admit priced pass");
     gate.reconcile(
         &admission,
@@ -2435,13 +2435,36 @@ async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pric
     // A failed pass reconciles `None`: the maximum stays charged.
     let failed = editorial_test_controller(tmp.path(), "revision-gate-failed.json", None);
     let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&failed, 0, 10);
-    let admission = gate.admit(EditorialActionKind::Critique, 1).expect("admit");
+    let admission = gate
+        .admit(EditorialActionKind::Critique, 1, "critic")
+        .expect("admit");
     gate.reconcile(&admission, None, Vec::new())
         .expect("reconcile unknown");
     let controller =
         crate::drafting::editorial::load_editorial_controller(&failed).expect("reload");
     assert_eq!(controller.scenes[0].ledger.scene_used(), admission.reserved);
     assert!(!controller.scenes[0].ledger.scene_reservations[0].usage_known);
+
+    // A two-call judge reservation claims each swapped-order pass separately:
+    // a resume after persisted pass 1 can still admit the reserved pass 2,
+    // while replaying pass 1 is rejected.
+    let judge_path = editorial_test_controller(tmp.path(), "revision-gate-judge.json", None);
+    let gate =
+        crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&judge_path, 0, 10);
+    let pass_1 = gate
+        .admit(EditorialActionKind::Judge, 1, "judge_pass_1")
+        .expect("judge pass 1 admits");
+    let pass_2 = gate
+        .admit(EditorialActionKind::Judge, 1, "judge_pass_2")
+        .expect("reserved judge pass 2 admits on resume");
+    assert_eq!(pass_1.admission_id, pass_2.admission_id);
+    let replay = gate
+        .admit(EditorialActionKind::Judge, 1, "judge_pass_1")
+        .expect_err("judge pass 1 cannot be replayed");
+    assert!(
+        replay.contains("dispatch_in_progress"),
+        "unexpected replay error: {replay}"
+    );
 }
 
 #[tokio::test]

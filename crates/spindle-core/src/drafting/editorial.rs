@@ -298,10 +298,14 @@ pub struct EditorialBudgetReservation {
     pub actual: Option<EditorialBudgetUsage>,
     #[serde(default)]
     pub model_call_ids: Vec<String>,
-    /// Set atomically when the paid dispatch is claimed. A reservation that was
-    /// dispatched but not reconciled cannot be reused for a second call.
+    /// Set atomically when the first paid dispatch is claimed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatched_at_millis: Option<u64>,
+    /// Per-pass dispatch claims. A two-call judge reservation claims
+    /// `judge_pass_1` and `judge_pass_2` separately so a resume can dispatch
+    /// the reserved remaining pass without replaying the first.
+    #[serde(default)]
+    pub dispatched_claims: Vec<String>,
     pub created_at_millis: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconciled_at_millis: Option<u64>,
@@ -322,16 +326,23 @@ impl EditorialBudgetReservation {
     }
 
     pub fn is_dispatched(&self) -> bool {
-        self.dispatched_at_millis.is_some()
+        self.dispatched_at_millis.is_some() || !self.dispatched_claims.is_empty()
     }
 
-    /// Claim the one paid dispatch for this reservation. Returns `false` when
-    /// another dispatch already owns it.
-    pub fn claim_dispatch(&mut self, now_millis: u64) -> bool {
-        if self.dispatched_at_millis.is_some() {
+    /// Claim one dispatch slot. Returns `false` when that claim was already
+    /// taken, which prevents duplicate calls for the same pass.
+    pub fn claim_dispatch(&mut self, claim: &str, now_millis: u64) -> bool {
+        if self
+            .dispatched_claims
+            .iter()
+            .any(|existing| existing == claim)
+        {
             return false;
         }
-        self.dispatched_at_millis = Some(now_millis);
+        self.dispatched_claims.push(claim.to_string());
+        if self.dispatched_at_millis.is_none() {
+            self.dispatched_at_millis = Some(now_millis);
+        }
         true
     }
 }
@@ -536,7 +547,12 @@ impl EditorialBudgetLedgerV1 {
 
     /// Claim dispatch on the scene and run projections together. Returns
     /// `None` when the key is absent, `Some(false)` when already dispatched.
-    pub fn claim_dispatch(&mut self, idempotency_key: &str, now_millis: u64) -> Option<bool> {
+    pub fn claim_dispatch(
+        &mut self,
+        idempotency_key: &str,
+        claim: &str,
+        now_millis: u64,
+    ) -> Option<bool> {
         let mut claimed = None;
         for reservation in self
             .scene_reservations
@@ -546,7 +562,7 @@ impl EditorialBudgetLedgerV1 {
             if reservation.idempotency_key != idempotency_key {
                 continue;
             }
-            let this_claim = reservation.claim_dispatch(now_millis);
+            let this_claim = reservation.claim_dispatch(claim, now_millis);
             if claimed.is_none() {
                 claimed = Some(this_claim);
             }
@@ -1624,6 +1640,7 @@ mod tests {
             actual: None,
             model_call_ids: Vec::new(),
             dispatched_at_millis: None,
+            dispatched_claims: Vec::new(),
             created_at_millis: 1,
             reconciled_at_millis: None,
         }
@@ -1995,6 +2012,7 @@ pub(crate) mod tests_support {
             actual: None,
             model_call_ids: Vec::new(),
             dispatched_at_millis: None,
+            dispatched_claims: Vec::new(),
             created_at_millis: 1,
             reconciled_at_millis: None,
         };

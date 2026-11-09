@@ -2090,6 +2090,45 @@ max_tokens = 500
         })
     }
 
+    #[derive(Default)]
+    struct RecordingRevisionGate {
+        admitted: std::sync::Mutex<Vec<(String, u32, String)>>,
+        seen: std::sync::Mutex<std::collections::BTreeSet<(String, u32, String)>>,
+    }
+
+    impl crate::drafting::revision::RevisionBudgetGate for RecordingRevisionGate {
+        fn admit(
+            &self,
+            action: spindle_core::drafting::EditorialActionKind,
+            attempt: u32,
+            claim: &str,
+        ) -> Result<crate::drafting::revision::RevisionBudgetAdmission, String> {
+            let key = (action.as_str().to_string(), attempt, claim.to_string());
+            let mut seen = self.seen.lock().map_err(|_| "gate lock".to_string())?;
+            if !seen.insert(key.clone()) {
+                return Err(format!("duplicate dispatch claim {key:?}"));
+            }
+            self.admitted
+                .lock()
+                .map_err(|_| "gate lock".to_string())?
+                .push(key);
+            Ok(crate::drafting::revision::RevisionBudgetAdmission {
+                admission_id: format!("{}:{}:{}", action.as_str(), attempt, claim),
+                action,
+                reserved: spindle_core::drafting::EditorialBudgetUsage::default(),
+            })
+        }
+
+        fn reconcile(
+            &self,
+            _admission: &crate::drafting::revision::RevisionBudgetAdmission,
+            _usage: Option<crate::drafting::revision::RevisionPassUsage>,
+            _model_call_ids: Vec<String>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn revision_loop_promotes_double_order_winner_and_recovers_from_crash_at_every_boundary()
     {
@@ -2103,6 +2142,7 @@ max_tokens = 500
         use spindle_core::drafting::{DeblindedArm, EditorialPolicy, EditorialStage};
 
         let temp = tempfile::tempdir().unwrap();
+        let gate = RecordingRevisionGate::default();
         let draft_prose = "Cold floodwater rose around the stone sluice.\n\nThe lantern flickered in the damp wind.";
         let revised_prose = "Cold floodwater surged against the stone sluice as Mara braced her shoulder.\n\nThe lantern flickered in the damp wind.";
 
@@ -2325,7 +2365,7 @@ max_tokens = 500
 
         for crash_point in boundaries {
             let err = service
-                .revise_artifact_loop(
+                .revise_artifact_loop_with_gate(
                     EditorialPolicy::CritiqueV1,
                     &draft_path,
                     &loop_path,
@@ -2338,6 +2378,7 @@ max_tokens = 500
                         crash_after: Some(crash_point),
                         ..Default::default()
                     },
+                    Some(&gate),
                 )
                 .await
                 .unwrap_err();
@@ -2356,7 +2397,7 @@ max_tokens = 500
         // Crash immediately after saving the promoted draft artifact, before persisting the
         // terminal AcceptedRevision loop snapshot (two-file commit boundary).
         let mid_commit_err = service
-            .revise_artifact_loop(
+            .revise_artifact_loop_with_gate(
                 EditorialPolicy::CritiqueV1,
                 &draft_path,
                 &loop_path,
@@ -2369,6 +2410,7 @@ max_tokens = 500
                     crash_after: Some(BoundaryCrashPoint::AfterDraftPromotionSave),
                     ..Default::default()
                 },
+                Some(&gate),
             )
             .await
             .unwrap_err();
@@ -2404,7 +2446,7 @@ max_tokens = 500
         // Now resume with no crash hook: it recognizes the completed promotion, does not false-positive
         // CAS fail against the already-revised draft, and finalizes AcceptedRevision with 0 extra HTTP calls!
         let final_loop = service
-            .revise_artifact_loop(
+            .revise_artifact_loop_with_gate(
                 EditorialPolicy::CritiqueV1,
                 &draft_path,
                 &loop_path,
@@ -2414,6 +2456,7 @@ max_tokens = 500
                 &judge_budget,
                 Some(&VerifiedFixtureTokenizer),
                 RevisionLoopOptions::default(),
+                Some(&gate),
             )
             .await
             .unwrap();
@@ -2468,7 +2511,7 @@ max_tokens = 500
 
         // Re-running after terminal state is a pure idempotent no-op
         let idempotent_rerun = service
-            .revise_artifact_loop(
+            .revise_artifact_loop_with_gate(
                 EditorialPolicy::CritiqueV1,
                 &draft_path,
                 &loop_path,
@@ -2478,11 +2521,29 @@ max_tokens = 500
                 &judge_budget,
                 Some(&VerifiedFixtureTokenizer),
                 RevisionLoopOptions::default(),
+                Some(&gate),
             )
             .await
             .unwrap();
         assert_eq!(idempotent_rerun, final_loop);
 
+        // The crash at JudgePass1 leaves pass 1 persisted; the resume must
+        // claim the distinct reserved pass 2 rather than replaying pass 1.
+        let admitted = gate.admitted.lock().unwrap().clone();
+        assert!(
+            admitted
+                .iter()
+                .any(|(action, _, claim)| action == "judge" && claim == "judge_pass_2"),
+            "resume never admitted judge_pass_2: {admitted:?}"
+        );
+        assert!(
+            admitted
+                .iter()
+                .filter(|(action, _, claim)| action == "judge" && claim == "judge_pass_1")
+                .count()
+                == 1,
+            "judge_pass_1 was re-dispatched: {admitted:?}"
+        );
         // Exactly 4 HTTP requests were made across all 8 crash boundaries + resume + idempotent rerun!
         assert_eq!(loop_srv.join().unwrap(), 4);
     }

@@ -106,6 +106,7 @@ pub trait RevisionBudgetGate: Send + Sync {
         &self,
         action: EditorialActionKind,
         attempt: u32,
+        claim: &str,
     ) -> Result<RevisionBudgetAdmission, String>;
     fn reconcile(
         &self,

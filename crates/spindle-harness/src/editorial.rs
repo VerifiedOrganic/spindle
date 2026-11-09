@@ -460,6 +460,7 @@ mod tests {
                 actual: None,
                 model_call_ids: Vec::new(),
                 dispatched_at_millis: None,
+                dispatched_claims: Vec::new(),
                 created_at_millis: 1,
                 reconciled_at_millis: None,
             })

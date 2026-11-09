@@ -593,7 +593,7 @@ impl SqliteSpindleService {
                     })
                     .collect();
                 let critic_admission = gate
-                    .map(|gate| gate.admit(EditorialActionKind::Critique, round_num))
+                    .map(|gate| gate.admit(EditorialActionKind::Critique, round_num, "critic"))
                     .transpose()
                     .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
                 let critic_start = std::time::Instant::now();
@@ -742,7 +742,7 @@ impl SqliteSpindleService {
                     .strengths_to_preserve
                     .clone();
                 let revision_admission = gate
-                    .map(|gate| gate.admit(EditorialActionKind::Revise, round_num))
+                    .map(|gate| gate.admit(EditorialActionKind::Revise, round_num, "revision"))
                     .transpose()
                     .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
                 let revision_start = std::time::Instant::now();
@@ -974,7 +974,9 @@ impl SqliteSpindleService {
                 }
                 if judge_admission.is_none() {
                     judge_admission = gate
-                        .map(|gate| gate.admit(EditorialActionKind::Judge, round_num))
+                        .map(|gate| {
+                            gate.admit(EditorialActionKind::Judge, round_num, "judge_pass_1")
+                        })
                         .transpose()
                         .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
                     judge_started = Some(std::time::Instant::now());
@@ -1079,7 +1081,9 @@ impl SqliteSpindleService {
                 if judge_admission.is_none() {
                     judge_preexisting_pass = true;
                     judge_admission = gate
-                        .map(|gate| gate.admit(EditorialActionKind::Judge, round_num))
+                        .map(|gate| {
+                            gate.admit(EditorialActionKind::Judge, round_num, "judge_pass_2")
+                        })
                         .transpose()
                         .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
                     judge_started = Some(std::time::Instant::now());

@@ -880,10 +880,13 @@ prose-affecting is activated by this step.
 - The controller is a single JSON artifact saved with a temp-file rename and a
   per-path lock. Stage changes and reservations are written in the same locked
   transaction, so a restart cannot reset counters and concurrent owners cannot
-  double-admit. Each paid reservation has a durable dispatch claim: an in-flight
-  attempt cannot be reused for a second call, a failed paid attempt consumes its
-  attempt, and a retry must pass the caps again as a new admission. Host judge
-  admission also runs inside the same locked transaction.
+  double-admit. Each paid reservation has durable per-pass dispatch claims: an
+  in-flight pass cannot be reused, a failed paid attempt consumes its attempt,
+  and a retry must pass the caps again as a new admission. A two-call judge
+  reservation claims `judge_pass_1` and `judge_pass_2` separately, so a crash
+  between the swapped-order passes can dispatch the remaining reserved pass
+  without replaying pass 1. Host judge admission also runs inside the same
+  locked transaction.
 - `EditorialAttributionV1` is prose-free: it records stage/attempt, stable
   prompt template id and version, prompt/context/packet/source hashes,
   tokenizer identity, parent/candidate hashes, judge order, outcome, durations,

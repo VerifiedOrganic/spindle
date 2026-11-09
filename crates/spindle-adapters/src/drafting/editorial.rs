@@ -221,6 +221,7 @@ fn admit_with_key(
         actual: None,
         model_call_ids: Vec::new(),
         dispatched_at_millis: None,
+        dispatched_claims: Vec::new(),
         created_at_millis: now_millis,
         reconciled_at_millis: None,
     };
