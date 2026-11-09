@@ -1038,13 +1038,54 @@ activates a prose-affecting default.
   rewrite, plot redesign, or plan mutation. The queue can be persisted beside
   the run artifacts with `save_book_advisory_queue`.
 
+### Measured row-6 G: critique→revise loop (PR 9)
+
+The previously unrun row-6 G was executed on fresh `main` `601bf09`: 30 briefs
+× 3 generation seeds (90 scenes), the calibrated gemma tokenizer/drafter, and
+three live Ollama judge families (zhipu-glm, deepseek, google-gemma). Every pair
+was judged in randomized and swapped presentation order; CIs are 95%
+non-parametric cluster bootstraps by brief. Checked-in results:
+`evals/results/drafting_g_loop_vs_baseline.json`,
+`evals/results/drafting_g_loop_vs_packet_only.json`,
+`evals/results/drafting_g_summary.json`, and
+`evals/results/drafting_g_usage.json`.
+
+| Comparison | n pairs | Win rate (tie-half) | 95% CI | Lower bound > 0.50? |
+| --- | ---: | ---: | --- | --- |
+| Loop vs legacy baseline | 90 | 0.4389 | [0.3667, 0.5111] | **No** |
+| Loop vs packet-only | 90 | 0.4833 | [0.4111, 0.5556] | **No** |
+
+The loop promoted a revision in only `9 / 90` scenes (`10.0%`). Of the rest,
+`56` had no actionable directives, `20` produced an invalid critic response,
+`3` ended in judge-order disagreement, and `2` kept the incumbent on judge
+preference. Position bias was high (`48.5%` vs baseline, `46.3%` vs packet-only)
+and three-judge agreement was low-to-fair (Fleiss' kappa `0.2302` / `0.2552`).
+Per-scene-type rates did not clear 0.50 either; the best was dialogue-heavy
+`0.4722` vs baseline and `0.5833` vs packet-only, both with CIs spanning 0.50.
+Neither lower bound exceeds 0.50, so the loop G does **not** clear and
+`EditorialPolicy::Legacy` stays the default.
+
+Usage: `532` generation-ledger calls (including `221` token-count probes; `311`
+draft/critic/revise/judge calls), `3.43M` input / `397k` output tokens total;
+`1,080` live judge passes (540 per comparison). Cost is not recorded because
+the eval configs carry no token price; tokens and latency are in the usage JSON.
+No defaults, flags, or product code were changed.
+
+The line-edit and chapter-pass G experiments, the chapter-coherence blinded
+comparison, and the row-7 hybrid/agent per-execution-mode G remain **unrun**:
+there is no evals-only bridge/harness for those passes/modes in this tree, and
+this measurement PR intentionally did not add product code. Both optional passes
+remain off and neither host execution mode is activated.
+
 ### Gates and defaults
 
 - Legacy remains the default. Line edit and the chapter pass stay opt-in and
   off; bounded chapter edits additionally require an explicit author selection.
-- Release gate **G** has not been run for line edit or the chapter pass. The
-  design's chapter-coherence blinded comparison lower-bound `> 0.50` gate is
-  therefore not cleared, so neither optional pass is activated by default.
+- Release gate **G** for the critique→revise loop was measured with the row-6
+  experiment above and did not clear either lower bound. G for line edit and the
+  chapter pass, and the design's chapter-coherence blinded comparison
+  lower-bound `> 0.50` gate, remain unrun; neither optional pass is activated by
+  default.
 - Continuity gate **C** now matches the post-P2 #62 baseline: `28 / 28 = 1.0000`
   overall recall with `5` control false positives, `4 / 4` accepted-prose
   violating probes, `90` verified live artifacts, and `0` clean blocker issues.
