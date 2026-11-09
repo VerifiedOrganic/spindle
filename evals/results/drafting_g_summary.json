@@ -320,5 +320,6 @@
     "loop_vs_packet_only_lower_bound_exceeds_0_50": false,
     "any_default_activation": false,
     "note": "Defaults unchanged. A lower bound <= 0.50 means the loop does not clear the G gate; even a pass would not be activated in this PR."
-  }
+  },
+  "branch_merged_main": "9b6a70e"
 }

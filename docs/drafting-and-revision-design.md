@@ -1040,7 +1040,7 @@ activates a prose-affecting default.
 
 ### Measured row-6 G: critique→revise loop (PR 9)
 
-The previously unrun row-6 G was executed on fresh `main` `601bf09`: 30 briefs
+The previously unrun row-6 G was executed on fresh `main` `601bf09` (the PR branch later merged `main` `9b6a70e`, an eval-corpus/release-only update): 30 briefs
 × 3 generation seeds (90 scenes), the calibrated gemma tokenizer/drafter, and
 three live Ollama judge families (zhipu-glm, deepseek, google-gemma). Every pair
 was judged in randomized and swapped presentation order; CIs are 95%
