@@ -40,14 +40,6 @@ impl SqliteSpindleService {
                 .repository
                 .list_scene_versions_by_project(&input.project_id)
                 .await?;
-            let mut latest_by_scene: std::collections::BTreeMap<String, i32> =
-                std::collections::BTreeMap::new();
-            for version in &versions {
-                latest_by_scene
-                    .entry(version.scene_id.clone())
-                    .and_modify(|number| *number = (*number).max(version.version_number))
-                    .or_insert(version.version_number);
-            }
             for version in versions {
                 if version.branch_id != branch_id {
                     continue;
@@ -59,8 +51,6 @@ impl SqliteSpindleService {
                 {
                     continue;
                 }
-                let is_current =
-                    latest_by_scene.get(&version.scene_id) == Some(&version.version_number);
                 changes.push(ChangeReceipt {
                     operation_id: format!("scene_version:{}", version.id),
                     project_id: version.project_id,
@@ -75,14 +65,10 @@ impl SqliteSpindleService {
                         version.scene_order
                     ),
                     created_at: version.created_at.to_rfc3339(),
-                    undo_support: if is_current {
-                        UndoSupport::Irreversible
-                    } else {
-                        UndoSupport::Reversible
-                    },
-                    undo_reason: is_current.then(|| {
-                        "current scene version; save a new version before undoing".to_string()
-                    }),
+                    undo_support: UndoSupport::CheckpointOnly,
+                    undo_reason: Some(
+                        "scene snapshots preserve prose only; approved continuity deltas require explicit review before restore_scene_version".to_string(),
+                    ),
                     undone: false,
                 });
             }
@@ -127,7 +113,7 @@ impl SqliteSpindleService {
                 .list_style_profile_applications(&input.project_id)
                 .await?
             {
-                let reversible = app.rollback_status == "applied";
+                let reversible = app.rollback_status != "rolled_back";
                 changes.push(ChangeReceipt {
                     operation_id: format!("style_application:{}", app.id),
                     project_id: app.project_id.clone(),
@@ -155,7 +141,7 @@ impl SqliteSpindleService {
                 .list_style_revision_patch_audits(&input.project_id)
                 .await?
             {
-                let reversible = audit.rollback_status == "applied";
+                let reversible = audit.rollback_status != "rolled_back";
                 changes.push(ChangeReceipt {
                     operation_id: format!("style_patch:{}", audit.id),
                     project_id: audit.project_id.clone(),
@@ -227,93 +213,9 @@ impl SqliteSpindleService {
             );
         };
         match prefix {
-            "scene_version" => {
-                let version = self.repository.get_scene_version(id).await?;
-                anyhow::ensure!(
-                    version.project_id == input.project_id,
-                    "scene version does not belong to the requested project"
-                );
-                let versions = self
-                    .repository
-                    .list_scene_versions(&version.scene_id)
-                    .await?;
-                let current = versions
-                    .iter()
-                    .max_by_key(|version| version.version_number)
-                    .ok_or_else(|| anyhow::anyhow!("scene has no versions"))?;
-                anyhow::ensure!(
-                    current.id == input.expected_head,
-                    "stale expected_head: current scene version is {}",
-                    current.id
-                );
-                anyhow::ensure!(
-                    current.id != version.id,
-                    "operation is already the current scene version"
-                );
-                let affected = vec![
-                    UndoAffected {
-                        table: "scene".to_string(),
-                        id: version.scene_id.clone(),
-                        summary: format!("restore scene version {}", version.version_number),
-                    },
-                    UndoAffected {
-                        table: "scene_version".to_string(),
-                        id: version.id.clone(),
-                        summary: "source version".to_string(),
-                    },
-                ];
-                if input.dry_run {
-                    return Ok(UndoChangeOutput {
-                        operation_id: input.operation_id,
-                        kind: "scene_save".to_string(),
-                        project_id: input.project_id,
-                        branch_id: version.branch_id,
-                        affected,
-                        compensating_operation_id: None,
-                        dry_run: true,
-                        message: "dry run: would restore the prior scene text and derived state"
-                            .to_string(),
-                    });
-                }
-                let restored = self
-                    .restore_scene_version(RestoreSceneVersionInput {
-                        project_id: input.project_id.clone(),
-                        scene_id: version.scene_id.clone(),
-                        scene_version_id: version.id.clone(),
-                    })
-                    .await?;
-                let latest = self
-                    .repository
-                    .list_scene_versions(&version.scene_id)
-                    .await?
-                    .into_iter()
-                    .max_by_key(|version| version.version_number)
-                    .map(|version| format!("scene_version:{}", version.id));
-                let undo_id = self
-                    .repository
-                    .append_history_undo(
-                        &input.project_id,
-                        &version.branch_id,
-                        &input.operation_id,
-                        latest.as_deref(),
-                        "scene_save",
-                        &format!(
-                            "restored scene version {} ({})",
-                            version.version_number, restored.status
-                        ),
-                    )
-                    .await?;
-                Ok(UndoChangeOutput {
-                    operation_id: input.operation_id,
-                    kind: "scene_save".to_string(),
-                    project_id: input.project_id,
-                    branch_id: version.branch_id,
-                    affected,
-                    compensating_operation_id: latest,
-                    dry_run: false,
-                    message: format!("scene restored; undo audit recorded as {undo_id}"),
-                })
-            }
+            "scene_version" => anyhow::bail!(
+                "checkpoint_only: scene_version:{id} restores prose but not the approved continuity state; review the deltas and use restore_scene_version explicitly"
+            ),
             "style_application" => {
                 let apps = self
                     .repository
@@ -324,18 +226,24 @@ impl SqliteSpindleService {
                     .find(|app| app.id == id)
                     .ok_or_else(|| anyhow::anyhow!("style application not found"))?;
                 anyhow::ensure!(
-                    app.rollback_status == "applied",
+                    app.rollback_status != "rolled_back",
                     "style application is not reversible ({})",
                     app.rollback_status
                 );
-                let latest = apps
+                let head = apps
                     .iter()
+                    .filter(|candidate| candidate.rollback_status != "rolled_back")
                     .max_by(|a, b| a.applied_at.cmp(&b.applied_at))
-                    .expect("non-empty style applications");
+                    .expect("at least one applied style application");
                 anyhow::ensure!(
-                    latest.id == input.expected_head,
-                    "stale expected_head: latest style application is {}",
-                    latest.id
+                    app.id == head.id,
+                    "style application is not the current applied head; undo {} first",
+                    head.id
+                );
+                anyhow::ensure!(
+                    input.expected_head == head.id,
+                    "stale expected_head: current applied style application is {}",
+                    head.id
                 );
                 let branch_id = self
                     .repository
@@ -401,18 +309,24 @@ impl SqliteSpindleService {
                     .find(|audit| audit.id == id)
                     .ok_or_else(|| anyhow::anyhow!("style revision patch audit not found"))?;
                 anyhow::ensure!(
-                    audit.rollback_status == "applied",
+                    audit.rollback_status != "rolled_back",
                     "style revision patch is not reversible ({})",
                     audit.rollback_status
                 );
-                let latest = audits
+                let head = audits
                     .iter()
+                    .filter(|candidate| candidate.rollback_status != "rolled_back")
                     .max_by(|a, b| a.applied_at.cmp(&b.applied_at))
-                    .expect("non-empty style audits");
+                    .expect("at least one applied style patch");
                 anyhow::ensure!(
-                    latest.id == input.expected_head,
-                    "stale expected_head: latest style patch is {}",
-                    latest.id
+                    audit.id == head.id,
+                    "style revision patch is not the current applied head; undo {} first",
+                    head.id
+                );
+                anyhow::ensure!(
+                    input.expected_head == head.id,
+                    "stale expected_head: current applied style patch is {}",
+                    head.id
                 );
                 let branch_id = self
                     .repository

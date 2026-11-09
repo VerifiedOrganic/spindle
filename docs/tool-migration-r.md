@@ -80,12 +80,14 @@ names delegate to them as one-release compatibility aliases.
 `list_changes` is the discoverable history surface: it paginates scene saves,
 branch checkpoints, style applications/patches, and prior undo records, and
 marks each receipt `reversible`, `checkpoint_only`, or `irreversible` with a
-reason. `undo_change(project_id, operation_id, expected_head, dry_run)` restores
-scene versions and style operations only after the expected head matches and
-records a compensating audit row; it never deletes history. Branch save points
-remain checkpoint-scoped: use `restore_save_point`, not `undo_change`.
-`restore_scene_version`, `restore_save_point`, and the style rollback tools keep
-their original inputs and scopes.
+reason. `undo_change(project_id, operation_id, expected_head, dry_run)` rolls back the
+current applied style application/patch after the expected head matches and
+records a compensating audit row; it never deletes history. Scene snapshots are
+`checkpoint_only` because they preserve prose but not approved continuity
+deltas: review those deltas and use `restore_scene_version` explicitly. Branch
+save points remain checkpoint-scoped: use `restore_save_point`, not
+`undo_change`. `restore_scene_version`, `restore_save_point`, and the style
+rollback tools keep their original inputs and scopes.
 
 ### Profiles
 

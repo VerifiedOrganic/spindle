@@ -2,8 +2,8 @@ use spindle_adapters::ModelRouter;
 use spindle_adapters::sqlite::{Repository, SqlitePool, SqliteSpindleService};
 use spindle_core::models::{
     ContentRating, CreateBranchInput, CreateProjectInput, CreateSavePointInput, ListChangesInput,
-    ListSceneVersionsInput, ReaderContract, ReviseSceneInput, SaveSceneDraftInput,
-    SwitchBranchInput, UndoChangeInput, UndoSupport,
+    ListSceneVersionsInput, ReaderContract, RestoreSceneVersionInput, ReviseSceneInput,
+    SaveSceneDraftInput, SwitchBranchInput, UndoChangeInput, UndoSupport,
 };
 use tempfile::TempDir;
 
@@ -145,15 +145,15 @@ async fn list_changes_paginates_and_marks_checkpoint_scope() {
         .await
         .unwrap();
     assert_eq!(scene_changes.changes.len(), 2);
-    // The current version is explicitly marked as not directly undoable.
+    // Scene snapshots preserve prose only; unified undo marks them checkpoint-only.
     assert_eq!(
         scene_changes.changes[0].undo_support,
-        UndoSupport::Irreversible
+        UndoSupport::CheckpointOnly
     );
 }
 
 #[tokio::test]
-async fn undo_scene_version_checks_head_and_creates_audited_compensation() {
+async fn scene_undo_is_checkpoint_only_and_restore_alias_works() {
     let (_tmp, svc) = fresh_service().await;
     let project_id = project(&svc, "History Undo").await;
     let scene_id = three_versions(&svc, &project_id).await;
@@ -166,47 +166,53 @@ async fn undo_scene_version_checks_head_and_creates_audited_compensation() {
         .await
         .unwrap()
         .versions;
-    let current = &versions[0];
     let target = versions.last().unwrap();
-    let expected_head = current.scene_version_id.clone();
+    let current = versions.first().unwrap();
 
-    let dry = svc
+    let changes = svc
+        .list_changes(ListChangesInput {
+            project_id: project_id.clone(),
+            branch_id: None,
+            scene_id: Some(scene_id.clone()),
+            kind: Some("scene_save".to_string()),
+            limit: None,
+            offset: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        changes
+            .changes
+            .iter()
+            .all(|change| change.undo_support == UndoSupport::CheckpointOnly)
+    );
+
+    // Unified undo refuses prose-only scene history rather than leaving
+    // approved continuity deltas active.
+    let refused = svc
         .undo_change(UndoChangeInput {
             project_id: project_id.clone(),
             operation_id: format!("scene_version:{}", target.scene_version_id),
-            expected_head: expected_head.clone(),
+            expected_head: current.scene_version_id.clone(),
             dry_run: true,
         })
         .await
-        .unwrap();
-    assert!(dry.dry_run);
-    assert_eq!(
-        dry.affected.iter().filter(|a| a.table == "scene").count(),
-        1
-    );
-    assert_eq!(
-        svc.list_scene_versions(ListSceneVersionsInput {
-            project_id: project_id.clone(),
-            scene_id: scene_id.clone()
-        })
-        .await
-        .unwrap()
-        .versions
-        .len(),
-        2
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("checkpoint_only"),
+        "{refused:#}"
     );
 
-    let undone = svc
-        .undo_change(UndoChangeInput {
+    // The explicit alias keeps its original scope and restores the snapshot.
+    let restored = svc
+        .restore_scene_version(RestoreSceneVersionInput {
             project_id: project_id.clone(),
-            operation_id: format!("scene_version:{}", target.scene_version_id),
-            expected_head: expected_head.clone(),
-            dry_run: false,
+            scene_id: scene_id.clone(),
+            scene_version_id: target.scene_version_id.clone(),
         })
         .await
         .unwrap();
-    assert!(!undone.dry_run);
-    assert!(undone.compensating_operation_id.is_some());
+    assert_eq!(restored.status, "restored");
     let after = svc
         .list_scene_versions(ListSceneVersionsInput {
             project_id: project_id.clone(),
@@ -215,35 +221,87 @@ async fn undo_scene_version_checks_head_and_creates_audited_compensation() {
         .await
         .unwrap()
         .versions;
-    assert_eq!(after.len(), 3, "restore must append a compensating version");
+    assert_eq!(after.len(), 3, "restore appends a compensating version");
+    let live = svc.repository().get_scene(&scene_id).await.unwrap();
+    assert_eq!(live.full_text, "Version one.");
+}
 
-    let audit = svc
-        .list_changes(ListChangesInput {
+#[tokio::test]
+async fn restore_scene_version_can_target_middle_and_latest_snapshots() {
+    let (_tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "History Middle").await;
+    let main = svc
+        .repository()
+        .active_branch_id_public(&project_id)
+        .await
+        .unwrap();
+    let child = svc
+        .create_branch(CreateBranchInput {
             project_id: project_id.clone(),
-            branch_id: None,
-            scene_id: None,
-            kind: Some("undo".to_string()),
-            limit: None,
-            offset: None,
+            name: "history".to_string(),
+            branch_type: "alternate".to_string(),
+            description: None,
+            parent_branch_id: Some(main),
         })
         .await
         .unwrap();
-    assert_eq!(audit.changes.len(), 1);
-    assert_eq!(audit.changes[0].undo_support, UndoSupport::Irreversible);
-
-    // Replaying with the old head is a conflict, not a silent overwrite.
-    let stale = svc
-        .undo_change(UndoChangeInput {
-            project_id,
-            operation_id: format!("scene_version:{}", target.scene_version_id),
-            expected_head,
-            dry_run: true,
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: child.branch_id,
+    })
+    .await
+    .unwrap();
+    let scene = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "A.".to_string(),
+            summary: "A.".to_string(),
+            content_rating: ContentRating::General,
+            ..Default::default()
         })
         .await
-        .unwrap_err();
-    assert!(
-        format!("{stale:#}").contains("stale expected_head"),
-        "{stale:#}"
+        .unwrap();
+    for text in ["B.", "C."] {
+        svc.revise_scene(ReviseSceneInput {
+            project_id: project_id.clone(),
+            scene_id: scene.scene_id.clone(),
+            full_text: text.to_string(),
+            summary: text.to_string(),
+            content_rating: ContentRating::General,
+            tone: None,
+        })
+        .await
+        .unwrap();
+    }
+    let versions = svc
+        .list_scene_versions(ListSceneVersionsInput {
+            project_id: project_id.clone(),
+            scene_id: scene.scene_id.clone(),
+        })
+        .await
+        .unwrap()
+        .versions;
+    // Newest historical snapshot is B (the old text before C), then A.
+    assert!(versions.len() >= 2);
+    let b = versions.first().unwrap();
+    svc.restore_scene_version(RestoreSceneVersionInput {
+        project_id: project_id.clone(),
+        scene_id: scene.scene_id.clone(),
+        scene_version_id: b.scene_version_id.clone(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        svc.repository()
+            .get_scene(&scene.scene_id)
+            .await
+            .unwrap()
+            .full_text,
+        "B."
     );
 }
 

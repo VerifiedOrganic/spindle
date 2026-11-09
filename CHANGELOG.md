@@ -5,9 +5,10 @@
 ### Added
 
 - Unified history and undo: `list_changes` paginates scene-version, checkpoint,
-  style, and prior-undo receipts with explicit undo support; `undo_change`
-  restores scene versions and style operations after an expected-head check and
-  records a compensating audit. Branch checkpoints remain checkpoint-only.
+  style, and prior-undo receipts with explicit undo support; `undo_change` rolls
+  back the current applied style operation after an expected-head check and
+  records a compensating audit. Scene snapshots and branch checkpoints remain
+  checkpoint-only; scene prose restores use `restore_scene_version` explicitly.
 
 - Canonical atomic batch creates: `create_terms`, `create_motifs`,
   `create_narrative_promises`, and `set_character_voice_profiles` accept 1-50

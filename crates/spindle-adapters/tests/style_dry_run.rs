@@ -442,3 +442,86 @@ async fn create_style_revision_patch_is_non_mutating_and_matches_preview() {
         serde_json::to_value(&preview).unwrap()
     );
 }
+
+#[tokio::test]
+async fn unified_undo_only_rolls_back_the_current_applied_style_head() {
+    use spindle_core::models::UndoChangeInput;
+
+    let (tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "Style Undo Head").await;
+    let first = profile(&svc, &tmp, &project_id).await;
+    svc.apply_style_profile(ApplyStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id: first,
+        mode: StyleProfileApplyMode::Merge,
+        force: None,
+        dry_run: false,
+    })
+    .await
+    .unwrap();
+    let second = profile(&svc, &tmp, &project_id).await;
+    svc.apply_style_profile(ApplyStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id: second,
+        mode: StyleProfileApplyMode::Merge,
+        force: None,
+        dry_run: false,
+    })
+    .await
+    .unwrap();
+
+    let apps = svc
+        .list_style_profile_applications(ListStyleProfileApplicationsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap()
+        .applications;
+    assert!(apps.len() >= 2, "expected two style applications");
+    let latest = &apps[0];
+    let older = &apps[1];
+
+    let denied = svc
+        .undo_change(UndoChangeInput {
+            project_id: project_id.clone(),
+            operation_id: format!("style_application:{}", older.id),
+            expected_head: latest.id.clone(),
+            dry_run: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{denied:#}").contains("current applied head"),
+        "older style application must be refused: {denied:#}"
+    );
+
+    svc.undo_change(UndoChangeInput {
+        project_id: project_id.clone(),
+        operation_id: format!("style_application:{}", latest.id),
+        expected_head: latest.id.clone(),
+        dry_run: false,
+    })
+    .await
+    .unwrap();
+
+    let after = svc
+        .list_style_profile_applications(ListStyleProfileApplicationsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap()
+        .applications;
+    let older_after = after
+        .iter()
+        .find(|app| app.id == older.id)
+        .expect("older application");
+    assert_eq!(older_after.rollback_status, "not_rolled_back");
+    svc.undo_change(UndoChangeInput {
+        project_id,
+        operation_id: format!("style_application:{}", older.id),
+        expected_head: older.id.clone(),
+        dry_run: false,
+    })
+    .await
+    .unwrap();
+}
