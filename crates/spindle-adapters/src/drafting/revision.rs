@@ -133,6 +133,11 @@ pub struct RevisionLoopOptions {
     pub max_scene_tokens: usize,
     pub max_critic_calls_per_round: u32,
     pub crash_after: Option<BoundaryCrashPoint>,
+    /// Chapter-driven edit proposals already selected by the author. When set,
+    /// round one skips the scene critic and uses these directives directly.
+    pub pre_selected_directives: Option<Vec<CritiqueDirective>>,
+    /// Bounded chapter advisory context included in both judge orders.
+    pub chapter_context: Option<String>,
 }
 
 impl Default for RevisionLoopOptions {
@@ -143,6 +148,8 @@ impl Default for RevisionLoopOptions {
             max_scene_tokens: HARD_MAX_SCENE_TOKENS,
             max_critic_calls_per_round: 2,
             crash_after: None,
+            pre_selected_directives: None,
+            chapter_context: None,
         }
     }
 }
@@ -165,7 +172,7 @@ pub enum RevisionError {
     Critique(#[from] CritiqueError),
 }
 
-fn fits_budget(
+pub(crate) fn fits_budget(
     input_tokens: usize,
     input_limit: usize,
     output_reserve: usize,
@@ -1065,6 +1072,7 @@ pub fn select_initial_judge_order(
 ///
 /// The judge NEVER sees critic scores, directives, revision labels (`incumbent`,
 /// `candidate`, `baseline`, `revised`), or model identity.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_pairwise_judge_messages(
     packet: &DraftingPacketV1,
     passage_1_text: &str,
@@ -1072,6 +1080,7 @@ pub fn assemble_pairwise_judge_messages(
     budget: &JudgeBudget,
     tokenizer: Option<&dyn DraftTokenizer>,
     route_system: &str,
+    chapter_context: Option<&str>,
 ) -> Result<(DraftMessages, String, usize), RevisionError> {
     let t =
         tokenizer.ok_or_else(|| RevisionError::BudgetUnknown("no tokenizer configured".into()))?;
@@ -1098,6 +1107,9 @@ pub fn assemble_pairwise_judge_messages(
     let schema_json = serde_json::to_string(&SinglePassJudgePayload::json_schema())
         .map_err(|e| RevisionError::MalformedJson(e.to_string()))?;
 
+    let chapter_section = chapter_context
+        .map(|context| format!("CHAPTER CONTEXT\n{context}\n\n"))
+        .unwrap_or_default();
     let render_judge_user = |continuity_sec: &str, voice_sec: &str| -> String {
         format!(
             "PAIRWISE JUDGE CONTRACT\n\
@@ -1120,7 +1132,7 @@ pub fn assemble_pairwise_judge_messages(
              {continuity_sec}\n\
              VOICE & STYLE CONTEXT\n\
              {voice_sec}\n\
-             PASSAGE 1\n\
+             {chapter_section}PASSAGE 1\n\
              {passage_1_text}\n\n\
              PASSAGE 2\n\
              {passage_2_text}\n"
@@ -1926,6 +1938,7 @@ mod tests {
             &budget,
             Some(&TestTokenizer),
             "",
+            None,
         )
         .unwrap();
 

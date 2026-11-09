@@ -2521,3 +2521,690 @@ async fn host_judge_admission_is_locked_and_shares_the_run_budget() {
         "unexpected denial: {denial}"
     );
 }
+
+#[tokio::test]
+async fn line_edit_without_route_is_skipped_and_leaves_accepted_prose_unchanged() {
+    use crate::drafting::artifact;
+    use crate::drafting::line_edit::LineEditBudget;
+    use crate::drafting::tests::fixture;
+    use spindle_core::drafting::{
+        DraftMessages, EditorialPolicy, EditorialStage, LineEditOutcomeV1, PreparedDraftingPacket,
+        extraction::DraftReceiptBinding,
+    };
+
+    let (tmp, svc) = fresh_service_local().await;
+    let packet = fixture();
+    let controller_path = tmp.path().join("line-edit-controller.json");
+    let draft_path = tmp.path().join("line-edit-draft.json");
+    let settings = {
+        let mut settings =
+            spindle_core::drafting::ResolvedEditorialSettingsV1::critique_v1_default();
+        settings.line_edit_enabled = true;
+        settings.pricing = Some(spindle_core::drafting::EditorialPricingV1 {
+            input_usd_micros_per_million: 0,
+            output_usd_micros_per_million: 0,
+        });
+        settings
+    };
+    let mut controller = spindle_core::drafting::EditorialControllerStateV1::new(
+        "run:1".into(),
+        packet.project_id.clone(),
+        packet.branch_id.clone(),
+        settings.clone(),
+    );
+    let mut scene = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        1,
+        Some("scene:1".into()),
+        "packet-hash".into(),
+        "source-hash".into(),
+        spindle_core::drafting::EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    scene.stage = EditorialStage::AcceptedOriginal;
+    scene.incumbent = Some(spindle_core::drafting::EditorialTextRefV1 {
+        text_sha256: crate::drafting::editorial::editorial_sha256_hex(b"Accepted prose."),
+        generation_id: Some("generation:1".into()),
+        agent_id: Some("agent".into()),
+    });
+    controller.scenes.push(scene);
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller");
+
+    let messages = DraftMessages {
+        system: "system".into(),
+        user: "user".into(),
+    };
+    let packet_hash =
+        crate::drafting::editorial::editorial_sha256_hex(&serde_json::to_vec(&messages).unwrap());
+    let mut draft = artifact::capture_plain_text(
+        &packet,
+        &packet_hash,
+        "Accepted prose.".into(),
+        false,
+        DraftReceiptBinding {
+            generation_id: "generation:1".into(),
+            agent_id: "agent".into(),
+            normalized_output_sha256: crate::drafting::editorial::normalized_output_sha256(
+                "Accepted prose.",
+            ),
+        },
+    )
+    .expect("capture draft");
+    draft.prepared_packet = Some(PreparedDraftingPacket {
+        packet,
+        messages,
+        messages_hash: packet_hash,
+    });
+    artifact::save_artifact(&draft_path, &draft).expect("save draft");
+    let before = std::fs::read(&draft_path).expect("read before");
+
+    let outcome = svc
+        .execute_editorial_agent_line_edit(
+            &controller_path,
+            0,
+            &draft_path,
+            &LineEditBudget::scene_default("fixture".into(), 20_000),
+            None,
+            10,
+        )
+        .await
+        .expect("line edit runs");
+    assert!(matches!(outcome, LineEditOutcomeV1::Skipped { .. }));
+    let after = std::fs::read(&draft_path).expect("read after");
+    assert_eq!(before, after, "accepted prose must be byte-identical");
+    let controller =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    assert!(controller.scenes[0].line_edit_attempted);
+    assert_eq!(
+        controller.settings.editorial_policy,
+        EditorialPolicy::CritiqueV1
+    );
+}
+
+fn spawn_json_response_server(
+    responses: Vec<(u16, String)>,
+) -> (String, std::thread::JoinHandle<usize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let address = listener.local_addr().expect("listener address");
+    let handle = std::thread::spawn(move || {
+        let mut handled = 0usize;
+        for (status, body) in responses {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut chunk = [0_u8; 65536];
+            loop {
+                let count = stream.read(&mut chunk).expect("read");
+                if count == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..count]);
+                let current = String::from_utf8_lossy(&raw);
+                if let Some((headers, body_part)) = current.split_once("\r\n\r\n") {
+                    let expected = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.trim()
+                                .eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if body_part.len() >= expected {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+            handled += 1;
+        }
+        handled
+    });
+    (format!("http://{address}/v1"), handle)
+}
+
+fn judge_tie_json() -> serde_json::Value {
+    let mut rubric = serde_json::Map::new();
+    for dimension in spindle_core::drafting::JudgeRubricDimension::ALL {
+        rubric.insert(
+            dimension.as_str().to_string(),
+            serde_json::json!({
+                "score": 4,
+                "rationale": format!("Evidence for {}.", dimension.as_str())
+            }),
+        );
+    }
+    serde_json::json!({
+        "rubric": rubric,
+        "overall_preference": "tie",
+        "deciding_factor": "Both passages carry the scene turn.",
+        "strengths_passage_1": ["Atmosphere"],
+        "strengths_passage_2": ["Pacing"]
+    })
+}
+
+#[tokio::test]
+async fn chapter_critic_without_route_is_skipped() {
+    use spindle_core::drafting::{
+        ChapterCriticOutcomeV1, ChapterSceneRefV1, EditorialControllerStateV1, EditorialPricingV1,
+        EditorialRouteAvailability, ResolvedEditorialSettingsV1, plan_chapter_windows,
+    };
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let controller_path = tmp.path().join("chapter-controller.json");
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.chapter_pass_enabled = true;
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        "project:1".into(),
+        "branch:1".into(),
+        settings.clone(),
+    );
+    controller
+        .scenes
+        .push(crate::drafting::editorial::new_editorial_scene_state(
+            1,
+            1,
+            Some("scene:1".into()),
+            "packet-hash".into(),
+            "source-hash".into(),
+            EditorialRouteAvailability::all_available(),
+            &settings,
+        ));
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller");
+    let text = "Cold water rose.";
+    let coverage = plan_chapter_windows(
+        1,
+        &[ChapterSceneRefV1 {
+            scene_id: "scene:1".into(),
+            scene_order: 1,
+            text_sha256: crate::drafting::editorial::editorial_sha256_hex(text.as_bytes()),
+            word_count: 3,
+        }],
+        4,
+    );
+    let mut scene_texts = std::collections::BTreeMap::new();
+    scene_texts.insert("scene:1".into(), text.to_string());
+    let outcome = svc
+        .run_editorial_chapter_critic(
+            &controller_path,
+            0,
+            "general",
+            &coverage,
+            &scene_texts,
+            &[],
+            &crate::drafting::chapter::ChapterCriticBudget::scene_default("fixture".into(), 20_000),
+            None,
+            10,
+        )
+        .await
+        .expect("chapter critic runs");
+    assert!(matches!(outcome, ChapterCriticOutcomeV1::Skipped { .. }));
+}
+
+#[tokio::test]
+async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
+    use crate::drafting::artifact;
+    use crate::drafting::revision::{JudgeBudget, RevisionBudget, RevisionLoopOptions};
+    use crate::drafting::tests::{VerifiedFixtureTokenizer, fixture};
+    use spindle_core::drafting::{
+        ChapterConcernAnchorV1, ChapterConcernDimension, ChapterCritiqueV1, ChapterEditProposalV1,
+        ChapterEditSelectionV1, ChapterSceneRefV1, DirectiveSeverity, DraftMessages,
+        EditorialControllerStateV1, EditorialPricingV1, EditorialRouteAvailability, EditorialStage,
+        PreparedDraftingPacket, ResolvedEditorialSettingsV1, extraction::DraftReceiptBinding,
+        plan_chapter_windows,
+    };
+
+    let server_responses = vec![
+        (
+            200,
+            serde_json::json!({"choices": [{"message": {"content": "Revised prose."}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 120, "completion_tokens": 12, "total_tokens": 132}}).to_string(),
+        ),
+        (
+            200,
+            serde_json::json!({"choices": [{"message": {"content": judge_tie_json().to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}}).to_string(),
+        ),
+        (
+            200,
+            serde_json::json!({"choices": [{"message": {"content": judge_tie_json().to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}}).to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_json_response_server(server_responses);
+    let temp = tempfile::TempDir::new().unwrap();
+    let pool = crate::sqlite::SqlitePool::open(&temp.path().join("chapter-edit.db"))
+        .await
+        .unwrap();
+    let router = crate::ai::ModelRouter::local_only();
+    let config_path = temp.path().join("agents.toml");
+    let config = format!(
+        "[health_check]\nenabled = false\n[[agents]]\nid = \"venice\"\nname = \"Venice\"\nprovider = \"venice\"\nendpoint = \"{endpoint}\"\nmodel = \"venice-model\"\nratings = [\"general\"]\n[[routing]]\nroute = \"draft\"\nagent = \"venice\"\nmax_tokens = 500\n[[routing]]\nroute = \"review\"\nagent = \"venice\"\nmax_tokens = 500\n"
+    );
+    std::fs::write(&config_path, config).unwrap();
+    router
+        .configure(Some(config_path.to_str().unwrap()))
+        .unwrap();
+    let repository = crate::sqlite::repository::Repository::with_model_router(
+        pool,
+        temp.path().join("data"),
+        router,
+    );
+    let service = crate::sqlite::service::SqliteSpindleService::new(repository.clone());
+    let project = service
+        .create_project(spindle_core::models::CreateProjectInput {
+            name: "Chapter Edit Test".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: spindle_core::models::ReaderContract {
+                promise: "A crossing".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let branch = repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let mut packet = fixture();
+    packet.project_id = project.project_id.clone();
+    packet.branch_id = branch.id.clone();
+    packet.scene_id = Some("scene:1".into());
+    for source in &mut packet.source_versions {
+        source.branch_id = branch.id.clone();
+    }
+    packet.scene_card.source.branch_id = branch.id.clone();
+    packet.scene_card.pov.source.branch_id = branch.id.clone();
+    let messages = DraftMessages {
+        system: "system".into(),
+        user: "user".into(),
+    };
+    let packet_hash =
+        crate::drafting::editorial::editorial_sha256_hex(&serde_json::to_vec(&messages).unwrap());
+    let mut draft = artifact::capture_plain_text(
+        &packet,
+        &packet_hash,
+        "Original prose.".into(),
+        false,
+        DraftReceiptBinding {
+            generation_id: "generation:1".into(),
+            agent_id: "agent".into(),
+            normalized_output_sha256: crate::drafting::editorial::normalized_output_sha256(
+                "Original prose.",
+            ),
+        },
+    )
+    .unwrap();
+    draft.prepared_packet = Some(PreparedDraftingPacket {
+        packet: packet.clone(),
+        messages,
+        messages_hash: packet_hash.clone(),
+    });
+    draft.accepted_text_sha256 = Some(draft.text_sha256.clone());
+    let draft_path = temp.path().join("chapter-edit-draft.json");
+    artifact::save_artifact(&draft_path, &draft).unwrap();
+    let draft_before = std::fs::read(&draft_path).unwrap();
+
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.chapter_pass_enabled = true;
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        project.project_id.clone(),
+        branch.id.clone(),
+        settings.clone(),
+    );
+    let mut scene = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        1,
+        Some("scene:1".into()),
+        packet_hash.clone(),
+        "source-hash".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    scene.stage = EditorialStage::Critiqued;
+    scene.incumbent = Some(spindle_core::drafting::EditorialTextRefV1 {
+        text_sha256: draft.text_sha256.clone(),
+        generation_id: Some("generation:1".into()),
+        agent_id: Some("agent".into()),
+    });
+    controller.scenes.push(scene);
+    let controller_path = temp.path().join("chapter-edit-controller.json");
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller).unwrap();
+
+    let coverage = plan_chapter_windows(
+        1,
+        &[ChapterSceneRefV1 {
+            scene_id: "scene:1".into(),
+            scene_order: 1,
+            text_sha256: draft.text_sha256.clone(),
+            word_count: 2,
+        }],
+        4,
+    );
+    let anchor = ChapterConcernAnchorV1 {
+        scene_id: "scene:1".into(),
+        text_sha256: draft.text_sha256.clone(),
+        start_byte: 0,
+        end_byte: 8,
+        exact_quote: "Original".into(),
+    };
+    let critique = ChapterCritiqueV1 {
+        schema_version: spindle_core::drafting::CHAPTER_CRITIQUE_SCHEMA_VERSION.into(),
+        chapter_number: 1,
+        chapter_text_hash: "chapter-hash".into(),
+        concerns: Vec::new(),
+        edit_proposals: vec![ChapterEditProposalV1 {
+            id: "proposal:1".into(),
+            scene_id: "scene:1".into(),
+            base_text_sha256: draft.text_sha256.clone(),
+            dimension: ChapterConcernDimension::OpeningsEndings,
+            anchor,
+            diagnosis: "Opening is abstract.".into(),
+            requested_change: "Ground the opening in physical action.".into(),
+            preserve: vec!["POV".into()],
+            success_test: "The opening is physical.".into(),
+            source_concern_ids: Vec::new(),
+        }],
+        strengths_to_preserve: Vec::new(),
+        requires_author_decision: Vec::new(),
+        coverage: Some(coverage.clone()),
+        no_edit_reason: None,
+    };
+    let selection = ChapterEditSelectionV1 {
+        chapter_number: 1,
+        selected_proposal_ids: vec!["proposal:1".into()],
+        author_note: "try the opening".into(),
+    };
+    let application = service
+        .apply_editorial_chapter_edits(
+            &controller_path,
+            0,
+            &draft_path,
+            "chapter 1 context",
+            &critique,
+            &selection,
+            &RevisionBudget::scene_default("venice-model".into(), 20_000),
+            &JudgeBudget::scene_default("venice-model".into(), 20_000),
+            Some(&VerifiedFixtureTokenizer),
+            RevisionLoopOptions::default(),
+            10,
+        )
+        .await
+        .expect("chapter edit applies");
+    assert_eq!(application.edits.len(), 1);
+    assert!(!application.edits[0].accepted);
+    assert!(application.invalidation.affected_scene_ids.is_empty());
+    assert_eq!(std::fs::read(&draft_path).unwrap(), draft_before);
+    assert_eq!(server.join().unwrap(), 3, "revision + two judge calls only");
+    assert_eq!(
+        critique.concerns.len() + critique.edit_proposals.len(),
+        1,
+        "fixture sanity"
+    );
+    let _ = (
+        DirectiveSeverity::Major,
+        ChapterConcernDimension::Repetition,
+    );
+}
+
+#[tokio::test]
+async fn line_edit_tie_retains_accepted_prose_and_charges_both_passes() {
+    use crate::drafting::artifact;
+    use crate::drafting::line_edit::LineEditBudget;
+    use crate::drafting::tests::{VerifiedFixtureTokenizer, fixture};
+    use spindle_core::drafting::{
+        DraftMessages, EditorialControllerStateV1, EditorialPricingV1, EditorialRouteAvailability,
+        EditorialStage, LineEditOutcomeV1, PreparedDraftingPacket, ResolvedEditorialSettingsV1,
+        extraction::DraftReceiptBinding,
+    };
+
+    let responses = vec![
+        (
+            200,
+            serde_json::json!({"choices": [{"message": {"content": "Polished prose."}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 100, "completion_tokens": 12, "total_tokens": 112}}).to_string(),
+        ),
+        (
+            200,
+            serde_json::json!({"choices": [{"message": {"content": judge_tie_json().to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}}).to_string(),
+        ),
+        (
+            200,
+            serde_json::json!({"choices": [{"message": {"content": judge_tie_json().to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}}).to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_json_response_server(responses);
+    let temp = tempfile::TempDir::new().unwrap();
+    let pool = crate::sqlite::SqlitePool::open(&temp.path().join("line-edit.db"))
+        .await
+        .unwrap();
+    let router = crate::ai::ModelRouter::local_only();
+    let config_path = temp.path().join("agents.toml");
+    let config = format!(
+        "[health_check]\nenabled = false\n[[agents]]\nid = \"venice\"\nname = \"Venice\"\nprovider = \"venice\"\nendpoint = \"{endpoint}\"\nmodel = \"venice-model\"\nratings = [\"general\"]\n[[routing]]\nroute = \"line_edit\"\nagent = \"venice\"\nmax_tokens = 500\n[[routing]]\nroute = \"review\"\nagent = \"venice\"\nmax_tokens = 500\n"
+    );
+    std::fs::write(&config_path, config).unwrap();
+    router
+        .configure(Some(config_path.to_str().unwrap()))
+        .unwrap();
+    let repository = crate::sqlite::repository::Repository::with_model_router(
+        pool,
+        temp.path().join("data"),
+        router,
+    );
+    let service = crate::sqlite::service::SqliteSpindleService::new(repository);
+    let packet = fixture();
+    let messages = DraftMessages {
+        system: "system".into(),
+        user: "user".into(),
+    };
+    let packet_hash =
+        crate::drafting::editorial::editorial_sha256_hex(&serde_json::to_vec(&messages).unwrap());
+    let mut draft = artifact::capture_plain_text(
+        &packet,
+        &packet_hash,
+        "Accepted prose.".into(),
+        false,
+        DraftReceiptBinding {
+            generation_id: "generation:1".into(),
+            agent_id: "agent".into(),
+            normalized_output_sha256: crate::drafting::editorial::normalized_output_sha256(
+                "Accepted prose.",
+            ),
+        },
+    )
+    .unwrap();
+    draft.accepted_text_sha256 = Some(draft.text_sha256.clone());
+    draft.prepared_packet = Some(PreparedDraftingPacket {
+        packet: packet.clone(),
+        messages,
+        messages_hash: packet_hash.clone(),
+    });
+    let draft_path = temp.path().join("line-edit-tie-draft.json");
+    artifact::save_artifact(&draft_path, &draft).unwrap();
+    let draft_before = std::fs::read(&draft_path).unwrap();
+
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.line_edit_enabled = true;
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        packet.project_id.clone(),
+        packet.branch_id.clone(),
+        settings.clone(),
+    );
+    let mut scene = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        1,
+        Some("scene:1".into()),
+        packet_hash,
+        "source-hash".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    scene.stage = EditorialStage::AcceptedOriginal;
+    scene.incumbent = Some(spindle_core::drafting::EditorialTextRefV1 {
+        text_sha256: draft.text_sha256.clone(),
+        generation_id: Some("generation:1".into()),
+        agent_id: Some("agent".into()),
+    });
+    controller.scenes.push(scene);
+    let controller_path = temp.path().join("line-edit-tie-controller.json");
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller).unwrap();
+
+    let outcome = service
+        .execute_editorial_agent_line_edit(
+            &controller_path,
+            0,
+            &draft_path,
+            &LineEditBudget::scene_default("venice-model".into(), 20_000),
+            Some(&VerifiedFixtureTokenizer),
+            10,
+        )
+        .await
+        .expect("line edit runs");
+    let LineEditOutcomeV1::Retained { reason, .. } = outcome else {
+        panic!("judge tie must retain the accepted prose: {outcome:?}");
+    };
+    assert_eq!(reason, "judge_tie");
+    assert_eq!(std::fs::read(&draft_path).unwrap(), draft_before);
+    let controller =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    assert!(controller.scenes[0].line_edit_attempted);
+    assert_eq!(server.join().unwrap(), 3);
+}
+
+#[tokio::test]
+async fn chapter_critic_persists_validated_advisory_critique() {
+    use crate::drafting::chapter::ChapterCriticBudget;
+    use crate::drafting::tests::VerifiedFixtureTokenizer;
+    use spindle_core::drafting::{
+        ChapterCriticOutcomeV1, ChapterSceneRefV1, EditorialControllerStateV1, EditorialPricingV1,
+        EditorialRouteAvailability, ResolvedEditorialSettingsV1, plan_chapter_windows,
+    };
+
+    let critique_json = serde_json::json!({
+        "schema_version": "chapter_critique_v1",
+        "chapter_number": 1,
+        "chapter_text_hash": "ignored",
+        "concerns": [],
+        "edit_proposals": [],
+        "strengths_to_preserve": ["Cold image"],
+        "requires_author_decision": [],
+        "no_edit_reason": "No chapter-level issue found."
+    });
+    let (endpoint, server) = spawn_json_response_server(vec![(
+        200,
+        serde_json::json!({"choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 200, "completion_tokens": 40, "total_tokens": 240}}).to_string(),
+    )]);
+    let temp = tempfile::TempDir::new().unwrap();
+    let pool = crate::sqlite::SqlitePool::open(&temp.path().join("chapter-critic.db"))
+        .await
+        .unwrap();
+    let router = crate::ai::ModelRouter::local_only();
+    let config_path = temp.path().join("agents.toml");
+    let config = format!(
+        "[health_check]\nenabled = false\n[[agents]]\nid = \"venice\"\nname = \"Venice\"\nprovider = \"venice\"\nendpoint = \"{endpoint}\"\nmodel = \"venice-model\"\nratings = [\"general\"]\n[[routing]]\nroute = \"review\"\nagent = \"venice\"\nmax_tokens = 500\n"
+    );
+    std::fs::write(&config_path, config).unwrap();
+    router
+        .configure(Some(config_path.to_str().unwrap()))
+        .unwrap();
+    let repository = crate::sqlite::repository::Repository::with_model_router(
+        pool,
+        temp.path().join("data"),
+        router,
+    );
+    let service = crate::sqlite::service::SqliteSpindleService::new(repository);
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.chapter_pass_enabled = true;
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        "project:1".into(),
+        "branch:1".into(),
+        settings.clone(),
+    );
+    controller
+        .scenes
+        .push(crate::drafting::editorial::new_editorial_scene_state(
+            1,
+            1,
+            Some("scene:1".into()),
+            "packet-hash".into(),
+            "source-hash".into(),
+            EditorialRouteAvailability::all_available(),
+            &settings,
+        ));
+    let controller_path = temp.path().join("chapter-critic-controller.json");
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller).unwrap();
+    let text = "Cold water rose.";
+    let coverage = plan_chapter_windows(
+        1,
+        &[ChapterSceneRefV1 {
+            scene_id: "scene:1".into(),
+            scene_order: 1,
+            text_sha256: crate::drafting::editorial::editorial_sha256_hex(text.as_bytes()),
+            word_count: 3,
+        }],
+        4,
+    );
+    let mut scene_texts = std::collections::BTreeMap::new();
+    scene_texts.insert("scene:1".into(), text.to_string());
+    let outcome = service
+        .run_editorial_chapter_critic(
+            &controller_path,
+            0,
+            "general",
+            &coverage,
+            &scene_texts,
+            &[],
+            &ChapterCriticBudget::scene_default("venice-model".into(), 20_000),
+            Some(&VerifiedFixtureTokenizer),
+            10,
+        )
+        .await
+        .expect("chapter critic runs");
+    let ChapterCriticOutcomeV1::Critiqued {
+        critique,
+        critique_artifact_path,
+        ..
+    } = outcome
+    else {
+        panic!("expected a critiqued outcome: {outcome:?}");
+    };
+    assert_eq!(critique.chapter_number, 1);
+    assert!(critique.coverage.is_some());
+    assert!(std::path::Path::new(&critique_artifact_path).exists());
+    let controller =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    assert_eq!(
+        controller.scenes[0].ledger.scene_used().calls,
+        1,
+        "one chapter-critic call is charged"
+    );
+    assert_eq!(server.join().unwrap(), 1);
+}

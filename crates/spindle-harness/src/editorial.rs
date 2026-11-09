@@ -114,6 +114,10 @@ pub fn render_editorial_status(state: &HarnessState, verbose: bool) -> String {
                 .unwrap_or_else(|| "none".into()),
             scene.parked_issues.len()
         ));
+        out.push_str(&format!(
+            "  line_edit_attempted={} extracted={}\n",
+            scene.line_edit_attempted, scene.extracted
+        ));
         if let Some(task) = scene.find_pending_task() {
             out.push_str(&format!(
                 "  pending host task: {} ({:?})\n",

@@ -951,3 +951,86 @@ prose-affecting is activated by this step.
   `EditorialPolicy::Legacy` as the default. Continuity gate **C** remains
   `20 / 28 = 0.7143` overall recall with `5` control false positives and
   `4 / 4` accepted-prose violating probes across `90` verified live artifacts.
+
+## Implementation status: optional line edit and bounded chapter pass (PR 8)
+
+PR 8 adds the optional line-edit pass, the bounded chapter advisory critique with
+author-selected edits, repetition/editorial memory, checkpoint-feedback adapters,
+and the book advisory queue. Both optional model passes remain **off by default**
+(`line_edit_enabled = false`, `chapter_pass_enabled = false`); nothing here
+activates a prose-affecting default.
+
+### Optional line edit
+
+- `crates/spindle-adapters/src/drafting/line_edit.rs` defines the `line_edit`
+  system prompt, `LineEditBudget` (18,000 input / 3,000 output / 512 framing),
+  and token-verified prompt assembly. The prompt permits diction, syntax,
+  rhythm, and dialogue polish only and requires preserving every event, the
+  scene turn, POV, rating, and author locks.
+- `ModelRouter::line_edit_candidate` resolves the rating-cleared `line_edit`
+  route with **no fallback to `draft`**; a missing route is an honest skip. The
+  candidate still runs the existing deterministic checks and the blinded
+  swapped-order judge. A new candidate is promoted only when both passes prefer
+  it; any tie, incumbent win, order disagreement, truncation, new blocker, or
+  unavailable judge retains the pre-line-edit accepted prose. The pass is
+  marked attempted either way and its ledger/attribution rows are recorded.
+- The harness already exposes `line_edit_enabled` in resolved settings; the
+  controller's next-action report returns `line_edit` only when the terminal
+  scene has not attempted it. Tests cover the disabled/no-route skip (accepted
+  prose byte-identical) and judge-tie retention (both judge passes charged).
+
+### Bounded chapter pass
+
+- `plan_chapter_windows` splits a chapter into deterministic windows (default 4
+  scenes, hard cap 8) with an explicit index and coverage report; it never
+  silently truncates. The full chapter index and coverage are mandatory in the
+  chapter-critic prompt, and an over-budget chapter fails closed instead of
+  claiming a full review.
+- `ChapterCritiqueV1` covers openings/endings, repetition, beat/intensity
+  progression, scene lengths, reader engagement, continuity, and chapter
+  coherence. Concerns carry exact scene/hash/UTF-8 anchors; a missing or
+  unverifiable anchor becomes `advisory = true` and never drives an edit.
+  Invalid proposal anchors are dropped, and at most two scene-edit proposals
+  survive validation.
+- `run_editorial_chapter_critic` admits one `ChapterCritique` pass through the
+  durable controller ledger, persists the validated critique as a local
+  artifact, and returns it. A missing route/tokenizer/price returns an honest
+  skip; no prose or plan is mutated.
+- Applying edits requires an explicit `ChapterEditSelectionV1`. Each selected
+  proposal is converted to a scene `CritiqueDirective` and flows through the
+  existing deterministic-check + doubled-order judge loop with
+  `pre_selected_directives` (the scene critic is skipped) and bounded chapter
+  context included in both judge orders. Unselected proposals are never
+  applied; stale base hashes/scene mismatches are skipped. Acceptance returns a
+  `ChapterInvalidationPlanV1` covering the chapter summary, scene extraction,
+  beat annotations, reader notes, re-extraction, and downstream revalidation.
+  The chapter-level rejection test verifies a judge tie keeps the accepted
+  prose and returns no invalidation.
+- Editor/reader feedback adapters map retained reader-simulation and dual-persona
+  notes into unanchored `CriticFindingInput`s for the critic.
+
+### Repetition memory and book advisory queue
+
+- `build_editorial_memory` selects accepted scenes only, excludes every rejected
+  candidate hash, and combines the current chapter's earlier scenes with the
+  previous eight accepted scenes. It builds bounded recent openings/endings,
+  repeated phrases, recurring images, and pacing history with scene/hash
+  provenance. Tests verify rejected candidates never enter memory.
+- `build_book_advisory_queue` reports chapter-summary gaps, large pacing drops,
+  repeated opening/closing devices, and unresolved promises whose planned
+  payoff has passed. Every item is `advisory = true`; there is no automatic book
+  rewrite, plot redesign, or plan mutation. The queue can be persisted beside
+  the run artifacts with `save_book_advisory_queue`.
+
+### Gates and defaults
+
+- Legacy remains the default. Line edit and the chapter pass stay opt-in and
+  off; bounded chapter edits additionally require an explicit author selection.
+- Release gate **G** has not been run for line edit or the chapter pass. The
+  design's chapter-coherence blinded comparison lower-bound `> 0.50` gate is
+  therefore not cleared, so neither optional pass is activated by default.
+- Continuity gate **C** remains `20 / 28 = 0.7143` overall recall with `5`
+  control false positives, `4 / 4` accepted-prose violating probes, `90`
+  verified live artifacts, and `0` clean blocker issues.
+- No SQLite migration, MCP tool, skill/reference file, or `tools/list` surface
+  change is introduced by this step.

@@ -208,6 +208,20 @@ caps, pending host tasks, and the next action/reservation in `status`/`resume`
 dry runs. Legacy runs and `EditorialPolicy::Legacy` remain byte-compatible and
 are still the default; see `docs/drafting-and-revision-design.md`.
 
+## Chapter pass, line edit, and book advisory
+
+The opt-in editorial controller also carries an optional `line_edit` pass
+(diction/syntax/dialogue polish on the cleared `line_edit` route, still gated by
+deterministic checks and the swapped-order judge), a bounded chapter advisory
+critique over deterministic scene windows with explicit coverage, and
+author-selected chapter edits that reuse the scene acceptance gate with bounded
+chapter context in both judge orders. Repetition memory builds only from
+accepted prose (never rejected candidates), checkpoint reader/dual-persona notes
+adapt into critic findings, and the book advisory queue reports summary gaps,
+pacing drops, repeated devices, and unresolved promises without rewriting
+anything. Both optional model passes default off; see
+`docs/drafting-and-revision-design.md`.
+
 ## The authoring-run editorial loop
 
 The authoring supervisor (`spindle-harness`, driven through the `authoring_*`
