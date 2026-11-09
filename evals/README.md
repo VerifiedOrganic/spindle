@@ -178,6 +178,32 @@ disposable `spindle-mcp` server and temporary `SPINDLE_DATA_DIR`:
    pairing a lexical/direct variant with a natural-prose/paraphrased variant in
    each category.
 
+## Held-out corpus
+
+`evals/continuity_held_out.py` is a separate, independently authored corpus for
+generalization testing. It does not reuse the baseline fixture prose and does not
+change the baseline or any detector. It adds two 16-chapter manuscripts in
+distinct genres and voices, plants four contradictions for each of the seven
+public contradiction types (28 per manuscript, 56 total), and includes near-miss
+controls for negation, hypotheticals, flashbacks, dreams, quoted rumors, letters
+and mentions. Secrets and knowledge are seeded through the public canonical-fact
+and knowledge paths; attributes, life status, quantities, world rules and scene
+clocks use their public tools.
+
+```sh
+python3 evals/continuity_recall.py held-out
+python3 evals/continuity_recall.py held-out --output evals/results/continuity_recall_held_out.json
+```
+
+This mode reports per-type recall and control false positives but is not the
+release baseline. The checked-in report records the current main result: 24/56
+overall (42.86%), 0 control false positives, with `timeline_chronology_rewind`
+8/8, `quantity_affordability` 8/8 and `world_rule_cost_violation` 8/8, while
+`character_attribute`, `dead_character_acting`,
+`knowledge_leak_before_learned` and `secret_leak` each returned 0/8 against
+exact-phrase, cast-present natural paraphrases. Treat the held-out result as a
+generalization signal, not a replacement for the baseline gate.
+
 ## Run
 
 ```sh
